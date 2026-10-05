@@ -1,6 +1,6 @@
 [package]
 name = "theviewer"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 description = "A fast binary viewer and editor that rasters any file as pixels, with structure, protocol and compression analysis"
 readme = "README.md"
