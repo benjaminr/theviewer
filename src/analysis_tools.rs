@@ -29,6 +29,8 @@ type ProtocolResult = (usize, Vec<u8>, protocol::ProtocolReport, Vec<FramingCand
 pub struct ToolsState {
     pub record_len: usize,
     pub columns: Option<(usize, usize, Vec<ColumnProfile>, Vec<FieldGuess>)>,
+    /// How many records the column profile covers.
+    pub columns_records: usize,
 
     protocol_pending: Option<Receiver<ProtocolResult>>,
     pub protocol: Option<ProtocolView>,
@@ -70,9 +72,15 @@ fn kind_colour(kind: ColumnKind) -> Color32 {
 // Columns
 // ---------------------------------------------------------------------------
 
-/// Where record analysis starts: the selection start, else the view origin.
-fn records_origin(app: &ViewerApp) -> usize {
-    app.selection().map(|(s, _)| s).unwrap_or(app.shape.byte_offset)
+/// Where record analysis starts: the selection, else the start of the record
+/// (counted from the view origin) that holds the cursor.
+fn records_origin(app: &ViewerApp, record_len: usize) -> usize {
+    if let Some((start, _)) = app.selection() {
+        return start;
+    }
+    let origin = app.shape.byte_offset;
+    let into_table = app.cursor.saturating_sub(origin);
+    origin + into_table / record_len.max(1) * record_len.max(1)
 }
 
 pub fn show_columns(app: &mut ViewerApp, ui: &mut Ui) {
@@ -84,7 +92,7 @@ pub fn show_columns(app: &mut ViewerApp, ui: &mut Ui) {
             .unwrap_or_else(|| app.shape.row_stride())
             .clamp(1, 65_536);
     }
-    let origin = records_origin(app);
+    let origin = records_origin(app, app.bench.tools.record_len);
     ui.horizontal(|ui| {
         ui.label("Record length");
         ui.add(egui::DragValue::new(&mut app.bench.tools.record_len).range(1..=65_536).suffix(" B"));
@@ -96,14 +104,27 @@ pub fn show_columns(app: &mut ViewerApp, ui: &mut Ui) {
         {
             app.bench.tools.record_len = best;
         }
-        ui.label(RichText::new(format!("records from {origin:#x}")).small().color(theme::TEXT_DIM));
+        if let Some((_, _, profiles, _)) = &app.bench.tools.columns
+            && !profiles.is_empty()
+        {
+            let records = app.bench.tools.columns_records;
+            ui.label(RichText::new(format!("{records} records from {origin:#x}")).small().color(theme::TEXT_DIM))
+                .on_hover_text("From the cursor's record (or the selection) to where the records stop looking alike");
+        }
     });
     let record_len = app.bench.tools.record_len.max(1);
     let key = (origin, record_len);
     if app.bench.tools.columns.as_ref().map(|c| (c.0, c.1)) != Some(key) {
         let bytes = app.document.read_range(origin, record_len * PROFILE_RECORDS);
-        let profiles = columns::profile(&bytes, record_len, PROFILE_RECORDS);
-        let fields = columns::group_fields(&bytes, record_len, &profiles, app.document.len());
+        // Within a selection every record counts; otherwise stop where the table does.
+        let records = match app.selection() {
+            Some((_, len)) => (len / record_len).clamp(1, PROFILE_RECORDS),
+            None => columns::table_length(&bytes, record_len, PROFILE_RECORDS),
+        };
+        let bytes = &bytes[..(records * record_len).min(bytes.len())];
+        app.bench.tools.columns_records = records;
+        let profiles = columns::profile(bytes, record_len, PROFILE_RECORDS);
+        let fields = columns::group_fields(bytes, record_len, &profiles, app.document.len());
         app.bench.tools.columns = Some((origin, record_len, profiles, fields));
     }
     let (_, _, profiles, fields) = app.bench.tools.columns.clone().expect("filled above");

@@ -82,6 +82,66 @@ const MAX_GROUPED_RECORDS: usize = 4096;
 /// Distinct values at or below which a column counts as low cardinality.
 const LOW_CARDINALITY: usize = 8;
 
+/// Records used to learn which byte positions are stable in a table.
+const TABLE_SAMPLE_RECORDS: usize = 8;
+/// Share of the stable positions a record must match to belong to the table.
+const TABLE_MATCH_SHARE: f32 = 0.8;
+/// Consecutive records that do not match before the table is taken to end.
+const TABLE_END_RUN: usize = 3;
+
+/// Broad kind of a byte (zero, text, control, high or 0xFF), the same split
+/// the byte-class pixel format colours.
+fn byte_kind(byte: u8) -> u8 {
+    match byte {
+        0x00 => 0,
+        0xFF => 1,
+        0x20..=0x7E => 2,
+        0x01..=0x1F | 0x7F => 3,
+        _ => 4,
+    }
+}
+
+/// How many records, from the first, belong to one table.
+///
+/// Byte positions whose kind is the same in each of the first few records
+/// (a constant, a text tag, a zero high byte) are the table's fingerprint.
+/// The table ends where records stop matching it, so whatever follows (text,
+/// an image, compressed data) does not drown out the real columns. With no
+/// stable positions there is nothing to go on, and every record counts.
+pub fn table_length(bytes: &[u8], record_len: usize, max_records: usize) -> usize {
+    let records = record_count(bytes, record_len, max_records);
+    let sample = records.min(TABLE_SAMPLE_RECORDS);
+    if sample < 2 {
+        return records;
+    }
+    let record = |index: usize| &bytes[index * record_len..(index + 1) * record_len];
+    let stable: Vec<(usize, u8)> = (0..record_len)
+        .filter_map(|position| {
+            let kind = byte_kind(record(0)[position]);
+            (1..sample).all(|r| byte_kind(record(r)[position]) == kind).then_some((position, kind))
+        })
+        .collect();
+    if stable.is_empty() {
+        return records;
+    }
+    let matches = |index: usize| {
+        let matching = stable.iter().filter(|&&(position, kind)| byte_kind(record(index)[position]) == kind).count();
+        matching as f32 >= stable.len() as f32 * TABLE_MATCH_SHARE
+    };
+    let mut misses = 0;
+    for index in sample..records {
+        if matches(index) {
+            misses = 0;
+        } else {
+            misses += 1;
+            if misses == TABLE_END_RUN {
+                return index + 1 - TABLE_END_RUN;
+            }
+        }
+    }
+    records
+}
+
 /// Records available: at most `max_records` whole records.
 fn record_count(bytes: &[u8], record_len: usize, max_records: usize) -> usize {
     if record_len == 0 {
@@ -430,6 +490,21 @@ pub fn to_template(record_len: usize, fields: &[FieldGuess]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_table_ends_where_its_records_stop_looking_alike() {
+        let record_len = 16;
+        let mut bytes = Vec::new();
+        for i in 0..50u32 {
+            bytes.extend_from_slice(&i.to_le_bytes());
+            bytes.extend_from_slice(b"TAG:");
+            bytes.extend_from_slice(&[0, 0, 0, 0, 1, 2, 3, (i * 7) as u8]);
+        }
+        let table_bytes = bytes.len();
+        bytes.extend_from_slice(&b"log line: temperature 21.5C, link ok\n".repeat(20));
+        assert_eq!(table_length(&bytes, record_len, 4096), table_bytes / record_len);
+        assert_eq!(table_length(&bytes[..table_bytes], record_len, 4096), 50, "a table that fills the data");
+    }
     use crate::templates::Template;
 
     fn xorshift(state: &mut u32) -> u8 {
