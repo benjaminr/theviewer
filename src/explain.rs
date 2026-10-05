@@ -193,8 +193,19 @@ fn block_regions(bytes: &[u8]) -> Vec<Region> {
 // ---------------------------------------------------------------------------
 
 /// The region kind a confident finding stands for, if it is one worth mapping.
+/// Whether a catalogue finding measured how long its object is, rather than
+/// covering only the magic bytes it matched (see `catalog::Catalog`).
+fn catalogue_extent_known(finding: &Finding) -> bool {
+    finding.detail.contains(" bytes")
+}
+
 fn finding_kind(finding: &Finding) -> Option<RegionKind> {
     if finding.confidence < MIN_FINDING_CONFIDENCE {
+        return None;
+    }
+    // A bare magic-number match ("an ICO of 4 B") is too weak to describe a
+    // region, whatever category the catalogue files it under.
+    if finding.id.starts_with("signature:") && !catalogue_extent_known(finding) {
         return None;
     }
     let mime = finding.detail.to_ascii_lowercase();
@@ -216,10 +227,7 @@ fn finding_kind(finding: &Finding) -> Option<RegionKind> {
         Category::Filesystem => Some(RegionKind::Filesystem),
         Category::Compressed => Some(RegionKind::Compressed),
         Category::Document => Some(by_mime().unwrap_or(RegionKind::Data)),
-        // Catalogue signatures only count when they carry a real extent.
-        Category::Signature if finding.id.starts_with("signature:") && finding.detail.contains(" bytes") => {
-            Some(by_mime().unwrap_or(RegionKind::Data))
-        }
+        Category::Signature if finding.id.starts_with("signature:") => Some(by_mime().unwrap_or(RegionKind::Data)),
         _ => None,
     }
 }
@@ -548,6 +556,17 @@ mod tests {
         let report = explain(&random, "blob", &regions);
         assert_eq!(report.headline, "Compressed or encrypted data", "{regions:#?}");
         assert!(report.sentences[0].text.contains("looks like compressed or encrypted data"));
+    }
+
+    #[test]
+    fn a_bare_magic_number_match_is_not_reported_as_an_object() {
+        let magic_only = Finding::new("signature:image/vnd.microsoft.icon", "catalog", Category::Image, 0x9d, 4)
+            .title("ICO")
+            .detail("image/vnd.microsoft.icon · .ico")
+            .confidence(0.9);
+        assert_eq!(finding_kind(&magic_only), None);
+        let measured = magic_only.clone().detail("image/vnd.microsoft.icon · .ico · 1406 bytes");
+        assert_eq!(finding_kind(&measured), Some(RegionKind::Image));
     }
 
     #[test]
