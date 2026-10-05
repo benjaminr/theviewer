@@ -2506,6 +2506,7 @@ impl ViewerApp {
                 if ui.button("Protocol analysis").clicked() { self.dock.open = true; self.dock.tab = DockTab::Protocol; crate::analysis_tools::start_protocol(self); ui.close(); }
                 if ui.button("XOR keys").clicked() { self.dock.toggle(DockTab::Xor); ui.close(); }
                 if ui.button("Crypto: encrypted blocks, keys, ciphers").clicked() { self.dock.toggle(DockTab::Crypto); ui.close(); }
+                if ui.button("Compare many files…").clicked() { self.dock.toggle(DockTab::Compare); ui.close(); }
                 if ui.button("Compare with file…").clicked() {
                     self.dock.open = true;
                     self.dock.tab = DockTab::Diff;

@@ -262,6 +262,7 @@ impl ViewerApp {
             DockTab::Strings => crate::analysis_stats::show_strings(self, ui),
             DockTab::Xor => crate::analysis_stats::show_xor(self, ui),
             DockTab::Crypto => panels::show(self, ui, |p| &mut p.crypto, crate::panel_crypto::show_crypto),
+            DockTab::Compare => panels::show(self, ui, |p| &mut p.compare, crate::panel_compare::show_compare),
             DockTab::Assistant | DockTab::Live => {}
         }
     }

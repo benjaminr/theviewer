@@ -90,6 +90,7 @@ pub fn commands() -> Vec<Command> {
         Command { id: "tools.columns", title: "Profile record columns", keys: "", run: |app, _| { app.dock.open = true; app.dock.tab = crate::dock::DockTab::Columns; } },
         Command { id: "tools.protocol", title: "Analyse a message stream (protocol)", keys: "", run: |app, _| { app.dock.open = true; app.dock.tab = crate::dock::DockTab::Protocol; crate::analysis_tools::start_protocol(app); } },
         Command { id: "tools.xor", title: "Recover XOR keys", keys: "", run: |app, _| { app.dock.open = true; app.dock.tab = crate::dock::DockTab::Xor; } },
+        Command { id: "tools.compare", title: "Compare many files: variation, correlation and recording timeline", keys: "", run: |app, _| app.dock.toggle(crate::dock::DockTab::Compare) },
         Command { id: "tools.crypto", title: "Find encrypted blocks, keys and certificates; try simple ciphers", keys: "", run: |app, _| app.dock.toggle(crate::dock::DockTab::Crypto) },
         Command { id: "app.settings", title: "Settings (API key)", keys: "Cmd+,", run: |app, _| app.open_settings() },
         Command { id: "help.keys", title: "Keyboard shortcuts", keys: "?", run: |app, _| app.show_help = true },

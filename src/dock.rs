@@ -27,10 +27,11 @@ pub enum DockTab {
     Diff,
     Live,
     Crypto,
+    Compare,
 }
 
 impl DockTab {
-    pub const ALL: [DockTab; 14] = [
+    pub const ALL: [DockTab; 15] = [
         DockTab::Report,
         DockTab::Assistant,
         DockTab::Template,
@@ -45,6 +46,7 @@ impl DockTab {
         DockTab::Diff,
         DockTab::Live,
         DockTab::Crypto,
+        DockTab::Compare,
     ];
 
     /// Tabs grouped by purpose, for the tab bar.
@@ -52,7 +54,7 @@ impl DockTab {
         &[DockTab::Report, DockTab::Assistant],
         &[DockTab::Template, DockTab::Columns, DockTab::Protocol],
         &[DockTab::Statistics, DockTab::Strings, DockTab::Xor, DockTab::Crypto, DockTab::Checksums],
-        &[DockTab::Disassembly, DockTab::Unpacked, DockTab::Diff],
+        &[DockTab::Disassembly, DockTab::Unpacked, DockTab::Diff, DockTab::Compare],
         &[DockTab::Live],
     ];
 
@@ -72,6 +74,7 @@ impl DockTab {
             DockTab::Diff => "Diff",
             DockTab::Live => "Live",
             DockTab::Crypto => "Crypto",
+            DockTab::Compare => "Compare",
         }
     }
 
@@ -91,6 +94,7 @@ impl DockTab {
             DockTab::Diff => "Compare with another file",
             DockTab::Live => "URLs, devices, serial, watch and history",
             DockTab::Crypto => "Encrypted blocks, keys and certificates, and simple ciphers",
+            DockTab::Compare => "Many files: what varies, what follows an outside value, and a recording's timeline",
         }
     }
 }

@@ -138,6 +138,7 @@ right-click menu. Each one is a panel you can dock anywhere.
 | **Unpacked** | Extracts ZIP, tar and compressed streams recursively into a tree you can browse, open or save. |
 | **Checksums** | CRC-32, Adler-32, MD5, SHA-1, SHA-256 and simple sums of a selection, and *Find the checksum*, which works out which stored value checks which bytes. |
 | **Diff** | Compares with another file, finding inserted and deleted bytes rather than only changed ones, and scrolls both together. |
+| **Compare** | Many files at once (captures, firmware versions, saved states): which byte ranges stay constant, vary or count up across them; which fields follow a value you enter for each file, such as a temperature or a setting; and, for a live recording, a timeline of which bytes changed when. |
 | **Live** | Opens a URL, a serial port (`serial:/dev/cu.usbserial@115200`), a block device (`/dev/rdisk2`, needs sudo) or process memory (`pid:1234`, Linux only). Can watch a file as it grows and record its history. |
 | **Ask** | Ask Claude about the file (see below). |
 
