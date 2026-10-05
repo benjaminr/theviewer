@@ -335,6 +335,7 @@ pub fn build_registry_with(host: Option<&SharedLuaHost>) -> Registry {
         eprintln!("theviewer: user catalogue ignored: {message}");
     }
     registry.add_detector(catalog);
+    registry.add_detector(crate::cortex_m::CortexMVectorDetector);
     for parser in parsers::builtin_parsers() {
         registry.add_parser_arc(parser);
     }
@@ -2499,6 +2500,7 @@ impl ViewerApp {
                 if ui.button("Infer a template from the selection").clicked() { self.infer_template(); ui.close(); }
                 if ui.button("Disassemble at cursor").clicked() { self.dock.open = true; self.dock.tab = DockTab::Disassembly; ui.close(); }
                 if ui.button("Unpack everything").clicked() { self.dock.open = true; self.dock.tab = DockTab::Unpacked; self.start_unpack(); ui.close(); }
+                if ui.button("Filesystems and block types").clicked() { self.dock.toggle(DockTab::Forensics); ui.close(); }
                 if ui.button("Checksums").clicked() { self.dock.toggle(DockTab::Checksums); ui.close(); }
                 ui.separator();
                 if ui.button("Byte statistics").clicked() { self.dock.open = true; self.dock.tab = DockTab::Statistics; crate::analysis_stats::start_statistics(self); ui.close(); }

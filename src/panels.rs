@@ -9,6 +9,7 @@ use eframe::egui::Ui;
 use crate::app::ViewerApp;
 use crate::panel_bits::BitsState;
 use crate::panel_compare::CompareState;
+use crate::panel_forensics::ForensicsState;
 use crate::panel_crypto::CryptoState;
 
 /// The state of every self-contained tool panel.
@@ -17,6 +18,7 @@ pub struct PanelStates {
     pub crypto: CryptoState,
     pub compare: CompareState,
     pub bits: BitsState,
+    pub forensics: ForensicsState,
 }
 
 /// Draw a panel, lending it its state from `app` for the frame. The state is

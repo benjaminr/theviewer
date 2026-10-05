@@ -264,6 +264,7 @@ impl ViewerApp {
             DockTab::Crypto => panels::show(self, ui, |p| &mut p.crypto, crate::panel_crypto::show_crypto),
             DockTab::Compare => panels::show(self, ui, |p| &mut p.compare, crate::panel_compare::show_compare),
             DockTab::Bits => panels::show(self, ui, |p| &mut p.bits, crate::panel_bits::show_bits),
+            DockTab::Forensics => panels::show(self, ui, |p| &mut p.forensics, crate::panel_forensics::show_forensics),
             DockTab::Assistant | DockTab::Live => {}
         }
     }

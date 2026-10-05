@@ -115,17 +115,46 @@ fn expand(node: &mut Node, depth: usize, limits: &Limits, budget: &mut Budget) {
         return;
     }
     for mut child in found {
-        if budget.nodes >= limits.max_nodes {
-            node.note = Some("stopped: node limit reached".to_string());
+        if !admit(node, &child, limits, budget) {
             break;
         }
-        if budget.bytes + child.data.len() > limits.max_total_bytes {
-            node.note = Some("stopped: size limit reached".to_string());
+        descend(&mut child, depth + 1, limits, budget);
+        node.children.push(child);
+    }
+}
+
+/// Count `child` against the limits. Returns false, with a note on `parent`,
+/// once a limit is reached.
+fn admit(parent: &mut Node, child: &Node, limits: &Limits, budget: &mut Budget) -> bool {
+    if budget.nodes >= limits.max_nodes {
+        parent.note = Some("stopped: node limit reached".to_string());
+        return false;
+    }
+    if budget.bytes + child.data.len() > limits.max_total_bytes {
+        parent.note = Some("stopped: size limit reached".to_string());
+        return false;
+    }
+    budget.nodes += 1;
+    budget.bytes += child.data.len();
+    true
+}
+
+/// Look inside a newly found node. Most are searched for containers and
+/// streams; an embedded filesystem arrives as a folder that already holds its
+/// files, so each of those is counted and searched instead.
+fn descend(node: &mut Node, depth: usize, limits: &Limits, budget: &mut Budget) {
+    if node.children.is_empty() {
+        expand(node, depth, limits, budget);
+        return;
+    }
+    let files = std::mem::take(&mut node.children);
+    for mut child in files {
+        if !admit(node, &child, limits, budget) {
             break;
         }
-        budget.nodes += 1;
-        budget.bytes += child.data.len();
-        expand(&mut child, depth + 1, limits, budget);
+        if depth < limits.max_depth {
+            descend(&mut child, depth + 1, limits, budget);
+        }
         node.children.push(child);
     }
 }
@@ -136,8 +165,18 @@ fn expand(node: &mut Node, depth: usize, limits: &Limits, budget: &mut Budget) {
 /// Extracted bytes are taken from `bytes_left`; once it runs out, no more
 /// children are extracted.
 fn find_children(data: &[u8], limits: &Limits, bytes_left: &mut usize) -> Vec<Node> {
-    let mut children = zip_entries(data, limits, bytes_left);
-    children.extend(tar_entries(data, limits, bytes_left));
+    // Filesystems first: their compressed blocks and stored files must not be
+    // reported again as loose streams or archive entries.
+    let mut children = crate::embedfs::filesystem_nodes(data, limits, bytes_left);
+    let in_filesystem = |offset: usize| {
+        children.iter().any(|fs| offset >= fs.source_offset && offset < fs.source_offset + fs.source_len)
+    };
+    let archived: Vec<Node> = zip_entries(data, limits, bytes_left)
+        .into_iter()
+        .chain(tar_entries(data, limits, bytes_left))
+        .filter(|entry| !in_filesystem(entry.source_offset))
+        .collect();
+    children.extend(archived);
     let claimed: Vec<(usize, usize)> = children.iter().map(|c| (c.source_offset, c.source_offset + c.source_len)).collect();
     for stream in compress::scan_streams(data, 0) {
         if claimed.iter().any(|&(start, end)| stream.start >= start && stream.start < end) {

@@ -29,10 +29,11 @@ pub enum DockTab {
     Crypto,
     Compare,
     Bits,
+    Forensics,
 }
 
 impl DockTab {
-    pub const ALL: [DockTab; 16] = [
+    pub const ALL: [DockTab; 17] = [
         DockTab::Report,
         DockTab::Assistant,
         DockTab::Template,
@@ -49,6 +50,7 @@ impl DockTab {
         DockTab::Crypto,
         DockTab::Compare,
         DockTab::Bits,
+        DockTab::Forensics,
     ];
 
     /// Tabs grouped by purpose, for the tab bar.
@@ -56,7 +58,7 @@ impl DockTab {
         &[DockTab::Report, DockTab::Assistant],
         &[DockTab::Template, DockTab::Columns, DockTab::Protocol, DockTab::Bits],
         &[DockTab::Statistics, DockTab::Strings, DockTab::Xor, DockTab::Crypto, DockTab::Checksums],
-        &[DockTab::Disassembly, DockTab::Unpacked, DockTab::Diff, DockTab::Compare],
+        &[DockTab::Disassembly, DockTab::Unpacked, DockTab::Forensics, DockTab::Diff, DockTab::Compare],
         &[DockTab::Live],
     ];
 
@@ -78,6 +80,7 @@ impl DockTab {
             DockTab::Crypto => "Crypto",
             DockTab::Compare => "Compare",
             DockTab::Bits => "Bits",
+            DockTab::Forensics => "Forensics",
         }
     }
 
@@ -99,6 +102,7 @@ impl DockTab {
             DockTab::Crypto => "Encrypted blocks, keys and certificates, and simple ciphers",
             DockTab::Compare => "Many files: what varies, what follows an outside value, and a recording's timeline",
             DockTab::Bits => "Bit-level frames, bit planes, line codes, number types and length fields",
+            DockTab::Forensics => "Embedded filesystems, and what kind of data each block holds",
         }
     }
 }

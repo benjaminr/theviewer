@@ -92,6 +92,7 @@ with its shortcut, or right-click a byte for the actions that apply to it.
 
 **Understand it**
 - A period scan that suggests record sizes.
+- ARM Cortex-M vector tables, with the stack pointer, reset and fault handlers, and the flash address the image was built for.
 - Detection of counters, timestamps, offset tables, float arrays, text,
   padding, file signatures and compressed streams.
 - A catalogue of about 600 file signatures, from Apache Tika's database
@@ -136,7 +137,8 @@ right-click menu. Each one is a panel you can dock anywhere.
 | **XOR** | Recovers single-byte and repeating XOR keys. Preview the result or apply it as an edit. |
 | **Crypto** | Spots ECB-style encryption from repeated cipher blocks; finds PEM and DER certificates and keys, OpenSSH keys and likely raw keys; and tries rolling XOR, ADD, rotation and combined ciphers, or drags a known plaintext such as `PK\x03\x04` across the data to reveal the key. Decodes open as a document or apply as an edit. |
 | **Disassembly** | x86, ARM, RISC-V, MIPS and PowerPC, with the architecture read from executable headers or guessed, and branch targets you can follow. |
-| **Unpacked** | Extracts ZIP, tar and compressed streams recursively into a tree you can browse, open or save. |
+| **Unpacked** | Extracts ZIP, tar, compressed streams and embedded filesystems (SquashFS, CramFS, JFFS2 and UBI volumes) recursively into a tree you can browse, open or save. |
+| **Forensics** | Lists the embedded filesystems in the file with their files, and classifies every block (padding, text, markup, machine code, compressed, random, raw image, audio, tables) as a coloured strip, for carving fragments that have no headers. |
 | **Checksums** | CRC-32, Adler-32, MD5, SHA-1, SHA-256 and simple sums of a selection, and *Find the checksum*, which works out which stored value checks which bytes. |
 | **Diff** | Compares with another file, finding inserted and deleted bytes rather than only changed ones, and scrolls both together. |
 | **Compare** | Many files at once (captures, firmware versions, saved states): which byte ranges stay constant, vary or count up across them; which fields follow a value you enter for each file, such as a temperature or a setting; and, for a live recording, a timeline of which bytes changed when. |

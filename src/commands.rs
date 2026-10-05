@@ -76,6 +76,7 @@ pub fn commands() -> Vec<Command> {
         Command { id: "tools.infer", title: "Infer a template from the selection", keys: "", run: |app, _| app.infer_template() },
         Command { id: "tools.disassemble", title: "Disassemble at the cursor", keys: "", run: |app, _| { app.dock.open = true; app.dock.tab = crate::dock::DockTab::Disassembly; } },
         Command { id: "tools.unpack", title: "Unpack everything (recursive extraction)", keys: "", run: |app, _| { app.dock.open = true; app.dock.tab = crate::dock::DockTab::Unpacked; app.start_unpack(); } },
+        Command { id: "tools.forensics", title: "Find embedded filesystems and classify each block of the file", keys: "", run: |app, _| app.dock.toggle(crate::dock::DockTab::Forensics) },
         Command { id: "tools.checksums", title: "Checksums and find-the-checksum", keys: "", run: |app, _| app.dock.toggle(crate::dock::DockTab::Checksums) },
         Command { id: "tools.diff", title: "Compare with another file", keys: "", run: |app, _| { app.dock.open = true; app.dock.tab = crate::dock::DockTab::Diff; } },
         Command { id: "tools.live", title: "Open a URL, device, serial port or process", keys: "", run: |app, _| { app.dock.open = true; app.dock.tab = crate::dock::DockTab::Live; } },
