@@ -1,0 +1,63 @@
+[package]
+name = "theviewer"
+version = "0.1.0"
+edition = "2024"
+description = "A fast binary viewer and editor that rasters any file as pixels, with structure, protocol and compression analysis"
+readme = "README.md"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+aho-corasick = "1.1.5"
+anyhow = "1.0.104"
+bzip2 = "0.6.1"
+capstone = "0.14.0"
+crc32fast = "1.5.2"
+der-parser = "10.0.0"
+eframe = "0.36.2"
+egui_dock = { version = "0.21.1", features = ["serde"] }
+egui_plot = "0.37"
+etherparse = "0.21.0"
+flate2 = "1.1.10"
+goblin = "0.10.7"
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "bmp", "webp", "tiff", "ico"] }
+lz4_flex = "0.14.0"
+lzma-rs = "0.3.0"
+mbrman = "0.6.1"
+md-5 = "0.11.0"
+memmap2 = "0.9.11"
+mlua = { version = "0.12.2", features = ["lua54", "send", "vendored"] }
+pcap-parser = "0.17.0"
+rayon = "1.12.0"
+rfd = "0.17.2"
+rodio = { version = "0.22.2", default-features = false, features = ["playback", "symphonia-all"] }
+roxmltree = "0.21.1"
+ruzstd = "0.9.0"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+serialport = "4.10.1"
+sha1 = "0.11.0"
+sha2 = "0.11.0"
+symphonia = { version = "0.5.5", default-features = false, features = ["aac", "alac", "flac", "isomp4", "mkv", "mp3", "ogg", "pcm", "vorbis", "wav", "aiff", "caf", "adpcm"] }
+toml = "1.1.6"
+ureq = { version = "3.4.2", features = ["json"] }
+x509-parser = "0.18.1"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+# Panics must unwind: parsers of untrusted input are run under catch_unwind
+# (parsers::guarded), which "abort" would turn into a crash of the whole app.
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
+[dev-dependencies]
+egui_kittest = { version = "0.36.2", features = ["eframe"] }
+
+# Local copy of egui_dock that adds wrapping tab bars (TabBarStyle::wrap_tabs).
+[patch.crates-io]
+egui_dock = { path = "vendor/egui_dock" }

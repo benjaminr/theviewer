@@ -1,0 +1,1021 @@
+//! Lua plugin host.
+//!
+//! Scripts in a plugin directory register detectors, parsers, codecs and
+//! actions through a `theviewer` global. Each script runs in its own
+//! sandboxed Lua state (no `io`, `os`, `package` or `debug`, a memory cap and
+//! an instruction budget per callback), so a broken or runaway plugin can
+//! only ever fail its own callback, never the viewer.
+//!
+//! See `docs/plugins.md` for the scripting API.
+
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, Weak};
+
+use mlua::{AnyUserData, Function, HookTriggers, Lua, LuaOptions, RegistryKey, StdLib, Table, UserData, UserDataMethods, Value, VmState};
+
+use crate::plugin::{Category, CodecKind, CodecPlugin, Decoded, Detector, Field, Finding, Parser, ScanContext};
+
+/// Memory a single script may allocate.
+const MEMORY_LIMIT_BYTES: usize = 64 * 1024 * 1024;
+/// Instructions a single callback may execute before it is aborted.
+const INSTRUCTION_LIMIT: u64 = 50_000_000;
+/// How often the instruction hook fires.
+const HOOK_INTERVAL: u32 = 1000;
+
+/// Outcome of loading one script file.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LoadReport {
+    pub name: String,
+    /// `Ok` carries a short summary of what the script registered.
+    pub result: Result<String, String>,
+}
+
+/// An action a script offers, for menus and the command palette.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ActionInfo {
+    pub id: String,
+    pub title: String,
+    pub plugin: String,
+}
+
+/// What an action may do to the document. The application implements this;
+/// tests use a fake.
+pub trait ActionHost {
+    fn document_len(&self) -> usize;
+    fn cursor(&self) -> usize;
+    fn selection(&self) -> Option<(usize, usize)>;
+    fn read(&mut self, start: usize, len: usize) -> Vec<u8>;
+    fn replace(&mut self, start: usize, len: usize, bytes: &[u8]);
+    fn select(&mut self, start: usize, len: usize);
+    fn set_status(&mut self, text: &str);
+}
+
+/// Where plugins are looked for by default.
+pub fn default_dirs() -> Vec<PathBuf> {
+    let mut dirs = vec![PathBuf::from("plugins")];
+    if let Some(home) = std::env::var_os("HOME") {
+        dirs.push(PathBuf::from(home).join(".config").join("theviewer").join("plugins"));
+    }
+    dirs
+}
+
+// ---------------------------------------------------------------------------
+// Script state
+// ---------------------------------------------------------------------------
+
+/// A sandboxed Lua state plus the bookkeeping callbacks need.
+struct ScriptState {
+    name: String,
+    lua: Mutex<Lua>,
+    /// Instructions executed by the callback currently running.
+    instructions: AtomicU64,
+    log: Mutex<Vec<String>>,
+}
+
+impl ScriptState {
+    fn new(name: &str) -> Result<Arc<Self>, String> {
+        let libraries = StdLib::STRING | StdLib::TABLE | StdLib::MATH | StdLib::UTF8;
+        let lua = Lua::new_with(libraries, LuaOptions::default()).map_err(|e| e.to_string())?;
+        lua.set_memory_limit(MEMORY_LIMIT_BYTES).map_err(|e| e.to_string())?;
+        // `dofile` and `loadfile` would reach the filesystem. `load` stays
+        // because it is useful, but only for source text: crafted bytecode can
+        // corrupt the interpreter's memory and escape the sandbox, so binary
+        // chunks are refused and `string.dump` (which makes them) is removed.
+        let globals = lua.globals();
+        for name in ["dofile", "loadfile"] {
+            globals.set(name, Value::Nil).map_err(|e| e.to_string())?;
+        }
+        lua.load(
+            r#"
+            local load_any = load
+            load = function(chunk, chunk_name, _mode, env)
+                return load_any(chunk, chunk_name, "t", env)
+            end
+            string.dump = nil
+            "#,
+        )
+        .set_name("sandbox")
+        .exec()
+        .map_err(|e| e.to_string())?;
+        let state = Arc::new(ScriptState {
+            name: name.to_string(),
+            lua: Mutex::new(lua),
+            instructions: AtomicU64::new(0),
+            log: Mutex::new(Vec::new()),
+        });
+        state.install_instruction_budget()?;
+        Ok(state)
+    }
+
+    /// Abort any callback that runs past the instruction budget.
+    fn install_instruction_budget(self: &Arc<Self>) -> Result<(), String> {
+        let weak = Arc::downgrade(self);
+        let lua = self.lua.lock().map_err(|_| "plugin state poisoned")?;
+        let triggers = HookTriggers { every_nth_instruction: Some(HOOK_INTERVAL), ..Default::default() };
+        lua.set_hook(triggers, move |_, _| {
+            let Some(state) = weak.upgrade() else {
+                return Ok(VmState::Continue);
+            };
+            let executed = state.instructions.fetch_add(HOOK_INTERVAL as u64, Ordering::Relaxed) + HOOK_INTERVAL as u64;
+            if executed > INSTRUCTION_LIMIT {
+                Err(mlua::Error::RuntimeError(format!(
+                    "plugin callback aborted after {INSTRUCTION_LIMIT} instructions"
+                )))
+            } else {
+                Ok(VmState::Continue)
+            }
+        })
+        .map_err(|e| e.to_string())
+    }
+
+    fn log(&self, text: String) {
+        if let Ok(mut log) = self.log.lock() {
+            log.push(format!("{}: {text}", self.name));
+        }
+    }
+
+    /// Run `body` with the Lua state locked and a fresh instruction budget.
+    fn with_lua<R>(&self, body: impl FnOnce(&Lua) -> Result<R, String>) -> Result<R, String> {
+        let lua = self.lua.lock().map_err(|_| "plugin state poisoned".to_string())?;
+        self.instructions.store(0, Ordering::Relaxed);
+        body(&lua)
+    }
+}
+
+fn lua_error(context: &str, error: mlua::Error) -> String {
+    format!("{context}: {error}")
+}
+
+// ---------------------------------------------------------------------------
+// Window userdata exposed to scripts
+// ---------------------------------------------------------------------------
+
+/// Read-only view of bytes for scripts. Offsets are 0-based except `byte`,
+/// which follows Lua's 1-based convention.
+struct Window(Arc<[u8]>);
+
+impl Window {
+    fn slice(&self, offset: usize, len: usize) -> Option<&[u8]> {
+        self.0.get(offset..offset.checked_add(len)?)
+    }
+
+    fn read_le(&self, offset: usize, size: usize) -> Option<u64> {
+        let bytes = self.slice(offset, size)?;
+        Some(bytes.iter().rev().fold(0u64, |acc, &b| (acc << 8) | b as u64))
+    }
+
+    fn read_be(&self, offset: usize, size: usize) -> Option<u64> {
+        let bytes = self.slice(offset, size)?;
+        Some(bytes.iter().fold(0u64, |acc, &b| (acc << 8) | b as u64))
+    }
+
+    fn find(&self, needle: &[u8], start: usize) -> Option<usize> {
+        if needle.is_empty() || start >= self.0.len() {
+            return None;
+        }
+        self.0[start..].windows(needle.len()).position(|w| w == needle).map(|p| p + start)
+    }
+}
+
+/// Parse "89 50 4E 47" or "89504e47" into bytes.
+fn parse_hex(text: &str) -> Result<Vec<u8>, String> {
+    let digits: String = text.chars().filter(|c| !c.is_whitespace()).collect();
+    if !digits.len().is_multiple_of(2) {
+        return Err(format!("odd number of hex digits in '{text}'"));
+    }
+    (0..digits.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&digits[i..i + 2], 16).map_err(|_| format!("bad hex in '{text}'")))
+        .collect()
+}
+
+impl UserData for Window {
+    fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
+        methods.add_method("len", |_, this, ()| Ok(this.0.len()));
+        methods.add_method("byte", |_, this, index: usize| {
+            Ok(index.checked_sub(1).and_then(|i| this.0.get(i)).copied())
+        });
+        methods.add_method("bytes", |lua, this, (offset, len): (usize, usize)| {
+            match this.slice(offset, len) {
+                Some(bytes) => lua.create_string(bytes).map(Value::String),
+                None => Ok(Value::Nil),
+            }
+        });
+        methods.add_method("u8", |_, this, offset: usize| Ok(this.read_le(offset, 1)));
+        methods.add_method("u16le", |_, this, offset: usize| Ok(this.read_le(offset, 2)));
+        methods.add_method("u16be", |_, this, offset: usize| Ok(this.read_be(offset, 2)));
+        methods.add_method("u32le", |_, this, offset: usize| Ok(this.read_le(offset, 4)));
+        methods.add_method("u32be", |_, this, offset: usize| Ok(this.read_be(offset, 4)));
+        methods.add_method("u64le", |_, this, offset: usize| Ok(this.read_le(offset, 8).map(|v| v as i64)));
+        methods.add_method("u64be", |_, this, offset: usize| Ok(this.read_be(offset, 8).map(|v| v as i64)));
+        methods.add_method("i32le", |_, this, offset: usize| Ok(this.read_le(offset, 4).map(|v| v as u32 as i32)));
+        methods.add_method("f32le", |_, this, offset: usize| Ok(this.read_le(offset, 4).map(|v| f32::from_bits(v as u32))));
+        methods.add_method("find", |_, this, (needle, start): (mlua::LuaString, Option<usize>)| {
+            Ok(this.find(&needle.as_bytes(), start.unwrap_or(0)))
+        });
+        methods.add_method("find_hex", |_, this, (hex, start): (String, Option<usize>)| {
+            let needle = parse_hex(&hex).map_err(mlua::Error::RuntimeError)?;
+            Ok(this.find(&needle, start.unwrap_or(0)))
+        });
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Converting Lua tables into findings
+// ---------------------------------------------------------------------------
+
+fn get_string(table: &Table, key: &str) -> Option<String> {
+    table.get::<Option<String>>(key).ok().flatten()
+}
+
+fn get_usize(table: &Table, key: &str) -> Option<usize> {
+    table.get::<Option<i64>>(key).ok().flatten().and_then(|v| usize::try_from(v).ok())
+}
+
+fn field_from_table(table: &Table, base: usize) -> Field {
+    let children = table
+        .get::<Option<Table>>("children")
+        .ok()
+        .flatten()
+        .map(|list| list.sequence_values::<Table>().flatten().map(|t| field_from_table(&t, base)).collect())
+        .unwrap_or_default();
+    Field {
+        name: get_string(table, "name").unwrap_or_default(),
+        offset: base + get_usize(table, "offset").unwrap_or(0),
+        len: get_usize(table, "len").unwrap_or(0),
+        value: get_string(table, "value").unwrap_or_default(),
+        children,
+    }
+}
+
+/// Build a finding from a script's table. `base` is added to every offset.
+fn finding_from_table(table: &Table, base: usize, source: &str, default_id: &str) -> Result<Finding, String> {
+    let start = get_usize(table, "start").ok_or("finding needs a numeric 'start'")?;
+    let len = get_usize(table, "len").ok_or("finding needs a numeric 'len'")?;
+    let category = get_string(table, "category")
+        .and_then(|name| Category::from_name(&name))
+        .unwrap_or(Category::Custom);
+    let fields = table
+        .get::<Option<Table>>("fields")
+        .map_err(|e| e.to_string())?
+        .map(|list| list.sequence_values::<Table>().flatten().map(|t| field_from_table(&t, base)).collect())
+        .unwrap_or_default();
+    let mut finding = Finding::new(get_string(table, "id").unwrap_or_else(|| default_id.to_string()), source, category, base + start, len)
+        .title(get_string(table, "title").unwrap_or_default())
+        .detail(get_string(table, "detail").unwrap_or_default())
+        .fields(fields);
+    if let Some(confidence) = table.get::<Option<f32>>("confidence").ok().flatten() {
+        finding = finding.confidence(confidence);
+    }
+    Ok(finding)
+}
+
+fn findings_from_value(value: Value, base: usize, source: &str, default_id: &str) -> Result<Vec<Finding>, String> {
+    match value {
+        Value::Nil => Ok(Vec::new()),
+        Value::Table(list) => list
+            .sequence_values::<Table>()
+            .map(|entry| entry.map_err(|e| e.to_string()).and_then(|t| finding_from_table(&t, base, source, default_id)))
+            .collect(),
+        other => Err(format!("scan must return a table of findings or nil, got {}", other.type_name())),
+    }
+}
+
+fn scan_context_table(lua: &Lua, context: &ScanContext) -> Result<Table, String> {
+    let table = lua.create_table().map_err(|e| e.to_string())?;
+    table.set("base", context.base).map_err(|e| e.to_string())?;
+    table.set("document_len", context.document_len).map_err(|e| e.to_string())?;
+    let strides = lua.create_table().map_err(|e| e.to_string())?;
+    for (index, stride) in context.strides.iter().enumerate() {
+        strides.set(index + 1, *stride).map_err(|e| e.to_string())?;
+    }
+    table.set("strides", strides).map_err(|e| e.to_string())?;
+    Ok(table)
+}
+
+fn categories_from_table(table: &Table) -> Vec<Category> {
+    table
+        .get::<Option<Table>>("categories")
+        .ok()
+        .flatten()
+        .map(|list| list.sequence_values::<String>().flatten().filter_map(|name| Category::from_name(&name)).collect())
+        .unwrap_or_else(|| vec![Category::Custom])
+}
+
+// ---------------------------------------------------------------------------
+// Plugin implementations backed by Lua callbacks
+// ---------------------------------------------------------------------------
+
+struct LuaDetector {
+    state: Arc<ScriptState>,
+    id: String,
+    name: String,
+    categories: Vec<Category>,
+    scan: RegistryKey,
+}
+
+impl Detector for LuaDetector {
+    fn id(&self) -> &str {
+        &self.id
+    }
+
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn categories(&self) -> Vec<Category> {
+        self.categories.clone()
+    }
+
+    fn scan(&self, window: &[u8], context: &ScanContext) -> Vec<Finding> {
+        let result = self.state.with_lua(|lua| {
+            let function: Function = lua.registry_value(&self.scan).map_err(|e| lua_error("scan", e))?;
+            let window = lua.create_userdata(Window(Arc::from(window))).map_err(|e| e.to_string())?;
+            let context_table = scan_context_table(lua, context)?;
+            let value: Value = function.call((window, context_table)).map_err(|e| lua_error(&self.id, e))?;
+            findings_from_value(value, context.base, &self.id, &self.id)
+        });
+        match result {
+            Ok(findings) => findings,
+            Err(error) => {
+                self.state.log(error);
+                Vec::new()
+            }
+        }
+    }
+}
+
+struct LuaParser {
+    state: Arc<ScriptState>,
+    id: String,
+    name: String,
+    looks_like: RegistryKey,
+    parse: RegistryKey,
+}
+
+impl Parser for LuaParser {
+    fn id(&self) -> &str {
+        &self.id
+    }
+
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn looks_like(&self, bytes: &[u8]) -> bool {
+        // Keep this cheap: only the first 64 bytes are handed over.
+        let head: Arc<[u8]> = Arc::from(&bytes[..bytes.len().min(64)]);
+        let result = self.state.with_lua(|lua| {
+            let function: Function = lua.registry_value(&self.looks_like).map_err(|e| e.to_string())?;
+            let window = lua.create_userdata(Window(head)).map_err(|e| e.to_string())?;
+            function.call::<bool>(window).map_err(|e| lua_error(&self.id, e))
+        });
+        result.unwrap_or_else(|error| {
+            self.state.log(error);
+            false
+        })
+    }
+
+    fn parse(&self, bytes: &[u8], base: usize) -> Option<Finding> {
+        let result = self.state.with_lua(|lua| {
+            let function: Function = lua.registry_value(&self.parse).map_err(|e| e.to_string())?;
+            let window = lua.create_userdata(Window(Arc::from(bytes))).map_err(|e| e.to_string())?;
+            let value: Value = function.call((window, base)).map_err(|e| lua_error(&self.id, e))?;
+            match value {
+                Value::Nil => Ok(None),
+                Value::Table(table) => finding_from_table(&table, base, &self.id, &self.id).map(Some),
+                other => Err(format!("parse must return a finding table or nil, got {}", other.type_name())),
+            }
+        });
+        result.unwrap_or_else(|error| {
+            self.state.log(error);
+            None
+        })
+    }
+}
+
+struct LuaCodec {
+    state: Arc<ScriptState>,
+    id: String,
+    name: String,
+    kind: CodecKind,
+    detect: RegistryKey,
+    decode: RegistryKey,
+    encode: Option<RegistryKey>,
+}
+
+impl CodecPlugin for LuaCodec {
+    fn id(&self) -> &str {
+        &self.id
+    }
+
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn kind(&self) -> CodecKind {
+        self.kind
+    }
+
+    fn detect(&self, bytes: &[u8]) -> bool {
+        let head: Arc<[u8]> = Arc::from(&bytes[..bytes.len().min(4096)]);
+        let result = self.state.with_lua(|lua| {
+            let function: Function = lua.registry_value(&self.detect).map_err(|e| e.to_string())?;
+            let window = lua.create_userdata(Window(head)).map_err(|e| e.to_string())?;
+            function.call::<bool>(window).map_err(|e| lua_error(&self.id, e))
+        });
+        result.unwrap_or_else(|error| {
+            self.state.log(error);
+            false
+        })
+    }
+
+    fn decode(&self, input: &[u8], max_out: usize) -> Result<Decoded, String> {
+        self.state.with_lua(|lua| {
+            let function: Function = lua.registry_value(&self.decode).map_err(|e| e.to_string())?;
+            let window = lua.create_userdata(Window(Arc::from(input))).map_err(|e| e.to_string())?;
+            let (data, consumed): (Option<mlua::LuaString>, Option<i64>) =
+                function.call((window, max_out)).map_err(|e| lua_error(&self.id, e))?;
+            let Some(data) = data else {
+                return Err(format!("{} could not decode these bytes", self.name));
+            };
+            let mut data = data.as_bytes().to_vec();
+            let truncated = data.len() > max_out;
+            data.truncate(max_out);
+            let consumed_exact = consumed.is_some();
+            let consumed = consumed.and_then(|c| usize::try_from(c).ok()).unwrap_or(input.len()).min(input.len());
+            Ok(Decoded { data, consumed, consumed_exact, complete: !truncated, truncated })
+        })
+    }
+
+    fn encode(&self, data: &[u8]) -> Option<Result<Vec<u8>, String>> {
+        let key = self.encode.as_ref()?;
+        Some(self.state.with_lua(|lua| {
+            let function: Function = lua.registry_value(key).map_err(|e| e.to_string())?;
+            let input = lua.create_string(data).map_err(|e| e.to_string())?;
+            let output: mlua::LuaString = function.call(input).map_err(|e| lua_error(&self.id, e))?;
+            Ok(output.as_bytes().to_vec())
+        }))
+    }
+}
+
+struct LuaAction {
+    state: Arc<ScriptState>,
+    id: String,
+    title: String,
+    run: RegistryKey,
+}
+
+/// Hands an [`ActionHost`] to a script for the duration of one action call.
+/// The pointer is only dereferenced while `alive` is set, which the host
+/// clears before returning, so a script that keeps the handle gets an error
+/// instead of a dangling reference.
+struct ActionApi {
+    host: usize,
+    alive: Arc<AtomicBool>,
+}
+
+impl ActionApi {
+    fn with_host<R>(&self, body: impl FnOnce(&mut dyn ActionHost) -> R) -> mlua::Result<R> {
+        if !self.alive.load(Ordering::Acquire) {
+            return Err(mlua::Error::RuntimeError("the action has finished; the api handle is no longer valid".into()));
+        }
+        // SAFETY: `host` was created from a live `&mut dyn ActionHost` in
+        // `run_action`, which holds that borrow for the whole call and
+        // clears `alive` before it returns. Calls are serialised by the
+        // script's Lua lock, so no two uses overlap.
+        let host = unsafe { &mut *(self.host as *mut &mut dyn ActionHost) };
+        Ok(body(*host))
+    }
+}
+
+impl UserData for ActionApi {
+    fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
+        methods.add_method("document_len", |_, this, ()| this.with_host(|h| h.document_len()));
+        methods.add_method("cursor", |_, this, ()| this.with_host(|h| h.cursor()));
+        methods.add_method("selection", |_, this, ()| {
+            this.with_host(|h| h.selection()).map(|selection| match selection {
+                Some((start, len)) => (Some(start), Some(len)),
+                None => (None, None),
+            })
+        });
+        methods.add_method("read", |lua, this, (start, len): (usize, usize)| {
+            let bytes = this.with_host(|h| h.read(start, len))?;
+            lua.create_string(bytes)
+        });
+        methods.add_method("replace", |_, this, (start, len, bytes): (usize, usize, mlua::LuaString)| {
+            this.with_host(|h| h.replace(start, len, &bytes.as_bytes()))
+        });
+        methods.add_method("select", |_, this, (start, len): (usize, usize)| this.with_host(|h| h.select(start, len)));
+        methods.add_method("status", |_, this, text: String| this.with_host(|h| h.set_status(&text)));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Registration collected while a script loads
+// ---------------------------------------------------------------------------
+
+#[derive(Default)]
+struct Registrations {
+    detectors: Vec<(String, String, Vec<Category>, RegistryKey)>,
+    parsers: Vec<(String, String, RegistryKey, RegistryKey)>,
+    codecs: Vec<(String, String, CodecKind, RegistryKey, RegistryKey, Option<RegistryKey>)>,
+    actions: Vec<(String, String, RegistryKey)>,
+}
+
+fn required_string(spec: &Table, key: &str) -> mlua::Result<String> {
+    spec.get::<Option<String>>(key)?
+        .ok_or_else(|| mlua::Error::RuntimeError(format!("registration needs a string '{key}'")))
+}
+
+fn required_function(lua: &Lua, spec: &Table, key: &str) -> mlua::Result<RegistryKey> {
+    let function: Function = spec
+        .get::<Option<Function>>(key)?
+        .ok_or_else(|| mlua::Error::RuntimeError(format!("registration needs a function '{key}'")))?;
+    lua.create_registry_value(function)
+}
+
+fn optional_function(lua: &Lua, spec: &Table, key: &str) -> mlua::Result<Option<RegistryKey>> {
+    match spec.get::<Option<Function>>(key)? {
+        Some(function) => lua.create_registry_value(function).map(Some),
+        None => Ok(None),
+    }
+}
+
+fn with_registrations<R>(lua: &Lua, body: impl FnOnce(&mut Registrations) -> R) -> mlua::Result<R> {
+    let mut registrations = lua
+        .app_data_mut::<Registrations>()
+        .ok_or_else(|| mlua::Error::RuntimeError("registration is only possible while a script loads".into()))?;
+    Ok(body(&mut registrations))
+}
+
+/// Install the `theviewer` global into a fresh state. `log` writes to
+/// `state`'s log, so it works while loading and in every later callback.
+fn install_api(lua: &Lua, state: Weak<ScriptState>) -> mlua::Result<()> {
+    let api = lua.create_table()?;
+
+    api.set(
+        "register_detector",
+        lua.create_function(|lua, spec: Table| {
+            let id = required_string(&spec, "id")?;
+            let name = get_string(&spec, "name").unwrap_or_else(|| id.clone());
+            let categories = categories_from_table(&spec);
+            let scan = required_function(lua, &spec, "scan")?;
+            with_registrations(lua, |r| r.detectors.push((id, name, categories, scan)))
+        })?,
+    )?;
+
+    api.set(
+        "register_parser",
+        lua.create_function(|lua, spec: Table| {
+            let id = required_string(&spec, "id")?;
+            let name = get_string(&spec, "name").unwrap_or_else(|| id.clone());
+            let looks_like = required_function(lua, &spec, "looks_like")?;
+            let parse = required_function(lua, &spec, "parse")?;
+            with_registrations(lua, |r| r.parsers.push((id, name, looks_like, parse)))
+        })?,
+    )?;
+
+    api.set(
+        "register_codec",
+        lua.create_function(|lua, spec: Table| {
+            let id = required_string(&spec, "id")?;
+            let name = get_string(&spec, "name").unwrap_or_else(|| id.clone());
+            let kind = match get_string(&spec, "kind").as_deref() {
+                Some("compression") => CodecKind::Compression,
+                _ => CodecKind::Encoding,
+            };
+            let detect = required_function(lua, &spec, "detect")?;
+            let decode = required_function(lua, &spec, "decode")?;
+            let encode = optional_function(lua, &spec, "encode")?;
+            with_registrations(lua, |r| r.codecs.push((id, name, kind, detect, decode, encode)))
+        })?,
+    )?;
+
+    api.set(
+        "register_action",
+        lua.create_function(|lua, spec: Table| {
+            let id = required_string(&spec, "id")?;
+            let title = get_string(&spec, "title").unwrap_or_else(|| id.clone());
+            let run = required_function(lua, &spec, "run")?;
+            with_registrations(lua, |r| r.actions.push((id, title, run)))
+        })?,
+    )?;
+
+    api.set(
+        "log",
+        lua.create_function(move |_, text: String| {
+            if let Some(state) = state.upgrade() {
+                state.log(text);
+            }
+            Ok(())
+        })?,
+    )?;
+
+    lua.globals().set("theviewer", api)
+}
+
+// ---------------------------------------------------------------------------
+// The host
+// ---------------------------------------------------------------------------
+
+/// One loaded script and everything it registered.
+struct Script {
+    state: Arc<ScriptState>,
+    detectors: Vec<Arc<LuaDetector>>,
+    parsers: Vec<Arc<LuaParser>>,
+    codecs: Vec<Arc<LuaCodec>>,
+    actions: Vec<Arc<LuaAction>>,
+}
+
+/// Loads scripts and exposes what they registered.
+#[derive(Default)]
+pub struct LuaHost {
+    scripts: Vec<Script>,
+    loaded_dirs: Vec<PathBuf>,
+    log: Vec<String>,
+}
+
+impl LuaHost {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Load every `*.lua` file in `dir`, in name order. A missing directory
+    /// yields an empty report rather than an error.
+    pub fn load_dir(&mut self, dir: &Path) -> Vec<LoadReport> {
+        if !self.loaded_dirs.contains(&dir.to_path_buf()) {
+            self.loaded_dirs.push(dir.to_path_buf());
+        }
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return Vec::new();
+        };
+        let mut paths: Vec<PathBuf> = entries
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().is_some_and(|ext| ext == "lua"))
+            .collect();
+        paths.sort();
+        paths
+            .into_iter()
+            .map(|path| {
+                let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                let result = std::fs::read_to_string(&path)
+                    .map_err(|e| format!("could not read {}: {e}", path.display()))
+                    .and_then(|source| self.load_source(&name, &source));
+                LoadReport { name, result }
+            })
+            .collect()
+    }
+
+    /// Load one script from source. Returns a summary of what it registered.
+    pub fn load_source(&mut self, name: &str, source: &str) -> Result<String, String> {
+        let state = ScriptState::new(name)?;
+        let weak_state = Arc::downgrade(&state);
+        let registrations = state.with_lua(|lua| {
+            lua.set_app_data(Registrations::default());
+            install_api(lua, weak_state).map_err(|e| lua_error("installing api", e))?;
+            lua.load(source).set_name(name).exec().map_err(|e| lua_error(name, e))?;
+            lua.remove_app_data::<Registrations>().ok_or_else(|| "registrations vanished".to_string())
+        })?;
+
+        let summary = format!(
+            "{} detector(s), {} parser(s), {} codec(s), {} action(s)",
+            registrations.detectors.len(),
+            registrations.parsers.len(),
+            registrations.codecs.len(),
+            registrations.actions.len()
+        );
+        let script = Script {
+            detectors: registrations
+                .detectors
+                .into_iter()
+                .map(|(id, name, categories, scan)| Arc::new(LuaDetector { state: state.clone(), id, name, categories, scan }))
+                .collect(),
+            parsers: registrations
+                .parsers
+                .into_iter()
+                .map(|(id, name, looks_like, parse)| Arc::new(LuaParser { state: state.clone(), id, name, looks_like, parse }))
+                .collect(),
+            codecs: registrations
+                .codecs
+                .into_iter()
+                .map(|(id, name, kind, detect, decode, encode)| {
+                    Arc::new(LuaCodec { state: state.clone(), id, name, kind, detect, decode, encode })
+                })
+                .collect(),
+            actions: registrations
+                .actions
+                .into_iter()
+                .map(|(id, title, run)| Arc::new(LuaAction { state: state.clone(), id, title, run }))
+                .collect(),
+            state,
+        };
+        self.scripts.push(script);
+        Ok(summary)
+    }
+
+    /// Drop every script and load the directories again.
+    pub fn reload(&mut self) -> Vec<LoadReport> {
+        self.scripts.clear();
+        let dirs = std::mem::take(&mut self.loaded_dirs);
+        dirs.iter().flat_map(|dir| self.load_dir(dir)).collect()
+    }
+
+    pub fn detectors(&self) -> Vec<Arc<dyn Detector>> {
+        self.scripts
+            .iter()
+            .flat_map(|script| script.detectors.iter().map(|d| d.clone() as Arc<dyn Detector>))
+            .collect()
+    }
+
+    pub fn parsers(&self) -> Vec<Arc<dyn Parser>> {
+        self.scripts
+            .iter()
+            .flat_map(|script| script.parsers.iter().map(|p| p.clone() as Arc<dyn Parser>))
+            .collect()
+    }
+
+    pub fn codecs(&self) -> Vec<Arc<dyn CodecPlugin>> {
+        self.scripts
+            .iter()
+            .flat_map(|script| script.codecs.iter().map(|c| c.clone() as Arc<dyn CodecPlugin>))
+            .collect()
+    }
+
+    pub fn actions(&self) -> Vec<ActionInfo> {
+        self.scripts
+            .iter()
+            .flat_map(|script| {
+                script.actions.iter().map(|action| ActionInfo {
+                    id: action.id.clone(),
+                    title: action.title.clone(),
+                    plugin: script.state.name.clone(),
+                })
+            })
+            .collect()
+    }
+
+    /// Run the action with `id` against `host`.
+    pub fn run_action(&self, id: &str, host: &mut dyn ActionHost) -> Result<(), String> {
+        let action = self
+            .scripts
+            .iter()
+            .flat_map(|script| script.actions.iter())
+            .find(|action| action.id == id)
+            .ok_or_else(|| format!("no plugin action '{id}'"))?;
+        let alive = Arc::new(AtomicBool::new(true));
+        let mut host_ref: &mut dyn ActionHost = host;
+        let api = ActionApi { host: (&mut host_ref as *mut &mut dyn ActionHost) as usize, alive: alive.clone() };
+        let result = action.state.with_lua(|lua| {
+            let function: Function = lua.registry_value(&action.run).map_err(|e| e.to_string())?;
+            let api: AnyUserData = lua.create_userdata(api).map_err(|e| e.to_string())?;
+            function.call::<()>(api).map_err(|e| lua_error(&action.id, e))
+        });
+        alive.store(false, Ordering::Release);
+        result
+    }
+
+    /// Messages logged by scripts and errors from their callbacks, cleared on read.
+    pub fn take_log(&mut self) -> Vec<String> {
+        let mut lines = std::mem::take(&mut self.log);
+        for script in &self.scripts {
+            if let Ok(mut log) = script.state.log.lock() {
+                lines.append(&mut log);
+            }
+        }
+        lines
+    }
+
+    pub fn script_names(&self) -> Vec<String> {
+        self.scripts.iter().map(|script| script.state.name.clone()).collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn examples_dir() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("plugins")
+    }
+
+    fn host_with_examples() -> LuaHost {
+        let mut host = LuaHost::new();
+        let reports = host.load_dir(&examples_dir());
+        for report in &reports {
+            assert!(report.result.is_ok(), "{}: {:?}", report.name, report.result);
+        }
+        assert!(reports.len() >= 5, "expected the example scripts, got {reports:?}");
+        host
+    }
+
+    struct FakeHost {
+        bytes: Vec<u8>,
+        cursor: usize,
+        selection: Option<(usize, usize)>,
+        status: String,
+    }
+
+    impl ActionHost for FakeHost {
+        fn document_len(&self) -> usize {
+            self.bytes.len()
+        }
+        fn cursor(&self) -> usize {
+            self.cursor
+        }
+        fn selection(&self) -> Option<(usize, usize)> {
+            self.selection
+        }
+        fn read(&mut self, start: usize, len: usize) -> Vec<u8> {
+            self.bytes[start..(start + len).min(self.bytes.len())].to_vec()
+        }
+        fn replace(&mut self, start: usize, len: usize, bytes: &[u8]) {
+            self.bytes.splice(start..start + len, bytes.iter().copied());
+        }
+        fn select(&mut self, start: usize, len: usize) {
+            self.selection = Some((start, len));
+        }
+        fn set_status(&mut self, text: &str) {
+            self.status = text.to_string();
+        }
+    }
+
+    #[test]
+    fn example_scripts_load_and_register_things() {
+        let host = host_with_examples();
+        assert!(host.codecs().iter().any(|c| c.id() == "base64"));
+        assert!(host.codecs().iter().any(|c| c.id() == "xor-55"));
+        assert!(host.detectors().iter().any(|d| d.id() == "ntp-timestamps"));
+        assert!(host.parsers().iter().any(|p| p.id() == "tlv"));
+        assert!(host.actions().iter().any(|a| a.id == "uppercase-selection"));
+    }
+
+    #[test]
+    fn base64_codec_round_trips_and_detects() {
+        let host = host_with_examples();
+        let codecs = host.codecs();
+        let base64 = codecs.iter().find(|c| c.id() == "base64").unwrap();
+        let encoded = base64.encode(b"hello world").unwrap().unwrap();
+        assert_eq!(encoded, b"aGVsbG8gd29ybGQ=");
+        let decoded = base64.decode(&encoded, usize::MAX).unwrap();
+        assert_eq!(decoded.data, b"hello world");
+        assert!(base64.detect(b"aGVsbG8gd29ybGQgdGhpcyBpcyBhIGxvbmdlciBzdHJpbmc="));
+        assert!(!base64.detect(&[0x00, 0xFF, 0x12, 0x80, 0x7F, 0x01]));
+        assert_eq!(base64.kind(), CodecKind::Encoding);
+    }
+
+    #[test]
+    fn xor_codec_is_its_own_inverse() {
+        let host = host_with_examples();
+        let codecs = host.codecs();
+        let xor = codecs.iter().find(|c| c.id() == "xor-55").unwrap();
+        let masked = xor.encode(b"secret").unwrap().unwrap();
+        assert_ne!(masked, b"secret");
+        assert_eq!(xor.decode(&masked, usize::MAX).unwrap().data, b"secret");
+        assert!(!xor.detect(b"anything"));
+    }
+
+    #[test]
+    fn ntp_detector_finds_a_planted_run_at_document_offsets() {
+        let host = host_with_examples();
+        let detectors = host.detectors();
+        let ntp = detectors.iter().find(|d| d.id() == "ntp-timestamps").unwrap();
+        let mut window = vec![0u8; 64];
+        // 2024-01-01 in NTP seconds (Unix 1704067200 + 2208988800).
+        let mut seconds: u32 = 1_704_067_200 + 2_208_988_800;
+        for _ in 0..6 {
+            window.extend_from_slice(&seconds.to_be_bytes());
+            window.extend_from_slice(&[0u8; 4]);
+            seconds += 30;
+        }
+        let context = ScanContext { base: 1000, document_len: 2000, strides: vec![] };
+        let findings = ntp.scan(&window, &context);
+        let hit = findings.iter().find(|f| f.category == Category::Timestamp).expect("an NTP run");
+        assert_eq!(hit.start, 1064);
+        assert_eq!(hit.sequence.map(|s| s.stride), None);
+        assert!(hit.detail.contains("2024"), "{}", hit.detail);
+    }
+
+    #[test]
+    fn tlv_parser_builds_one_field_per_element() {
+        let host = host_with_examples();
+        let parsers = host.parsers();
+        let tlv = parsers.iter().find(|p| p.id() == "tlv").unwrap();
+        let mut bytes = Vec::new();
+        for (tag, len) in [(1u8, 4usize), (2, 6), (3, 2), (4, 8)] {
+            bytes.push(tag);
+            bytes.push(len as u8);
+            bytes.extend(std::iter::repeat_n(0xEE, len));
+        }
+        assert!(tlv.looks_like(&bytes));
+        let finding = tlv.parse(&bytes, 500).expect("a TLV finding");
+        assert_eq!(finding.start, 500);
+        assert_eq!(finding.len, bytes.len());
+        assert_eq!(finding.fields.len(), 4);
+        assert_eq!(finding.fields[1].offset, 506);
+        assert_eq!(finding.category, Category::Structure);
+    }
+
+    #[test]
+    fn uppercase_action_edits_the_selection_through_the_host() {
+        let host = host_with_examples();
+        let mut fake = FakeHost { bytes: b"hello world".to_vec(), cursor: 0, selection: Some((6, 5)), status: String::new() };
+        host.run_action("uppercase-selection", &mut fake).unwrap();
+        assert_eq!(fake.bytes, b"hello WORLD");
+        assert!(fake.status.contains("5"), "{}", fake.status);
+        assert!(host.run_action("no-such-action", &mut fake).is_err());
+    }
+
+    #[test]
+    fn a_broken_script_only_fails_itself() {
+        let dir = std::env::temp_dir().join(format!("theviewer-plugins-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a_broken.lua"), "this is not lua (").unwrap();
+        std::fs::write(
+            dir.join("b_fine.lua"),
+            "theviewer.register_detector{ id='fine', scan=function(w, ctx) return nil end }",
+        )
+        .unwrap();
+        let mut host = LuaHost::new();
+        let reports = host.load_dir(&dir);
+        std::fs::remove_dir_all(&dir).ok();
+        assert_eq!(reports.len(), 2);
+        assert!(reports[0].result.is_err());
+        assert!(reports[1].result.is_ok());
+        assert_eq!(host.detectors().len(), 1);
+    }
+
+    #[test]
+    fn a_runaway_callback_is_aborted() {
+        let mut host = LuaHost::new();
+        host.load_source("loop.lua", "theviewer.register_detector{ id='loop', scan=function(w, ctx) while true do end end }")
+            .unwrap();
+        let detector = host.detectors().remove(0);
+        let findings = detector.scan(&[0u8; 16], &ScanContext::default());
+        assert!(findings.is_empty());
+        let log = host.take_log();
+        assert!(log.iter().any(|line| line.contains("aborted")), "{log:?}");
+    }
+
+    #[test]
+    fn scripts_cannot_reach_the_operating_system() {
+        let mut host = LuaHost::new();
+        assert!(host.load_source("os.lua", "os.exit(1)").is_err());
+        assert!(host.load_source("io.lua", "io.open('/etc/passwd')").is_err());
+        assert!(host.load_source("file.lua", "dofile('/etc/passwd')").is_err());
+        host.load_source("late.lua", "theviewer.register_detector{ id='late', scan=function() return os.getenv('HOME') end }")
+            .unwrap();
+        let detector = host.detectors().remove(0);
+        assert!(detector.scan(&[0u8; 4], &ScanContext::default()).is_empty());
+        assert!(host.take_log().iter().any(|l| l.contains("os")));
+    }
+
+    #[test]
+    fn scripts_cannot_load_bytecode_but_can_load_source_text() {
+        let mut host = LuaHost::new();
+        assert!(host.load_source("dump.lua", "local f = string.dump(function() end)").is_err(), "string.dump is gone");
+        // "\27Lua" starts every binary chunk; even asking for binary mode is refused.
+        let refused = host.load_source(
+            "binary.lua",
+            r"local f, err = load('\27Lua\84\0', 'x', 'b'); assert(f == nil and err:find('binary'), err)",
+        );
+        assert!(refused.is_ok(), "{refused:?}");
+        let text = host.load_source("text.lua", "local f = load('return 1 + 1'); assert(f() == 2)");
+        assert!(text.is_ok(), "{text:?}");
+    }
+
+    #[test]
+    fn log_works_while_loading_and_inside_callbacks() {
+        let mut host = LuaHost::new();
+        host.load_source(
+            "chatty.lua",
+            "theviewer.log('loaded'); theviewer.register_detector{ id='c', scan=function(w, ctx) theviewer.log('scanned ' .. w:len()); return { { start=0, len=1 } } end }",
+        )
+        .unwrap();
+        let detector = host.detectors().remove(0);
+        let found = detector.scan(&[0u8; 4], &ScanContext::default()).len();
+        assert_eq!(found, 1, "logging does not lose the results: {:?}", host.take_log());
+        let log = host.take_log();
+        assert!(log.contains(&"chatty.lua: loaded".to_string()), "{log:?}");
+        assert!(log.contains(&"chatty.lua: scanned 4".to_string()), "{log:?}");
+    }
+
+    #[test]
+    fn findings_need_start_and_len_and_default_the_rest() {
+        let mut host = LuaHost::new();
+        host.load_source(
+            "f.lua",
+            "theviewer.register_detector{ id='f', scan=function(w, ctx) return { { start=2, len=3, title='x' }, { start=0, len=1, category='Protocol', confidence=0.4, fields={ {name='a', offset=0, len=1, children={ {name='b', offset=0, len=1} }} } } } end }",
+        )
+        .unwrap();
+        let detector = host.detectors().remove(0);
+        let findings = detector.scan(&[0u8; 8], &ScanContext { base: 100, document_len: 108, strides: vec![] });
+        assert_eq!(findings.len(), 2);
+        assert_eq!((findings[0].start, findings[0].len, findings[0].category), (102, 3, Category::Custom));
+        assert_eq!(findings[1].category, Category::Protocol);
+        assert!(findings[1].weak());
+        assert_eq!(findings[1].fields[0].children[0].offset, 100);
+    }
+}

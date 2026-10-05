@@ -1,0 +1,10045 @@
+# Generated from Apache Tika's tika-mimetypes.xml by `cargo run --bin import_catalog`.
+# Source: https://github.com/apache/tika (Apache License 2.0; see catalog/LICENSE-tika.txt).
+# Do not edit by hand; regenerate instead. Hand-written entries live in curated.toml.
+
+[[signature]]
+id = "application/applefile"
+name = "applefile"
+category = "Signature"
+mime = "application/applefile"
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "00051600"
+
+[[signature]]
+id = "application/x-bat"
+name = "Windows Batch / Command File"
+category = "Signature"
+mime = "application/x-bat"
+extensions = ["bat", "cmd"]
+priority = 50
+references = ["sub-class-of:text/plain"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "406563686f206f6666"
+ignore_case = true
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "72656d20"
+ignore_case = true
+
+[[signature]]
+id = "application/cbor"
+name = "CBOR (Concise Binary Object Representation container)"
+category = "Signature"
+mime = "application/cbor"
+extensions = ["cbor"]
+priority = 60
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "d9d9f7"
+
+[[signature]]
+id = "application/coreldraw"
+name = "CorelDraw"
+category = "Signature"
+mime = "application/coreldraw"
+extensions = ["cdr"]
+priority = 60
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "52494646"
+
+[[signature.magic.matches.children]]
+offset = 8
+bytes = "434452"
+
+[[signature.magic.matches.children]]
+offset = 8
+bytes = "636472"
+
+[[signature.magic.matches.children]]
+offset = 8
+bytes = "444553"
+
+[[signature.magic.matches.children]]
+offset = 8
+bytes = "646573"
+
+[[signature]]
+id = "application/dash+xml"
+name = "dash+xml"
+category = "Signature"
+mime = "application/dash+xml"
+extensions = ["mpd"]
+priority = 50
+references = ["sub-class-of:application/xml"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "3c4d5044"
+
+[[signature]]
+id = "application/dicom"
+name = "DICOM medical imaging data"
+category = "Signature"
+mime = "application/dicom"
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 128
+bytes = "4449434d"
+
+[[signature]]
+id = "application/x-dvd-ifo"
+name = "IFO (DVD information file)"
+category = "Signature"
+mime = "application/x-dvd-ifo"
+extensions = ["ifo", "bup"]
+priority = 70
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "445644564944454f2d565453"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "445644564944454f2d564d47"
+
+[[signature]]
+id = "application/x-ebu-stl"
+name = "EBU-STL subtitles"
+category = "Signature"
+mime = "application/x-ebu-stl"
+priority = 70
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 3
+bytes = "53544c"
+
+[[signature.magic.matches.children]]
+offset = 8
+bytes = "2e3031"
+
+[[signature]]
+id = "application/epub+zip"
+name = "EPUB (Electronic Publication)"
+category = "Document"
+mime = "application/epub+zip"
+extensions = ["epub"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "504b0304"
+
+[[signature.magic.matches.children]]
+offset = 30
+bytes = "6d696d65747970656170706c69636174696f6e2f657075622b7a6970"
+
+[[signature]]
+id = "application/fits"
+name = "FITS (Flexible Image Transport System)"
+category = "Signature"
+mime = "application/fits"
+extensions = ["fits", "fit", "fts"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "53494d504c4520203d202020202020202020202020202020202020202054"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "53494d504c4520203d2020202020202020202020202020202054"
+
+[[signature]]
+id = "application/illustrator+ps"
+name = "Adobe Illustrator Artwork -- the older postscript based AI files"
+category = "Signature"
+mime = "application/illustrator+ps"
+priority = 60
+references = ["sub-class-of:application/postscript"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = "0..8192"
+bytes = "254149355f46696c65466f726d617420"
+
+[[signature]]
+id = "application/inf"
+name = "Windows setup INFormation"
+category = "Signature"
+mime = "application/inf"
+priority = 30
+references = ["sub-class-of:text/plain"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "5b76657273696f6e5d"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "5b737472696e67735d"
+
+[[signature]]
+id = "application/vnd.android.axml"
+name = "AXML (Android Binary XML)"
+category = "Signature"
+mime = "application/vnd.android.axml"
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "03000800"
+
+[[signature.magic.matches.children]]
+offset = 8
+bytes = "0100"
+
+[[signature]]
+id = "text/javascript"
+name = "JavaScript Source Code"
+category = "Document"
+mime = "text/javascript"
+extensions = ["js", "mjs"]
+priority = 50
+references = ["sub-class-of:text/plain"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "2f2a206a517565727920"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "2f2a21206a517565727920"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "2f2a21"
+
+[[signature.magic.matches.children]]
+offset = "4..8"
+bytes = "2a206a517565727920"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "2866756e6374696f6e28652c756e646566696e6564297b"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "2166756e6374696f6e2877696e646f772c756e646566696e6564297b"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "2f2a202050726f746f74797065204a61766153637269707420"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "7661722050726f746f747970653d7b"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "66756e6374696f6e2024772874297b"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "2f2a2a20406c6963656e7365205265616374"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "2f2a2a"
+
+[[signature.magic.matches.children]]
+offset = "4..8"
+bytes = "2a20526561637420"
+
+[[signature]]
+id = "application/java-vm"
+name = "Java Class File"
+category = "Executable"
+mime = "application/java-vm"
+extensions = ["class"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "cafebabe"
+
+[[signature]]
+id = "application/x-mach-o-universal"
+name = "Mach-O Universal"
+category = "Signature"
+mime = "application/x-mach-o-universal"
+priority = 60
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "cafebabe"
+
+[[signature.magic.matches.children]]
+offset = 4
+bytes = "00000001"
+
+[[signature.magic.matches.children]]
+offset = 4
+bytes = "00000002"
+
+[[signature.magic.matches.children]]
+offset = 4
+bytes = "00000003"
+
+[[signature.magic.matches.children]]
+offset = 4
+bytes = "00000004"
+
+[[signature.magic.matches.children]]
+offset = 4
+bytes = "00000005"
+
+[[signature.magic.matches.children]]
+offset = 4
+bytes = "00000006"
+
+[[signature.magic.matches.children]]
+offset = 4
+bytes = "00000007"
+
+[[signature.magic.matches.children]]
+offset = 4
+bytes = "00000008"
+
+[[signature.magic.matches.children]]
+offset = 4
+bytes = "00000009"
+
+[[signature.magic.matches.children]]
+offset = 4
+bytes = "0000000a"
+
+[[signature.magic.matches.children]]
+offset = 4
+bytes = "0000000b"
+
+[[signature.magic.matches.children]]
+offset = 4
+bytes = "0000000c"
+
+[[signature.magic.matches.children]]
+offset = 4
+bytes = "0000000d"
+
+[[signature.magic.matches.children]]
+offset = 4
+bytes = "0000000e"
+
+[[signature.magic.matches.children]]
+offset = 4
+bytes = "0000000f"
+
+[[signature.magic.matches.children]]
+offset = 4
+bytes = "00000010"
+
+[[signature.magic.matches.children]]
+offset = 4
+bytes = "00000011"
+
+[[signature.magic.matches.children]]
+offset = 4
+bytes = "00000012"
+
+[[signature.magic.matches.children]]
+offset = 4
+bytes = "00000013"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "bebafeca"
+
+[[signature.magic.matches.children]]
+offset = 4
+bytes = "01000000"
+
+[[signature.magic.matches.children]]
+offset = 4
+bytes = "02000000"
+
+[[signature.magic.matches.children]]
+offset = 4
+bytes = "03000000"
+
+[[signature.magic.matches.children]]
+offset = 4
+bytes = "04000000"
+
+[[signature.magic.matches.children]]
+offset = 4
+bytes = "05000000"
+
+[[signature.magic.matches.children]]
+offset = 4
+bytes = "06000000"
+
+[[signature.magic.matches.children]]
+offset = 4
+bytes = "07000000"
+
+[[signature.magic.matches.children]]
+offset = 4
+bytes = "08000000"
+
+[[signature.magic.matches.children]]
+offset = 4
+bytes = "09000000"
+
+[[signature.magic.matches.children]]
+offset = 4
+bytes = "0a000000"
+
+[[signature.magic.matches.children]]
+offset = 4
+bytes = "0b000000"
+
+[[signature.magic.matches.children]]
+offset = 4
+bytes = "0c000000"
+
+[[signature.magic.matches.children]]
+offset = 4
+bytes = "0d000000"
+
+[[signature.magic.matches.children]]
+offset = 4
+bytes = "0e000000"
+
+[[signature.magic.matches.children]]
+offset = 4
+bytes = "0f000000"
+
+[[signature.magic.matches.children]]
+offset = 4
+bytes = "10000000"
+
+[[signature.magic.matches.children]]
+offset = 4
+bytes = "11000000"
+
+[[signature.magic.matches.children]]
+offset = 4
+bytes = "12000000"
+
+[[signature.magic.matches.children]]
+offset = 4
+bytes = "13000000"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "cafebabf"
+
+[[signature.magic.matches.children]]
+offset = 4
+bytes = "00000001"
+
+[[signature.magic.matches.children]]
+offset = 4
+bytes = "00000002"
+
+[[signature.magic.matches.children]]
+offset = 4
+bytes = "00000003"
+
+[[signature.magic.matches.children]]
+offset = 4
+bytes = "00000004"
+
+[[signature.magic.matches.children]]
+offset = 4
+bytes = "00000005"
+
+[[signature.magic.matches.children]]
+offset = 4
+bytes = "00000006"
+
+[[signature.magic.matches.children]]
+offset = 4
+bytes = "00000007"
+
+[[signature.magic.matches.children]]
+offset = 4
+bytes = "00000008"
+
+[[signature.magic.matches.children]]
+offset = 4
+bytes = "00000009"
+
+[[signature.magic.matches.children]]
+offset = 4
+bytes = "0000000a"
+
+[[signature.magic.matches.children]]
+offset = 4
+bytes = "0000000b"
+
+[[signature.magic.matches.children]]
+offset = 4
+bytes = "0000000c"
+
+[[signature.magic.matches.children]]
+offset = 4
+bytes = "0000000d"
+
+[[signature.magic.matches.children]]
+offset = 4
+bytes = "0000000e"
+
+[[signature.magic.matches.children]]
+offset = 4
+bytes = "0000000f"
+
+[[signature.magic.matches.children]]
+offset = 4
+bytes = "00000010"
+
+[[signature.magic.matches.children]]
+offset = 4
+bytes = "00000011"
+
+[[signature.magic.matches.children]]
+offset = 4
+bytes = "00000012"
+
+[[signature.magic.matches.children]]
+offset = 4
+bytes = "00000013"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "bfbafeca"
+
+[[signature.magic.matches.children]]
+offset = 4
+bytes = "01000000"
+
+[[signature.magic.matches.children]]
+offset = 4
+bytes = "02000000"
+
+[[signature.magic.matches.children]]
+offset = 4
+bytes = "03000000"
+
+[[signature.magic.matches.children]]
+offset = 4
+bytes = "04000000"
+
+[[signature.magic.matches.children]]
+offset = 4
+bytes = "05000000"
+
+[[signature.magic.matches.children]]
+offset = 4
+bytes = "06000000"
+
+[[signature.magic.matches.children]]
+offset = 4
+bytes = "07000000"
+
+[[signature.magic.matches.children]]
+offset = 4
+bytes = "08000000"
+
+[[signature.magic.matches.children]]
+offset = 4
+bytes = "09000000"
+
+[[signature.magic.matches.children]]
+offset = 4
+bytes = "0a000000"
+
+[[signature.magic.matches.children]]
+offset = 4
+bytes = "0b000000"
+
+[[signature.magic.matches.children]]
+offset = 4
+bytes = "0c000000"
+
+[[signature.magic.matches.children]]
+offset = 4
+bytes = "0d000000"
+
+[[signature.magic.matches.children]]
+offset = 4
+bytes = "0e000000"
+
+[[signature.magic.matches.children]]
+offset = 4
+bytes = "0f000000"
+
+[[signature.magic.matches.children]]
+offset = 4
+bytes = "10000000"
+
+[[signature.magic.matches.children]]
+offset = 4
+bytes = "11000000"
+
+[[signature.magic.matches.children]]
+offset = 4
+bytes = "12000000"
+
+[[signature.magic.matches.children]]
+offset = 4
+bytes = "13000000"
+
+[[signature]]
+id = "application/mac-binhex40"
+name = "mac-binhex40"
+category = "Signature"
+mime = "application/mac-binhex40"
+extensions = ["hqx"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 11
+bytes = "6d75737420626520636f6e76657274656420776974682042696e486578"
+
+[[signature]]
+id = "application/mathematica"
+name = "Wolfram Mathematica"
+category = "Signature"
+mime = "application/mathematica"
+extensions = ["ma", "nb", "mb"]
+priority = 50
+references = ["sub-class-of:text/plain"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "282a2a"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "282a20"
+
+[[signature]]
+id = "application/vnd.wolfram.wl"
+name = "Wolfram Language"
+category = "Signature"
+mime = "application/vnd.wolfram.wl"
+extensions = ["wl"]
+priority = 50
+references = ["sub-class-of:application/mathematica"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "23212f7573722f62696e2f656e7620776f6c6672616d736372697074"
+
+[[signature]]
+id = "application/mbox"
+name = "mbox"
+category = "Signature"
+mime = "application/mbox"
+extensions = ["mbox"]
+priority = 70
+references = ["sub-class-of:text/x-tika-text-based-message"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "46726f6d20"
+
+[[signature.magic.matches.children]]
+offset = "32..256"
+bytes = "0a46726f6d3a20"
+
+[[signature.magic.matches.children]]
+offset = "32..256"
+bytes = "0a446174653a20"
+
+[[signature.magic.matches.children]]
+offset = "32..256"
+bytes = "0a5375626a6563743a20"
+
+[[signature.magic.matches.children]]
+offset = "32..256"
+bytes = "0a44656c6976657265642d546f3a20"
+
+[[signature.magic.matches.children]]
+offset = "32..256"
+bytes = "0a52656365697665643a20627920"
+
+[[signature.magic.matches.children]]
+offset = "32..256"
+bytes = "0a52656365697665643a2076696120"
+
+[[signature.magic.matches.children]]
+offset = "32..256"
+bytes = "0a52656365697665643a2066726f6d20"
+
+[[signature.magic.matches.children]]
+offset = "32..256"
+bytes = "0a4d696d652d56657273696f6e3a20"
+
+[[signature.magic.matches.children]]
+offset = "32..256"
+bytes = "0a582d"
+ignore_case = true
+
+[[signature.magic.matches.children.children]]
+offset = "32..8192"
+bytes = "0a46726f6d3a20"
+
+[[signature.magic.matches.children.children]]
+offset = "32..8192"
+bytes = "0a446174653a20"
+
+[[signature.magic.matches.children.children]]
+offset = "32..8192"
+bytes = "0a5375626a6563743a20"
+
+[[signature.magic.matches.children.children]]
+offset = "32..8192"
+bytes = "0a44656c6976657265642d546f3a20"
+
+[[signature.magic.matches.children.children]]
+offset = "32..8192"
+bytes = "0a52656365697665643a20627920"
+
+[[signature.magic.matches.children.children]]
+offset = "32..8192"
+bytes = "0a52656365697665643a2076696120"
+
+[[signature.magic.matches.children.children]]
+offset = "32..8192"
+bytes = "0a52656365697665643a2066726f6d20"
+
+[[signature.magic.matches.children.children]]
+offset = "32..8192"
+bytes = "0a4d696d652d56657273696f6e3a20"
+
+[[signature]]
+id = "application/msword"
+name = "Microsoft Word Document"
+category = "Document"
+mime = "application/msword"
+extensions = ["doc", "dot"]
+priority = 50
+references = ["sub-class-of:application/x-tika-msoffice"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 2080
+bytes = "4d6963726f736f667420576f726420362e3020446f63756d656e74"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 2080
+bytes = "446f63756d656e746f204d6963726f736f667420576f72642036"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 2112
+bytes = "4d53576f7264446f63"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "31be0000"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "504f5e5160"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "fe370023"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "dba52d000000"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "94a62e"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = "0..8"
+bytes = "d0cf11e0a1b11ae1"
+
+[[signature.magic.matches.children]]
+offset = "1152..4096"
+bytes = "57006f007200640044006f00630075006d0065006e0074"
+
+[[signature]]
+id = "application/msword2"
+name = "Microsoft Word 2 Document"
+category = "Document"
+mime = "application/msword2"
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "9ba5"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "dba5"
+
+[[signature]]
+id = "application/msword5"
+name = "Microsoft Word 5 Document"
+category = "Document"
+mime = "application/msword5"
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "fe37"
+
+[[signature]]
+id = "application/octet-stream"
+name = "octet-stream"
+category = "Signature"
+mime = "application/octet-stream"
+extensions = ["bin", "dms", "lha", "lrf", "lzh", "so", "dist", "distz", "pkg", "bpk", "dump", "elc", "deploy"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 10
+bytes = "2320546869732069732061207368656c6c2061726368697665"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "1f1e"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "1d44"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "ff1f"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "ff1f"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "fd37"
+
+[[signature]]
+id = "application/ogg"
+name = "ogg"
+category = "Signature"
+mime = "application/ogg"
+extensions = ["ogx"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "4f676753"
+
+[[signature]]
+id = "application/onenote;format=one"
+name = "onenote;format=one"
+category = "Signature"
+mime = "application/onenote;format=one"
+extensions = ["one"]
+priority = 50
+references = ["sub-class-of:application/onenote"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "e4525c7b"
+
+[[signature.magic.matches.children]]
+offset = 4
+bytes = "8cd8"
+
+[[signature.magic.matches.children.children]]
+offset = 6
+bytes = "a74d"
+
+[[signature.magic.matches.children.children.children]]
+offset = 8
+bytes = "aeb15378d02996d3"
+
+[[signature]]
+id = "application/onenote;format=onetoc2"
+name = "OneNote Table of Contents"
+category = "Signature"
+mime = "application/onenote;format=onetoc2"
+extensions = ["onetoc", "onetoc2"]
+priority = 50
+references = ["sub-class-of:application/onenote"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "a12fff43"
+
+[[signature.magic.matches.children]]
+offset = 4
+bytes = "d9ef"
+
+[[signature.magic.matches.children.children]]
+offset = 6
+bytes = "764c"
+
+[[signature.magic.matches.children.children.children]]
+offset = 8
+bytes = "9ee210ea5722765f"
+
+[[signature]]
+id = "application/pdf"
+name = "PDF (Portable Document Format)"
+category = "Document"
+mime = "application/pdf"
+extensions = ["pdf"]
+priority = 20
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "255044462d"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "efbbbf255044462d"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = "0..128"
+bytes = "2525"
+
+[[signature.magic.matches.children]]
+offset = "1..512"
+bytes = "255044462d312e"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = "0..128"
+bytes = "2525"
+
+[[signature.magic.matches.children]]
+offset = "1..512"
+bytes = "255044462d322e"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = "1..512"
+bytes = "255044462d312e"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = "1..512"
+bytes = "255044462d322e"
+
+[[signature]]
+id = "application/pgp-encrypted"
+name = "pgp-encrypted"
+category = "Signature"
+mime = "application/pgp-encrypted"
+extensions = ["pgp", "gpg"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "85"
+
+[[signature.magic.matches.children]]
+offset = 3
+bytes = "03"
+
+[[signature]]
+id = "application/pkcs7-mime"
+name = "pkcs7-mime"
+category = "Signature"
+mime = "application/pkcs7-mime"
+extensions = ["p7m", "p7c"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "30"
+
+[[signature.magic.matches.children]]
+offset = "2..6"
+bytes = "060b2a864886f70d0109100100"
+mask = "ffffffffffffffffffffffff00"
+
+[[signature]]
+id = "application/pkcs7-signature"
+name = "pkcs7-signature"
+category = "Signature"
+mime = "application/pkcs7-signature"
+extensions = ["p7s"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "2d2d2d2d2d424547494e20504b435337"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "30"
+
+[[signature.magic.matches.children]]
+offset = "2..6"
+bytes = "06092a864886f70d0107ffa0"
+mask = "ffffffffffffffffffff00ff"
+
+[[signature]]
+id = "application/timestamped-data"
+name = "timestamped-data"
+category = "Signature"
+mime = "application/timestamped-data"
+extensions = ["tsd"]
+priority = 60
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "30"
+
+[[signature.magic.matches.children]]
+offset = "2..6"
+bytes = "060b2a864886f70d010910011f"
+
+[[signature]]
+id = "application/postscript"
+name = "PostScript"
+category = "Document"
+mime = "application/postscript"
+extensions = ["ps", "eps", "epsf", "epsi"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "2521"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "042521"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "c5d0d3c6"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "252150532d41646f62652d332e3020455053462d332e30"
+
+[[signature]]
+id = "application/rtf"
+name = "Rich Text Format File"
+category = "Document"
+mime = "application/rtf"
+extensions = ["rtf"]
+priority = 50
+references = ["sub-class-of:text/plain"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "7b5c727466"
+
+[[signature]]
+id = "application/sereal;version=1"
+name = "sereal;version=1"
+category = "Signature"
+mime = "application/sereal;version=1"
+priority = 50
+references = ["sub-class-of:application/sereal"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "3d73726c"
+
+[[signature.magic.matches.children]]
+offset = 4
+bytes = "01"
+mask = "0f"
+
+[[signature]]
+id = "application/sereal;version=2"
+name = "sereal;version=2"
+category = "Signature"
+mime = "application/sereal;version=2"
+priority = 50
+references = ["sub-class-of:application/sereal"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "3d73726c"
+
+[[signature.magic.matches.children]]
+offset = 4
+bytes = "02"
+mask = "0f"
+
+[[signature]]
+id = "application/sereal;version=3"
+name = "sereal;version=3"
+category = "Signature"
+mime = "application/sereal;version=3"
+priority = 50
+references = ["sub-class-of:application/sereal"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "3df3726c"
+
+[[signature.magic.matches.children]]
+offset = 4
+bytes = "03"
+mask = "0f"
+
+[[signature]]
+id = "application/vnd.apple.mpegurl"
+name = "apple.mpegurl"
+category = "Signature"
+mime = "application/vnd.apple.mpegurl"
+extensions = ["m3u8"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "234558544d3355"
+
+[[signature]]
+id = "application/vnd.digilite.prolights"
+name = "digilite.eu Prolights configuration file"
+category = "Signature"
+mime = "application/vnd.digilite.prolights"
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "7f0c442b"
+
+[[signature]]
+id = "application/vnd.etsi.asic-e+zip"
+name = "ASiC-E (Extended Associated Signature Container)"
+category = "Signature"
+mime = "application/vnd.etsi.asic-e+zip"
+extensions = ["asice"]
+priority = 60
+references = ["sub-class-of:application/zip"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "504b0304"
+
+[[signature.magic.matches.children]]
+offset = 30
+bytes = "6d696d65747970656170706c69636174696f6e2f766e642e657473692e617369632d652b7a6970"
+
+[[signature]]
+id = "application/vnd.etsi.asic-s+zip"
+name = "ASiC-S (Simple Associated Signature Container)"
+category = "Signature"
+mime = "application/vnd.etsi.asic-s+zip"
+extensions = ["asics"]
+priority = 60
+references = ["sub-class-of:application/zip"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "504b0304"
+
+[[signature.magic.matches.children]]
+offset = 30
+bytes = "6d696d65747970656170706c69636174696f6e2f766e642e657473692e617369632d732b7a6970"
+
+[[signature]]
+id = "application/vnd.fdf"
+name = "FDF (Forms Data Format)"
+category = "Signature"
+mime = "application/vnd.fdf"
+extensions = ["fdf"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "254644462d"
+
+[[signature]]
+id = "application/vnd.iccprofile"
+name = "iccprofile"
+category = "Signature"
+mime = "application/vnd.iccprofile"
+extensions = ["icc", "icm"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 36
+bytes = "61637370"
+
+[[signature]]
+id = "application/vnd.lotus-1-2-3;version=1"
+name = "Lotus 1-2-3, version 1"
+category = "Signature"
+mime = "application/vnd.lotus-1-2-3;version=1"
+priority = 50
+references = ["sub-class-of:application/vnd.lotus-1-2-3"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "000002000404"
+
+[[signature]]
+id = "application/vnd.lotus-1-2-3;version=2"
+name = "Lotus 1-2-3, version 2"
+category = "Signature"
+mime = "application/vnd.lotus-1-2-3;version=2"
+extensions = ["wk1", "wk2"]
+priority = 50
+references = ["sub-class-of:application/vnd.lotus-1-2-3"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "00000200060406000800"
+
+[[signature]]
+id = "application/vnd.lotus-1-2-3;version=3"
+name = "Lotus 1-2-3, version 3"
+category = "Signature"
+mime = "application/vnd.lotus-1-2-3;version=3"
+extensions = ["wk3"]
+priority = 50
+references = ["sub-class-of:application/vnd.lotus-1-2-3"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "00001a0000100400"
+
+[[signature]]
+id = "application/vnd.lotus-1-2-3;version=4"
+name = "Lotus 1-2-3, version 4-5"
+category = "Signature"
+mime = "application/vnd.lotus-1-2-3;version=4"
+extensions = ["wk4"]
+priority = 50
+references = ["sub-class-of:application/vnd.lotus-1-2-3"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "00001a0002100400"
+
+[[signature]]
+id = "application/vnd.lotus-1-2-3;version=97+9.x"
+name = "Lotus 1-2-3, version 97/9.x"
+category = "Signature"
+mime = "application/vnd.lotus-1-2-3;version=97+9.x"
+extensions = ["123"]
+priority = 50
+references = ["sub-class-of:application/vnd.lotus-1-2-3"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "00001a0003100400"
+
+[[signature]]
+id = "application/vnd.lotus-wordpro"
+name = "lotus-wordpro"
+category = "Signature"
+mime = "application/vnd.lotus-wordpro"
+extensions = ["lwp"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "576f726450726f00"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "576f726450726f0dfb"
+
+[[signature]]
+id = "application/vnd.mif"
+name = "FrameMaker Interchange Format"
+category = "Signature"
+mime = "application/vnd.mif"
+extensions = ["mif"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "3c4d616b657246696c65"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "3c4d494646696c65"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "3c4d616b657244696374696f6e617279"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "3c4d616b657253637265656e466f6e74"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "3c4d4d4c"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "3c426f6f6b"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "3c4d616b6572"
+
+[[signature]]
+id = "application/vnd.ms-cab-compressed"
+name = "ms-cab-compressed"
+category = "Archive"
+mime = "application/vnd.ms-cab-compressed"
+extensions = ["cab"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "4d53434600000000"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "4d534346"
+
+[[signature]]
+id = "application/vnd.ms-excel"
+name = "Microsoft Excel Spreadsheet"
+category = "Document"
+mime = "application/vnd.ms-excel"
+extensions = ["xls", "xlm", "xla", "xlc", "xlt", "xlw", "xll", "xld"]
+priority = 50
+references = ["sub-class-of:application/x-tika-msoffice"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 2080
+bytes = "4d6963726f736f667420457863656c20352e3020576f726b7368656574"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 2080
+bytes = "466f676c696f206469206c61766f726f204d6963726f736f66742045786365"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 2114
+bytes = "4269666635"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 2121
+bytes = "4269666635"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = "0..8"
+bytes = "d0cf11e0a1b11ae1"
+
+[[signature.magic.matches.children]]
+offset = "1152..4096"
+bytes = "57006f0072006b0062006f006f006b"
+
+[[signature]]
+id = "application/vnd.ms-excel.sheet.4"
+name = "Microsoft Excel 4 Worksheet"
+category = "Document"
+mime = "application/vnd.ms-excel.sheet.4"
+priority = 60
+references = ["sub-class-of:application/x-tika-old-excel"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "09040600"
+
+[[signature.magic.matches.children]]
+offset = 4
+bytes = "00001000"
+
+[[signature.magic.matches.children]]
+offset = 4
+bytes = "00002000"
+
+[[signature.magic.matches.children]]
+offset = 4
+bytes = "00004000"
+
+[[signature]]
+id = "application/vnd.ms-excel.workspace.4"
+name = "Microsoft Excel 4 Workspace"
+category = "Document"
+mime = "application/vnd.ms-excel.workspace.4"
+priority = 60
+references = ["sub-class-of:application/x-tika-old-excel"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "09040600"
+
+[[signature.magic.matches.children]]
+offset = 4
+bytes = "00000001"
+
+[[signature]]
+id = "application/vnd.ms-excel.sheet.3"
+name = "Microsoft Excel 3 Worksheet"
+category = "Document"
+mime = "application/vnd.ms-excel.sheet.3"
+priority = 60
+references = ["sub-class-of:application/x-tika-old-excel"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "09020600"
+
+[[signature.magic.matches.children]]
+offset = 4
+bytes = "00001000"
+
+[[signature.magic.matches.children]]
+offset = 4
+bytes = "00002000"
+
+[[signature.magic.matches.children]]
+offset = 4
+bytes = "00004000"
+
+[[signature]]
+id = "application/vnd.ms-excel.workspace.3"
+name = "Microsoft Excel 3 Workspace"
+category = "Document"
+mime = "application/vnd.ms-excel.workspace.3"
+priority = 60
+references = ["sub-class-of:application/x-tika-old-excel"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "09020600"
+
+[[signature.magic.matches.children]]
+offset = 4
+bytes = "00000001"
+
+[[signature]]
+id = "application/vnd.ms-excel.sheet.2"
+name = "Microsoft Excel 2 Worksheet"
+category = "Document"
+mime = "application/vnd.ms-excel.sheet.2"
+priority = 60
+references = ["sub-class-of:application/x-tika-old-excel"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "09000400"
+
+[[signature.magic.matches.children]]
+offset = 4
+bytes = "00001000"
+
+[[signature.magic.matches.children]]
+offset = 4
+bytes = "00002000"
+
+[[signature.magic.matches.children]]
+offset = 4
+bytes = "00004000"
+
+[[signature]]
+id = "application/vnd.ms-fontobject"
+name = "ms-fontobject"
+category = "Document"
+mime = "application/vnd.ms-fontobject"
+extensions = ["eot"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 8
+bytes = "02000200"
+
+[[signature.magic.matches.children]]
+offset = 34
+bytes = "4c50"
+
+[[signature]]
+id = "application/vnd.ms-htmlhelp"
+name = "ms-htmlhelp"
+category = "Document"
+mime = "application/vnd.ms-htmlhelp"
+extensions = ["chm"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "49545346"
+
+[[signature]]
+id = "application/vnd.ms-outlook-pst"
+name = "Outlook Personal Folders File Format"
+category = "Document"
+mime = "application/vnd.ms-outlook-pst"
+extensions = ["pst", "ost"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "2142444e2e2e2e2e534d"
+mask = "ffffffff00000000ffff"
+
+[[signature]]
+id = "application/vnd.ms-powerpoint"
+name = "Microsoft Powerpoint Presentation"
+category = "Document"
+mime = "application/vnd.ms-powerpoint"
+extensions = ["ppt", "ppz", "pps", "pot", "ppa"]
+priority = 50
+references = ["sub-class-of:application/x-tika-msoffice"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = "0..8"
+bytes = "d0cf11e0a1b11ae1"
+
+[[signature.magic.matches.children]]
+offset = "1152..4096"
+bytes = "50006f0077006500720050006f0069006e0074002044006f00630075006d0065006e0074"
+
+[[signature]]
+id = "application/x-project"
+name = "project"
+category = "Signature"
+mime = "application/x-project"
+extensions = ["mpx"]
+priority = 50
+references = ["sub-class-of:text/plain"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "4d50582c4d6963726f736f66742050726f6a65637420666f722057696e646f77732c"
+
+[[signature]]
+id = "application/vnd.ms-tnef"
+name = "ms-tnef"
+category = "Document"
+mime = "application/vnd.ms-tnef"
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "789f3e22"
+
+[[signature]]
+id = "application/vnd.ms-works"
+name = "ms-works"
+category = "Document"
+mime = "application/vnd.ms-works"
+extensions = ["wps", "wks", "wcm", "wdb"]
+priority = 50
+references = ["sub-class-of:application/x-tika-msoffice"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = "0..8"
+bytes = "d0cf11e0a1b11ae1"
+
+[[signature.magic.matches.children]]
+offset = "1152..4096"
+bytes = "4d00610074004f00530054"
+
+[[signature]]
+id = "application/vnd.msa-disk-image"
+name = "Magic Shadow Archiver"
+category = "Filesystem"
+mime = "application/vnd.msa-disk-image"
+extensions = ["msa"]
+priority = 20
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "0e0f"
+
+[[signature]]
+id = "application/vnd.oasis.opendocument.chart"
+name = "OpenDocument v1.0: Chart document"
+category = "Document"
+mime = "application/vnd.oasis.opendocument.chart"
+extensions = ["odc"]
+priority = 50
+references = ["sub-class-of:application/zip"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "504b"
+
+[[signature.magic.matches.children]]
+offset = 30
+bytes = "6d696d65747970656170706c69636174696f6e2f766e642e6f617369732e6f70656e646f63756d656e742e6368617274"
+
+[[signature]]
+id = "application/vnd.oasis.opendocument.chart-template"
+name = "OpenDocument v1.0: Chart document used as template"
+category = "Document"
+mime = "application/vnd.oasis.opendocument.chart-template"
+extensions = ["otc"]
+priority = 50
+references = ["sub-class-of:application/zip"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "504b"
+
+[[signature.magic.matches.children]]
+offset = 30
+bytes = "6d696d65747970656170706c69636174696f6e2f766e642e6f617369732e6f70656e646f63756d656e742e63686172742d74656d706c617465"
+
+[[signature]]
+id = "application/vnd.oasis.opendocument.formula"
+name = "OpenDocument v1.0: Formula document"
+category = "Document"
+mime = "application/vnd.oasis.opendocument.formula"
+extensions = ["odf"]
+priority = 50
+references = ["sub-class-of:application/zip"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "504b"
+
+[[signature.magic.matches.children]]
+offset = 30
+bytes = "6d696d65747970656170706c69636174696f6e2f766e642e6f617369732e6f70656e646f63756d656e742e666f726d756c61"
+
+[[signature]]
+id = "application/vnd.oasis.opendocument.formula-template"
+name = "OpenDocument v1.0: Formula document used as template"
+category = "Document"
+mime = "application/vnd.oasis.opendocument.formula-template"
+extensions = ["odft"]
+priority = 50
+references = ["sub-class-of:application/zip"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "504b"
+
+[[signature.magic.matches.children]]
+offset = 30
+bytes = "6d696d65747970656170706c69636174696f6e2f766e642e6f617369732e6f70656e646f63756d656e742e666f726d756c612d74656d706c617465"
+
+[[signature]]
+id = "application/vnd.oasis.opendocument.graphics"
+name = "OpenDocument v1.0: Graphics document (Drawing)"
+category = "Document"
+mime = "application/vnd.oasis.opendocument.graphics"
+extensions = ["odg"]
+priority = 50
+references = ["sub-class-of:application/zip"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "504b"
+
+[[signature.magic.matches.children]]
+offset = 30
+bytes = "6d696d65747970656170706c69636174696f6e2f766e642e6f617369732e6f70656e646f63756d656e742e6772617068696373"
+
+[[signature]]
+id = "application/vnd.oasis.opendocument.graphics-template"
+name = "OpenDocument v1.0: Graphics document used as template"
+category = "Document"
+mime = "application/vnd.oasis.opendocument.graphics-template"
+extensions = ["otg"]
+priority = 50
+references = ["sub-class-of:application/zip"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "504b"
+
+[[signature.magic.matches.children]]
+offset = 30
+bytes = "6d696d65747970656170706c69636174696f6e2f766e642e6f617369732e6f70656e646f63756d656e742e67726170686963732d74656d706c617465"
+
+[[signature]]
+id = "application/vnd.oasis.opendocument.image"
+name = "OpenDocument v1.0: Image document"
+category = "Document"
+mime = "application/vnd.oasis.opendocument.image"
+extensions = ["odi"]
+priority = 50
+references = ["sub-class-of:application/zip"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "504b"
+
+[[signature.magic.matches.children]]
+offset = 30
+bytes = "6d696d65747970656170706c69636174696f6e2f766e642e6f617369732e6f70656e646f63756d656e742e696d616765"
+
+[[signature]]
+id = "application/vnd.oasis.opendocument.image-template"
+name = "OpenDocument v1.0: Image document used as template"
+category = "Document"
+mime = "application/vnd.oasis.opendocument.image-template"
+extensions = ["oti"]
+priority = 50
+references = ["sub-class-of:application/zip"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "504b"
+
+[[signature.magic.matches.children]]
+offset = 30
+bytes = "6d696d65747970656170706c69636174696f6e2f766e642e6f617369732e6f70656e646f63756d656e742e696d6167652d74656d706c617465"
+
+[[signature]]
+id = "application/vnd.oasis.opendocument.presentation"
+name = "OpenDocument v1.0: Presentation document"
+category = "Document"
+mime = "application/vnd.oasis.opendocument.presentation"
+extensions = ["odp"]
+priority = 50
+references = ["sub-class-of:application/zip"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "504b"
+
+[[signature.magic.matches.children]]
+offset = 30
+bytes = "6d696d65747970656170706c69636174696f6e2f766e642e6f617369732e6f70656e646f63756d656e742e70726573656e746174696f6e"
+
+[[signature]]
+id = "application/vnd.oasis.opendocument.presentation-template"
+name = "OpenDocument v1.0: Presentation document used as template"
+category = "Document"
+mime = "application/vnd.oasis.opendocument.presentation-template"
+extensions = ["otp"]
+priority = 50
+references = ["sub-class-of:application/zip"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "504b"
+
+[[signature.magic.matches.children]]
+offset = 30
+bytes = "6d696d65747970656170706c69636174696f6e2f766e642e6f617369732e6f70656e646f63756d656e742e70726573656e746174696f6e2d74656d706c617465"
+
+[[signature]]
+id = "application/vnd.oasis.opendocument.spreadsheet"
+name = "OpenDocument v1.0: Spreadsheet document"
+category = "Document"
+mime = "application/vnd.oasis.opendocument.spreadsheet"
+extensions = ["ods"]
+priority = 50
+references = ["sub-class-of:application/zip"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "504b"
+
+[[signature.magic.matches.children]]
+offset = 30
+bytes = "6d696d65747970656170706c69636174696f6e2f766e642e6f617369732e6f70656e646f63756d656e742e7370726561647368656574"
+
+[[signature]]
+id = "application/vnd.oasis.opendocument.spreadsheet-template"
+name = "OpenDocument v1.0: Spreadsheet document used as template"
+category = "Document"
+mime = "application/vnd.oasis.opendocument.spreadsheet-template"
+extensions = ["ots"]
+priority = 50
+references = ["sub-class-of:application/zip"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "504b"
+
+[[signature.magic.matches.children]]
+offset = 30
+bytes = "6d696d65747970656170706c69636174696f6e2f766e642e6f617369732e6f70656e646f63756d656e742e73707265616473686565742d74656d706c617465"
+
+[[signature]]
+id = "application/vnd.oasis.opendocument.text"
+name = "OpenDocument v1.0: Text document"
+category = "Document"
+mime = "application/vnd.oasis.opendocument.text"
+extensions = ["odt"]
+priority = 50
+references = ["sub-class-of:application/zip"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "504b"
+
+[[signature.magic.matches.children]]
+offset = 30
+bytes = "6d696d65747970656170706c69636174696f6e2f766e642e6f617369732e6f70656e646f63756d656e742e74657874"
+
+[[signature]]
+id = "application/vnd.oasis.opendocument.text-master"
+name = "OpenDocument v1.0: Global Text document"
+category = "Document"
+mime = "application/vnd.oasis.opendocument.text-master"
+extensions = ["otm"]
+priority = 50
+references = ["sub-class-of:application/zip"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "504b"
+
+[[signature.magic.matches.children]]
+offset = 30
+bytes = "6d696d65747970656170706c69636174696f6e2f766e642e6f617369732e6f70656e646f63756d656e742e746578742d6d6173746572"
+
+[[signature]]
+id = "application/vnd.oasis.opendocument.text-template"
+name = "OpenDocument v1.0: Text document used as template"
+category = "Document"
+mime = "application/vnd.oasis.opendocument.text-template"
+extensions = ["ott"]
+priority = 50
+references = ["sub-class-of:application/zip"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "504b"
+
+[[signature.magic.matches.children]]
+offset = 30
+bytes = "6d696d65747970656170706c69636174696f6e2f766e642e6f617369732e6f70656e646f63756d656e742e746578742d74656d706c617465"
+
+[[signature]]
+id = "application/vnd.oasis.opendocument.text-web"
+name = "OpenDocument v1.0: Text document used as template for HTML documents"
+category = "Document"
+mime = "application/vnd.oasis.opendocument.text-web"
+extensions = ["oth"]
+priority = 50
+references = ["sub-class-of:application/zip"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "504b"
+
+[[signature.magic.matches.children]]
+offset = 30
+bytes = "6d696d65747970656170706c69636174696f6e2f766e642e6f617369732e6f70656e646f63756d656e742e746578742d776562"
+
+[[signature]]
+id = "application/vnd.rn-realmedia"
+name = "rn-realmedia"
+category = "Signature"
+mime = "application/vnd.rn-realmedia"
+extensions = ["rm"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "2e524d46"
+
+[[signature]]
+id = "application/vnd.stardivision.calc"
+name = "stardivision.calc"
+category = "Signature"
+mime = "application/vnd.stardivision.calc"
+extensions = ["sdc"]
+priority = 50
+references = ["sub-class-of:application/x-tika-staroffice"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = "0..8"
+bytes = "d0cf11e0a1b11ae1"
+
+[[signature.magic.matches.children]]
+offset = "2048..2207"
+bytes = "5374617243616c63"
+
+[[signature]]
+id = "application/vnd.stardivision.draw"
+name = "stardivision.draw"
+category = "Signature"
+mime = "application/vnd.stardivision.draw"
+extensions = ["sda"]
+priority = 50
+references = ["sub-class-of:application/x-tika-staroffice"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = "0..8"
+bytes = "d0cf11e0a1b11ae1"
+
+[[signature.magic.matches.children]]
+offset = "2048..2207"
+bytes = "5374617244726177"
+
+[[signature]]
+id = "application/vnd.stardivision.impress"
+name = "stardivision.impress"
+category = "Signature"
+mime = "application/vnd.stardivision.impress"
+extensions = ["sdd"]
+priority = 50
+references = ["sub-class-of:application/x-tika-staroffice"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = "0..8"
+bytes = "d0cf11e0a1b11ae1"
+
+[[signature.magic.matches.children]]
+offset = "2048..2207"
+bytes = "53746172496d7072657373"
+
+[[signature]]
+id = "application/vnd.stardivision.writer"
+name = "stardivision.writer"
+category = "Signature"
+mime = "application/vnd.stardivision.writer"
+extensions = ["sdw"]
+priority = 50
+references = ["sub-class-of:application/x-tika-staroffice"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = "0..8"
+bytes = "d0cf11e0a1b11ae1"
+
+[[signature.magic.matches.children]]
+offset = "2048..2207"
+bytes = "53746172577269746572"
+
+[[signature]]
+id = "application/x-subrip"
+name = "SubRip (srt) subtitles"
+category = "Signature"
+mime = "application/x-subrip"
+extensions = ["srt"]
+priority = 50
+references = ["sub-class-of:text/plain"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "310a3030"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "310d3030"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "efbbbf310a3030"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "efbbbf310d3030"
+
+[[signature]]
+id = "application/vnd.sun.xml.writer"
+name = "OpenOffice v1.0: Writer Document"
+category = "Signature"
+mime = "application/vnd.sun.xml.writer"
+extensions = ["sxw"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "504b"
+
+[[signature.magic.matches.children]]
+offset = 30
+bytes = "6d696d65747970656170706c69636174696f6e2f766e642e73756e2e786d6c2e777269746572"
+
+[[signature]]
+id = "application/vnd.symbian.install"
+name = "symbian.install"
+category = "Signature"
+mime = "application/vnd.symbian.install"
+extensions = ["sis", "sisx"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 8
+bytes = "19040010"
+
+[[signature]]
+id = "application/vnd.tcpdump.pcap"
+name = "TCPDump pcap packet capture"
+category = "Signature"
+mime = "application/vnd.tcpdump.pcap"
+extensions = ["pcap", "cap", "dmp"]
+priority = 60
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "a1b2c3d4"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "d4c3b2a1"
+
+[[signature]]
+id = "application/vnd.tcpdump.pcapng"
+name = "TCPDump next gen pcap packet capture"
+category = "Signature"
+mime = "application/vnd.tcpdump.pcapng"
+extensions = ["pcapng"]
+priority = 60
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "0a0d0d0a"
+
+[[signature.magic.matches.children]]
+offset = 8
+bytes = "a1b2c3d4"
+
+[[signature.magic.matches.children]]
+offset = 8
+bytes = "4d3c2b1a"
+
+[[signature]]
+id = "application/x-tmx"
+name = "TMX Translation Memory"
+category = "Signature"
+mime = "application/x-tmx"
+extensions = ["tmx"]
+priority = 80
+references = ["sub-class-of:application/xml"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = "0..256"
+bytes = "3c746d78"
+
+[[signature]]
+id = "application/vnd.wordperfect"
+name = "WPD (WordPerfect - Corel Word Processing)"
+category = "Signature"
+mime = "application/vnd.wordperfect"
+extensions = ["wpd", "wp", "wp5", "wp6", "w60", "wp61", "wpt"]
+priority = 40
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "6170706c69636174696f6e2f766e642e776f7264706572666563743b"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "ff575043"
+
+[[signature]]
+id = "application/vnd.wordperfect;version=4.2"
+name = "wordperfect;version=4.2"
+category = "Signature"
+mime = "application/vnd.wordperfect;version=4.2"
+priority = 50
+references = ["sub-class-of:application/vnd.wordperfect"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "cb0a01"
+
+[[signature.magic.matches.children]]
+offset = 5
+bytes = "cb"
+
+[[signature]]
+id = "application/vnd.wordperfect;version=5.0"
+name = "wordperfect;version=5.0"
+category = "Signature"
+mime = "application/vnd.wordperfect;version=5.0"
+priority = 50
+references = ["sub-class-of:application/vnd.wordperfect"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "ff575043"
+
+[[signature.magic.matches.children]]
+offset = 10
+bytes = "0000"
+
+[[signature]]
+id = "application/vnd.wordperfect;version=5.1"
+name = "wordperfect;version=5.1"
+category = "Signature"
+mime = "application/vnd.wordperfect;version=5.1"
+priority = 50
+references = ["sub-class-of:application/vnd.wordperfect"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "ff575043"
+
+[[signature.magic.matches.children]]
+offset = 10
+bytes = "0001"
+
+[[signature]]
+id = "application/vnd.wordperfect;version=6.x"
+name = "wordperfect;version=6.x"
+category = "Signature"
+mime = "application/vnd.wordperfect;version=6.x"
+priority = 50
+references = ["sub-class-of:application/vnd.wordperfect"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "ff575043"
+
+[[signature.magic.matches.children]]
+offset = 10
+bytes = "0201"
+
+[[signature]]
+id = "application/vnd.xara"
+name = "xara"
+category = "Signature"
+mime = "application/vnd.xara"
+extensions = ["xar"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "78617221"
+
+[[signature]]
+id = "application/warc"
+name = "WARC"
+category = "Signature"
+mime = "application/warc"
+extensions = ["warc"]
+priority = 60
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "574152432f"
+
+[[signature]]
+id = "application/wasm"
+name = "Wasm (Web Assembly)"
+category = "Executable"
+mime = "application/wasm"
+extensions = ["wasm"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "0061736d"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "6d736100"
+
+[[signature]]
+id = "image/x-tga"
+name = "Targa image data"
+category = "Image"
+mime = "image/x-tga"
+extensions = ["tga", "icb", "vda"]
+priority = 90
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 1
+bytes = "01010000"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 1
+bytes = "00020000"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 1
+bytes = "00030000"
+
+[[signature]]
+id = "application/x-activemime"
+name = "activemime"
+category = "Signature"
+mime = "application/x-activemime"
+priority = 60
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "4163746976654d696d650000"
+
+[[signature]]
+id = "application/x-atari-floppy-disk-image"
+name = "atari-floppy-disk-image"
+category = "Filesystem"
+mime = "application/x-atari-floppy-disk-image"
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "9602"
+
+[[signature.magic.matches.children]]
+offset = 4
+bytes = "8000"
+
+[[signature.magic.matches.children.children]]
+offset = 11
+bytes = "00000000"
+
+[[signature.magic.matches.children]]
+offset = 4
+bytes = "0001"
+
+[[signature.magic.matches.children.children]]
+offset = 11
+bytes = "00000000"
+
+[[signature]]
+id = "application/x-axcrypt"
+name = "AxCrypt"
+category = "Signature"
+mime = "application/x-axcrypt"
+extensions = ["axx"]
+priority = 60
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "c0b9072e4f93f146a015792ca1d9e821"
+
+[[signature.magic.matches.children]]
+offset = 17
+bytes = "00000002"
+
+[[signature]]
+id = "application/x-adobe-indesign"
+name = "INDD (Adobe InDesign document)"
+category = "Signature"
+mime = "application/x-adobe-indesign"
+extensions = ["indd"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "0606edf5d81d46e5bd31efe7fe74b71d"
+
+[[signature]]
+id = "application/x-adobe-indesign-interchange"
+name = "INX (Adobe InDesign Interchange format)"
+category = "Signature"
+mime = "application/x-adobe-indesign-interchange"
+extensions = ["inx"]
+priority = 50
+references = ["sub-class-of:application/xml"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = "0..100"
+bytes = "3c3f616964"
+
+[[signature]]
+id = "application/x-archive"
+name = "archive"
+category = "Archive"
+mime = "application/x-archive"
+extensions = ["ar", "a"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "3d3c61723e"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "213c617263683e0a"
+
+[[signature]]
+id = "application/x-arj"
+name = "arj"
+category = "Archive"
+mime = "application/x-arj"
+extensions = ["arj"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "60ea"
+
+[[signature]]
+id = "application/x-asprs"
+name = "ASPRS Lidar Data Exchange Format"
+category = "Signature"
+mime = "application/x-asprs"
+extensions = ["las", "laz"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "4c415346"
+
+[[signature.magic.matches.children]]
+offset = 24
+bytes = "0101"
+
+[[signature.magic.matches.children]]
+offset = 24
+bytes = "0102"
+
+[[signature]]
+id = "application/x-berkeley-db;format=hash"
+name = "Berkeley DB Hash Database"
+category = "Signature"
+mime = "application/x-berkeley-db;format=hash"
+priority = 50
+references = ["sub-class-of:application/x-berkeley-db"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "61150600"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "00061561"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "61150600"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 12
+bytes = "61150600"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 12
+bytes = "00061561"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 12
+bytes = "61150600"
+
+[[signature]]
+id = "application/x-berkeley-db;format=btree"
+name = "Berkeley DB BTree Database"
+category = "Signature"
+mime = "application/x-berkeley-db;format=btree"
+priority = 50
+references = ["sub-class-of:application/x-berkeley-db"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "62310500"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "00053162"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "62310500"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 12
+bytes = "62310500"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 12
+bytes = "00053162"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 12
+bytes = "62310500"
+
+[[signature]]
+id = "application/x-berkeley-db;format=queue"
+name = "Berkeley DB Queue Database"
+category = "Signature"
+mime = "application/x-berkeley-db;format=queue"
+priority = 50
+references = ["sub-class-of:application/x-berkeley-db"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 12
+bytes = "53220400"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 12
+bytes = "00042253"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 12
+bytes = "53220400"
+
+[[signature]]
+id = "application/x-berkeley-db;format=log"
+name = "Berkeley DB Log Database"
+category = "Signature"
+mime = "application/x-berkeley-db;format=log"
+priority = 50
+references = ["sub-class-of:application/x-berkeley-db"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 12
+bytes = "88090400"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 12
+bytes = "88090400"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 12
+bytes = "00040988"
+
+[[signature]]
+id = "application/x-berkeley-db;format=hash;version=2"
+name = "Berkeley DB Version 2 Hash Database"
+category = "Signature"
+mime = "application/x-berkeley-db;format=hash;version=2"
+priority = 60
+references = ["sub-class-of:application/x-berkeley-db;format=hash"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 12
+bytes = "61150600"
+
+[[signature.magic.matches.children]]
+offset = 16
+bytes = "05000000"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 12
+bytes = "00061561"
+
+[[signature.magic.matches.children]]
+offset = 16
+bytes = "00000005"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 12
+bytes = "61150600"
+
+[[signature.magic.matches.children]]
+offset = 16
+bytes = "05000000"
+
+[[signature]]
+id = "application/x-berkeley-db;format=hash;version=3"
+name = "Berkeley DB Version 3 Hash Database"
+category = "Signature"
+mime = "application/x-berkeley-db;format=hash;version=3"
+priority = 60
+references = ["sub-class-of:application/x-berkeley-db;format=hash"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 12
+bytes = "61150600"
+
+[[signature.magic.matches.children]]
+offset = 16
+bytes = "07000000"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 12
+bytes = "00061561"
+
+[[signature.magic.matches.children]]
+offset = 16
+bytes = "00000007"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 12
+bytes = "61150600"
+
+[[signature.magic.matches.children]]
+offset = 16
+bytes = "07000000"
+
+[[signature]]
+id = "application/x-berkeley-db;format=hash;version=4"
+name = "Berkeley DB Version 4 Hash Database"
+category = "Signature"
+mime = "application/x-berkeley-db;format=hash;version=4"
+priority = 60
+references = ["sub-class-of:application/x-berkeley-db;format=hash"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 12
+bytes = "61150600"
+
+[[signature.magic.matches.children]]
+offset = 16
+bytes = "08000000"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 12
+bytes = "00061561"
+
+[[signature.magic.matches.children]]
+offset = 16
+bytes = "00000008"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 12
+bytes = "61150600"
+
+[[signature.magic.matches.children]]
+offset = 16
+bytes = "08000000"
+
+[[signature]]
+id = "application/x-berkeley-db;format=hash;version=5"
+name = "Berkeley DB Version 5 Hash Database"
+category = "Signature"
+mime = "application/x-berkeley-db;format=hash;version=5"
+priority = 60
+references = ["sub-class-of:application/x-berkeley-db;format=hash"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 12
+bytes = "61150600"
+
+[[signature.magic.matches.children]]
+offset = 16
+bytes = "09000000"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 12
+bytes = "00061561"
+
+[[signature.magic.matches.children]]
+offset = 16
+bytes = "00000009"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 12
+bytes = "61150600"
+
+[[signature.magic.matches.children]]
+offset = 16
+bytes = "09000000"
+
+[[signature]]
+id = "application/x-berkeley-db;format=btree;version=2"
+name = "Berkeley DB Version 2 BTree Database"
+category = "Signature"
+mime = "application/x-berkeley-db;format=btree;version=2"
+priority = 60
+references = ["sub-class-of:application/x-berkeley-db;format=btree"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 12
+bytes = "62310500"
+
+[[signature.magic.matches.children]]
+offset = 16
+bytes = "06000000"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 12
+bytes = "00053162"
+
+[[signature.magic.matches.children]]
+offset = 16
+bytes = "00000006"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 12
+bytes = "62310500"
+
+[[signature.magic.matches.children]]
+offset = 16
+bytes = "06000000"
+
+[[signature]]
+id = "application/x-berkeley-db;format=btree;version=3"
+name = "Berkeley DB Version 3 BTree Database"
+category = "Signature"
+mime = "application/x-berkeley-db;format=btree;version=3"
+priority = 60
+references = ["sub-class-of:application/x-berkeley-db;format=btree"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 12
+bytes = "62310500"
+
+[[signature.magic.matches.children]]
+offset = 16
+bytes = "08000000"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 12
+bytes = "00053162"
+
+[[signature.magic.matches.children]]
+offset = 16
+bytes = "00000008"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 12
+bytes = "62310500"
+
+[[signature.magic.matches.children]]
+offset = 16
+bytes = "08000000"
+
+[[signature]]
+id = "application/x-berkeley-db;format=btree;version=4"
+name = "Berkeley DB Version 4 and 5 BTree Database"
+category = "Signature"
+mime = "application/x-berkeley-db;format=btree;version=4"
+priority = 60
+references = ["sub-class-of:application/x-berkeley-db;format=btree"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 12
+bytes = "62310500"
+
+[[signature.magic.matches.children]]
+offset = 16
+bytes = "09000000"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 12
+bytes = "00053162"
+
+[[signature.magic.matches.children]]
+offset = 16
+bytes = "00000009"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 12
+bytes = "62310500"
+
+[[signature.magic.matches.children]]
+offset = 16
+bytes = "09000000"
+
+[[signature]]
+id = "application/x-bibtex-text-file"
+name = "bibtex-text-file"
+category = "Signature"
+mime = "application/x-bibtex-text-file"
+extensions = ["bib", "bibtex"]
+priority = 30
+references = ["sub-class-of:text/plain"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "25204269625465582060"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 73
+bytes = "2525252020"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "2520426962546558207374616e64617264206269626c696f67726170687920"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 73
+bytes = "2525252020404269625465582d7374796c652d66696c657b"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "4061727469636c657b"
+ignore_case = true
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "40626f6f6b7b"
+ignore_case = true
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "40696e626f6f6b7b"
+ignore_case = true
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "40696e636f6c6c656374696f6e7b"
+ignore_case = true
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "40696e70726f63656564696e67737b"
+ignore_case = true
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "406d616e75616c7b"
+ignore_case = true
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "406d6973637b"
+ignore_case = true
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "40707265616d626c657b"
+ignore_case = true
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "407068647468657369737b"
+ignore_case = true
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "40737472696e677b"
+ignore_case = true
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "40746563687265706f72747b"
+ignore_case = true
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "40756e7075626c69736865647b"
+ignore_case = true
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "25"
+
+[[signature.magic.matches.children]]
+offset = "2..128"
+bytes = "0a4061727469636c657b"
+ignore_case = true
+
+[[signature.magic.matches.children]]
+offset = "2..128"
+bytes = "0a40626f6f6b7b"
+ignore_case = true
+
+[[signature.magic.matches.children]]
+offset = "2..128"
+bytes = "0a40696e626f6f6b7b"
+ignore_case = true
+
+[[signature.magic.matches.children]]
+offset = "2..128"
+bytes = "0a40696e636f6c6c656374696f6e7b"
+ignore_case = true
+
+[[signature.magic.matches.children]]
+offset = "2..128"
+bytes = "0a40696e70726f63656564696e67737b"
+ignore_case = true
+
+[[signature.magic.matches.children]]
+offset = "2..128"
+bytes = "0a406d616e75616c7b"
+ignore_case = true
+
+[[signature.magic.matches.children]]
+offset = "2..128"
+bytes = "0a406d6973637b"
+ignore_case = true
+
+[[signature.magic.matches.children]]
+offset = "2..128"
+bytes = "0a40707265616d626c657b"
+ignore_case = true
+
+[[signature.magic.matches.children]]
+offset = "2..128"
+bytes = "0a407068647468657369737b"
+ignore_case = true
+
+[[signature.magic.matches.children]]
+offset = "2..128"
+bytes = "0a40737472696e677b"
+ignore_case = true
+
+[[signature.magic.matches.children]]
+offset = "2..128"
+bytes = "0a40746563687265706f72747b"
+ignore_case = true
+
+[[signature.magic.matches.children]]
+offset = "2..128"
+bytes = "0a40756e7075626c69736865647b"
+ignore_case = true
+
+[[signature]]
+id = "application/x-bittorrent"
+name = "bittorrent"
+category = "Signature"
+mime = "application/x-bittorrent"
+extensions = ["torrent"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "64383a616e6e6f756e6365"
+
+[[signature]]
+id = "application/x-bplist"
+name = "bplist"
+category = "Signature"
+mime = "application/x-bplist"
+priority = 60
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "62706c6973740000"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "62706c6973740001"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "62706c6973744000"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "62706c6973743030"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "62706c6973743031"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "62706c6973743130"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "62706c6973743135"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "62706c6973743136"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "62706c697374"
+
+[[signature]]
+id = "application/x-cdf"
+name = "CD Audio"
+category = "Signature"
+mime = "application/x-cdf"
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "524946462400000043444441666d742018"
+
+[[signature]]
+id = "application/x-gtar"
+name = "GNU tar Compressed File Archive (GNU Tape Archive)"
+category = "Signature"
+mime = "application/x-gtar"
+extensions = ["gtar"]
+priority = 50
+references = ["sub-class-of:application/x-tar"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 257
+bytes = "7573746172202000"
+
+[[signature]]
+id = "application/x-guitar-pro"
+name = "Guitar Pro"
+category = "Signature"
+mime = "application/x-guitar-pro"
+extensions = ["gp4"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 1
+bytes = "4649434849455220475549544152452050524f20"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 1
+bytes = "46494348494552204755495441522050524f20"
+
+[[signature]]
+id = "application/x-amiga-disk-format"
+name = "Amiga Disk File"
+category = "Signature"
+mime = "application/x-amiga-disk-format"
+extensions = ["adf"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "444f53"
+
+[[signature.magic.matches.children]]
+offset = 4
+bytes = "00"
+
+[[signature.magic.matches.children]]
+offset = 4
+bytes = "01"
+
+[[signature.magic.matches.children]]
+offset = 4
+bytes = "02"
+
+[[signature.magic.matches.children]]
+offset = 4
+bytes = "03"
+
+[[signature.magic.matches.children]]
+offset = 4
+bytes = "04"
+
+[[signature.magic.matches.children]]
+offset = 4
+bytes = "05"
+
+[[signature.magic.matches.children]]
+offset = 4
+bytes = "06"
+
+[[signature.magic.matches.children]]
+offset = 4
+bytes = "07"
+
+[[signature]]
+id = "application/x-bzip"
+name = "bzip"
+category = "Signature"
+mime = "application/x-bzip"
+extensions = ["bz", "tbz"]
+priority = 40
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "425a30"
+
+[[signature]]
+id = "application/x-chrome-package"
+name = "CRX (Chrome Extension Package)"
+category = "Signature"
+mime = "application/x-chrome-package"
+extensions = ["crx"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "43723234"
+
+[[signature]]
+id = "application/x-compress"
+name = "compress"
+category = "Signature"
+mime = "application/x-compress"
+extensions = ["z"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "1f9d"
+
+[[signature]]
+id = "application/x-cpio"
+name = "UNIX CPIO Archive"
+category = "Archive"
+mime = "application/x-cpio"
+extensions = ["cpio"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "3314"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "1433"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "303730373037"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "303730373031"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "303730373032"
+
+[[signature]]
+id = "application/x-debian-package"
+name = "debian-package"
+category = "Signature"
+mime = "application/x-debian-package"
+extensions = ["deb", "udeb"]
+priority = 60
+references = ["sub-class-of:application/x-archive"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "213c617263683e0a64656269616e2d62696e617279"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "213c617263683e0a64656269616e2d73706c6974"
+
+[[signature]]
+id = "application/x-dex"
+name = "DEX (Dalvik Executable Format)"
+category = "Executable"
+mime = "application/x-dex"
+extensions = ["dex"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "6465780a"
+
+[[signature.magic.matches.children]]
+offset = 7
+bytes = "00"
+
+[[signature]]
+id = "application/x-dvi"
+name = "TeX Device Independent Document"
+category = "Signature"
+mime = "application/x-dvi"
+extensions = ["dvi"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "f702"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "f702"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 14
+bytes = "1b20546558206f757470757420"
+
+[[signature]]
+id = "application/x-elc"
+name = "Emacs Lisp bytecode"
+category = "Signature"
+mime = "application/x-elc"
+extensions = ["elc"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "0a28"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "3b454c4313000000"
+
+[[signature]]
+id = "application/x-elf"
+name = "elf"
+category = "Executable"
+mime = "application/x-elf"
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "7f454c46"
+
+[[signature]]
+id = "message/x-emlx"
+name = "Apple Mail message"
+category = "Signature"
+mime = "message/x-emlx"
+extensions = ["emlx"]
+priority = 70
+references = ["sub-class-of:text/x-tika-text-based-message"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = "1..10"
+bytes = "0a"
+
+[[signature]]
+id = "application/x-endnote-refer"
+name = "endnote-refer"
+category = "Signature"
+mime = "application/x-endnote-refer"
+extensions = ["enw", "enr"]
+priority = 80
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = "0..50"
+bytes = "254120"
+
+[[signature.magic.matches.children]]
+offset = "0..1000"
+bytes = "0a254420"
+
+[[signature.magic.matches.children.children]]
+offset = "0..1000"
+bytes = "0a255420"
+
+[[signature]]
+id = "application/x-endnote-style"
+name = "endnote-style"
+category = "Signature"
+mime = "application/x-endnote-style"
+extensions = ["ens"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "0008"
+
+[[signature.magic.matches.children]]
+offset = 4
+bytes = "0000"
+
+[[signature.magic.matches.children.children]]
+offset = 8
+bytes = "525346545354594c"
+
+[[signature.magic.matches.children.children]]
+offset = 8
+bytes = "454e444e454e4654"
+
+[[signature]]
+id = "application/x-fat-diskimage"
+name = "fat disk image; extensions: ima, img, dsk"
+category = "Signature"
+mime = "application/x-fat-diskimage"
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "eb"
+
+[[signature.magic.matches.children]]
+offset = 2
+bytes = "90"
+
+[[signature]]
+id = "application/x-object"
+name = "object"
+category = "Executable"
+mime = "application/x-object"
+priority = 50
+references = ["sub-class-of:application/x-elf"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "7f454c46"
+
+[[signature.magic.matches.children]]
+offset = 16
+bytes = "0100"
+
+[[signature.magic.matches.children]]
+offset = 16
+bytes = "0001"
+
+[[signature]]
+id = "application/x-executable"
+name = "executable"
+category = "Executable"
+mime = "application/x-executable"
+priority = 50
+references = ["sub-class-of:application/x-elf"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "7f454c46"
+
+[[signature.magic.matches.children]]
+offset = 16
+bytes = "0200"
+
+[[signature.magic.matches.children]]
+offset = 16
+bytes = "0002"
+
+[[signature]]
+id = "application/x-sharedlib"
+name = "sharedlib"
+category = "Executable"
+mime = "application/x-sharedlib"
+priority = 50
+references = ["sub-class-of:application/x-elf"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "7f454c46"
+
+[[signature.magic.matches.children]]
+offset = 16
+bytes = "0300"
+
+[[signature.magic.matches.children]]
+offset = 16
+bytes = "0003"
+
+[[signature]]
+id = "application/x-coredump"
+name = "coredump"
+category = "Executable"
+mime = "application/x-coredump"
+priority = 50
+references = ["sub-class-of:application/x-elf"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "7f454c46"
+
+[[signature.magic.matches.children]]
+offset = 16
+bytes = "0400"
+
+[[signature.magic.matches.children]]
+offset = 16
+bytes = "0004"
+
+[[signature]]
+id = "application/x-mmm-digisonde"
+name = "Modified Maximum Method Digisonde Portable Sounder File format"
+category = "Signature"
+mime = "application/x-mmm-digisonde"
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "093c00"
+
+[[signature.magic.matches.children]]
+offset = 24
+bytes = "0000"
+
+[[signature]]
+id = "application/x-erdas-hfa"
+name = "erdas-hfa"
+category = "Signature"
+mime = "application/x-erdas-hfa"
+extensions = ["hfa"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "454846415f4845414445525f544147"
+
+[[signature]]
+id = "application/x-filemaker"
+name = "FP7 (FileMaker Pro 7)"
+category = "Signature"
+mime = "application/x-filemaker"
+extensions = ["fp7"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 14
+bytes = "c04842414d37"
+
+[[signature.magic.matches.children]]
+offset = 525
+bytes = "4842414d323130314f43543939c102480750726f20372e30c0c0"
+
+[[signature]]
+id = "application/x-font-otf"
+name = "OTF (OpenType Font)"
+category = "Signature"
+mime = "application/x-font-otf"
+extensions = ["otf"]
+priority = 40
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "4f54544f00"
+
+[[signature]]
+id = "application/x-font-ttf"
+name = "TTF (TrueType Font)"
+category = "Signature"
+mime = "application/x-font-ttf"
+extensions = ["ttf", "ttc"]
+priority = 40
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "00010000"
+
+[[signature]]
+id = "application/x-font-type1"
+name = "font-type1"
+category = "Signature"
+mime = "application/x-font-type1"
+extensions = ["pfa", "pfb"]
+priority = 60
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "8001ffff0000252150532d41646f6265466f6e74"
+mask = "ffff0000ffffffffffffffffffffffffffffffff"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "252150532d41646f6265466f6e742d312e30"
+
+[[signature]]
+id = "application/x-font-adobe-metric"
+name = "Adobe Font Metric"
+category = "Signature"
+mime = "application/x-font-adobe-metric"
+extensions = ["afm", "acfm", "amfm"]
+priority = 40
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "5374617274466f6e744d657472696373"
+
+[[signature]]
+id = "application/x-font-printer-metric"
+name = "Printer Font Metric"
+category = "Signature"
+mime = "application/x-font-printer-metric"
+extensions = ["pfm"]
+priority = 40
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "0001ffff0000436f707972"
+mask = "ffff0000ffffffffffffff"
+
+[[signature]]
+id = "application/x-foxmail"
+name = "Foxmail Email File"
+category = "Signature"
+mime = "application/x-foxmail"
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "1010101010101011111111111153"
+
+[[signature]]
+id = "application/x-gnumeric"
+name = "gnumeric"
+category = "Signature"
+mime = "application/x-gnumeric"
+extensions = ["gnumeric"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 39
+bytes = "3d3c676d723a576f726b626f6f6b"
+
+[[signature]]
+id = "application/x-grib"
+name = "GRIB (General Regularly-distributed Information in Binary form)"
+category = "Signature"
+mime = "application/x-grib"
+extensions = ["grb", "grb1", "grb2"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "47524942"
+
+[[signature.magic.matches.children]]
+offset = 7
+bytes = "01"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "47524942"
+
+[[signature.magic.matches.children]]
+offset = 7
+bytes = "02"
+
+[[signature]]
+id = "application/gzip"
+name = "Gzip Compressed Archive"
+category = "Signature"
+mime = "application/gzip"
+extensions = ["gz", "tgz"]
+priority = 45
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "1f8b"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "1f8b"
+
+[[signature]]
+id = "application/zstd"
+name = "https://en.wikipedia.org/wiki/Zstandard"
+category = "Signature"
+mime = "application/zstd"
+extensions = ["zst"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "28b52ffd"
+
+[[signature]]
+id = "application/x-hdf"
+name = "Hierarchical Data Format File"
+category = "Signature"
+mime = "application/x-hdf"
+extensions = ["hdf", "he5", "h5"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "0e031301"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "894844460d0a1a"
+
+[[signature]]
+id = "application/x-hwp"
+name = "Hangul Word Processor File"
+category = "Signature"
+mime = "application/x-hwp"
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "48575020446f63756d656e742046696c652056"
+
+[[signature]]
+id = "application/x-ibooks+zip"
+name = "Apple iBooks Author publication format"
+category = "Signature"
+mime = "application/x-ibooks+zip"
+extensions = ["ibooks"]
+priority = 50
+references = ["sub-class-of:application/epub+zip"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "504b0304"
+
+[[signature.magic.matches.children]]
+offset = 30
+bytes = "6d696d65747970656170706c69636174696f6e2f782d69626f6f6b732b7a6970"
+
+[[signature]]
+id = "application/x-idl-save-file"
+name = "NV5 Geospatial Interactive Data Language Save File"
+category = "Signature"
+mime = "application/x-idl-save-file"
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "535200040000000a000004"
+
+[[signature]]
+id = "application/x-internet-archive"
+name = "ARC"
+category = "Signature"
+mime = "application/x-internet-archive"
+extensions = ["arc"]
+priority = 60
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "66696c65646573633a2f2f"
+
+[[signature]]
+id = "application/x-isatab-investigation"
+name = "ISA-Tab Investigation file"
+category = "Signature"
+mime = "application/x-isatab-investigation"
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "4f4e544f4c4f475920534f55524345205245464552454e4345"
+
+[[signature]]
+id = "application/x-isatab"
+name = "ISA-Tab Study file"
+category = "Signature"
+mime = "application/x-isatab"
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 1
+bytes = "536f75726365204e616d65"
+
+[[signature]]
+id = "application/x-isatab-assay"
+name = "ISA-Tab Assay file"
+category = "Signature"
+mime = "application/x-isatab-assay"
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 1
+bytes = "53616d706c65204e616d65"
+
+[[signature]]
+id = "application/x-iso9660-image"
+name = "ISO 9660 CD-ROM filesystem data"
+category = "Archive"
+mime = "application/x-iso9660-image"
+extensions = ["iso"]
+priority = 60
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 32769
+bytes = "4344303031"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 34817
+bytes = "4344303031"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 36865
+bytes = "4344303031"
+
+[[signature]]
+id = "application/x-jeol-jdf"
+name = "JDF NMR Spectroscopy"
+category = "Signature"
+mime = "application/x-jeol-jdf"
+extensions = ["jdf"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "4a454f4c2e4e4d52"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "524d4e2e4c4f454a"
+
+[[signature]]
+id = "application/x-jigdo"
+name = "Jigsaw Download"
+category = "Signature"
+mime = "application/x-jigdo"
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "4a6967736177446f776e6c6f61642074656d706c617465"
+
+[[signature]]
+id = "application/x-kdelnk"
+name = "kdelnk"
+category = "Signature"
+mime = "application/x-kdelnk"
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "5b4b4445204465736b746f7020456e7472795d"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "23204b444520436f6e6669672046696c65"
+
+[[signature]]
+id = "application/x-latex"
+name = "LaTeX Source Document"
+category = "Signature"
+mime = "application/x-latex"
+extensions = ["latex"]
+priority = 50
+references = ["sub-class-of:application/x-tex"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "25202d2a2d6c617465782d2a2d"
+
+[[signature]]
+id = "application/x-lha"
+name = "lha"
+category = "Archive"
+mime = "application/x-lha"
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 2
+bytes = "2d6c7a732d"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 2
+bytes = "2d6c68202d"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 2
+bytes = "2d6c68642d"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 2
+bytes = "2d6c68322d"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 2
+bytes = "2d6c68332d"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 2
+bytes = "2d6c68342d"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 2
+bytes = "2d6c68352d"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 2
+bytes = "2d6c68362d"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 2
+bytes = "2d6c68372d"
+
+[[signature]]
+id = "application/x-lharc"
+name = "lharc"
+category = "Signature"
+mime = "application/x-lharc"
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 2
+bytes = "2d6c68302d"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 2
+bytes = "2d6c68312d"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 2
+bytes = "2d6c7a342d"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 2
+bytes = "2d6c7a352d"
+
+[[signature]]
+id = "application/x-lz4"
+name = "First match LZ4 Frame"
+category = "Signature"
+mime = "application/x-lz4"
+extensions = ["lz4"]
+priority = 60
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "04224d18"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "02214c18"
+
+[[signature]]
+id = "application/x-lzip"
+name = "Lzip (LZMA) compressed archive"
+category = "Signature"
+mime = "application/x-lzip"
+extensions = ["lz"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "4c5a4950"
+
+[[signature]]
+id = "application/x-mach-o"
+name = "Mach-O"
+category = "Signature"
+mime = "application/x-mach-o"
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "feedface"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "cefaedfe"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "feedfacf"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "cffaedfe"
+
+[[signature]]
+id = "application/x-mach-o-object"
+name = "Mach-O relocatable object file"
+category = "Signature"
+mime = "application/x-mach-o-object"
+priority = 55
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "feedface"
+
+[[signature.magic.matches.children]]
+offset = 12
+bytes = "00000001"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "cefaedfe"
+
+[[signature.magic.matches.children]]
+offset = 12
+bytes = "01000000"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "feedfacf"
+
+[[signature.magic.matches.children]]
+offset = 12
+bytes = "00000001"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "cffaedfe"
+
+[[signature.magic.matches.children]]
+offset = 12
+bytes = "01000000"
+
+[[signature]]
+id = "application/x-mach-o-executable"
+name = "Mach-O executable"
+category = "Signature"
+mime = "application/x-mach-o-executable"
+priority = 55
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "feedface"
+
+[[signature.magic.matches.children]]
+offset = 12
+bytes = "00000002"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "cefaedfe"
+
+[[signature.magic.matches.children]]
+offset = 12
+bytes = "02000000"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "feedfacf"
+
+[[signature.magic.matches.children]]
+offset = 12
+bytes = "00000002"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "cffaedfe"
+
+[[signature.magic.matches.children]]
+offset = 12
+bytes = "02000000"
+
+[[signature]]
+id = "application/x-mach-o-fvmlib"
+name = "Mach-O fixed VM shared library"
+category = "Signature"
+mime = "application/x-mach-o-fvmlib"
+priority = 55
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "feedface"
+
+[[signature.magic.matches.children]]
+offset = 12
+bytes = "00000003"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "cefaedfe"
+
+[[signature.magic.matches.children]]
+offset = 12
+bytes = "03000000"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "feedfacf"
+
+[[signature.magic.matches.children]]
+offset = 12
+bytes = "00000003"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "cffaedfe"
+
+[[signature.magic.matches.children]]
+offset = 12
+bytes = "03000000"
+
+[[signature]]
+id = "application/x-mach-o-core"
+name = "Mach-O core file"
+category = "Signature"
+mime = "application/x-mach-o-core"
+priority = 55
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "feedface"
+
+[[signature.magic.matches.children]]
+offset = 12
+bytes = "00000004"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "cefaedfe"
+
+[[signature.magic.matches.children]]
+offset = 12
+bytes = "04000000"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "feedfacf"
+
+[[signature.magic.matches.children]]
+offset = 12
+bytes = "00000004"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "cffaedfe"
+
+[[signature.magic.matches.children]]
+offset = 12
+bytes = "04000000"
+
+[[signature]]
+id = "application/x-mach-o-preload"
+name = "Mach-O preloaded executable"
+category = "Signature"
+mime = "application/x-mach-o-preload"
+priority = 55
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "feedface"
+
+[[signature.magic.matches.children]]
+offset = 12
+bytes = "00000005"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "cefaedfe"
+
+[[signature.magic.matches.children]]
+offset = 12
+bytes = "05000000"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "feedfacf"
+
+[[signature.magic.matches.children]]
+offset = 12
+bytes = "00000005"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "cffaedfe"
+
+[[signature.magic.matches.children]]
+offset = 12
+bytes = "05000000"
+
+[[signature]]
+id = "application/x-mach-o-dylib"
+name = "Mach-O dynamic shared library"
+category = "Signature"
+mime = "application/x-mach-o-dylib"
+priority = 55
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "feedface"
+
+[[signature.magic.matches.children]]
+offset = 12
+bytes = "00000006"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "cefaedfe"
+
+[[signature.magic.matches.children]]
+offset = 12
+bytes = "06000000"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "feedfacf"
+
+[[signature.magic.matches.children]]
+offset = 12
+bytes = "00000006"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "cffaedfe"
+
+[[signature.magic.matches.children]]
+offset = 12
+bytes = "06000000"
+
+[[signature]]
+id = "application/x-mach-o-dylinker"
+name = "Mach-O dynamic link editor"
+category = "Signature"
+mime = "application/x-mach-o-dylinker"
+priority = 55
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "feedface"
+
+[[signature.magic.matches.children]]
+offset = 12
+bytes = "00000007"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "cefaedfe"
+
+[[signature.magic.matches.children]]
+offset = 12
+bytes = "07000000"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "feedfacf"
+
+[[signature.magic.matches.children]]
+offset = 12
+bytes = "00000007"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "cffaedfe"
+
+[[signature.magic.matches.children]]
+offset = 12
+bytes = "07000000"
+
+[[signature]]
+id = "application/x-mach-o-bundle"
+name = "Mach-O dynamic bundle"
+category = "Signature"
+mime = "application/x-mach-o-bundle"
+priority = 55
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "feedface"
+
+[[signature.magic.matches.children]]
+offset = 12
+bytes = "00000008"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "cefaedfe"
+
+[[signature.magic.matches.children]]
+offset = 12
+bytes = "08000000"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "feedfacf"
+
+[[signature.magic.matches.children]]
+offset = 12
+bytes = "00000008"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "cffaedfe"
+
+[[signature.magic.matches.children]]
+offset = 12
+bytes = "08000000"
+
+[[signature]]
+id = "application/x-mach-o-dylib-stub"
+name = "Mach-O shared library for static linking"
+category = "Signature"
+mime = "application/x-mach-o-dylib-stub"
+priority = 55
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "feedface"
+
+[[signature.magic.matches.children]]
+offset = 12
+bytes = "00000009"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "cefaedfe"
+
+[[signature.magic.matches.children]]
+offset = 12
+bytes = "09000000"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "feedfacf"
+
+[[signature.magic.matches.children]]
+offset = 12
+bytes = "00000009"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "cffaedfe"
+
+[[signature.magic.matches.children]]
+offset = 12
+bytes = "09000000"
+
+[[signature]]
+id = "application/x-mach-o-dsym"
+name = "Mach-O debug symbols file"
+category = "Signature"
+mime = "application/x-mach-o-dsym"
+priority = 55
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "feedface"
+
+[[signature.magic.matches.children]]
+offset = 12
+bytes = "0000000a"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "cefaedfe"
+
+[[signature.magic.matches.children]]
+offset = 12
+bytes = "0a000000"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "feedfacf"
+
+[[signature.magic.matches.children]]
+offset = 12
+bytes = "0000000a"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "cffaedfe"
+
+[[signature.magic.matches.children]]
+offset = 12
+bytes = "0a000000"
+
+[[signature]]
+id = "application/x-mach-o-kext-bundle"
+name = "Mach-O kext bundle"
+category = "Signature"
+mime = "application/x-mach-o-kext-bundle"
+priority = 55
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "feedface"
+
+[[signature.magic.matches.children]]
+offset = 12
+bytes = "0000000b"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "cefaedfe"
+
+[[signature.magic.matches.children]]
+offset = 12
+bytes = "0b000000"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "feedfacf"
+
+[[signature.magic.matches.children]]
+offset = 12
+bytes = "0000000b"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "cffaedfe"
+
+[[signature.magic.matches.children]]
+offset = 12
+bytes = "0b000000"
+
+[[signature]]
+id = "application/x-mobipocket-ebook"
+name = "Mobipocket Ebook"
+category = "Document"
+mime = "application/x-mobipocket-ebook"
+extensions = ["prc", "mobi"]
+priority = 60
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = "0..60"
+bytes = "424f4f4b4d4f4249"
+
+[[signature]]
+id = "application/x-ms-compress-szdd"
+name = "MS-DOS compression szzd"
+category = "Signature"
+mime = "application/x-ms-compress-szdd"
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "535a444488f0273341"
+
+[[signature]]
+id = "application/x-msaccess"
+name = "msaccess"
+category = "Signature"
+mime = "application/x-msaccess"
+extensions = ["accdb", "mdb"]
+priority = 60
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "000100005374616e"
+
+[[signature]]
+id = "application/x-msdownload"
+name = "msdownload"
+category = "Executable"
+mime = "application/x-msdownload"
+extensions = ["dll", "com"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "4d5a"
+
+[[signature]]
+id = "application/x-msdownload;format=pe"
+name = "msdownload;format=pe"
+category = "Signature"
+mime = "application/x-msdownload;format=pe"
+priority = 55
+references = ["sub-class-of:application/x-msdownload"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "4d5a"
+
+[[signature.magic.matches.children]]
+offset = 128
+bytes = "50450000"
+
+[[signature.magic.matches.children]]
+offset = 176
+bytes = "50450000"
+
+[[signature.magic.matches.children]]
+offset = 208
+bytes = "50450000"
+
+[[signature.magic.matches.children]]
+offset = 240
+bytes = "50450000"
+
+[[signature]]
+id = "application/x-msdownload;format=pe32"
+name = "msdownload;format=pe32"
+category = "Signature"
+mime = "application/x-msdownload;format=pe32"
+priority = 60
+references = ["sub-class-of:application/x-msdownload;format=pe"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 128
+bytes = "50450000"
+
+[[signature.magic.matches.children]]
+offset = 132
+bytes = "4c01"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 240
+bytes = "50450000"
+
+[[signature.magic.matches.children]]
+offset = 244
+bytes = "4c01"
+
+[[signature]]
+id = "application/x-msdownload;format=pe64"
+name = "msdownload;format=pe64"
+category = "Signature"
+mime = "application/x-msdownload;format=pe64"
+priority = 60
+references = ["sub-class-of:application/x-msdownload;format=pe"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 128
+bytes = "50450000"
+
+[[signature.magic.matches.children]]
+offset = 132
+bytes = "6486"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 240
+bytes = "50450000"
+
+[[signature.magic.matches.children]]
+offset = 244
+bytes = "6486"
+
+[[signature]]
+id = "application/x-msdownload;format=pe-itanium"
+name = "msdownload;format=pe-itanium"
+category = "Signature"
+mime = "application/x-msdownload;format=pe-itanium"
+priority = 60
+references = ["sub-class-of:application/x-msdownload;format=pe"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 128
+bytes = "50450000"
+
+[[signature.magic.matches.children]]
+offset = 132
+bytes = "0002"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 240
+bytes = "50450000"
+
+[[signature.magic.matches.children]]
+offset = 244
+bytes = "0002"
+
+[[signature]]
+id = "application/x-msdownload;format=pe-armLE"
+name = "msdownload;format=pe-armLE"
+category = "Signature"
+mime = "application/x-msdownload;format=pe-armLE"
+priority = 60
+references = ["sub-class-of:application/x-msdownload;format=pe"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 128
+bytes = "70650000"
+
+[[signature.magic.matches.children]]
+offset = 132
+bytes = "c001"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 240
+bytes = "70650000"
+
+[[signature.magic.matches.children]]
+offset = 244
+bytes = "c001"
+
+[[signature]]
+id = "application/x-msdownload;format=pe-arm7"
+name = "msdownload;format=pe-arm7"
+category = "Signature"
+mime = "application/x-msdownload;format=pe-arm7"
+priority = 60
+references = ["sub-class-of:application/x-msdownload;format=pe"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 128
+bytes = "70650000"
+
+[[signature.magic.matches.children]]
+offset = 132
+bytes = "c401"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 240
+bytes = "70650000"
+
+[[signature.magic.matches.children]]
+offset = 244
+bytes = "c401"
+
+[[signature]]
+id = "application/x-msmoney"
+name = "msmoney"
+category = "Signature"
+mime = "application/x-msmoney"
+extensions = ["mny"]
+priority = 60
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "000100004d534953414d204461746162617365"
+
+[[signature]]
+id = "application/x-mswrite"
+name = "mswrite"
+category = "Signature"
+mime = "application/x-mswrite"
+extensions = ["wri"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "31be0000"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "32be0000"
+
+[[signature]]
+id = "application/x-mysql-table-definition"
+name = "MySQL Table Definition (Format)"
+category = "Signature"
+mime = "application/x-mysql-table-definition"
+priority = 40
+references = ["sub-class-of:application/x-mysql-db"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "fe0107"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "fe0108"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "fe0109"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "fe010a"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "fe010b"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "fe010c"
+
+[[signature]]
+id = "application/x-mysql-misam-index"
+name = "MySQL MISAM Index"
+category = "Signature"
+mime = "application/x-mysql-misam-index"
+priority = 40
+references = ["sub-class-of:application/x-mysql-db"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "fefe03"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "fefe05"
+
+[[signature]]
+id = "application/x-mysql-misam-compressed-index"
+name = "MySQL MISAM Compressed Index"
+category = "Signature"
+mime = "application/x-mysql-misam-compressed-index"
+extensions = ["myi"]
+priority = 40
+references = ["sub-class-of:application/x-mysql-db"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "fefe06"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "fefe07"
+
+[[signature]]
+id = "application/x-nesrom"
+name = "Nintendo Entertainment System ROM"
+category = "Signature"
+mime = "application/x-nesrom"
+extensions = ["nes"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "4e45531a"
+
+[[signature]]
+id = "application/x-netcdf"
+name = "netcdf"
+category = "Signature"
+mime = "application/x-netcdf"
+extensions = ["nc", "cdf"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "43444601"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "43444602"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "43444601"
+
+[[signature]]
+id = "application/x-parquet"
+name = "parquet"
+category = "Signature"
+mime = "application/x-parquet"
+extensions = ["parquet"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "50415231"
+
+[[signature]]
+id = "application/x-pds"
+name = "Planetary Data System Version 3 format"
+category = "Signature"
+mime = "application/x-pds"
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "5044535f56455253494f4e5f4944"
+
+[[signature]]
+id = "application/x-pkcs12"
+name = "pkcs12"
+category = "Signature"
+mime = "application/x-pkcs12"
+extensions = ["p12", "pfx"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "30"
+
+[[signature.magic.matches.children]]
+offset = "2..6"
+bytes = "02010330"
+
+[[signature.magic.matches.children.children]]
+offset = "7..15"
+bytes = "06092a864886f70d010701"
+mask = "ffffffffffffffffffff00"
+
+[[signature]]
+id = "application/x-prt"
+name = "prt"
+category = "Signature"
+mime = "application/x-prt"
+extensions = ["prt"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 8
+bytes = "304d3343"
+
+[[signature]]
+id = "application/x-quattro-pro;version=1-4"
+name = "Quattro Pro for DOS, version 1-4"
+category = "Signature"
+mime = "application/x-quattro-pro;version=1-4"
+extensions = ["wq1", "wkq"]
+priority = 50
+references = ["sub-class-of:application/x-quattro-pro"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "000002002051"
+
+[[signature]]
+id = "application/x-quattro-pro;version=5"
+name = "Quattro Pro for DOS, version 5"
+category = "Signature"
+mime = "application/x-quattro-pro;version=5"
+extensions = ["wq2", "wkq"]
+priority = 50
+references = ["sub-class-of:application/x-quattro-pro"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "000002002151"
+
+[[signature]]
+id = "application/x-quattro-pro;version=1+5"
+name = "Quattro Pro for Windows, version 1, 5"
+category = "Signature"
+mime = "application/x-quattro-pro;version=1+5"
+extensions = ["wb1"]
+priority = 50
+references = ["sub-class-of:application/x-quattro-pro"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "000002000110"
+
+[[signature]]
+id = "application/x-quattro-pro;version=6"
+name = "Quattro Pro for Windows, version 6"
+category = "Signature"
+mime = "application/x-quattro-pro;version=6"
+extensions = ["wb2"]
+priority = 50
+references = ["sub-class-of:application/x-quattro-pro"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "000002000210"
+
+[[signature]]
+id = "application/x-rar-compressed"
+name = "RAR archive"
+category = "Archive"
+mime = "application/x-rar-compressed"
+extensions = ["rar"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "52617221"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "526172211a"
+
+[[signature]]
+id = "application/x-rar-compressed;version=4"
+name = "RAR archive"
+category = "Signature"
+mime = "application/x-rar-compressed;version=4"
+priority = 60
+references = ["sub-class-of:application/x-rar-compressed"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "526172211a0700"
+
+[[signature]]
+id = "application/x-rar-compressed;version=5"
+name = "RAR archive"
+category = "Signature"
+mime = "application/x-rar-compressed;version=5"
+priority = 60
+references = ["sub-class-of:application/x-rar-compressed"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "526172211a070100"
+
+[[signature]]
+id = "application/x-rpm"
+name = "RedHat Package Manager"
+category = "Archive"
+mime = "application/x-rpm"
+extensions = ["rpm"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "edabeedb"
+
+[[signature]]
+id = "application/x-sas-data-v6"
+name = "SAS v6 Data Set"
+category = "Signature"
+mime = "application/x-sas-data-v6"
+extensions = ["sd2"]
+priority = 40
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "5341532020202020362e"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "5341532020202020372e"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "5341532020202020382e30"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "5341532020202020392e30"
+
+[[signature]]
+id = "application/x-sas-data"
+name = "SAS Data Set"
+category = "Signature"
+mime = "application/x-sas-data"
+extensions = ["sd7", "sas7bdat"]
+priority = 40
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 84
+bytes = "5341532046494c45"
+
+[[signature]]
+id = "application/x-sas-xport"
+name = "SAS XPORT Transfer File"
+category = "Signature"
+mime = "application/x-sas-xport"
+extensions = ["xpt", "xport"]
+priority = 40
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "484541444552205245434f52442a2a2a2a2a2a2a4c49425241525920484541444552205245434f524421212121212121"
+
+[[signature]]
+id = "application/x-spss-sav"
+name = "SPSS Data File"
+category = "Signature"
+mime = "application/x-spss-sav"
+extensions = ["sav"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "24464c3240282329"
+
+[[signature]]
+id = "application/x-sc"
+name = "sc"
+category = "Signature"
+mime = "application/x-sc"
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 38
+bytes = "5370726561647368656574"
+
+[[signature]]
+id = "application/x-sh"
+name = "UNIX/LINUX Shell Script"
+category = "Signature"
+mime = "application/x-sh"
+extensions = ["sh", "bash"]
+priority = 50
+references = ["sub-class-of:text/plain"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "23212f"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "2321202f"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "2321092f"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "6576616c202265786563"
+
+[[signature]]
+id = "application/x-shapefile"
+name = "ESRI Shapefiles"
+category = "Signature"
+mime = "application/x-shapefile"
+extensions = ["shp"]
+priority = 60
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "0000270a"
+
+[[signature]]
+id = "application/x-shockwave-flash"
+name = "Adobe Flash"
+category = "Signature"
+mime = "application/x-shockwave-flash"
+extensions = ["swf"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "465753"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "435753"
+
+[[signature]]
+id = "application/x-sibelius"
+name = "Sibelius"
+category = "Signature"
+mime = "application/x-sibelius"
+extensions = ["sib"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "0f534942454c495553"
+
+[[signature]]
+id = "application/x-snappy-framed"
+name = "Snappy Framed"
+category = "Signature"
+mime = "application/x-snappy-framed"
+extensions = ["sz"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "734e61507059"
+
+[[signature]]
+id = "application/x-spectrum-tzx"
+name = "TAP (ZX Spectrum)"
+category = "Signature"
+mime = "application/x-spectrum-tzx"
+extensions = ["tzx"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "5a5854617065211a"
+
+[[signature]]
+id = "application/x-sqlite3"
+name = "sqlite3"
+category = "Signature"
+mime = "application/x-sqlite3"
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "53514c69746520666f726d6174203300"
+
+[[signature]]
+id = "application/x-geopackage"
+name = "geopackage"
+category = "Signature"
+mime = "application/x-geopackage"
+extensions = ["gpkg"]
+priority = 60
+references = ["sub-class-of:application/x-sqlite3"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "53514c69746520666f726d6174203300"
+
+[[signature.magic.matches.children]]
+offset = 68
+bytes = "47504b47"
+
+[[signature]]
+id = "application/x-geopackage; version=1.1Or1.0"
+name = "geopackage; version=1.1Or1.0"
+category = "Signature"
+mime = "application/x-geopackage; version=1.1Or1.0"
+extensions = ["gpkg"]
+priority = 60
+references = ["sub-class-of:application/x-sqlite3"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "53514c69746520666f726d6174203300"
+
+[[signature.magic.matches.children]]
+offset = 68
+bytes = "47503130"
+
+[[signature]]
+id = "application/x-fossil-checkout"
+name = "fossil-checkout"
+category = "Signature"
+mime = "application/x-fossil-checkout"
+priority = 60
+references = ["sub-class-of:application/x-sqlite3"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "53514c69746520666f726d6174203300"
+
+[[signature.magic.matches.children]]
+offset = 68
+bytes = "0f055112"
+
+[[signature]]
+id = "application/x-fossil-checkout"
+name = "fossil-checkout"
+category = "Signature"
+mime = "application/x-fossil-checkout"
+priority = 60
+references = ["sub-class-of:application/x-sqlite3"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "53514c69746520666f726d6174203300"
+
+[[signature.magic.matches.children]]
+offset = 68
+bytes = "0f055112"
+
+[[signature]]
+id = "application/x-fossil-global-conf"
+name = "fossil-global-conf"
+category = "Signature"
+mime = "application/x-fossil-global-conf"
+priority = 60
+references = ["sub-class-of:application/x-sqlite3"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "53514c69746520666f726d6174203300"
+
+[[signature.magic.matches.children]]
+offset = 68
+bytes = "0f055113"
+
+[[signature]]
+id = "application/x-fossil-repository"
+name = "fossil-repository"
+category = "Signature"
+mime = "application/x-fossil-repository"
+priority = 60
+references = ["sub-class-of:application/x-sqlite3"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "53514c69746520666f726d6174203300"
+
+[[signature.magic.matches.children]]
+offset = 68
+bytes = "0f055111"
+
+[[signature]]
+id = "application/x-bentley-besqlite"
+name = "bentley-besqlite"
+category = "Signature"
+mime = "application/x-bentley-besqlite"
+priority = 60
+references = ["sub-class-of:application/x-sqlite3"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "53514c69746520666f726d6174203300"
+
+[[signature.magic.matches.children]]
+offset = 68
+bytes = "42654462"
+
+[[signature]]
+id = "application/x-bentley-localization"
+name = "bentley-localization"
+category = "Signature"
+mime = "application/x-bentley-localization"
+priority = 60
+references = ["sub-class-of:application/x-sqlite3"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "53514c69746520666f726d6174203300"
+
+[[signature.magic.matches.children]]
+offset = 68
+bytes = "42654c6e"
+
+[[signature]]
+id = "application/x-monotone-source-repo"
+name = "monotone-source-repo"
+category = "Signature"
+mime = "application/x-monotone-source-repo"
+priority = 60
+references = ["sub-class-of:application/x-sqlite3"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "53514c69746520666f726d6174203300"
+
+[[signature.magic.matches.children]]
+offset = 68
+bytes = "5f4d544e"
+
+[[signature]]
+id = "application/x-esri-spatially-enabled-db"
+name = "esri-spatially-enabled-db"
+category = "Signature"
+mime = "application/x-esri-spatially-enabled-db"
+priority = 60
+references = ["sub-class-of:application/x-sqlite3"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "53514c69746520666f726d6174203300"
+
+[[signature.magic.matches.children]]
+offset = 68
+bytes = "45737269"
+
+[[signature]]
+id = "application/x-mbtiles"
+name = "mbtiles"
+category = "Signature"
+mime = "application/x-mbtiles"
+priority = 60
+references = ["sub-class-of:application/x-sqlite3"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "53514c69746520666f726d6174203300"
+
+[[signature.magic.matches.children]]
+offset = 68
+bytes = "4d504258"
+
+[[signature]]
+id = "application/x-texnicard"
+name = "texnicard"
+category = "Signature"
+mime = "application/x-texnicard"
+priority = 60
+references = ["sub-class-of:application/x-sqlite3"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "53514c69746520666f726d6174203300"
+
+[[signature.magic.matches.children]]
+offset = 68
+bytes = "6a035744"
+
+[[signature]]
+id = "application/x-stata-dta"
+name = "Stata DTA Dataset"
+category = "Signature"
+mime = "application/x-stata-dta"
+extensions = ["dta"]
+priority = 40
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "3c73746174615f6474613e3c6865616465723e3c72656c656173653e"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "3c73746174615f6474613e"
+
+[[signature]]
+id = "application/x-stata-dta;version=14"
+name = "stata-dta;version=14"
+category = "Signature"
+mime = "application/x-stata-dta;version=14"
+priority = 60
+references = ["sub-class-of:application/x-stata-dta"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "3c73746174615f6474613e3c6865616465723e3c72656c656173653e3131383c2f72656c656173653e"
+
+[[signature]]
+id = "application/x-stata-dta;version=13"
+name = "stata-dta;version=13"
+category = "Signature"
+mime = "application/x-stata-dta;version=13"
+priority = 60
+references = ["sub-class-of:application/x-stata-dta"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "3c73746174615f6474613e3c6865616465723e3c72656c656173653e3131373c2f72656c656173653e"
+
+[[signature]]
+id = "application/x-stata-dta;version=12"
+name = "stata-dta;version=12"
+category = "Signature"
+mime = "application/x-stata-dta;version=12"
+priority = 60
+references = ["sub-class-of:application/x-stata-dta"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "3c73746174615f6474613e3c6865616465723e3c72656c656173653e3131353c2f72656c656173653e"
+
+[[signature]]
+id = "application/x-stata-dta;version=10"
+name = "stata-dta;version=10"
+category = "Signature"
+mime = "application/x-stata-dta;version=10"
+priority = 60
+references = ["sub-class-of:application/x-stata-dta"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "3c73746174615f6474613e3c6865616465723e3c72656c656173653e3131343c2f72656c656173653e"
+
+[[signature]]
+id = "application/x-stata-dta;version=8"
+name = "stata-dta;version=8"
+category = "Signature"
+mime = "application/x-stata-dta;version=8"
+priority = 60
+references = ["sub-class-of:application/x-stata-dta"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "3c73746174615f6474613e3c6865616465723e3c72656c656173653e3131333c2f72656c656173653e"
+
+[[signature]]
+id = "application/x-stuffit"
+name = "stuffit"
+category = "Archive"
+mime = "application/x-stuffit"
+extensions = ["sit"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "53747566664974"
+
+[[signature]]
+id = "application/x-tar"
+name = "tar"
+category = "Archive"
+mime = "application/x-tar"
+extensions = ["tar"]
+priority = 40
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 257
+bytes = "757374617200"
+
+[[signature]]
+id = "application/x-tex"
+name = "TeX Source"
+category = "Signature"
+mime = "application/x-tex"
+extensions = ["tex"]
+priority = 50
+references = ["sub-class-of:text/plain"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "5c696e707574"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "5c73656374696f6e"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "5c7365746c656e677468"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "5c646f63756d656e747374796c65"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "5c63686170746572"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "5c646f63756d656e74636c617373"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "5c72656c6178"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "5c636f6e74656e74736c696e65"
+
+[[signature]]
+id = "application/x-texinfo"
+name = "texinfo"
+category = "Signature"
+mime = "application/x-texinfo"
+extensions = ["texinfo", "texi"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "5c696e70757420746578696e666f"
+
+[[signature]]
+id = "application/x-tex-virtual-font"
+name = "TeX Virtual Font format"
+category = "Signature"
+mime = "application/x-tex-virtual-font"
+extensions = ["vf"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "f7ca"
+
+[[signature.magic.matches.children]]
+offset = 11
+bytes = "f300"
+
+[[signature.magic.matches.children.children]]
+offset = 17
+bytes = "0010"
+
+[[signature]]
+id = "application/x-touhou"
+name = "Touhou Project"
+category = "Signature"
+mime = "application/x-touhou"
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "7431"
+
+[[signature]]
+id = "application/x-tika-msoffice"
+name = "tika-msoffice"
+category = "Signature"
+mime = "application/x-tika-msoffice"
+priority = 40
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = "0..8"
+bytes = "d0cf11e0a1b11ae1"
+
+[[signature]]
+id = "application/x-tika-msworks-spreadsheet"
+name = "tika-msworks-spreadsheet"
+category = "Signature"
+mime = "application/x-tika-msworks-spreadsheet"
+extensions = ["xlr"]
+priority = 60
+references = ["sub-class-of:application/vnd.ms-excel"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = "0..8"
+bytes = "d0cf11e0a1b11ae1"
+
+[[signature.magic.matches.children]]
+offset = "1152..4096"
+bytes = "57006b0073005300530057006f0072006b0042006f006f006b"
+
+[[signature]]
+id = "application/x-tika-ooxml"
+name = "tika-ooxml"
+category = "Signature"
+mime = "application/x-tika-ooxml"
+priority = 50
+references = ["sub-class-of:application/zip"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "504b0304"
+
+[[signature.magic.matches.children]]
+offset = 30
+bytes = "5b436f6e74656e745f54797065735d2e786d6c"
+
+[[signature.magic.matches.children]]
+offset = 30
+bytes = "5f72656c732f2e72656c73"
+
+[[signature]]
+id = "application/x-uc2-compressed"
+name = "uc2-compressed"
+category = "Signature"
+mime = "application/x-uc2-compressed"
+extensions = ["uc2"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "5543321a"
+
+[[signature]]
+id = "application/x-vhd"
+name = "VHD (Virtual PC Virtual Hard Disk)"
+category = "Filesystem"
+mime = "application/x-vhd"
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "636f6e6563746978"
+
+[[signature]]
+id = "application/x-x509-cert;format=pem"
+name = "x509-cert;format=pem"
+category = "Signature"
+mime = "application/x-x509-cert;format=pem"
+extensions = ["pem"]
+priority = 50
+references = ["sub-class-of:application/x-x509-cert"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "2d2d2d2d2d424547494e2043455254494649434154452d2d2d2d2d"
+
+[[signature]]
+id = "application/x-x509-cert;format=der"
+name = "x509-cert;format=der"
+category = "Signature"
+mime = "application/x-x509-cert;format=der"
+extensions = ["der"]
+priority = 50
+references = ["sub-class-of:application/x-x509-cert"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "3080"
+mask = "fff8"
+
+[[signature.magic.matches.children]]
+offset = "10..50"
+bytes = "300d06092a864886f70d01010b0500"
+mask = "ffffffffffffffffffffffff00ffff"
+
+[[signature.magic.matches.children]]
+offset = "10..50"
+bytes = "300b0609608648016503040301"
+mask = "ffffffffffffffffffffffff00"
+
+[[signature.magic.matches.children]]
+offset = "10..50"
+bytes = "300a06082a8648ce3d040301"
+mask = "ffffffffffffffffffffff00"
+
+[[signature]]
+id = "application/x-x509-key;format=pem"
+name = "x509-key;format=pem"
+category = "Signature"
+mime = "application/x-x509-key;format=pem"
+priority = 50
+references = ["sub-class-of:application/x-x509-key"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "2d2d2d2d2d424547494e2050524956415445204b45592d2d2d2d2d"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "2d2d2d2d2d424547494e205055424c4943204b45592d2d2d2d2d"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "2d2d2d2d2d424547494e204b45592d2d2d2d2d"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "2d2d2d2d2d424547494e20525341204b45592d2d2d2d2d"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "2d2d2d2d2d424547494e205253412050524956415445204b45592d2d2d2d2d"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "2d2d2d2d2d424547494e20445341204b45592d2d2d2d2d"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "2d2d2d2d2d424547494e204453412050524956415445204b45592d2d2d2d2d"
+
+[[signature]]
+id = "application/x-x509-key;format=der"
+name = "x509-key;format=der"
+category = "Signature"
+mime = "application/x-x509-key;format=der"
+priority = 40
+references = ["sub-class-of:application/x-x509-key"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "3080020100"
+mask = "fffffffffc"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "3081ff020100"
+mask = "ffff00fffffc"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "3082ffff020100"
+mask = "ffff0000fffffc"
+
+[[signature]]
+id = "application/x-x509-dsa-parameters"
+name = "x509-dsa-parameters"
+category = "Signature"
+mime = "application/x-x509-dsa-parameters"
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "2d2d2d2d2d424547494e2044534120504152414d45544552532d2d2d2d2d"
+
+[[signature]]
+id = "application/x-x509-ec-parameters"
+name = "x509-ec-parameters"
+category = "Signature"
+mime = "application/x-x509-ec-parameters"
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "2d2d2d2d2d424547494e20454320504152414d45544552532d2d2d2d2d"
+
+[[signature]]
+id = "application/x-java-keystore"
+name = "Java Keystore"
+category = "Signature"
+mime = "application/x-java-keystore"
+extensions = ["jks"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = "0..4"
+bytes = "feedfeed"
+
+[[signature]]
+id = "application/x-xz"
+name = "xz"
+category = "Signature"
+mime = "application/x-xz"
+extensions = ["xz"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "fd377a585a00"
+
+[[signature]]
+id = "application/x-zim"
+name = "Zeno IMproved (ZIM)"
+category = "Signature"
+mime = "application/x-zim"
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "5a494d04"
+
+[[signature]]
+id = "application/x-zoo"
+name = "zoo"
+category = "Signature"
+mime = "application/x-zoo"
+extensions = ["zoo"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 20
+bytes = "dca7c4fd"
+
+[[signature]]
+id = "application/xhtml+xml"
+name = "xhtml+xml"
+category = "Signature"
+mime = "application/xhtml+xml"
+extensions = ["xhtml", "xhtml2", "xht"]
+priority = 40
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = "0..8192"
+bytes = "3c68746d6c20786d6c6e733d"
+
+[[signature]]
+id = "application/xml"
+name = "XML (Extensible Markup Language)"
+category = "Signature"
+mime = "application/xml"
+extensions = ["xml", "xsl", "xsd"]
+priority = 30
+references = ["sub-class-of:text/plain"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "3c3f786d6c"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "3c3f584d4c"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "efbbbf3c3f786d6c"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "fffe3c003f0078006d006c00"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "feff003c003f0078006d006c"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "3c212d2d"
+
+[[signature]]
+id = "application/zip"
+name = "Compressed Archive File"
+category = "Archive"
+mime = "application/zip"
+extensions = ["zip", "zipx"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "504b0304"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "504b0506"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "504b0708"
+
+[[signature]]
+id = "application/zlib"
+name = "ZLIB Compressed Data Format"
+category = "Signature"
+mime = "application/zlib"
+priority = 45
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "7801"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "785e"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "789c"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "78da"
+
+[[signature]]
+id = "application/x-7z-compressed"
+name = "7zip (7-zip archive)"
+category = "Archive"
+mime = "application/x-7z-compressed"
+extensions = ["7z"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = "0..1"
+bytes = "377a"
+
+[[signature.magic.matches.children]]
+offset = "2..5"
+bytes = "bcaf271c"
+
+[[signature]]
+id = "audio/ac3"
+name = "AC3 (Dolby Digital Audio Compression File)"
+category = "Signature"
+mime = "audio/ac3"
+extensions = ["ac3"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "0b77"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "0b77"
+
+[[signature.magic.matches.children]]
+offset = 5
+bytes = "00"
+mask = "f8"
+
+[[signature.magic.matches.children]]
+offset = 5
+bytes = "08"
+mask = "f8"
+
+[[signature.magic.matches.children]]
+offset = 5
+bytes = "10"
+mask = "f8"
+
+[[signature.magic.matches.children]]
+offset = 5
+bytes = "18"
+mask = "f8"
+
+[[signature.magic.matches.children]]
+offset = 5
+bytes = "20"
+mask = "f8"
+
+[[signature.magic.matches.children]]
+offset = 5
+bytes = "28"
+mask = "f8"
+
+[[signature.magic.matches.children]]
+offset = 5
+bytes = "30"
+mask = "f8"
+
+[[signature.magic.matches.children]]
+offset = 5
+bytes = "38"
+mask = "f8"
+
+[[signature.magic.matches.children]]
+offset = 5
+bytes = "40"
+mask = "f8"
+
+[[signature]]
+id = "audio/eac3"
+name = "EAC3 audio"
+category = "Signature"
+mime = "audio/eac3"
+priority = 50
+references = ["sub-class-of:audio/ac3"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "0b77"
+
+[[signature.magic.matches.children]]
+offset = 5
+bytes = "58"
+mask = "f8"
+
+[[signature.magic.matches.children]]
+offset = 5
+bytes = "60"
+mask = "f8"
+
+[[signature.magic.matches.children]]
+offset = 5
+bytes = "68"
+mask = "f8"
+
+[[signature.magic.matches.children]]
+offset = 5
+bytes = "70"
+mask = "f8"
+
+[[signature.magic.matches.children]]
+offset = 5
+bytes = "78"
+mask = "f8"
+
+[[signature.magic.matches.children]]
+offset = 5
+bytes = "80"
+mask = "f8"
+
+[[signature]]
+id = "audio/amr"
+name = "amr audio"
+category = "Signature"
+mime = "audio/amr"
+extensions = ["amr"]
+priority = 40
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "2321414d520a"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "2321414d52"
+
+[[signature]]
+id = "audio/amr-wb"
+name = "amr-wb audio"
+category = "Signature"
+mime = "audio/amr-wb"
+priority = 50
+references = ["sub-class-of:audio/amr"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "2321414d522d57420a"
+
+[[signature]]
+id = "audio/basic"
+name = "uLaw/AU Audio File"
+category = "Signature"
+mime = "audio/basic"
+extensions = ["au", "snd"]
+priority = 20
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "2e736e64"
+
+[[signature.magic.matches.children]]
+offset = 12
+bytes = "00000001"
+
+[[signature.magic.matches.children]]
+offset = 12
+bytes = "00000002"
+
+[[signature.magic.matches.children]]
+offset = 12
+bytes = "00000003"
+
+[[signature.magic.matches.children]]
+offset = 12
+bytes = "00000004"
+
+[[signature.magic.matches.children]]
+offset = 12
+bytes = "00000005"
+
+[[signature.magic.matches.children]]
+offset = 12
+bytes = "00000006"
+
+[[signature.magic.matches.children]]
+offset = 12
+bytes = "00000007"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "2e736e64000000"
+
+[[signature]]
+id = "audio/midi"
+name = "MIDI (Musical Instrument Digital Interface) audio"
+category = "Signature"
+mime = "audio/midi"
+extensions = ["mid", "midi", "kar", "rmi"]
+priority = 20
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "4d546864"
+
+[[signature]]
+id = "audio/mp4"
+name = "mp4 audio"
+category = "Signature"
+mime = "audio/mp4"
+extensions = ["mp4a", "m4a", "m4b"]
+priority = 60
+references = ["sub-class-of:video/mp4"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 4
+bytes = "667479704d344120"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 4
+bytes = "667479704d344220"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 4
+bytes = "6674797046344120"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 4
+bytes = "6674797046344220"
+
+[[signature]]
+id = "audio/mpeg"
+name = "MP3 (MPEG-1 Audio Layer 3)"
+category = "Signature"
+mime = "audio/mpeg"
+extensions = ["mpga", "mp2", "mp2a", "mp3", "m2a", "m3a"]
+priority = 10
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "fff2"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "fff3"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "fff4"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "fff5"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "fff6"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "fff7"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "fffa"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "fffb"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "fffc"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "fffd"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "ffe3"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "494433"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "494433"
+
+[[signature]]
+id = "audio/vorbis"
+name = "Ogg Vorbis Codec Compressed WAV File audio"
+category = "Signature"
+mime = "audio/vorbis"
+extensions = ["ogg"]
+priority = 60
+references = ["sub-class-of:audio/ogg"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "4f676753002e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e01766f72626973"
+mask = "ffffffff00000000000000000000000000000000000000000000000000ffffffffffff"
+
+[[signature]]
+id = "audio/x-psf"
+name = "Portable Sound Format audio"
+category = "Signature"
+mime = "audio/x-psf"
+extensions = ["psf1", "psflib", "minipsf", "minipsf1", "gslib", "minigsf"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "505346"
+
+[[signature.magic.matches.children]]
+offset = 3
+bytes = "01"
+
+[[signature.magic.matches.children]]
+offset = 3
+bytes = "02"
+
+[[signature.magic.matches.children]]
+offset = 3
+bytes = "11"
+
+[[signature.magic.matches.children]]
+offset = 3
+bytes = "12"
+
+[[signature.magic.matches.children]]
+offset = 3
+bytes = "13"
+
+[[signature.magic.matches.children]]
+offset = 3
+bytes = "21"
+
+[[signature.magic.matches.children]]
+offset = 3
+bytes = "22"
+
+[[signature.magic.matches.children]]
+offset = 3
+bytes = "23"
+
+[[signature.magic.matches.children]]
+offset = 3
+bytes = "41"
+
+[[signature]]
+id = "audio/x-sap"
+name = "Slight Atari Player audio"
+category = "Signature"
+mime = "audio/x-sap"
+extensions = ["sap"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "5341500d0a"
+
+[[signature]]
+id = "audio/x-oggflac"
+name = "Ogg Packaged Free Lossless Audio Codec"
+category = "Signature"
+mime = "audio/x-oggflac"
+priority = 60
+references = ["sub-class-of:audio/ogg"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "4f676753002e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e464c4143"
+mask = "ffffffff00000000000000000000000000000000000000000000000000ffffff"
+
+[[signature]]
+id = "audio/x-oggpcm"
+name = "Ogg Packaged Unompressed WAV File audio"
+category = "Signature"
+mime = "audio/x-oggpcm"
+priority = 60
+references = ["sub-class-of:audio/ogg"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "4f676753002e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e50434d2020202020"
+mask = "ffffffff00000000000000000000000000000000000000000000000000ffffffffffffff"
+
+[[signature]]
+id = "audio/opus"
+name = "Ogg Opus Codec Compressed WAV File audio"
+category = "Signature"
+mime = "audio/opus"
+extensions = ["opus"]
+priority = 60
+references = ["sub-class-of:audio/ogg"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "4f676753002e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e4f70757348656164"
+mask = "ffffffff00000000000000000000000000000000000000000000000000ffffffffffffff"
+
+[[signature]]
+id = "audio/speex"
+name = "Ogg Speex Codec Compressed WAV File audio"
+category = "Signature"
+mime = "audio/speex"
+extensions = ["spx"]
+priority = 60
+references = ["sub-class-of:audio/ogg"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "4f676753002e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e5370656578202020"
+mask = "ffffffff00000000000000000000000000000000000000000000000000ffffffffffffff"
+
+[[signature]]
+id = "audio/prs.sid"
+name = "prs.sid audio"
+category = "Signature"
+mime = "audio/prs.sid"
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "50534944"
+
+[[signature]]
+id = "audio/x-aac"
+name = "aac audio"
+category = "Signature"
+mime = "audio/x-aac"
+extensions = ["aac"]
+priority = 40
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "494433"
+
+[[signature]]
+id = "audio/x-adpcm"
+name = "adpcm audio"
+category = "Signature"
+mime = "audio/x-adpcm"
+priority = 20
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "2e736e64"
+
+[[signature.magic.matches.children]]
+offset = 12
+bytes = "00000017"
+
+[[signature]]
+id = "audio/x-aiff"
+name = "AIFF (Audio Interchange File Format)"
+category = "Signature"
+mime = "audio/x-aiff"
+extensions = ["aif", "aiff", "aifc"]
+priority = 20
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "464f524d2e2e2e2e41494646"
+mask = "ffffffff00000000ffffffff"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "464f524d2e2e2e2e41494643"
+mask = "ffffffff00000000ffffffff"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "464f524d2e2e2e2e38535658"
+mask = "ffffffff00000000ffffffff"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "464f524d00"
+
+[[signature]]
+id = "audio/x-caf"
+name = "Core Audio Format"
+category = "Signature"
+mime = "audio/x-caf"
+extensions = ["caf"]
+priority = 60
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "636166660000"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "636166660001"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "636166660002"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "636166664000"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "636166668000"
+
+[[signature]]
+id = "audio/x-dec-basic"
+name = "dec-basic audio"
+category = "Signature"
+mime = "audio/x-dec-basic"
+priority = 20
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "0064732e"
+
+[[signature.magic.matches.children]]
+offset = 12
+bytes = "00000001"
+
+[[signature.magic.matches.children]]
+offset = 12
+bytes = "00000002"
+
+[[signature.magic.matches.children]]
+offset = 12
+bytes = "00000003"
+
+[[signature.magic.matches.children]]
+offset = 12
+bytes = "00000004"
+
+[[signature.magic.matches.children]]
+offset = 12
+bytes = "00000005"
+
+[[signature.magic.matches.children]]
+offset = 12
+bytes = "00000006"
+
+[[signature.magic.matches.children]]
+offset = 12
+bytes = "00000007"
+
+[[signature]]
+id = "audio/x-dec-adpcm"
+name = "dec-adpcm audio"
+category = "Signature"
+mime = "audio/x-dec-adpcm"
+priority = 20
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "0064732e"
+
+[[signature.magic.matches.children]]
+offset = 12
+bytes = "00000017"
+
+[[signature]]
+id = "audio/x-flac"
+name = "FLAC (Free Lossless Audio Codec)"
+category = "Signature"
+mime = "audio/x-flac"
+extensions = ["flac"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "664c6143"
+
+[[signature]]
+id = "audio/x-mod"
+name = "MOD audio"
+category = "Signature"
+mime = "audio/x-mod"
+extensions = ["mod"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "457874656e646564204d6f64756c653a"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 21
+bytes = "424d4f443253544d"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 1080
+bytes = "4d2e4b2e"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 1080
+bytes = "4d214b21"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 1080
+bytes = "464c5434"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 1080
+bytes = "464c5438"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 1080
+bytes = "3443484e"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 1080
+bytes = "3643484e"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 1080
+bytes = "3843484e"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 1080
+bytes = "43443831"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 1080
+bytes = "4f4b5441"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 1080
+bytes = "3136434e"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 1080
+bytes = "3332434e"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "494d504d"
+
+[[signature]]
+id = "audio/x-mpegurl"
+name = "MP3 Playlist File audio"
+category = "Signature"
+mime = "audio/x-mpegurl"
+extensions = ["m3u"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "234558544d33550d0a"
+
+[[signature]]
+id = "audio/x-ms-wma"
+name = "ms-wma audio"
+category = "Signature"
+mime = "audio/x-ms-wma"
+extensions = ["wma"]
+priority = 50
+references = ["sub-class-of:video/x-ms-asf"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = "0..8192"
+bytes = "570069006e0064006f007700730020004d006500640069006100200041007500640069006f00"
+
+[[signature]]
+id = "audio/x-pn-realaudio"
+name = "Real Audio"
+category = "Signature"
+mime = "audio/x-pn-realaudio"
+extensions = ["ram", "ra"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "2e7261fd"
+
+[[signature]]
+id = "audio/vnd.wave"
+name = "WAV audio"
+category = "Signature"
+mime = "audio/vnd.wave"
+extensions = ["wav"]
+priority = 20
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "524946462e2e2e2e57415645"
+mask = "ffffffff00000000ffffffff"
+
+[[signature]]
+id = "chemical/x-cdx"
+name = "cdx"
+category = "Signature"
+mime = "chemical/x-cdx"
+extensions = ["cdx"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "566a434430313030"
+
+[[signature]]
+id = "image/x-3ds"
+name = "3D Studio (V1)"
+category = "Image"
+mime = "image/x-3ds"
+extensions = ["3ds"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "4d4d"
+
+[[signature.magic.matches.children]]
+offset = 6
+bytes = "02000a000000"
+
+[[signature.magic.matches.children.children]]
+offset = 16
+bytes = "3d3d"
+
+[[signature]]
+id = "image/aces"
+name = "ACES Image Container File"
+category = "Image"
+mime = "image/aces"
+extensions = ["exr"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "762f310102000000"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "762f310102040000"
+
+[[signature]]
+id = "image/x-os2-graphics; charset=binary"
+name = "OS2 bitmap array"
+category = "Image"
+mime = "image/x-os2-graphics; charset=binary"
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "4241"
+
+[[signature.magic.matches.children]]
+offset = 14
+bytes = "424d"
+
+[[signature.magic.matches.children]]
+offset = 14
+bytes = "4349"
+
+[[signature.magic.matches.children]]
+offset = 14
+bytes = "4943"
+
+[[signature.magic.matches.children]]
+offset = 14
+bytes = "4350"
+
+[[signature.magic.matches.children]]
+offset = 14
+bytes = "5054"
+
+[[signature]]
+id = "image/bmp"
+name = "BMP (Windows bitmap)"
+category = "Image"
+mime = "image/bmp"
+extensions = ["bmp", "dib"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "424d"
+
+[[signature.magic.matches.children]]
+offset = 26
+bytes = "0100"
+
+[[signature]]
+id = "image/bmp;format=compressed"
+name = "BMP (Windows bitmap compressed)"
+category = "Image"
+mime = "image/bmp;format=compressed"
+priority = 45
+references = ["sub-class-of:image/bmp"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "424d"
+
+[[signature.magic.matches.children]]
+offset = 26
+bytes = "0100"
+
+[[signature.magic.matches.children.children]]
+offset = 28
+bytes = "0000"
+
+[[signature.magic.matches.children.children]]
+offset = 28
+bytes = "0100"
+
+[[signature.magic.matches.children.children]]
+offset = 28
+bytes = "0400"
+
+[[signature.magic.matches.children.children]]
+offset = 28
+bytes = "0800"
+
+[[signature.magic.matches.children.children]]
+offset = 28
+bytes = "1000"
+
+[[signature.magic.matches.children.children]]
+offset = 28
+bytes = "1800"
+
+[[signature.magic.matches.children.children]]
+offset = 28
+bytes = "2000"
+
+[[signature]]
+id = "image/x-bpg"
+name = "BPG (Better Portable Graphics)"
+category = "Image"
+mime = "image/x-bpg"
+extensions = ["bpg"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "425047fb"
+
+[[signature]]
+id = "image/cgm"
+name = "CGM (Computer Graphics Metafile)"
+category = "Image"
+mime = "image/cgm"
+extensions = ["cgm"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "4245474d46"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "0020"
+mask = "ffe0"
+
+[[signature.magic.matches.children]]
+offset = "2..64"
+bytes = "10220001"
+
+[[signature.magic.matches.children]]
+offset = "2..64"
+bytes = "10220002"
+
+[[signature.magic.matches.children]]
+offset = "2..64"
+bytes = "10220003"
+
+[[signature.magic.matches.children]]
+offset = "2..64"
+bytes = "10220004"
+
+[[signature]]
+id = "image/x-dpx"
+name = "DPX (Digital Picture Exchange from SMPTE)"
+category = "Image"
+mime = "image/x-dpx"
+extensions = ["dpx"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "53445058"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "58504453"
+
+[[signature]]
+id = "image/emf"
+name = "EMF (Enhanced Metafile)"
+category = "Image"
+mime = "image/emf"
+extensions = ["emf"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "01000000"
+
+[[signature.magic.matches.children]]
+offset = 40
+bytes = "20454d46"
+
+[[signature]]
+id = "image/fits"
+name = "fits"
+category = "Image"
+mime = "image/fits"
+priority = 50
+references = ["sub-class-of:application/fits"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "53494d504c4520203d2020"
+
+[[signature]]
+id = "image/gif"
+name = "GIF (Graphics Interchange Format)"
+category = "Image"
+mime = "image/gif"
+extensions = ["gif"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "474946383761"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "474946383961"
+
+[[signature]]
+id = "image/avif"
+name = "AVIF (AV1 Image File)"
+category = "Image"
+mime = "image/avif"
+extensions = ["avif"]
+priority = 60
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 4
+bytes = "6674797061766966"
+
+[[signature]]
+id = "image/heif"
+name = "HEIF - High Efficiency Image File"
+category = "Image"
+mime = "image/heif"
+extensions = ["heif"]
+priority = 60
+references = ["sub-class-of:video/quicktime"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 4
+bytes = "667479706d696631"
+
+[[signature]]
+id = "image/heif-sequence"
+name = "HEIF Sequence - High Efficiency Image Sequence"
+category = "Image"
+mime = "image/heif-sequence"
+priority = 60
+references = ["sub-class-of:video/quicktime"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 4
+bytes = "667479706d736631"
+
+[[signature]]
+id = "image/heic"
+name = "HEIC (HEIF Image using HEVC Codec)"
+category = "Image"
+mime = "image/heic"
+extensions = ["heic"]
+priority = 60
+references = ["sub-class-of:image/heif"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 4
+bytes = "6674797068656963"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 4
+bytes = "6674797068656978"
+
+[[signature]]
+id = "image/heic-sequence"
+name = "HEIF Sequence using HEVC Codec"
+category = "Image"
+mime = "image/heic-sequence"
+priority = 60
+references = ["sub-class-of:image/heif-sequence"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 4
+bytes = "6674797068657663"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 4
+bytes = "6674797068657678"
+
+[[signature]]
+id = "image/icns"
+name = "Apple Icon Image Format"
+category = "Image"
+mime = "image/icns"
+extensions = ["icns"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "69636e73"
+
+[[signature]]
+id = "image/jp2"
+name = "JPEG 2000 Part 1 (JP2)"
+category = "Image"
+mime = "image/jp2"
+extensions = ["jp2"]
+priority = 50
+references = ["sub-class-of:image/x-jp2-container"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "0000000c6a5020200d0a870a"
+
+[[signature.magic.matches.children]]
+offset = 20
+bytes = "6a703220"
+
+[[signature]]
+id = "image/jpeg"
+name = "JPEG (Joint Photographic Experts Group)"
+category = "Image"
+mime = "image/jpeg"
+extensions = ["jpg", "jpeg", "jpe", "jif", "jfif", "jfi"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "ffd8ff"
+
+[[signature]]
+id = "image/jpm"
+name = "JP2 (JPEG 2000 Part 6 (JPM))"
+category = "Image"
+mime = "image/jpm"
+extensions = ["jpm", "jpgm"]
+priority = 50
+references = ["sub-class-of:image/x-jp2-container"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "0000000c6a5020200d0a870a"
+
+[[signature.magic.matches.children]]
+offset = 20
+bytes = "6a706d20"
+
+[[signature]]
+id = "image/jpx"
+name = "JP2 (JPEG 2000 Part 2 (JPX))"
+category = "Image"
+mime = "image/jpx"
+extensions = ["jpf"]
+priority = 50
+references = ["sub-class-of:image/x-jp2-container"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "0000000c6a5020200d0a870a"
+
+[[signature.magic.matches.children]]
+offset = 20
+bytes = "6a707820"
+
+[[signature]]
+id = "image/nitf"
+name = "nitf"
+category = "Image"
+mime = "image/nitf"
+extensions = ["ntf", "nitf"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "4e49544630312e3130"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "4e49544630322e303030"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "4e49544630322e313030"
+
+[[signature]]
+id = "image/png"
+name = "PNG (Portable Network Graphics)"
+category = "Image"
+mime = "image/png"
+extensions = ["png"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "89504e470d0a1a0a"
+
+[[signature]]
+id = "image/svg+xml"
+name = "SVG (Scalable Vector Graphics)"
+category = "Image"
+mime = "image/svg+xml"
+extensions = ["svg", "svgz"]
+priority = 50
+references = ["sub-class-of:application/xml"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "3c737667"
+
+[[signature.magic.matches.children]]
+offset = "5..256"
+bytes = "687474703a2f2f7777772e77332e6f72672f323030302f737667"
+
+[[signature]]
+id = "image/tiff"
+name = "TIFF (Tagged Image File Format)"
+category = "Image"
+mime = "image/tiff"
+extensions = ["tiff", "tif"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "4d4d002a"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "49492a00"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "4d4d002b"
+
+[[signature]]
+id = "image/vnd.adobe.photoshop"
+name = "PSD (Photoshop Image)"
+category = "Image"
+mime = "image/vnd.adobe.photoshop"
+extensions = ["psd"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "384250530001"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "384250530002"
+
+[[signature]]
+id = "image/vnd.dgn;version=7"
+name = "MicroStation v7 drawing"
+category = "Image"
+mime = "image/vnd.dgn;version=7"
+priority = 50
+references = ["sub-class-of:image/vnd.dgn"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "0809fe02"
+mask = "0fffffff"
+
+[[signature]]
+id = "image/vnd.djvu"
+name = "djvu"
+category = "Image"
+mime = "image/vnd.djvu"
+extensions = ["djvu", "djv"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "41542654464f524d"
+
+[[signature]]
+id = "image/vnd.dwg"
+name = "DWG (AutoCad Drawing)"
+category = "Image"
+mime = "image/vnd.dwg"
+extensions = ["dwg"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "4d43302e30"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "4143312e32"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "4143312e3430"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "4143312e3530"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "4143322e3130"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "4143322e3231"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "4143322e3232"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "414330303030"
+mask = "fffff0f0f0f0"
+
+[[signature]]
+id = "image/vnd.dxb"
+name = "DXB (AutoCAD DXF simplified Binary)"
+category = "Image"
+mime = "image/vnd.dxb"
+extensions = ["dxb"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "4175746f4341442044584220312e300d0a307831413030"
+
+[[signature]]
+id = "image/vnd.dxf;format=binary"
+name = "AutoCAD DXF in Binary form"
+category = "Image"
+mime = "image/vnd.dxf;format=binary"
+priority = 50
+references = ["sub-class-of:image/vnd.dxf"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "4175746f4341442042696e617279204458460d0a307831413030"
+
+[[signature]]
+id = "image/vnd.microsoft.icon"
+name = "ICO"
+category = "Image"
+mime = "image/vnd.microsoft.icon"
+extensions = ["ico"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "4241280000002e00000000000000"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "00000100"
+
+[[signature]]
+id = "image/vnd.ms-modi"
+name = "Microsoft Document Imaging"
+category = "Image"
+mime = "image/vnd.ms-modi"
+extensions = ["mdi"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "45502a00"
+
+[[signature]]
+id = "image/vnd.zbrush.dcx"
+name = "DCX (ZSoft Multi-Page Paintbrush)"
+category = "Image"
+mime = "image/vnd.zbrush.dcx"
+extensions = ["dcx"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "b168de3a"
+
+[[signature]]
+id = "image/vnd.zbrush.pcx"
+name = "PCX (ZSoft Paintbrush PiCture eXchange)"
+category = "Image"
+mime = "image/vnd.zbrush.pcx"
+extensions = ["pcx"]
+priority = 40
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "0a"
+
+[[signature.magic.matches.children]]
+offset = 1
+bytes = "00"
+
+[[signature.magic.matches.children]]
+offset = 1
+bytes = "02"
+
+[[signature.magic.matches.children]]
+offset = 1
+bytes = "03"
+
+[[signature.magic.matches.children]]
+offset = 1
+bytes = "04"
+
+[[signature.magic.matches.children]]
+offset = 1
+bytes = "05"
+
+[[signature]]
+id = "image/webp"
+name = "WEBP"
+category = "Image"
+mime = "image/webp"
+extensions = ["webp"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "524946462e2e2e2e57454250"
+mask = "ffffffff00000000ffffffff"
+
+[[signature]]
+id = "image/heic"
+name = "heic"
+category = "Image"
+mime = "image/heic"
+extensions = ["heic"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 4
+bytes = "6674797068656963"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 4
+bytes = "6674797068656978"
+
+[[signature]]
+id = "image/heif"
+name = "heif"
+category = "Image"
+mime = "image/heif"
+extensions = ["heif"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 4
+bytes = "667479706d696631"
+
+[[signature]]
+id = "image/heif-sequence"
+name = "heif-sequence"
+category = "Image"
+mime = "image/heif-sequence"
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 4
+bytes = "667479706d736631"
+
+[[signature]]
+id = "image/heic-sequence"
+name = "heic-sequence"
+category = "Image"
+mime = "image/heic-sequence"
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 4
+bytes = "6674797068657663"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 4
+bytes = "6674797068657678"
+
+[[signature]]
+id = "image/wmf"
+name = "WMF (Windows Metafile)"
+category = "Image"
+mime = "image/wmf"
+extensions = ["wmf"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "d7cdc69a0000"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "010009000003"
+
+[[signature]]
+id = "image/x-freehand"
+name = "FreeHand image"
+category = "Image"
+mime = "image/x-freehand"
+extensions = ["fh", "fhc", "fh4", "fh40", "fh5", "fh50", "fh7", "fh8", "fh9", "fh10", "fh11", "fh12", "ft7", "ft8", "ft9", "ft10", "ft11", "ft12"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "41474432"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "41474433"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "41474434"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = "0..24"
+bytes = "4672656548616e643130"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = "0..24"
+bytes = "4672656548616e643131"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = "0..24"
+bytes = "4672656548616e643132"
+
+[[signature]]
+id = "image/x-jbig2"
+name = """
+JBIG2 (A lossless image compression standard from the
+      Joint Bi-level Image Experts Group.)"""
+category = "Image"
+mime = "image/x-jbig2"
+extensions = ["jb2", "jbig2"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "974a42320d0a1a0a"
+
+[[signature]]
+id = "image/x-jp2-codestream"
+name = "JPEG 2000 Codestream"
+category = "Image"
+mime = "image/x-jp2-codestream"
+extensions = ["j2c"]
+priority = 25
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "ff4fff51"
+
+[[signature]]
+id = "image/x-jp2-container"
+name = "JPEG 2000 Container Format"
+category = "Image"
+mime = "image/x-jp2-container"
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "0000000c6a5020200d0a870a"
+
+[[signature]]
+id = "image/jxl"
+name = "JPEG XL"
+category = "Image"
+mime = "image/jxl"
+extensions = ["jxl"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "ff0a"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "0000000c4a584c200d0a870a"
+
+[[signature]]
+id = "image/x-niff"
+name = "Navy Interchange File Format"
+category = "Image"
+mime = "image/x-niff"
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "49494e31"
+
+[[signature]]
+id = "image/x-pict"
+name = "Apple Macintosh QuickDraw/PICT Format"
+category = "Image"
+mime = "image/x-pict"
+extensions = ["pic", "pct", "pict"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 522
+bytes = "001102ff0c00"
+
+[[signature]]
+id = "image/x-portable-bitmap"
+name = "PBM (Portable Bit Map)"
+category = "Image"
+mime = "image/x-portable-bitmap"
+extensions = ["pbm"]
+priority = 50
+references = ["sub-class-of:image/x-portable-anymap"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "5031"
+
+[[signature.magic.matches.children]]
+offset = 2
+bytes = "0a"
+
+[[signature.magic.matches.children]]
+offset = 2
+bytes = "0d"
+
+[[signature.magic.matches.children]]
+offset = 2
+bytes = "20"
+
+[[signature]]
+id = "image/x-portable-graymap"
+name = "PGM (Portable Graymap Graphic)"
+category = "Image"
+mime = "image/x-portable-graymap"
+extensions = ["pgm"]
+priority = 50
+references = ["sub-class-of:image/x-portable-anymap"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "5032"
+
+[[signature.magic.matches.children]]
+offset = 2
+bytes = "0a"
+
+[[signature.magic.matches.children]]
+offset = 2
+bytes = "0d"
+
+[[signature.magic.matches.children]]
+offset = 2
+bytes = "20"
+
+[[signature]]
+id = "image/x-portable-pixmap"
+name = "PXM (UNIX Portable Bitmap Graphic)"
+category = "Image"
+mime = "image/x-portable-pixmap"
+extensions = ["ppm"]
+priority = 50
+references = ["sub-class-of:image/x-portable-anymap"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "5033"
+
+[[signature.magic.matches.children]]
+offset = 2
+bytes = "0a"
+
+[[signature.magic.matches.children]]
+offset = 2
+bytes = "0d"
+
+[[signature.magic.matches.children]]
+offset = 2
+bytes = "20"
+
+[[signature]]
+id = "image/x-portable-arbitrarymap"
+name = "PAM (UNIX Portable Bitmap Graphic Arbitrary Map)"
+category = "Image"
+mime = "image/x-portable-arbitrarymap"
+extensions = ["pam"]
+priority = 50
+references = ["sub-class-of:image/x-portable-anymap"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "5037"
+
+[[signature.magic.matches.children]]
+offset = 2
+bytes = "0a"
+
+[[signature.magic.matches.children]]
+offset = 2
+bytes = "0d"
+
+[[signature.magic.matches.children]]
+offset = 2
+bytes = "20"
+
+[[signature]]
+id = "image/x-raw-fuji"
+name = "Fuji raw image"
+category = "Image"
+mime = "image/x-raw-fuji"
+extensions = ["raf"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "46554a4946494c4d4343442d524157"
+
+[[signature]]
+id = "image/x-raw-canon"
+name = "Canon raw image"
+category = "Image"
+mime = "image/x-raw-canon"
+extensions = ["crw"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "49491a0000004845415043434452"
+
+[[signature]]
+id = "image/x-canon-cr2"
+name = "Canon raw image, version 2, TIFF-based"
+category = "Image"
+mime = "image/x-canon-cr2"
+extensions = ["cr2"]
+priority = 60
+references = ["sub-class-of:image/tiff"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "4d4d002a"
+
+[[signature.magic.matches.children]]
+offset = 8
+bytes = "4352"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "49492a00"
+
+[[signature.magic.matches.children]]
+offset = 8
+bytes = "4352"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "4d4d002b"
+
+[[signature.magic.matches.children]]
+offset = 8
+bytes = "4352"
+
+[[signature]]
+id = "image/x-canon-cr3"
+name = "Canon raw image, version 3, Quicktime-based"
+category = "Image"
+mime = "image/x-canon-cr3"
+extensions = ["cr3"]
+priority = 60
+references = ["sub-class-of:video/quicktime"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 4
+bytes = "6674797063727820"
+
+[[signature]]
+id = "image/x-raw-minolta"
+name = "Minolta raw image"
+category = "Image"
+mime = "image/x-raw-minolta"
+extensions = ["mrw"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "004d524d"
+
+[[signature]]
+id = "image/x-raw-olympus"
+name = "Olympus raw image"
+category = "Image"
+mime = "image/x-raw-olympus"
+extensions = ["orf"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "4949524f"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "49495253"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "4d4d4f52"
+
+[[signature]]
+id = "image/x-raw-panasonic"
+name = "Panasonic raw image"
+category = "Image"
+mime = "image/x-raw-panasonic"
+extensions = ["raw", "rw2"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "49495500"
+
+[[signature]]
+id = "image/x-rgb"
+name = "Silicon Graphics RGB Bitmap"
+category = "Image"
+mime = "image/x-rgb"
+extensions = ["rgb"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "01da01010003"
+
+[[signature]]
+id = "image/x-xbitmap"
+name = "xbitmap"
+category = "Image"
+mime = "image/x-xbitmap"
+extensions = ["xbm"]
+priority = 50
+references = ["sub-class-of:text/x-c"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "2f2a2058504d"
+
+[[signature]]
+id = "image/x-xcf"
+name = "GIMP Image File"
+category = "Image"
+mime = "image/x-xcf"
+extensions = ["xcf"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "67696d702078636620"
+
+[[signature]]
+id = "message/news"
+name = "news"
+category = "Signature"
+mime = "message/news"
+priority = 50
+references = ["sub-class-of:text/x-tika-text-based-message"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "506174683a"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "587265663a"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "41727469636c65"
+
+[[signature]]
+id = "message/rfc822"
+name = "rfc822"
+category = "Signature"
+mime = "message/rfc822"
+extensions = ["eml", "mime"]
+priority = 40
+references = ["sub-class-of:text/x-tika-text-based-message"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "52656c61792d56657273696f6e3a"
+ignore_case = true
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "232120726e657773"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "4e232120726e657773"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "466f727761726420746f"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "5069706520746f"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "52657475726e2d506174683a"
+ignore_case = true
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "4d6573736167652d49443a"
+ignore_case = true
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "582d4d61696c65723a"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "582d4e6f7465732d4974656d3a"
+
+[[signature.magic.matches.children]]
+offset = "0..8192"
+bytes = "4d6573736167652d49443a"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = "0..29"
+bytes = "3a"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = "0..1000"
+bytes = "0a4d6573736167652d49443a"
+ignore_case = true
+
+[[signature]]
+id = "application/x-httpresponse"
+name = "httpresponse"
+category = "Signature"
+mime = "application/x-httpresponse"
+priority = 60
+references = ["sub-class-of:text/x-tika-text-based-message"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "485454502f"
+
+[[signature.magic.matches.children]]
+offset = "0..1000"
+bytes = "0a43616368652d436f6e74726f6c3a"
+
+[[signature.magic.matches.children]]
+offset = "0..1000"
+bytes = "0a436f6e74656e742d547970653a"
+
+[[signature.magic.matches.children]]
+offset = "0..1000"
+bytes = "0a436f6e74656e742d4c656e6774683a"
+
+[[signature.magic.matches.children]]
+offset = "0..1000"
+bytes = "0a436f6e74656e742d446973706f736974696f6e3a"
+
+[[signature.magic.matches.children]]
+offset = "0..1000"
+bytes = "0a446174653a"
+
+[[signature.magic.matches.children]]
+offset = "0..1000"
+bytes = "0a5365727665723a"
+
+[[signature]]
+id = "multipart/related"
+name = "MHTML (MIME Encapsulation of Aggregate HTML Documents)"
+category = "Signature"
+mime = "multipart/related"
+extensions = ["mht", "mhtml"]
+priority = 60
+references = ["sub-class-of:message/rfc822"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "46726f6d3a203c53617665642062792057696e646f777320496e7465726e6574204578706c6f72657220383e"
+ignore_case = true
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "46726f6d3a2022536176656420627920496e7465726e6574204578706c6f72657220313122"
+ignore_case = true
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "4d494d452d56657273696f6e3a20312e30"
+
+[[signature.magic.matches.children]]
+offset = "16..512"
+bytes = "0a436f6e74656e742d547970653a206d756c7469706172742f72656c61746564"
+
+[[signature]]
+id = "model/e57"
+name = "3d imaging data exchange"
+category = "Signature"
+mime = "model/e57"
+extensions = ["e57"]
+priority = 60
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "4153544d2d453537"
+
+[[signature]]
+id = "model/x.stl-ascii"
+name = "x.stl-ascii"
+category = "Signature"
+mime = "model/x.stl-ascii"
+priority = 60
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "736f6c696420"
+
+[[signature.magic.matches.children]]
+offset = "7..256"
+bytes = "666163657420"
+
+[[signature]]
+id = "model/vnd.dwf"
+name = "DWF (AutoCAD Design Web Format)"
+category = "Signature"
+mime = "model/vnd.dwf"
+extensions = ["dwf"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "284457462056"
+
+[[signature.magic.matches.children]]
+offset = 8
+bytes = "2e"
+
+[[signature.magic.matches.children.children]]
+offset = 11
+bytes = "29"
+
+[[signature]]
+id = "model/vnd.dwf;version=6"
+name = "dwf;version=6"
+category = "Signature"
+mime = "model/vnd.dwf;version=6"
+priority = 60
+references = ["sub-class-of:model/vnd.dwf"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "28445746205630362e"
+
+[[signature.magic.matches.children]]
+offset = 11
+bytes = "29504b"
+
+[[signature]]
+id = "model/vnd.dwf;version=5"
+name = "dwf;version=5"
+category = "Signature"
+mime = "model/vnd.dwf;version=5"
+priority = 60
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "28445746205630302e353529"
+
+[[signature]]
+id = "model/vnd.dwf;version=2"
+name = "dwf;version=2"
+category = "Signature"
+mime = "model/vnd.dwf;version=2"
+priority = 60
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "28445746205630302e323229"
+
+[[signature]]
+id = "multipart/appledouble"
+name = "appledouble"
+category = "Signature"
+mime = "multipart/appledouble"
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "00051607"
+
+[[signature]]
+id = "text/calendar"
+name = "calendar"
+category = "Document"
+mime = "text/calendar"
+extensions = ["ics", "ifb"]
+priority = 50
+references = ["sub-class-of:text/plain"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "424547494e3a5643414c454e444152"
+
+[[signature.magic.matches.children]]
+offset = "15..360"
+bytes = "0a56455253494f4e3a322e30"
+
+[[signature]]
+id = "text/html"
+name = "HTML (HyperText Markup Language)"
+category = "Document"
+mime = "text/html"
+extensions = ["html", "htm"]
+priority = 20
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = "0..64"
+bytes = "3c21444f43545950452048544d4c"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = "0..64"
+bytes = "3c21444f43545950452068746d6c"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = "0..64"
+bytes = "3c21646f63747970652048544d4c"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = "0..64"
+bytes = "3c21646f63747970652068746d6c"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = "0..64"
+bytes = "3c48454144"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = "0..64"
+bytes = "3c68656164"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = "0..64"
+bytes = "3c5449544c45"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = "0..64"
+bytes = "3c7469746c65"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = "0..64"
+bytes = "3c48544d4c"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = "0..128"
+bytes = "3c68746d6c"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = "128..8192"
+bytes = "3c68746d6c"
+
+[[signature]]
+id = "text/x-makefile"
+name = "Makefile build file"
+category = "Document"
+mime = "text/x-makefile"
+priority = 20
+references = ["sub-class-of:text/plain"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "23204d616b6566696c652e696e2067656e657261746564206279"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "23216d616b65"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "23212f7573722f62696e2f6d616b65"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "23212f7573722f6c6f63616c2f62696e2f6d616b65"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "23212f7573722f62696e2f656e76206d616b65"
+
+[[signature]]
+id = "text/plain"
+name = "plain"
+category = "Document"
+mime = "text/plain"
+extensions = ["txt", "text", "def", "list", "in", "aart", "ac", "am", "apt", "bsh", "classpath", "cnd", "cwiki", "data", "dcl", "dsp", "dsw", "egrm", "ent", "ft", "fn", "fv", "grm", "g", "handlers", "htc", "ihtml", "jmx", "junit", "jx", "manifest", "m4", "mf", "mf", "meta", "mdo", "n3", "pen", "pod", "pom", "project", "rng", "rnx", "roles", "schemas", "tld", "types", "vm", "vsl", "wsdd", "xargs", "xcat", "xegrm", "xgrm", "xlex", "xlog", "xmap", "xroles", "xsamples", "xsp", "xtest", "xweb", "xwelcome"]
+priority = 20
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "54686973206973205465582c"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "54686973206973204d455441464f4e542c"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "2f2a"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "2f2f"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "3b3b"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "feff"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "fffe"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "efbbbf"
+
+[[signature]]
+id = "text/troff"
+name = "Roff/nroff/troff/groff Unformatted Manual Page (UNIX)"
+category = "Document"
+mime = "text/troff"
+extensions = ["t", "tr", "roff", "nroff", "man", "me", "ms"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "2e5c22"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "275c22"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "272e5c22"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "5c22"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "272727"
+
+[[signature]]
+id = "text/vnd.iptc.anpa"
+name = "ANPA (American Newspaper Publishers Association Wire Feeds)"
+category = "Document"
+mime = "text/vnd.iptc.anpa"
+extensions = ["anpa"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "161601"
+
+[[signature]]
+id = "text/vtt"
+name = "WebVTT (Web Video Text Tracks Format)"
+category = "Document"
+mime = "text/vtt"
+extensions = ["vtt"]
+priority = 30
+references = ["sub-class-of:text/plain"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "5745425654540d"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "5745425654540a"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "feff"
+
+[[signature.magic.matches.children]]
+offset = 2
+bytes = "5745425654540d"
+
+[[signature.magic.matches.children]]
+offset = 2
+bytes = "5745425654540a"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "feff"
+
+[[signature.magic.matches.children]]
+offset = 2
+bytes = "5745425654540d"
+
+[[signature.magic.matches.children]]
+offset = 2
+bytes = "5745425654540a"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "efbbbf"
+
+[[signature.magic.matches.children]]
+offset = 3
+bytes = "5745425654540d"
+
+[[signature.magic.matches.children]]
+offset = 3
+bytes = "5745425654540a"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "5745425654542046494c450d"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "5745425654542046494c450a"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "57454256545420"
+
+[[signature.magic.matches.children]]
+offset = "10..50"
+bytes = "0a0a"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "57454256545420"
+
+[[signature.magic.matches.children]]
+offset = "10..50"
+bytes = "0d0d"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "57454256545420"
+
+[[signature.magic.matches.children]]
+offset = "10..50"
+bytes = "0d0a0d0a"
+
+[[signature]]
+id = "text/x-awk"
+name = "AWK script"
+category = "Document"
+mime = "text/x-awk"
+extensions = ["awk"]
+priority = 50
+references = ["sub-class-of:text/plain"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "23212f62696e2f6761776b"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "2321202f62696e2f6761776b"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "23212f7573722f62696e2f6761776b"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "2321202f7573722f62696e2f6761776b"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "23212f7573722f6c6f63616c2f62696e2f6761776b"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "2321202f7573722f6c6f63616c2f62696e2f6761776b"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "23212f62696e2f61776b"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "2321202f62696e2f61776b"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "23212f7573722f62696e2f61776b"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "2321202f7573722f62696e2f61776b"
+
+[[signature]]
+id = "text/x-chdr"
+name = "C source code header"
+category = "Document"
+mime = "text/x-chdr"
+extensions = ["h"]
+priority = 30
+references = ["sub-class-of:text/plain"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "2369666e64656620"
+
+[[signature]]
+id = "text/x-csrc"
+name = "C source code"
+category = "Document"
+mime = "text/x-csrc"
+extensions = ["c"]
+priority = 30
+references = ["sub-class-of:text/plain"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "23696e636c75646520"
+
+[[signature]]
+id = "text/x-diff"
+name = "diff"
+category = "Document"
+mime = "text/x-diff"
+extensions = ["diff", "patch"]
+priority = 50
+references = ["sub-class-of:text/plain"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "6469666620"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "2a2a2a20"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "4f6e6c7920696e20"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "436f6d6d6f6e207375626469726563746f726965733a20"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "496e6465783a"
+
+[[signature]]
+id = "text/x-jsp"
+name = "Java Server Page"
+category = "Document"
+mime = "text/x-jsp"
+extensions = ["jsp"]
+priority = 50
+references = ["sub-class-of:text/plain"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "3c2540"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "3c252d2d"
+
+[[signature]]
+id = "text/x-matlab"
+name = "Matlab source code"
+category = "Document"
+mime = "text/x-matlab"
+priority = 25
+references = ["sub-class-of:text/plain"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "66756e6374696f6e205b"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "25"
+
+[[signature.magic.matches.children]]
+offset = "2..120"
+bytes = "0a25"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "25"
+
+[[signature.magic.matches.children]]
+offset = "2..120"
+bytes = "0d25"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "2525"
+
+[[signature]]
+id = "application/x-matlab-data"
+name = "matlab-data"
+category = "Signature"
+mime = "application/x-matlab-data"
+extensions = ["mat"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "4d41544c4142"
+
+[[signature]]
+id = "text/x-perl"
+name = "Perl script"
+category = "Document"
+mime = "text/x-perl"
+extensions = ["pl", "pm", "al", "perl"]
+priority = 50
+references = ["sub-class-of:text/plain"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "6576616c205c2265786563202f7573722f6c6f63616c2f62696e2f7065726c"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "23212f62696e2f7065726c"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "23212f62696e2f656e76207065726c"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "23212f7573722f62696e2f7065726c"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "23212f7573722f6c6f63616c2f62696e2f7065726c"
+
+[[signature]]
+id = "text/x-php"
+name = "PHP script"
+category = "Document"
+mime = "text/x-php"
+extensions = ["php", "php3", "php4"]
+priority = 50
+references = ["sub-class-of:text/plain"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "3c3f706870"
+
+[[signature]]
+id = "text/x-python"
+name = "Python script"
+category = "Document"
+mime = "text/x-python"
+extensions = ["py"]
+priority = 50
+references = ["sub-class-of:text/plain"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "23212f62696e2f707974686f6e"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "2321202f62696e2f707974686f6e"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "6576616c202265786563202f62696e2f707974686f6e"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "23212f7573722f62696e2f707974686f6e"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "2321202f7573722f62696e2f707974686f6e"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "6576616c202265786563202f7573722f62696e2f707974686f6e"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "23212f7573722f6c6f63616c2f62696e2f707974686f6e"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "2321202f7573722f6c6f63616c2f62696e2f707974686f6e"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "6576616c202265786563202f7573722f6c6f63616c2f62696e2f707974686f6e"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 1
+bytes = "2f62696e2f656e7620707974686f6e"
+
+[[signature]]
+id = "text/x-vcalendar"
+name = "vcalendar"
+category = "Document"
+mime = "text/x-vcalendar"
+extensions = ["vcs"]
+priority = 50
+references = ["sub-class-of:text/plain"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "424547494e3a5643414c454e444152"
+
+[[signature.magic.matches.children]]
+offset = "15..30"
+bytes = "56455253494f4e3a312e30"
+
+[[signature]]
+id = "text/x-vcard"
+name = "vcard"
+category = "Document"
+mime = "text/x-vcard"
+extensions = ["vcf"]
+priority = 50
+references = ["sub-class-of:text/plain"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "424547494e3a5643415244"
+
+[[signature]]
+id = "video/3gpp"
+name = "3gpp video"
+category = "Signature"
+mime = "video/3gpp"
+extensions = ["3gp"]
+priority = 60
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 4
+bytes = "6674797033676536"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 4
+bytes = "6674797033676537"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 4
+bytes = "6674797033676736"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 4
+bytes = "6674797033677031"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 4
+bytes = "6674797033677032"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 4
+bytes = "6674797033677033"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 4
+bytes = "6674797033677034"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 4
+bytes = "6674797033677035"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 4
+bytes = "6674797033677036"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 4
+bytes = "6674797033677337"
+
+[[signature]]
+id = "video/3gpp2"
+name = "3gpp2 video"
+category = "Signature"
+mime = "video/3gpp2"
+extensions = ["3g2"]
+priority = 60
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 4
+bytes = "6674797033673261"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 4
+bytes = "6674797033673262"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 4
+bytes = "6674797033673263"
+
+[[signature]]
+id = "video/mj2"
+name = "JPEG 2000 Part 3 (Motion JPEG, MJ2) video"
+category = "Signature"
+mime = "video/mj2"
+extensions = ["mj2", "mjp2"]
+priority = 50
+references = ["sub-class-of:image/x-jp2-container"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "0000000c6a5020200d0a870a"
+
+[[signature.magic.matches.children]]
+offset = 20
+bytes = "6d6a7032"
+
+[[signature]]
+id = "video/mp4"
+name = "mp4 video"
+category = "Signature"
+mime = "video/mp4"
+extensions = ["mp4", "mp4v", "mpg4"]
+priority = 60
+references = ["sub-class-of:video/quicktime"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 4
+bytes = "667479706d703431"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 4
+bytes = "667479706d703432"
+
+[[signature]]
+id = "video/mpeg"
+name = "MPEG Movie Clip video"
+category = "Signature"
+mime = "video/mpeg"
+extensions = ["mpeg", "mpg", "mpe", "m1v", "m2v"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "000001b3"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "000001ba"
+
+[[signature]]
+id = "video/daala"
+name = "Ogg Daala Video"
+category = "Signature"
+mime = "video/daala"
+priority = 60
+references = ["sub-class-of:video/ogg"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "4f676753002e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e806461616c61"
+mask = "ffffffff00000000000000000000000000000000000000000000000000ffffffffff"
+
+[[signature]]
+id = "video/theora"
+name = "Ogg Theora Video"
+category = "Signature"
+mime = "video/theora"
+priority = 60
+references = ["sub-class-of:video/ogg"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "4f676753002e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e807468656f7261"
+mask = "ffffffff00000000000000000000000000000000000000000000000000ffffffffffff"
+
+[[signature]]
+id = "video/x-dirac"
+name = "Ogg Packaged Dirac Video"
+category = "Signature"
+mime = "video/x-dirac"
+extensions = ["drc"]
+priority = 60
+references = ["sub-class-of:video/ogg"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "4f676753002e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e42424344"
+mask = "ffffffff00000000000000000000000000000000000000000000000000ffffff"
+
+[[signature]]
+id = "video/x-ogm"
+name = "Ogg Packaged OGM Video"
+category = "Signature"
+mime = "video/x-ogm"
+extensions = ["ogm"]
+priority = 60
+references = ["sub-class-of:video/ogg"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "4f676753002e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e766964656f"
+mask = "ffffffff00000000000000000000000000000000000000000000000000ffffffff"
+
+[[signature]]
+id = "video/x-ogguvs"
+name = "Ogg Packaged Raw UVS Video"
+category = "Signature"
+mime = "video/x-ogguvs"
+priority = 60
+references = ["sub-class-of:video/ogg"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "4f676753002e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e55565320"
+mask = "ffffffff00000000000000000000000000000000000000000000000000ffffff"
+
+[[signature]]
+id = "video/x-oggyuv"
+name = "Ogg Packaged Raw YUV Video"
+category = "Signature"
+mime = "video/x-oggyuv"
+priority = 60
+references = ["sub-class-of:video/ogg"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "4f676753002e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e01595556"
+mask = "ffffffff00000000000000000000000000000000000000000000000000ffffff"
+
+[[signature]]
+id = "video/x-oggrgb"
+name = "Ogg Packaged Raw RGB Video"
+category = "Signature"
+mime = "video/x-oggrgb"
+priority = 60
+references = ["sub-class-of:video/ogg"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "4f676753002e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e01524742"
+mask = "ffffffff00000000000000000000000000000000000000000000000000ffffff"
+
+[[signature]]
+id = "video/quicktime"
+name = "QuickTime Video"
+category = "Signature"
+mime = "video/quicktime"
+extensions = ["qt", "mov"]
+priority = 50
+references = ["sub-class-of:application/quicktime"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 4
+bytes = "6d6f6f7600"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 4
+bytes = "6d64617400"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 4
+bytes = "6672656500"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 4
+bytes = "736b697000"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 4
+bytes = "706e6f7400"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 4
+bytes = "66747970"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "0000000877696465"
+
+[[signature]]
+id = "video/x-flv"
+name = "flv video"
+category = "Signature"
+mime = "video/x-flv"
+extensions = ["flv"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "464c56"
+
+[[signature]]
+id = "video/x-jng"
+name = "jng video"
+category = "Signature"
+mime = "video/x-jng"
+extensions = ["jng"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "8b4a4e47"
+
+[[signature]]
+id = "video/x-m4v"
+name = "m4v video"
+category = "Signature"
+mime = "video/x-m4v"
+extensions = ["m4v"]
+priority = 60
+references = ["sub-class-of:video/mp4"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 4
+bytes = "667479704d345620"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 4
+bytes = "667479704d345648"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 4
+bytes = "667479704d345650"
+
+[[signature]]
+id = "video/x-mng"
+name = "mng video"
+category = "Signature"
+mime = "video/x-mng"
+extensions = ["mng"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "8a4d4e47"
+
+[[signature]]
+id = "video/x-ms-asf"
+name = "ms-asf video"
+category = "Signature"
+mime = "video/x-ms-asf"
+extensions = ["asf"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "3026b275"
+
+[[signature]]
+id = "video/x-ms-wmv"
+name = "ms-wmv video"
+category = "Signature"
+mime = "video/x-ms-wmv"
+extensions = ["wmv"]
+priority = 60
+references = ["sub-class-of:video/x-ms-asf"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = "0..8192"
+bytes = "570069006e0064006f007700730020004d006500640069006100200056006900640065006f00"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = "0..8192"
+bytes = "560043002d003100200041006400760061006e006300650064002000500072006f00660069006c006500"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = "0..8192"
+bytes = "77006d0076003200"
+
+[[signature]]
+id = "video/x-msvideo"
+name = "Audio Video Interleave File"
+category = "Signature"
+mime = "video/x-msvideo"
+extensions = ["avi"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "524946462e2e2e2e41564920"
+mask = "ffffffff00000000ffffffff"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 8
+bytes = "41564920"
+
+[[signature]]
+id = "video/x-sgi-movie"
+name = "sgi-movie video"
+category = "Signature"
+mime = "video/x-sgi-movie"
+extensions = ["movie"]
+priority = 50
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "4d4f564900"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "4d4f564901"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "4d4f564902"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "4d4f5649fe"
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "4d4f5649ff"
+
+[[signature]]
+id = "application/x-matroska"
+name = "Matroska Media Container"
+category = "Signature"
+mime = "application/x-matroska"
+priority = 40
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "1a45dfa3"
+
+[[signature]]
+id = "video/x-matroska"
+name = "matroska video"
+category = "Signature"
+mime = "video/x-matroska"
+extensions = ["mkv"]
+priority = 50
+references = ["sub-class-of:application/x-matroska"]
+
+[[signature.magic]]
+
+[[signature.magic.matches]]
+offset = 0
+bytes = "1a45dfa3934282886d6174726f736b61"

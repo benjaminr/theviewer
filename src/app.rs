@@ -1,0 +1,3098 @@
+//! Application state, keyboard shortcuts, file handling and the top-level
+//! layout. The raster view lives in `view.rs` and the hex dump in `hex.rs`.
+
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::mpsc::{self, Receiver, Sender};
+use std::thread;
+use std::time::{Duration, Instant};
+
+use eframe::egui::{self, Color32, ColorImage, Context, Key, Modifiers, RichText, TextureHandle, TextureOptions, ViewportCommand};
+
+use crate::analysis::{self, PeriodScan};
+use crate::catalog::Catalog;
+use crate::packing::RowPacker;
+use crate::preferences::{self, Preferences};
+use crate::parsers;
+use crate::plugins::{self, ActionHost, LoadReport, LuaHost};
+use crate::bookmarks::{self, Bookmark, Sidecar};
+use crate::commands::{self, PaletteState};
+use crate::compress::{self, Codec, Decompressed};
+use crate::assistant::{Assistant, Credentials};
+use crate::settings::{KeySource, SettingsWindow};
+use crate::dock::{DockState, DockTab};
+use crate::layout::{self, Pane, Preset};
+use crate::findings::FindingsFilter;
+use crate::plot::PlotWindow;
+use crate::workbench::Workbench;
+use crate::media::{self, MediaFormat};
+use crate::player::{MediaPlayer, MediaRequest};
+use crate::document::Document;
+use crate::ops;
+use crate::patterns;
+use crate::plugin::{Category, Finding, Registry, ScanContext};
+use crate::raster::{self, Palette, PixelFormat};
+use crate::search::{self, SearchMode};
+use crate::theme;
+
+pub const MAX_WIDTH: usize = 16384;
+/// Upper bound on pixels held in the view texture (32M pixels = 128 MiB).
+pub const MAX_TEXTURE_PIXELS: usize = 32 * 1024 * 1024;
+/// Bytes examined by a period scan.
+const SCAN_WINDOW: usize = 192 * 1024;
+/// Resolution of the entropy strip.
+const ENTROPY_BLOCKS: usize = 1024;
+/// Largest region handed to the pattern scanner at once.
+const PATTERN_WINDOW_MAX: usize = 4 * 1024 * 1024;
+/// Most compressed input a decompression will read.
+const DECOMPRESS_INPUT_MAX: usize = 64 * 1024 * 1024;
+/// Pattern scan windows are aligned to this so small scrolls reuse a scan.
+const PATTERN_ALIGN: usize = 64 * 1024;
+pub const ZOOM_LEVELS: [f32; 14] = [
+    0.125, 0.25, 0.5, 1.0, 2.0, 3.0, 4.0, 6.0, 8.0, 12.0, 16.0, 24.0, 32.0, 48.0,
+];
+
+/// Results sent back from background analysis threads.
+pub enum AnalysisMessage {
+    Periods(PeriodScan),
+    Entropy { document_version: u64, map: Vec<f32> },
+    Patterns { key: PatternKey, patterns: Vec<Finding> },
+}
+
+/// Identifies the region and document state a pattern scan was made for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PatternKey {
+    pub version: u64,
+    pub start: usize,
+    pub len: usize,
+    pub row_stride: usize,
+}
+
+/// A document we descended from by decompressing a block, kept so the user
+/// can go back to it with their place intact.
+pub struct ParentDocument {
+    pub document: Document,
+    pub shape: Shape,
+    pub cursor: usize,
+    pub top_row: usize,
+    pub name: String,
+    /// Analysis results, kept so Back does not have to rescan.
+    patterns: Vec<Finding>,
+    pattern_key: Option<PatternKey>,
+    period_scan: Option<PeriodScan>,
+    entropy_map: Option<Vec<f32>>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EditMode {
+    Overwrite,
+    Insert,
+}
+
+/// How the flat byte stream is folded into a 2D image.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Shape {
+    pub format: PixelFormat,
+    pub palette: Palette,
+    /// Pixels per row.
+    pub width: usize,
+    /// Document offset of the first pixel in row 0.
+    pub byte_offset: usize,
+    /// Additional bit shift (0..8) applied on top of `byte_offset`.
+    pub bit_offset: u32,
+    /// Bytes skipped between the end of one row's pixels and the next row.
+    pub row_padding: usize,
+}
+
+impl Shape {
+    pub fn bits_per_pixel(&self) -> usize {
+        self.format.bits_per_pixel()
+    }
+
+    pub fn row_bytes(&self) -> usize {
+        self.format.bytes_for_pixels(self.width)
+    }
+
+    pub fn row_stride(&self) -> usize {
+        self.row_bytes() + self.row_padding
+    }
+
+    pub fn total_rows(&self, document_len: usize) -> usize {
+        if document_len <= self.byte_offset {
+            return 0;
+        }
+        (document_len - self.byte_offset).div_ceil(self.row_stride())
+    }
+
+    /// Document offset of the byte containing pixel (`row`, `col`).
+    pub fn byte_of_pixel(&self, row: usize, col: usize) -> usize {
+        let bit = (self.byte_offset + row * self.row_stride()) * 8
+            + self.bit_offset as usize
+            + col * self.bits_per_pixel();
+        bit / 8
+    }
+
+    /// Row and first pixel column of a document byte, or `None` if the byte
+    /// lies before the view origin.
+    pub fn pixel_of_byte(&self, byte: usize) -> Option<(usize, usize)> {
+        let origin = self.byte_offset * 8 + self.bit_offset as usize;
+        let bit = byte * 8;
+        if bit < origin {
+            return None;
+        }
+        let relative = bit - origin;
+        let row_bits = self.row_stride() * 8;
+        Some((relative / row_bits, (relative % row_bits) / self.bits_per_pixel()))
+    }
+}
+
+/// Everything that determines the texture contents. If unchanged, the
+/// previous texture is reused without touching the document.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct RasterKey {
+    version: u64,
+    shape: Shape,
+    top_row: usize,
+    rows: usize,
+}
+
+pub struct ViewerApp {
+    pub document: Document,
+    pub shape: Shape,
+    pub zoom: f32,
+    pub top_row: usize,
+    pub pan_x: f32,
+    pub visible_rows: usize,
+    pub cursor: usize,
+    pub anchor: Option<usize>,
+    pub edit_mode: EditMode,
+    pub pending_low_nibble: bool,
+    /// The byte a mouse drag started on; it stays selected whichever way the
+    /// drag goes.
+    drag_grab: Option<usize>,
+    pub clipboard: Vec<u8>,
+    /// Set by the toolbar; the view resolves it once it knows its own size.
+    pub fit_width_requested: bool,
+    /// Byte under the pointer in the raster view, for the status bar.
+    pub hover: Option<usize>,
+    pub show_help: bool,
+    last_title: String,
+
+    pub period_scan: Option<PeriodScan>,
+    pub scan_pending: bool,
+    pub scan_max_period: usize,
+    /// Entropy per block over the file on disk, for the strip beside the scrollbar.
+    pub entropy_map: Option<Vec<f32>>,
+    analysis_tx: Sender<AnalysisMessage>,
+    analysis_rx: Receiver<AnalysisMessage>,
+
+    /// Recognised structures in and around the visible region.
+    /// Documents above the current one, outermost first.
+    pub parents: Vec<ParentDocument>,
+    /// Name shown for a derived (decompressed) document, which has no path.
+    pub derived_name: Option<String>,
+    /// Codec used by "Compress selection".
+    pub compress_codec: Codec,
+    /// Codec of the last in-place decompression, so one click re-packs it.
+    pub inplace_codec: Option<Codec>,
+
+    /// Every detector, parser and codec, built-in or plugin.
+    pub registry: Arc<Registry>,
+    pub plugin_host: Option<SharedLuaHost>,
+    pub palette: PaletteState,
+    pub findings_filter: FindingsFilter,
+    /// Toolbar text fields that should grab focus on the next frame.
+    pub focus_goto: bool,
+    pub focus_search: bool,
+    pub search_mode: SearchMode,
+    pub search_text: String,
+    pub search_little_endian: bool,
+    pub search_count: Option<usize>,
+    /// Bookmarks and remembered shape for the current file.
+    pub bookmarks: Sidecar,
+    /// Name being typed for a new bookmark, when the prompt is open.
+    pub bookmark_prompt: Option<(usize, usize, String)>,
+    /// Structure parsed at the cursor, with the cursor and version it was parsed for.
+    pub cursor_structure: Option<Finding>,
+    cursor_structure_key: Option<(usize, u64)>,
+    pub show_structure_fields: bool,
+    /// The media window.
+    pub media: MediaPlayer,
+    /// Requests for the tools (which to show) from menus and links.
+    pub dock: DockState,
+    /// The arrangement of every pane.
+    pub layout: egui_dock::DockState<Pane>,
+    /// Where the raster image and the hex dump's rows were drawn last frame;
+    /// panes move, so tests and tools read these rather than assume.
+    pub raster_rect: Option<egui::Rect>,
+    pub hex_body_rect: Option<egui::Rect>,
+    /// A non-tool pane to bring forward on the next frame.
+    pub pane_request: Option<Pane>,
+    /// Whether the layout is saved and restored (the app, not tests).
+    pub persist_layout: bool,
+    /// Startup defaults chosen in Settings.
+    pub preferences: Preferences,
+    /// The toolbar arrangement the person dragged into place, as rows of
+    /// group keys; `None` packs the groups automatically.
+    pub toolbar_rows: Option<Vec<Vec<String>>>,
+    /// The "ask the file" conversation.
+    pub assistant: Assistant,
+    /// Credentials for Ask, and where they came from; `None` turns Ask off.
+    pub credentials: Option<(Credentials, KeySource)>,
+    pub settings: SettingsWindow,
+    /// The plot window.
+    pub plot: PlotWindow,
+    /// State of the dock's tools: report, unpacking, live sources and more.
+    pub bench: Workbench,
+    /// Media found at the cursor: (cursor, version) it was computed for, and the result.
+    media_hint: Option<MediaHint>,
+    /// Thumbnail of the image under the cursor, keyed by start and version.
+    pub image_preview: Option<(usize, u64, TextureHandle)>,
+    pub patterns: Vec<Finding>,
+    pattern_key: Option<PatternKey>,
+    pattern_pending: Option<PatternKey>,
+    /// Colour detected patterns in the view and hex dump (they are found
+    /// either way).
+    pub highlight_patterns: bool,
+    /// Which kinds of pattern are shown, in highlights and in Findings.
+    pub pattern_kinds: [bool; Category::ALL.len()],
+    pub pattern_list_open: bool,
+
+    texture: Option<TextureHandle>,
+    raster_key: Option<RasterKey>,
+    byte_buffer: Vec<u8>,
+    pub last_raster_ms: f32,
+    pub last_raster_pixels: usize,
+
+    pub status: String,
+    pub hex_top_row: usize,
+    /// Rows the hex dump showed last frame, so the raster can outline them
+    /// and cursor reveals know how much fits.
+    pub hex_visible_rows: usize,
+    goto_text: String,
+    insert_count: usize,
+    insert_value_text: String,
+    fill_value_text: String,
+    shift_amount: i64,
+    move_amount: i64,
+    scroll_accumulator: f32,
+}
+
+/// Cached media lookup: the (cursor, document version) it was computed for,
+/// and the media start and format found there, if any.
+type MediaHint = ((usize, u64), Option<(usize, MediaFormat)>);
+
+/// A scripted action a plugin offers, as shown in the command palette.
+#[derive(Clone, Debug)]
+pub struct PluginAction {
+    pub id: String,
+    pub title: String,
+}
+
+/// The Lua host, shared between the UI thread (actions, reload) and the
+/// registry's background scans (detectors hold their own script handles).
+pub type SharedLuaHost = Arc<std::sync::Mutex<LuaHost>>;
+
+/// Where user signature files live, alongside the plugin directory.
+pub fn user_catalog_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config/theviewer/catalog"))
+}
+
+/// Load the Lua plugins from the default directories.
+pub fn load_plugin_host() -> (SharedLuaHost, Vec<LoadReport>) {
+    let mut host = LuaHost::new();
+    let mut reports = Vec::new();
+    for dir in plugins::default_dirs() {
+        reports.extend(host.load_dir(&dir));
+    }
+    (Arc::new(std::sync::Mutex::new(host)), reports)
+}
+
+/// Assemble every detector, parser and codec the app knows about: the
+/// built-in scanners and codecs, the signature catalogue (with any user
+/// signature files), the structure parsers, and whatever Lua plugins
+/// registered.
+pub fn build_registry() -> Registry {
+    build_registry_with(None)
+}
+
+pub fn build_registry_with(host: Option<&SharedLuaHost>) -> Registry {
+    let mut registry = Registry::new();
+    for detector in patterns::builtin_detectors() {
+        registry.add_detector_arc(detector);
+    }
+    for codec in compress::builtin_codecs() {
+        registry.add_codec_arc(codec);
+    }
+    let mut catalog = Catalog::builtin();
+    // Having no user catalogue is the normal case; only report real errors.
+    if let Some(dir) = user_catalog_dir().filter(|dir| dir.is_dir())
+        && let Err(message) = catalog.load_dir(&dir)
+    {
+        eprintln!("theviewer: user catalogue ignored: {message}");
+    }
+    registry.add_detector(catalog);
+    for parser in parsers::builtin_parsers() {
+        registry.add_parser_arc(parser);
+    }
+    for detector in parsers::builtin_detectors() {
+        registry.add_detector_arc(detector);
+    }
+    if let Some(host) = host
+        && let Ok(host) = host.lock()
+    {
+        for detector in host.detectors() {
+            registry.add_detector_arc(detector);
+        }
+        for parser in host.parsers() {
+            registry.add_parser_arc(parser);
+        }
+        for codec in host.codecs() {
+            registry.add_codec_arc(codec);
+        }
+    }
+    registry
+}
+
+/// Initial settings supplied on the command line.
+#[derive(Debug, Default, Clone)]
+pub struct Launch {
+    pub path: Option<PathBuf>,
+    pub format: Option<PixelFormat>,
+    pub palette: Option<Palette>,
+    pub width: Option<usize>,
+    pub offset: Option<usize>,
+    pub zoom: Option<f32>,
+    /// Initial cursor position.
+    pub cursor: Option<usize>,
+    /// Run a period scan immediately after loading.
+    pub detect: bool,
+    /// Open the media at the cursor once loaded.
+    pub open_media: bool,
+    /// Open the tools dock on this tab (by its label, e.g. "report").
+    pub tool: Option<String>,
+    /// Restore and save the panel layout (the app sets this; tests do not).
+    pub restore_layout: bool,
+    /// Start with a layout preset: default, right, left or focus.
+    pub layout: Option<String>,
+}
+
+impl ViewerApp {
+    pub fn new(launch: Launch) -> Self {
+        let (analysis_tx, analysis_rx) = mpsc::channel();
+        let mut app = ViewerApp {
+            document: Document::default(),
+            shape: Shape {
+                format: PixelFormat::Gray8,
+                palette: Palette::Grey,
+                width: 512,
+                byte_offset: 0,
+                bit_offset: 0,
+                row_padding: 0,
+            },
+            zoom: 1.0,
+            top_row: 0,
+            pan_x: 0.0,
+            visible_rows: 1,
+            cursor: 0,
+            anchor: None,
+            edit_mode: EditMode::Overwrite,
+            pending_low_nibble: false,
+            drag_grab: None,
+            clipboard: Vec::new(),
+            fit_width_requested: false,
+            hover: None,
+            show_help: false,
+            last_title: String::new(),
+            period_scan: None,
+            scan_pending: false,
+            scan_max_period: 4096,
+            entropy_map: None,
+            analysis_tx,
+            analysis_rx,
+            parents: Vec::new(),
+            derived_name: None,
+            compress_codec: Codec::Zlib,
+            inplace_codec: None,
+            patterns: Vec::new(),
+            pattern_key: None,
+            pattern_pending: None,
+            highlight_patterns: true,
+            registry: Arc::new(Registry::new()),
+            plugin_host: None,
+            palette: PaletteState::default(),
+            findings_filter: FindingsFilter::default(),
+            focus_goto: false,
+            focus_search: false,
+            search_mode: SearchMode::Hex,
+            search_text: String::new(),
+            search_little_endian: true,
+            search_count: None,
+            bookmarks: Sidecar::default(),
+            bookmark_prompt: None,
+            cursor_structure: None,
+            cursor_structure_key: None,
+            show_structure_fields: true,
+            image_preview: None,
+            media: MediaPlayer::default(),
+            dock: DockState::default(),
+            layout: layout::default_layout(),
+            pane_request: None,
+            raster_rect: None,
+            hex_body_rect: None,
+            persist_layout: false,
+            toolbar_rows: None,
+            preferences: Preferences::default(),
+            assistant: Assistant::default(),
+            credentials: None,
+            settings: SettingsWindow::default(),
+            plot: PlotWindow::default(),
+            bench: Workbench::default(),
+            media_hint: None,
+            pattern_kinds: [true; Category::ALL.len()],
+            // Findings has its own pane now, so its list starts open.
+            pattern_list_open: true,
+            texture: None,
+            raster_key: None,
+            byte_buffer: Vec::new(),
+            last_raster_ms: 0.0,
+            last_raster_pixels: 0,
+            status: "Open a file (Cmd+O) or drop one onto the window".to_string(),
+            hex_top_row: 0,
+            hex_visible_rows: 1,
+            goto_text: String::new(),
+            insert_count: 1,
+            insert_value_text: "00".to_string(),
+            fill_value_text: "00".to_string(),
+            shift_amount: 1,
+            move_amount: 1,
+            scroll_accumulator: 0.0,
+        };
+        if launch.restore_layout {
+            app.persist_layout = true;
+            if let Some(saved) = layout::layout_path().and_then(|path| layout::load(&path)) {
+                app.layout = saved;
+            }
+            app.toolbar_rows = layout::toolbar_path().and_then(|path| layout::load_toolbar(&path));
+            if let Some(path) = preferences::preferences_path() {
+                app.preferences = preferences::load(&path);
+            }
+        }
+        app.apply_preferences();
+        if let Some(name) = &launch.layout {
+            let preset = match name.to_ascii_lowercase().as_str() {
+                "right" => Preset::EverythingRight,
+                "left" => Preset::ToolsLeft,
+                "focus" => Preset::Focus,
+                _ => Preset::Default,
+            };
+            app.apply_preset(preset);
+        }
+        app.refresh_credentials();
+        let (host, reports) = load_plugin_host();
+        app.registry = Arc::new(build_registry_with(Some(&host)));
+        app.plugin_host = Some(host);
+        let failed = failed_reports(&reports);
+        if !failed.is_empty() {
+            app.status = format!("Some plugins failed to load: {failed}");
+        }
+        if let Some(path) = &launch.path {
+            app.load_path(path);
+        }
+        if let Some(format) = launch.format {
+            app.shape.format = format;
+        }
+        if let Some(palette) = launch.palette {
+            app.shape.palette = palette;
+        }
+        if let Some(width) = launch.width {
+            app.set_width(width);
+        }
+        if let Some(offset) = launch.offset {
+            app.shape.byte_offset = offset.min(app.document.len());
+        }
+        if let Some(zoom) = launch.zoom {
+            app.apply_zoom_delta(zoom / app.zoom);
+        }
+        if let Some(cursor) = launch.cursor {
+            app.set_cursor(cursor, false);
+            app.reveal_cursor_centred();
+            app.reveal_cursor_in_hex(true);
+        }
+        if launch.detect && !app.document.is_empty() {
+            app.start_period_scan();
+        }
+        if launch.open_media {
+            app.open_media();
+        }
+        if let Some(name) = &launch.tool
+            && let Some(tab) = DockTab::ALL.into_iter().find(|tab| tab.label().eq_ignore_ascii_case(name))
+        {
+            app.dock.open = true;
+            app.dock.tab = tab;
+            match tab {
+                DockTab::Report => app.start_report(),
+                DockTab::Unpacked => app.start_unpack(),
+                DockTab::Statistics => crate::analysis_stats::start_statistics(&mut app),
+                DockTab::Protocol => crate::analysis_tools::start_protocol(&mut app),
+                _ => {}
+            }
+        }
+        app
+    }
+
+    // ------------------------------------------------------------------
+    // Files
+    // ------------------------------------------------------------------
+
+    /// Start from the chosen defaults: highlights, kinds, the findings list,
+    /// pixel format, palette, width and zoom.
+    pub fn apply_preferences(&mut self) {
+        let preferences = self.preferences.clone();
+        self.highlight_patterns = preferences.highlight_patterns;
+        for category in Category::ALL {
+            self.pattern_kinds[category.index()] = preferences.shows_kind(category);
+        }
+        self.pattern_list_open = preferences.findings_list_open;
+        self.shape.format = preferences.pixel_format();
+        self.shape.palette = preferences.palette();
+        self.set_width(preferences.width);
+        self.apply_zoom_delta(preferences.zoom / self.zoom);
+    }
+
+    /// Keep new defaults for next time. They take effect on the next start;
+    /// the current view is left as it is.
+    pub fn set_preferences(&mut self, preferences: Preferences) {
+        self.preferences = preferences;
+        if self.persist_layout
+            && let Some(path) = preferences::preferences_path()
+            && let Err(message) = preferences::save(&path, &self.preferences)
+        {
+            self.status = format!("Could not save preferences: {message}");
+        }
+    }
+
+    pub fn load_path(&mut self, path: &Path) {
+        match Document::open(path) {
+            Ok(document) => {
+                self.stop_live_sources();
+                self.document = document;
+                self.bench.document_changed();
+                self.parents.clear();
+                self.derived_name = None;
+                self.cursor = 0;
+                self.anchor = None;
+                self.top_row = 0;
+                self.pan_x = 0.0;
+                self.shape.byte_offset = 0;
+                self.shape.bit_offset = 0;
+                self.raster_key = None;
+                self.period_scan = None;
+                self.patterns.clear();
+                self.pattern_key = None;
+                self.cursor_structure = None;
+                self.cursor_structure_key = None;
+                self.start_entropy_map();
+                let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                self.status = format!("Loaded {name}");
+                let remembered_shape = self.load_sidecar(path);
+                if self.preferences.detect_width_on_open && !remembered_shape && !self.document.is_empty() {
+                    self.start_period_scan();
+                }
+            }
+            Err(error) => self.status = format!("Failed to open {}: {error:#}", path.display()),
+        }
+    }
+
+    /// Restore bookmarks and the remembered view. Returns whether the sidecar
+    /// remembered a view shape.
+    fn load_sidecar(&mut self, path: &Path) -> bool {
+        match bookmarks::load(&bookmarks::sidecar_path(path)) {
+            Ok(sidecar) => {
+                let remembered_shape = sidecar.shape.is_some();
+                if let Some(memo) = &sidecar.shape {
+                    if let Some(format) = PixelFormat::from_short_name(&memo.format) {
+                        self.shape.format = format;
+                    }
+                    if let Some(palette) = Palette::from_name(&memo.palette) {
+                        self.shape.palette = palette;
+                    }
+                    self.shape.width = memo.width.clamp(1, MAX_WIDTH);
+                    self.shape.byte_offset = memo.byte_offset.min(self.document.len());
+                    self.shape.bit_offset = memo.bit_offset.min(7);
+                    self.shape.row_padding = memo.row_padding;
+                    if memo.zoom > 0.0 {
+                        self.apply_zoom_delta(memo.zoom / self.zoom);
+                    }
+                }
+                if !sidecar.bookmarks.is_empty() {
+                    self.status = format!("{} ({} bookmarks)", self.status, sidecar.bookmarks.len());
+                }
+                self.bookmarks = sidecar;
+                remembered_shape
+            }
+            Err(message) => {
+                self.status = format!("Sidecar ignored: {message}");
+                false
+            }
+        }
+    }
+
+    /// Persist bookmarks and the current shape next to the file.
+    pub fn save_sidecar(&mut self) {
+        let Some(path) = self.document.path().map(Path::to_path_buf) else { return };
+        if !self.parents.is_empty() {
+            return;
+        }
+        self.bookmarks.shape = Some(bookmarks::ShapeMemo {
+            format: self.shape.format.short_name().to_string(),
+            palette: self.shape.palette.label().to_string(),
+            width: self.shape.width,
+            byte_offset: self.shape.byte_offset,
+            bit_offset: self.shape.bit_offset,
+            row_padding: self.shape.row_padding,
+            zoom: self.zoom,
+        });
+        if let Err(message) = bookmarks::save(&bookmarks::sidecar_path(&path), &self.bookmarks) {
+            self.status = format!("Could not save bookmarks: {message}");
+        }
+    }
+
+    pub fn open_dialog(&mut self) {
+        if let Some(path) = rfd::FileDialog::new().set_title("Open file").pick_file() {
+            self.load_path(&path);
+        }
+    }
+
+    pub fn save(&mut self) {
+        self.save_sidecar();
+        match self.document.path().map(Path::to_path_buf) {
+            Some(path) => self.save_to(&path),
+            None => self.save_as_dialog(),
+        }
+    }
+
+    pub fn save_as_dialog(&mut self) {
+        let mut dialog = rfd::FileDialog::new().set_title("Save as");
+        if let Some(name) = self.document.path().and_then(|p| p.file_name()) {
+            dialog = dialog.set_file_name(name.to_string_lossy());
+        }
+        if let Some(path) = dialog.save_file() {
+            self.save_to(&path);
+        }
+    }
+
+    fn save_to(&mut self, path: &Path) {
+        match self.document.save_to(path) {
+            Ok(()) => {
+                let cursor = self.cursor;
+                let top_row = self.top_row;
+                let shape = self.shape;
+                // Reopen so the piece table collapses back to a single mapping.
+                self.load_path(path);
+                self.shape = shape;
+                self.cursor = cursor.min(self.document.len());
+                self.top_row = top_row;
+                self.status = format!("Saved {}", path.display());
+            }
+            Err(error) => self.status = format!("Save failed: {error:#}"),
+        }
+    }
+
+    pub fn new_document(&mut self) {
+        self.stop_live_sources();
+        self.bookmarks = Sidecar::default();
+        self.parents.clear();
+        self.install_document(Document::default(), None);
+        self.entropy_map = None;
+        self.status = "New empty document".to_string();
+    }
+
+    // ------------------------------------------------------------------
+    // Cursor and selection
+    // ------------------------------------------------------------------
+
+    /// Current selection as `(start, len)`, if any bytes are selected.
+    pub fn selection(&self) -> Option<(usize, usize)> {
+        let anchor = self.anchor?;
+        let start = anchor.min(self.cursor);
+        let end = anchor.max(self.cursor).min(self.document.len());
+        (end > start).then_some((start, end - start))
+    }
+
+    /// The range an operation acts on: the selection, or the byte at the cursor.
+    fn target_range(&self) -> Option<(usize, usize)> {
+        self.selection().or_else(|| (self.cursor < self.document.len()).then_some((self.cursor, 1)))
+    }
+
+    pub fn set_cursor(&mut self, position: usize, extend: bool) {
+        let position = position.min(self.document.len());
+        if extend {
+            if self.anchor.is_none() {
+                self.anchor = Some(self.cursor);
+            }
+        } else {
+            self.anchor = None;
+        }
+        self.cursor = position;
+        self.pending_low_nibble = false;
+    }
+
+    /// Start a mouse drag selection on `byte`. With Shift, the drag extends
+    /// from the existing selection's anchor instead.
+    pub fn begin_drag_selection(&mut self, byte: usize, extend: bool) {
+        let grab = if extend { self.anchor.unwrap_or(self.cursor) } else { byte };
+        self.drag_grab = Some(grab.min(self.document.len().saturating_sub(1)));
+        self.drag_selection_to(byte);
+    }
+
+    /// Select from the drag's starting byte to `byte`, both included.
+    pub fn drag_selection_to(&mut self, byte: usize) {
+        let Some(grab) = self.drag_grab else { return };
+        let len = self.document.len();
+        if byte >= grab {
+            self.anchor = Some(grab);
+            self.cursor = (byte + 1).min(len);
+        } else {
+            self.anchor = Some((grab + 1).min(len));
+            self.cursor = byte;
+        }
+        self.pending_low_nibble = false;
+    }
+
+    /// Finish a drag. Ending on the byte it started on is a click, not a
+    /// selection: the cursor goes to that byte.
+    pub fn end_drag_selection(&mut self) {
+        if let Some(grab) = self.drag_grab.take()
+            && self.selection() == Some((grab, 1))
+        {
+            self.anchor = None;
+            self.cursor = grab;
+        }
+    }
+
+    fn move_cursor_by(&mut self, delta: i64, extend: bool) {
+        let target = (self.cursor as i64 + delta).clamp(0, self.document.len() as i64) as usize;
+        self.set_cursor(target, extend);
+        self.scroll_cursor_into_view();
+        self.reveal_cursor_in_hex(false);
+    }
+
+    pub fn scroll_cursor_into_view(&mut self) {
+        let Some((row, _)) = self.shape.pixel_of_byte(self.cursor) else {
+            return;
+        };
+        let visible = self.visible_rows.max(1);
+        if row < self.top_row {
+            self.top_row = row;
+        } else if row + 1 >= self.top_row + visible {
+            self.top_row = row + 2 - visible.min(row + 2);
+        }
+    }
+
+    /// Scroll the raster so the cursor sits a third of the way down, used when
+    /// the cursor jumps from the hex dump or a pattern rather than by keys.
+    pub fn reveal_cursor_centred(&mut self) {
+        let Some((row, _)) = self.shape.pixel_of_byte(self.cursor) else {
+            return;
+        };
+        let visible = self.visible_rows.max(1);
+        if row < self.top_row || row + 1 >= self.top_row + visible {
+            self.top_row = row.saturating_sub(visible / 3);
+            self.clamp_top_row();
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Keeping the raster and the hex dump in step
+    // ------------------------------------------------------------------
+
+    /// Bytes per hex dump row.
+    pub const HEX_ROW: usize = 16;
+
+    fn hex_max_top(&self) -> usize {
+        let total = self.document.len().div_ceil(Self::HEX_ROW).max(1);
+        total.saturating_sub(self.hex_visible_rows.max(1) / 2)
+    }
+
+    /// Align the hex dump with the raster's top-left byte (after the raster scrolled).
+    pub fn sync_hex_to_raster(&mut self) {
+        self.hex_top_row = (self.raster_first_byte() / Self::HEX_ROW).min(self.hex_max_top());
+    }
+
+    /// Scroll the raster so its first row holds the hex dump's first byte (after the hex scrolled).
+    pub fn sync_raster_to_hex(&mut self) {
+        if let Some(row) = self.raster_row_of(self.hex_top_row * Self::HEX_ROW) {
+            self.top_row = row;
+            self.clamp_top_row();
+        }
+    }
+
+    /// Scroll the hex dump by whole rows and drag the raster along.
+    pub fn scroll_hex_rows(&mut self, delta: i64) {
+        self.hex_top_row = (self.hex_top_row as i64 + delta).clamp(0, self.hex_max_top() as i64) as usize;
+        self.sync_raster_to_hex();
+    }
+
+    /// Make sure the hex dump shows the cursor's row. When `centre` is set the
+    /// row is placed a third of the way down (after a click or jump); otherwise
+    /// the dump only scrolls when the cursor leaves it (keyboard navigation).
+    pub fn reveal_cursor_in_hex(&mut self, centre: bool) {
+        let rows = self.hex_visible_rows.max(1);
+        let cursor_row = self.cursor / Self::HEX_ROW;
+        let visible = cursor_row >= self.hex_top_row && cursor_row < self.hex_top_row + rows;
+        if centre || !visible {
+            self.hex_top_row = cursor_row.saturating_sub(rows / 3).min(self.hex_max_top());
+        }
+    }
+
+    /// Document offset of the raster's top-left pixel.
+    pub fn raster_first_byte(&self) -> usize {
+        (self.shape.byte_offset + self.top_row * self.shape.row_stride()).min(self.document.len())
+    }
+
+    /// Row of the raster that contains `offset`, if it lies after the origin.
+    pub fn raster_row_of(&self, offset: usize) -> Option<usize> {
+        self.shape.pixel_of_byte(offset).map(|(row, _)| row)
+    }
+
+    pub fn clamp_top_row(&mut self) {
+        let total = self.shape.total_rows(self.document.len());
+        let max_top = total.saturating_sub(self.visible_rows.max(1) / 2);
+        self.top_row = self.top_row.min(max_top);
+    }
+
+    pub fn scroll_rows(&mut self, delta_rows: f32) {
+        self.scroll_accumulator += delta_rows;
+        let whole = self.scroll_accumulator.trunc();
+        if whole != 0.0 {
+            self.scroll_accumulator -= whole;
+            let target = (self.top_row as i64 + whole as i64).max(0) as usize;
+            self.top_row = target;
+            self.clamp_top_row();
+            self.sync_hex_to_raster();
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Zoom and shape
+    // ------------------------------------------------------------------
+
+    pub fn zoom_step(&mut self, direction: i32) {
+        let index = ZOOM_LEVELS
+            .iter()
+            .position(|&level| (level - self.zoom).abs() < 1e-3)
+            .unwrap_or_else(|| ZOOM_LEVELS.iter().position(|&level| level > self.zoom).unwrap_or(ZOOM_LEVELS.len() - 1));
+        let next = (index as i32 + direction).clamp(0, ZOOM_LEVELS.len() as i32 - 1) as usize;
+        self.zoom = ZOOM_LEVELS[next];
+    }
+
+    pub fn apply_zoom_delta(&mut self, factor: f32) {
+        let target = (self.zoom * factor).clamp(ZOOM_LEVELS[0], ZOOM_LEVELS[ZOOM_LEVELS.len() - 1]);
+        // Snap to the nearest level so pixels stay crisp.
+        self.zoom = ZOOM_LEVELS
+            .iter()
+            .copied()
+            .min_by(|a, b| (a - target).abs().total_cmp(&(b - target).abs()))
+            .unwrap_or(1.0);
+    }
+
+    fn set_width(&mut self, width: usize) {
+        self.shape.width = width.clamp(1, MAX_WIDTH);
+        self.clamp_top_row();
+    }
+
+    fn adjust_bit_offset(&mut self, delta: i64) {
+        let total_bits = (self.shape.byte_offset * 8) as i64 + self.shape.bit_offset as i64 + delta;
+        let total_bits = total_bits.clamp(0, (self.document.len() * 8) as i64) as usize;
+        self.shape.byte_offset = total_bits / 8;
+        self.shape.bit_offset = (total_bits % 8) as u32;
+    }
+
+    /// Make the cursor the top-left pixel of the view.
+    pub fn align_view_to_cursor(&mut self) {
+        self.shape.byte_offset = self.cursor.min(self.document.len());
+        self.shape.bit_offset = 0;
+        self.top_row = 0;
+        self.sync_hex_to_raster();
+        self.status = format!("View origin set to {:#x}", self.shape.byte_offset);
+    }
+
+    // ------------------------------------------------------------------
+    // Editing operations
+    // ------------------------------------------------------------------
+
+    fn after_edit(&mut self, cursor: usize) {
+        self.cursor = cursor.min(self.document.len());
+        self.anchor = None;
+        self.pending_low_nibble = false;
+        self.clamp_top_row();
+        self.scroll_cursor_into_view();
+        self.reveal_cursor_in_hex(false);
+    }
+
+    pub fn undo(&mut self) {
+        if let Some(position) = self.document.undo() {
+            self.after_edit(position);
+            self.status = "Undid the last edit".to_string();
+        }
+    }
+
+    pub fn redo(&mut self) {
+        if let Some(position) = self.document.redo() {
+            self.after_edit(position);
+            self.status = "Redid the edit".to_string();
+        }
+    }
+
+    pub fn delete_target(&mut self) {
+        if let Some((start, len)) = self.target_range() {
+            self.document.delete(start, len);
+            self.after_edit(start);
+            self.status = format!("Deleted {len} bytes at {start:#x}");
+        }
+    }
+
+    fn backspace(&mut self) {
+        if self.selection().is_some() {
+            self.delete_target();
+        } else if self.cursor > 0 {
+            self.document.delete(self.cursor - 1, 1);
+            self.after_edit(self.cursor - 1);
+        }
+    }
+
+    fn insert_bytes_at_cursor(&mut self, bytes: &[u8]) {
+        let at = self.cursor.min(self.document.len());
+        self.document.insert(at, bytes);
+        self.after_edit(at + bytes.len());
+        self.status = format!("Inserted {} bytes at {at:#x}", bytes.len());
+    }
+
+    pub fn insert_from_fields(&mut self) {
+        let Some(pattern) = ops::parse_hex(&self.insert_value_text) else {
+            self.status = "Insert value must be hex, e.g. 00 or DEADBEEF".to_string();
+            return;
+        };
+        let pattern = if pattern.is_empty() { vec![0u8] } else { pattern };
+        let bytes: Vec<u8> = pattern.iter().cycle().take(self.insert_count.max(1)).copied().collect();
+        self.insert_bytes_at_cursor(&bytes);
+    }
+
+    pub fn fill_target(&mut self) {
+        let Some(pattern) = ops::parse_hex(&self.fill_value_text).filter(|p| !p.is_empty()) else {
+            self.status = "Fill value must be hex".to_string();
+            return;
+        };
+        if let Some((start, len)) = self.target_range() {
+            let bytes: Vec<u8> = pattern.iter().cycle().take(len).copied().collect();
+            self.document.overwrite(start, &bytes);
+            self.status = format!("Filled {len} bytes at {start:#x}");
+            self.restore_selection(start, len);
+        }
+    }
+
+    /// Apply a same-length transformation to the selection (or cursor byte).
+    pub fn invert_target(&mut self) {
+        self.transform_target("Inverted", |bytes| {
+            let mut out = bytes.to_vec();
+            ops::invert_bits(&mut out);
+            out
+        });
+    }
+
+    pub fn reverse_target(&mut self) {
+        self.transform_target("Reversed bytes", |bytes| bytes.iter().rev().copied().collect());
+    }
+
+    pub fn mirror_target(&mut self) {
+        self.transform_target("Mirrored bits", |bytes| {
+            let mut out = bytes.to_vec();
+            ops::reverse_bits_in_bytes(&mut out);
+            out
+        });
+    }
+
+    pub fn reset_origin(&mut self) {
+        self.shape.byte_offset = 0;
+        self.shape.bit_offset = 0;
+        self.top_row = 0;
+        self.sync_hex_to_raster();
+    }
+
+    /// Apply the best detected period with a pixel format guessed from it:
+    /// strides divisible by 4 read as RGBA, by 3 as RGB, otherwise grey.
+    pub fn guess_image_shape(&mut self) {
+        let Some(best) = self.period_scan.as_ref().and_then(|scan| scan.candidates.first().copied()) else {
+            self.start_period_scan();
+            self.status = "Scanning for a period first; run Guess image again when the chart appears".to_string();
+            return;
+        };
+        self.shape.format = if best.period.is_multiple_of(4) && best.period >= 64 {
+            PixelFormat::Rgba8
+        } else if best.period.is_multiple_of(3) && best.period >= 48 {
+            PixelFormat::Rgb8
+        } else {
+            PixelFormat::Gray8
+        };
+        self.apply_period(best.period);
+        self.status = format!("Guessed {} at {} bytes per row", self.shape.format.label(), best.period);
+    }
+
+    /// Throw away the current scan so the next frame rescans the view.
+    pub fn force_rescan(&mut self) {
+        self.pattern_key = None;
+        self.patterns.clear();
+        self.cursor_structure_key = None;
+    }
+
+    // ------------------------------------------------------------------
+    // Search
+    // ------------------------------------------------------------------
+
+    fn search_needle(&mut self) -> Option<Vec<u8>> {
+        match search::needle_for(self.search_mode, &self.search_text, self.search_little_endian) {
+            Ok(needle) => Some(needle),
+            Err(message) => {
+                self.status = message;
+                None
+            }
+        }
+    }
+
+    fn show_match(&mut self, at: usize, len: usize, index_hint: &str) {
+        self.anchor = Some(at);
+        self.cursor = at + len;
+        self.pending_low_nibble = false;
+        self.reveal_cursor_centred();
+        self.reveal_cursor_in_hex(true);
+        self.status = format!("Match at {at:#x}{index_hint}");
+    }
+
+    pub fn find_next(&mut self) {
+        let Some(needle) = self.search_needle() else { return };
+        let from = self.selection().map(|(start, _)| start + 1).unwrap_or(self.cursor);
+        let found = search::find_next(&mut self.document, &needle, from).or_else(|| search::find_next(&mut self.document, &needle, 0));
+        match found {
+            Some(at) => {
+                let total = self.search_count.unwrap_or_else(|| search::count_matches(&mut self.document, &needle, 10_000));
+                self.search_count = Some(total);
+                self.show_match(at, needle.len(), &format!(" ({total} in file)"));
+            }
+            None => self.status = "No match".to_string(),
+        }
+    }
+
+    pub fn find_previous(&mut self) {
+        let Some(needle) = self.search_needle() else { return };
+        let before = self.selection().map(|(start, _)| start).unwrap_or(self.cursor);
+        let document_len = self.document.len();
+        let found = search::find_previous(&mut self.document, &needle, before)
+            .or_else(|| search::find_previous(&mut self.document, &needle, document_len));
+        match found {
+            Some(at) => self.show_match(at, needle.len(), ""),
+            None => self.status = "No match".to_string(),
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Bookmarks
+    // ------------------------------------------------------------------
+
+    /// Open the naming prompt for a bookmark at the selection or cursor.
+    pub fn begin_bookmark(&mut self) {
+        let (offset, len) = self.selection().unwrap_or((self.cursor, 0));
+        let suggested = self
+            .pattern_at(offset)
+            .map(|finding| finding.title.clone())
+            .unwrap_or_else(|| format!("mark {:#x}", offset));
+        self.bookmark_prompt = Some((offset, len, suggested));
+    }
+
+    pub fn add_bookmark(&mut self, offset: usize, len: usize, name: String) {
+        self.bookmarks.set(Bookmark { offset, len, name: name.clone(), note: String::new() });
+        self.save_sidecar();
+        self.status = format!("Bookmarked {name} at {offset:#x}");
+    }
+
+    pub fn remove_bookmark(&mut self, offset: usize) {
+        if self.bookmarks.remove(offset) {
+            self.save_sidecar();
+        }
+    }
+
+    pub fn jump_to_bookmark(&mut self, offset: usize) {
+        if let Some(bookmark) = self.bookmarks.at(offset).cloned() {
+            if bookmark.len > 1 {
+                self.anchor = Some(bookmark.offset);
+                self.cursor = bookmark.offset + bookmark.len;
+            } else {
+                self.set_cursor(bookmark.offset, false);
+            }
+            self.reveal_cursor_centred();
+            self.reveal_cursor_in_hex(true);
+            self.status = format!("Bookmark: {}", bookmark.name);
+        }
+    }
+
+    pub fn goto_bookmark(&mut self, forward: bool) {
+        let here = self.selection().map(|(start, _)| start).unwrap_or(self.cursor);
+        let next = if forward { self.bookmarks.next_after(here) } else { self.bookmarks.previous_before(here) };
+        match next.map(|b| b.offset) {
+            Some(offset) => self.jump_to_bookmark(offset),
+            None => self.status = "No bookmarks yet (Cmd+B adds one)".to_string(),
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Structure at the cursor
+    // ------------------------------------------------------------------
+
+    /// Run the registry's parsers at the cursor when it moves, so the
+    /// inspector can show a field tree even for things the window scan did
+    /// not anchor on.
+    fn refresh_cursor_structure(&mut self) {
+        /// Bytes read when parsing at the cursor directly.
+        const CURSOR_READ: usize = 256 * 1024;
+        /// Bytes read when re-parsing a structure the scan found; large enough
+        /// for big images and executables that run past the scan window.
+        const REPARSE_READ: usize = 16 * 1024 * 1024;
+        let key = (self.cursor, self.document.version());
+        if self.cursor_structure_key == Some(key) {
+            return;
+        }
+        self.cursor_structure_key = Some(key);
+        // The most confident parsed structure covering the cursor, innermost
+        // among equals, so a weak chance match cannot hide a real one.
+        // Weak findings (chance matches) never stand in as "the" structure.
+        let scanned = self
+            .patterns_in(self.cursor, self.cursor + 1)
+            .filter(|finding| !finding.fields.is_empty() && !finding.weak())
+            .min_by(|a, b| b.confidence.total_cmp(&a.confidence).then(a.len.cmp(&b.len)))
+            .cloned();
+        self.cursor_structure = match scanned {
+            Some(finding) => {
+                // The scan only saw a window around the view, so its parse can
+                // stop short of a large structure. Parse again from the
+                // document with a generous read, keeping the same parser.
+                let bytes = self.document.read_range(finding.start, REPARSE_READ);
+                let reparsed = self.registry.parse_at(&bytes, finding.start).into_iter().find(|f| f.id == finding.id);
+                Some(reparsed.filter(|f| f.len >= finding.len).unwrap_or(finding))
+            }
+            None if self.cursor < self.document.len() => {
+                let bytes = self.document.read_range(self.cursor, CURSOR_READ);
+                let mut parsed = self.registry.parse_at(&bytes, self.cursor);
+                parsed.retain(|finding| !finding.weak());
+                parsed.sort_by(|a, b| b.confidence.total_cmp(&a.confidence).then(b.len.cmp(&a.len)));
+                parsed.into_iter().next()
+            }
+            None => None,
+        };
+    }
+
+    /// Media that starts at, or contains, the cursor: findings covering the
+    /// cursor are tried first (smallest first), then the selection start,
+    /// then the cursor itself. Cached per cursor position and edit.
+    pub fn media_at_cursor(&mut self) -> Option<(usize, MediaFormat)> {
+        const PROBE_LEN: usize = 64 * 1024;
+        let key = (self.cursor, self.document.version());
+        if let Some((cached_key, result)) = &self.media_hint
+            && *cached_key == key
+        {
+            return result.clone();
+        }
+        let mut candidates: Vec<usize> = Vec::new();
+        let mut covering: Vec<&Finding> = self.patterns_in(self.cursor, self.cursor + 1).collect();
+        covering.sort_by_key(|finding| finding.len);
+        candidates.extend(covering.iter().map(|finding| finding.start));
+        if let Some((start, _)) = self.selection() {
+            candidates.push(start);
+        }
+        candidates.push(self.cursor);
+        candidates.dedup();
+        let mut found = None;
+        for start in candidates {
+            let head = self.document.read_range(start, PROBE_LEN);
+            if let Some(format) = media::detect(&head) {
+                found = Some((start, format));
+                break;
+            }
+        }
+        self.media_hint = Some((key, found.clone()));
+        found
+    }
+
+    /// Open the media at the cursor in the media window.
+    ///
+    /// Everything from the media's start to the end of the document is handed
+    /// over (capped), because every decoder stops at its format's own end:
+    /// PNG at IEND, WAV at its data size, ffmpeg at the container's end.
+    /// Lengths from findings are not used: they come from scans of a window
+    /// around the view and can stop short of a large file, and a finding that
+    /// merely starts at the same offset (such as a high-entropy region) says
+    /// nothing about where the media ends.
+    pub fn open_media(&mut self) {
+        const MAX_MEDIA: usize = 512 * 1024 * 1024;
+        let Some((start, format)) = self.media_at_cursor() else {
+            self.status = "No image, audio or video starts at the cursor".to_string();
+            return;
+        };
+        let len = (self.document.len() - start).min(MAX_MEDIA);
+        let bytes = self.document.read_range(start, len);
+        self.status = format!("{} {} at {start:#x}", format.kind.verb(), format.name);
+        self.media.open(MediaRequest { format, start, bytes, source_name: self.display_name() });
+    }
+
+    /// A texture for the image finding at the cursor, decoded once per image
+    /// and document version.
+    pub fn image_preview_texture(&mut self, ctx: &Context, finding: &Finding) -> Option<TextureHandle> {
+        const PREVIEW_SIZE: u32 = 160;
+        let key = (finding.start, self.document.version());
+        if let Some((start, version, texture)) = &self.image_preview
+            && (*start, *version) == key
+        {
+            return Some(texture.clone());
+        }
+        // Read past the finding's length: it may be cut short by the scan window.
+        let bytes = self.document.read_range(finding.start, 64 * 1024 * 1024);
+        let preview = parsers::image_preview(&bytes, PREVIEW_SIZE)?;
+        let image = ColorImage::from_rgba_unmultiplied([preview.width as usize, preview.height as usize], &preview.rgba);
+        let texture = ctx.load_texture("image-preview", image, TextureOptions::LINEAR);
+        self.image_preview = Some((key.0, key.1, texture.clone()));
+        Some(texture)
+    }
+
+    /// Right-click menu shared by the raster and the hex dump, for the byte at
+    /// `offset` (which becomes the cursor if it is outside the selection).
+    pub fn context_menu(&mut self, ui: &mut egui::Ui, offset: usize) {
+        let in_selection = self.selection().is_some_and(|(start, len)| offset >= start && offset < start + len);
+        if !in_selection && self.cursor != offset {
+            self.set_cursor(offset, false);
+            self.reveal_cursor_in_hex(true);
+        }
+        let finding = self.pattern_at(offset).cloned();
+        ui.label(RichText::new(format!("{offset:#x}")).monospace().color(theme::TEXT_DIM));
+        if let Some((start, format)) = self.media_at_cursor() {
+            if ui.button(RichText::new(format!("{} ({} at {start:#x})", format.kind.verb(), format.name)).strong()).clicked() {
+                self.open_media();
+                ui.close();
+            }
+            ui.separator();
+        }
+        if let Some(finding) = &finding {
+            ui.label(RichText::new(&finding.title).color(finding.category.colour()));
+            if ui.button("Select this finding").clicked() {
+                self.select_pattern(finding);
+                ui.close();
+            }
+            if finding.category == Category::Compressed && ui.button("Decompress").clicked() {
+                self.toggle_compressed_view();
+                ui.close();
+            }
+            ui.separator();
+        }
+        if self.selection().is_some() {
+            if ui.button("Copy as hex").clicked() {
+                let ctx = ui.ctx().clone();
+                self.copy(&ctx);
+                ui.close();
+            }
+            if ui.button("Extract to file…").clicked() {
+                self.export_dialog(false);
+                ui.close();
+            }
+            if ui.button("Fill…").on_hover_text("Uses the Fill pattern in the toolbar").clicked() {
+                self.fill_target();
+                ui.close();
+            }
+            if ui.button("Invert bits").clicked() {
+                self.invert_target();
+                ui.close();
+            }
+            if ui.button("Delete").clicked() {
+                self.delete_target();
+                ui.close();
+            }
+            ui.menu_button("Compress as", |ui| {
+                for codec in Codec::COMPRESSIBLE {
+                    if ui.button(codec.label()).clicked() {
+                        self.compress_selection(codec);
+                        ui.close();
+                    }
+                }
+            });
+            ui.separator();
+        }
+        ui.menu_button("Analyse", |ui| {
+            if ui.add_enabled(self.assistant_available(), egui::Button::new("Ask about this…")).on_disabled_hover_text(crate::assistant::NO_KEY_MESSAGE).clicked() {
+                self.dock.open = true;
+                self.dock.tab = DockTab::Assistant;
+                self.dock.question = format!("What is at {:#x}?", self.selection().map(|(s, _)| s).unwrap_or(offset));
+                ui.close();
+            }
+            if ui.button("Disassemble here").clicked() {
+                self.dock.open = true;
+                self.dock.tab = DockTab::Disassembly;
+                ui.close();
+            }
+            if ui.button("Apply template here").clicked() {
+                let source = self.bench.template_source.clone();
+                self.apply_template_source(&source);
+                ui.close();
+            }
+            if ui.add_enabled(self.selection().is_some(), egui::Button::new("Infer template from selection")).clicked() {
+                self.infer_template();
+                ui.close();
+            }
+            if ui.button("Statistics of selection").clicked() {
+                self.dock.open = true;
+                self.dock.tab = DockTab::Statistics;
+                crate::analysis_stats::start_statistics(self);
+                ui.close();
+            }
+            if ui.button("Strings in selection").clicked() {
+                self.dock.open = true;
+                self.dock.tab = DockTab::Strings;
+                ui.close();
+            }
+            if ui.button("Find XOR key for selection").clicked() {
+                self.dock.open = true;
+                self.dock.tab = DockTab::Xor;
+                ui.close();
+            }
+            if ui.button("Protocol analysis of selection").clicked() {
+                self.dock.open = true;
+                self.dock.tab = DockTab::Protocol;
+                crate::analysis_tools::start_protocol(self);
+                ui.close();
+            }
+            if ui.button("Checksums of selection").clicked() {
+                self.dock.open = true;
+                self.dock.tab = DockTab::Checksums;
+                ui.close();
+            }
+            if ui.button("Plot").clicked() {
+                self.open_plot();
+                ui.close();
+            }
+            if ui.button("Play as audio").clicked() {
+                self.play_bytes_as_audio();
+                ui.close();
+            }
+        });
+        if ui.button("Set view origin here").clicked() {
+            self.align_view_to_cursor();
+            ui.close();
+        }
+        if ui.button("Bookmark…").clicked() {
+            self.begin_bookmark();
+            ui.close();
+        }
+        if ui.button("Probe for compression").clicked() {
+            self.probe_at_cursor();
+            ui.close();
+        }
+        if ui.button("Detect width from here").clicked() {
+            self.align_view_to_cursor();
+            self.start_period_scan();
+            ui.close();
+        }
+    }
+
+    /// Scripted actions registered by plugins (none until a plugin host is attached).
+    pub fn plugin_actions(&self) -> Vec<PluginAction> {
+        let Some(host) = &self.plugin_host else { return Vec::new() };
+        let Ok(host) = host.lock() else { return Vec::new() };
+        host.actions()
+            .into_iter()
+            .map(|action| PluginAction { id: action.id, title: format!("{} ({})", action.title, action.plugin) })
+            .collect()
+    }
+
+    pub fn run_plugin_action(&mut self, id: &str) {
+        let Some(host) = self.plugin_host.clone() else {
+            self.status = "No plugin host".to_string();
+            return;
+        };
+        let Ok(mut host) = host.lock() else {
+            self.status = "Plugin host is unavailable".to_string();
+            return;
+        };
+        let result = host.run_action(id, self);
+        for line in host.take_log() {
+            self.status = line;
+        }
+        if let Err(message) = result {
+            self.status = format!("Plugin action failed: {message}");
+        }
+    }
+
+    pub fn reload_plugins(&mut self) {
+        let Some(host) = self.plugin_host.clone() else {
+            self.status = "No plugin host".to_string();
+            return;
+        };
+        let reports = match host.lock() {
+            Ok(mut locked) => locked.reload(),
+            Err(_) => {
+                self.status = "Plugin host is unavailable".to_string();
+                return;
+            }
+        };
+        self.registry = Arc::new(build_registry_with(Some(&host)));
+        self.force_rescan();
+        let failed = failed_reports(&reports);
+        self.status = if failed.is_empty() {
+            format!("Reloaded {} plugin files", reports.len())
+        } else {
+            format!("Plugins reloaded with errors: {failed}")
+        };
+    }
+
+    fn transform_target(&mut self, label: &str, transform: impl FnOnce(&[u8]) -> Vec<u8>) {
+        if let Some((start, len)) = self.target_range() {
+            let original = self.document.read_range(start, len);
+            let transformed = transform(&original);
+            self.document.overwrite(start, &transformed);
+            self.status = format!("{label}: {len} bytes at {start:#x}");
+            self.restore_selection(start, len);
+        }
+    }
+
+    pub fn restore_selection(&mut self, start: usize, len: usize) {
+        self.pending_low_nibble = false;
+        if len > 1 {
+            self.anchor = Some(start);
+            self.cursor = start + len;
+        } else {
+            self.anchor = None;
+            self.cursor = start;
+        }
+    }
+
+    /// Cut the selection out and re-insert it `delta` bytes away.
+    fn move_target(&mut self, delta: i64) {
+        let Some((start, len)) = self.target_range() else { return };
+        let bytes = self.document.read_range(start, len);
+        let remaining = self.document.len() - len;
+        let destination = (start as i64 + delta).clamp(0, remaining as i64) as usize;
+        if destination == start {
+            return;
+        }
+        // Two undo records; acceptable for an explicit move.
+        self.document.delete(start, len);
+        self.document.insert(destination, &bytes);
+        self.restore_selection(destination, len);
+        self.scroll_cursor_into_view();
+        self.status = format!("Moved {len} bytes from {start:#x} to {destination:#x}");
+    }
+
+    pub fn copy(&mut self, ctx: &Context) {
+        if let Some((start, len)) = self.target_range() {
+            self.clipboard = self.document.read_range(start, len);
+            ctx.copy_text(ops::to_hex_string(&self.clipboard));
+            self.status = format!("Copied {len} bytes");
+        }
+    }
+
+    pub fn cut(&mut self, ctx: &Context) {
+        self.copy(ctx);
+        self.delete_target();
+    }
+
+    pub fn paste(&mut self, system_text: Option<String>) {
+        let bytes = system_text
+            .as_deref()
+            .and_then(ops::parse_hex)
+            .filter(|b| !b.is_empty())
+            .unwrap_or_else(|| self.clipboard.clone());
+        if bytes.is_empty() {
+            self.status = "Clipboard is empty".to_string();
+            return;
+        }
+        if let Some((start, len)) = self.selection() {
+            self.document.replace(start, len, &bytes);
+            self.after_edit(start + bytes.len());
+        } else if self.edit_mode == EditMode::Insert {
+            self.insert_bytes_at_cursor(&bytes);
+        } else {
+            let at = self.cursor;
+            self.document.overwrite(at, &bytes);
+            self.after_edit(at + bytes.len());
+        }
+        self.status = format!("Pasted {} bytes", bytes.len());
+    }
+
+    /// Handle a typed hex digit: overwrite or insert one nibble at the cursor.
+    fn type_hex_digit(&mut self, digit: u8) {
+        let at_end = self.cursor >= self.document.len();
+        if self.pending_low_nibble && !at_end {
+            let current = self.document.byte_at(self.cursor).unwrap_or(0);
+            self.document.overwrite_byte_coalescing(self.cursor, (current & 0xF0) | digit);
+            self.pending_low_nibble = false;
+            self.cursor += 1;
+        } else if self.edit_mode == EditMode::Insert || at_end {
+            self.document.insert(self.cursor.min(self.document.len()), &[digit << 4]);
+            self.pending_low_nibble = true;
+        } else {
+            let current = self.document.byte_at(self.cursor).unwrap_or(0);
+            self.document.overwrite(self.cursor, &[(digit << 4) | (current & 0x0F)]);
+            self.pending_low_nibble = true;
+        }
+        self.anchor = None;
+        self.scroll_cursor_into_view();
+    }
+
+    pub fn toggle_bit_at_cursor(&mut self, bit: u32) {
+        if let Some(byte) = self.document.byte_at(self.cursor) {
+            self.document.overwrite(self.cursor, &[byte ^ (1 << bit)]);
+        }
+    }
+
+    fn go_to(&mut self) {
+        match ops::parse_offset(&self.goto_text) {
+            Some(offset) => {
+                self.set_cursor(offset, false);
+                self.reveal_cursor_centred();
+                self.reveal_cursor_in_hex(true);
+                self.status = format!("Cursor at {:#x}", self.cursor);
+            }
+            None => self.status = "Go to: enter a decimal or 0x-prefixed hex offset".to_string(),
+        }
+    }
+
+    pub fn select_all(&mut self) {
+        self.anchor = Some(0);
+        self.cursor = self.document.len();
+    }
+
+    // ------------------------------------------------------------------
+    // Compression
+    // ------------------------------------------------------------------
+
+    /// The verified compressed stream under the cursor, if any.
+    pub fn compressed_stream_at_cursor(&self) -> Option<Finding> {
+        self.patterns_in(self.cursor, self.cursor + 1)
+            .find(|pattern| pattern.category == Category::Compressed)
+            .cloned()
+    }
+
+    /// Where a decompression would start: the stream covering the cursor, else
+    /// the selection start, else the cursor.
+    fn decompress_start(&self) -> usize {
+        if let Some(stream) = self.compressed_stream_at_cursor() {
+            stream.start
+        } else if let Some((start, _)) = self.selection() {
+            start
+        } else {
+            self.cursor
+        }
+    }
+
+    fn decompress_target(&mut self) -> Result<(usize, Decompressed), String> {
+        let start = self.decompress_start();
+        if start >= self.document.len() {
+            return Err("Nothing to decompress at the end of the document".to_string());
+        }
+        let input = self.document.read_range(start, DECOMPRESS_INPUT_MAX);
+        compress::probe(&input, compress::MEASURE_MAX_OUT)
+            .into_iter()
+            .next()
+            .map(|result| (start, result))
+            .ok_or_else(|| format!("Nothing decodes at {start:#x} (tried gzip, zlib, bzip2, xz, zstd, LZ4, raw deflate and lzma)"))
+    }
+
+    fn describe_decompression(start: usize, result: &Decompressed) -> String {
+        let note = if result.truncated {
+            " (cut at the 64 MiB limit)"
+        } else if !result.complete {
+            " (stream was incomplete)"
+        } else {
+            ""
+        };
+        format!(
+            "{} at {start:#x}: {} compressed to {} decompressed{note}",
+            result.codec.label(),
+            compress::human_bytes(result.consumed),
+            compress::human_bytes(result.data.len())
+        )
+    }
+
+    /// Replace the whole view with the decompressed bytes, keeping the current
+    /// document on a stack so Back returns to it.
+    pub fn decompress_to_new_document(&mut self) {
+        match self.decompress_target() {
+            Ok((start, result)) => {
+                let child_name = format!("{} › {}@{start:#x}", self.display_name(), result.codec.label());
+                let status = Self::describe_decompression(start, &result);
+                self.open_derived(result.data, child_name);
+                self.status = status;
+            }
+            Err(message) => self.status = message,
+        }
+    }
+
+    /// Open `bytes` as a child of the current document: the current one goes
+    /// on the parent stack with its place and analysis, and Back returns to it.
+    pub fn open_derived(&mut self, bytes: Vec<u8>, name: String) {
+        let parent = ParentDocument {
+            document: std::mem::take(&mut self.document),
+            shape: self.shape,
+            cursor: self.cursor,
+            top_row: self.top_row,
+            name: self.display_name(),
+            patterns: std::mem::take(&mut self.patterns),
+            pattern_key: self.pattern_key.take(),
+            period_scan: self.period_scan.take(),
+            entropy_map: self.entropy_map.take(),
+        };
+        self.parents.push(parent);
+        self.install_document(Document::from_bytes(bytes), Some(name.clone()));
+        self.status = format!("Opened {name}");
+    }
+
+    /// Open `bytes` as a new top-level document (from a URL, device or capture).
+    pub fn open_bytes(&mut self, bytes: Vec<u8>, name: String) {
+        self.stop_live_sources();
+        self.parents.clear();
+        self.bookmarks = Sidecar::default();
+        self.install_document(Document::from_bytes(bytes), Some(name.clone()));
+        self.status = format!("Opened {name}");
+    }
+
+    /// Replace the document's bytes in place, keeping the view where it was:
+    /// for live sources that grow or change underneath the user.
+    pub fn refresh_bytes(&mut self, document: Document) {
+        let (cursor, anchor, top_row, shape) = (self.cursor, self.anchor, self.top_row, self.shape);
+        let name = self.derived_name.clone();
+        self.install_document(document, name);
+        self.shape = shape;
+        self.shape.byte_offset = self.shape.byte_offset.min(self.document.len());
+        self.cursor = cursor.min(self.document.len());
+        self.anchor = anchor.map(|a| a.min(self.document.len()));
+        self.top_row = top_row;
+        self.clamp_top_row();
+    }
+
+    /// Move the cursor to `offset` and bring it into view in both panes.
+    pub fn jump_to_offset(&mut self, offset: usize) {
+        self.set_cursor(offset.min(self.document.len()), false);
+        self.reveal_cursor_centred();
+        self.reveal_cursor_in_hex(true);
+    }
+
+    /// Swap the document being viewed and reset everything derived from it.
+    fn install_document(&mut self, document: Document, derived_name: Option<String>) {
+        self.document = document;
+        self.bench.document_changed();
+        self.derived_name = derived_name;
+        self.cursor = 0;
+        self.anchor = None;
+        self.top_row = 0;
+        self.pan_x = 0.0;
+        self.shape.byte_offset = 0;
+        self.shape.bit_offset = 0;
+        self.raster_key = None;
+        self.period_scan = None;
+        self.patterns.clear();
+        self.pattern_key = None;
+        self.hex_top_row = 0;
+        self.start_entropy_map();
+    }
+
+    pub fn back_to_parent(&mut self) {
+        let Some(parent) = self.parents.pop() else {
+            self.status = "Already at the top-level document".to_string();
+            return;
+        };
+        let name = (!self.parents.is_empty()).then_some(parent.name.clone());
+        self.install_document(parent.document, name);
+        self.shape = parent.shape;
+        self.cursor = parent.cursor.min(self.document.len());
+        self.top_row = parent.top_row;
+        self.patterns = parent.patterns;
+        self.pattern_key = parent.pattern_key;
+        self.period_scan = parent.period_scan;
+        if parent.entropy_map.is_some() {
+            self.entropy_map = parent.entropy_map;
+        }
+        self.clamp_top_row();
+        self.reveal_cursor_in_hex(true);
+        self.status = format!("Back to {}", parent.name);
+    }
+
+    /// Replace the compressed bytes with their decompressed form, as one
+    /// undoable edit. Needs an exact stream extent, which zstd and LZ4 cannot
+    /// give; those are opened as a new document instead.
+    pub fn decompress_in_place(&mut self) {
+        match self.decompress_target() {
+            Ok((start, result)) => {
+                if !result.consumed_exact {
+                    self.status = format!(
+                        "{} streams have no exact end marker; opening as a new document instead",
+                        result.codec.label()
+                    );
+                    self.decompress_to_new_document();
+                    return;
+                }
+                let description = Self::describe_decompression(start, &result);
+                let len = result.data.len();
+                self.inplace_codec = Some(result.codec);
+                self.document.replace(start, result.consumed, &result.data);
+                self.restore_selection(start, len);
+                self.reveal_cursor_centred();
+                self.reveal_cursor_in_hex(true);
+                self.status = format!("Replaced in place: {description}");
+            }
+            Err(message) => self.status = message,
+        }
+    }
+
+    /// Compress the selection with the chosen codec, replacing it in place.
+    pub fn compress_selection(&mut self, codec: Codec) {
+        let Some((start, len)) = self.selection() else {
+            self.status = "Select the bytes to compress first".to_string();
+            return;
+        };
+        let data = self.document.read_range(start, len);
+        match compress::compress(codec, &data) {
+            Ok(packed) => {
+                let packed_len = packed.len();
+                self.document.replace(start, len, &packed);
+                self.restore_selection(start, packed_len);
+                self.status = format!(
+                    "Compressed {} to {} with {}",
+                    compress::human_bytes(len),
+                    compress::human_bytes(packed_len),
+                    codec.label()
+                );
+            }
+            Err(message) => self.status = message,
+        }
+    }
+
+    /// One key flips between the compressed bytes and their contents: inside
+    /// a derived document it goes back, otherwise it decompresses here.
+    pub fn toggle_compressed_view(&mut self) {
+        if self.parents.is_empty() {
+            self.decompress_to_new_document();
+        } else {
+            self.back_to_parent();
+        }
+    }
+
+    /// Select exactly the verified stream under the cursor.
+    pub fn select_stream_at_cursor(&mut self) {
+        if let Some(stream) = self.compressed_stream_at_cursor() {
+            self.select_pattern(&stream);
+        } else {
+            self.status = "The cursor is not inside a recognised compressed stream".to_string();
+        }
+    }
+
+    /// Re-pack the selection with the codec of the last in-place decompression.
+    pub fn recompress_selection(&mut self) {
+        let codec = self.inplace_codec.unwrap_or(self.compress_codec);
+        self.compress_selection(codec);
+    }
+
+    /// Bytes of the selection, else of the stream under the cursor.
+    fn extract_source(&mut self) -> Option<(usize, Vec<u8>, &'static str)> {
+        if let Some((start, len)) = self.selection() {
+            return Some((start, self.document.read_range(start, len), "selection"));
+        }
+        let stream = self.compressed_stream_at_cursor()?;
+        Some((stream.start, self.document.read_range(stream.start, stream.len), "stream"))
+    }
+
+    /// Write the selection (or the stream under the cursor) to `path`.
+    pub fn export_bytes_to(&mut self, path: &Path) {
+        let Some((start, bytes, what)) = self.extract_source() else {
+            self.status = "Select some bytes, or put the cursor in a compressed stream, to extract".to_string();
+            return;
+        };
+        match std::fs::write(path, &bytes) {
+            Ok(()) => self.status = format!("Saved {} ({} from {start:#x}) to {}", compress::human_bytes(bytes.len()), what, path.display()),
+            Err(error) => self.status = format!("Could not write {}: {error}", path.display()),
+        }
+    }
+
+    /// Decompress the block at the cursor straight to `path`, without opening it.
+    pub fn export_decompressed_to(&mut self, path: &Path) {
+        match self.decompress_target() {
+            Ok((start, result)) => match std::fs::write(path, &result.data) {
+                Ok(()) => {
+                    self.status = format!("{} saved to {}", Self::describe_decompression(start, &result), path.display());
+                }
+                Err(error) => self.status = format!("Could not write {}: {error}", path.display()),
+            },
+            Err(message) => self.status = message,
+        }
+    }
+
+    /// Copy the selection or stream bytes to the clipboard as hex.
+    pub fn copy_extract_as_hex(&mut self, ctx: &Context) {
+        if let Some((start, bytes, what)) = self.extract_source() {
+            self.clipboard = bytes.clone();
+            ctx.copy_text(ops::to_hex_string(&bytes));
+            self.status = format!("Copied {} ({what} at {start:#x}) as hex", compress::human_bytes(bytes.len()));
+        } else {
+            self.status = "Nothing to copy: select bytes or put the cursor in a stream".to_string();
+        }
+    }
+
+    /// Copy the decompressed contents of the block at the cursor as hex.
+    pub fn copy_decompressed_as_hex(&mut self, ctx: &Context) {
+        match self.decompress_target() {
+            Ok((start, result)) => {
+                self.clipboard = result.data.clone();
+                ctx.copy_text(ops::to_hex_string(&result.data));
+                self.status = format!("Copied: {}", Self::describe_decompression(start, &result));
+            }
+            Err(message) => self.status = message,
+        }
+    }
+
+    fn suggested_export_name(&self, suffix: &str) -> String {
+        let base = self.display_name().replace([' ', '›', '/'], "_");
+        let at = self.selection().map(|(start, _)| start).unwrap_or(self.cursor);
+        format!("{base}-{at:#x}{suffix}")
+    }
+
+    pub fn export_dialog(&mut self, decompressed: bool) {
+        let suffix = if decompressed {
+            ".decompressed.bin".to_string()
+        } else {
+            match self.compressed_stream_at_cursor().filter(|_| self.selection().is_none()) {
+                Some(stream) => format!(".{}", stream.title.split(' ').next().unwrap_or("bin")),
+                None => ".bin".to_string(),
+            }
+        };
+        let name = self.suggested_export_name(&suffix);
+        let dialog = rfd::FileDialog::new().set_title("Extract bytes to").set_file_name(name);
+        if let Some(path) = dialog.save_file() {
+            if decompressed {
+                self.export_decompressed_to(&path);
+            } else {
+                self.export_bytes_to(&path);
+            }
+        }
+    }
+
+    /// Report every codec that decodes at the cursor without changing anything.
+    pub fn probe_at_cursor(&mut self) {
+        let start = self.decompress_start();
+        let input = self.document.read_range(start, DECOMPRESS_INPUT_MAX);
+        let found = compress::probe(&input, 1024 * 1024);
+        if found.is_empty() {
+            self.status = format!("Nothing decodes at {start:#x}");
+        } else {
+            let parts: Vec<String> = found
+                .iter()
+                .map(|r| {
+                    format!(
+                        "{}: {} to {}{}",
+                        r.codec.label(),
+                        compress::human_bytes(r.consumed),
+                        compress::human_bytes(r.data.len()),
+                        if r.truncated { "+" } else { "" }
+                    )
+                })
+                .collect();
+            self.status = format!("At {start:#x} decodes as {}", parts.join("; "));
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Structure analysis (runs on background threads)
+    // ------------------------------------------------------------------
+
+    /// Scan the bytes after the view origin for repeating periods.
+    pub fn start_period_scan(&mut self) {
+        let start = self.shape.byte_offset.min(self.document.len());
+        let window = self.document.read_range(start, SCAN_WINDOW);
+        let max_period = self.scan_max_period;
+        let sender = self.analysis_tx.clone();
+        thread::spawn(move || {
+            let scan = analysis::scan_periods(&window, start, max_period);
+            let _ = sender.send(AnalysisMessage::Periods(scan));
+        });
+        self.scan_pending = true;
+        self.pane_request = Some(Pane::PeriodChart);
+        self.status = "Scanning for periods…".to_string();
+    }
+
+    fn start_entropy_map(&mut self) {
+        let backing = self.document.original();
+        let version = self.document.version();
+        let sender = self.analysis_tx.clone();
+        thread::spawn(move || {
+            let map = analysis::entropy_map(backing.as_slice(), ENTROPY_BLOCKS);
+            let _ = sender.send(AnalysisMessage::Entropy { document_version: version, map });
+        });
+    }
+
+    fn poll_analysis(&mut self, ctx: &Context) {
+        while let Ok(message) = self.analysis_rx.try_recv() {
+            match message {
+                AnalysisMessage::Periods(scan) => {
+                    self.status = match scan.candidates.first() {
+                        Some(best) => format!("Best period {} bytes", best.period),
+                        None => "No repeating period found".to_string(),
+                    };
+                    self.period_scan = Some(scan);
+                    self.scan_pending = false;
+                }
+                AnalysisMessage::Entropy { map, .. } => self.entropy_map = Some(map),
+                AnalysisMessage::Patterns { key, patterns } => {
+                    if self.pattern_pending == Some(key) {
+                        self.pattern_pending = None;
+                    }
+                    self.patterns = patterns;
+                    self.pattern_key = Some(key);
+                    // New findings can reveal media or structure under the cursor.
+                    self.media_hint = None;
+                    self.cursor_structure_key = None;
+                }
+            }
+        }
+        self.maybe_start_pattern_scan();
+        if self.scan_pending || self.pattern_pending.is_some() {
+            ctx.request_repaint_after(Duration::from_millis(50));
+        }
+    }
+
+    /// The region a pattern scan should cover for the current view: the
+    /// visible bytes plus a screen either side, aligned to 64 KiB.
+    fn wanted_pattern_key(&self) -> Option<PatternKey> {
+        let len = self.document.len();
+        // Scanned whether or not patterns are highlighted: Findings, the
+        // inspector, Decompress and Ask all use what the scan finds.
+        if len == 0 {
+            return None;
+        }
+        let stride = self.shape.row_stride();
+        let visible_bytes = (self.visible_rows.max(1) * stride).max(4096);
+        let first = (self.shape.byte_offset + self.top_row * stride).min(len);
+        let start = (first.saturating_sub(visible_bytes) / PATTERN_ALIGN) * PATTERN_ALIGN;
+        let end = (first + 2 * visible_bytes).div_ceil(PATTERN_ALIGN) * PATTERN_ALIGN;
+        let end = end.min(len).min(start + PATTERN_WINDOW_MAX);
+        Some(PatternKey { version: self.document.version(), start, len: end - start, row_stride: stride })
+    }
+
+    fn maybe_start_pattern_scan(&mut self) {
+        let Some(key) = self.wanted_pattern_key() else { return };
+        if self.pattern_key == Some(key) || self.pattern_pending.is_some() {
+            return;
+        }
+        let window = self.document.read_range(key.start, key.len);
+        let mut strides = vec![key.row_stride];
+        if let Some(scan) = &self.period_scan {
+            strides.extend(scan.candidates.iter().take(3).map(|c| c.period));
+        }
+        let context = ScanContext { base: key.start, document_len: self.document.len(), strides };
+        let sender = self.analysis_tx.clone();
+        let registry = Arc::clone(&self.registry);
+        thread::spawn(move || {
+            let mut patterns = registry.scan(&window, &context);
+            patterns::resolve_overlaps(&mut patterns);
+            let _ = sender.send(AnalysisMessage::Patterns { key, patterns });
+        });
+        self.pattern_pending = Some(key);
+    }
+
+    /// Start and length of the region the current findings were scanned from.
+    pub fn pattern_scan_region(&self) -> Option<(usize, usize)> {
+        self.pattern_key.map(|key| (key.start, key.len))
+    }
+
+    pub fn pattern_kind_enabled(&self, category: Category) -> bool {
+        self.pattern_kinds[category.index()]
+    }
+
+    /// Enabled findings that overlap `[start, end)`.
+    pub fn patterns_in(&self, start: usize, end: usize) -> impl Iterator<Item = &Finding> {
+        self.patterns
+            .iter()
+            .chain(self.bench.pinned.iter())
+            .filter(move |pattern| self.pattern_kind_enabled(pattern.category) && pattern.start < end && pattern.end() > start)
+    }
+
+    /// The most specific enabled finding covering `offset`: smallest span
+    /// wins, then the more specific category.
+    pub fn pattern_at(&self, offset: usize) -> Option<&Finding> {
+        self.patterns_in(offset, offset + 1).min_by_key(|pattern| (pattern.len, pattern.category))
+    }
+
+    /// Select a finding's bytes and bring them into view.
+    pub fn select_pattern(&mut self, pattern: &Finding) {
+        let (start, end) = (pattern.start, pattern.end().min(self.document.len()));
+        self.anchor = Some(start);
+        self.cursor = end;
+        self.pending_low_nibble = false;
+        if let Some((row, _)) = self.shape.pixel_of_byte(start)
+            && (row < self.top_row || row >= self.top_row + self.visible_rows)
+        {
+            self.top_row = row.saturating_sub(self.visible_rows / 3);
+            self.clamp_top_row();
+        }
+        self.reveal_cursor_centred();
+        self.reveal_cursor_in_hex(true);
+        self.status = pattern.description();
+    }
+
+    pub fn pattern_counts(&self) -> [usize; Category::ALL.len()] {
+        let mut counts = [0usize; Category::ALL.len()];
+        for pattern in &self.patterns {
+            counts[pattern.category.index()] += 1;
+        }
+        counts
+    }
+
+    /// Pixels per row and padding bytes that make one row equal `period` bytes.
+    pub fn width_for_period(&self, period: usize) -> (usize, usize) {
+        let bits = self.shape.bits_per_pixel();
+        if bits >= 8 {
+            let bytes = bits / 8;
+            let width = (period / bytes).clamp(1, MAX_WIDTH);
+            (width, period.saturating_sub(width * bytes))
+        } else {
+            ((period * 8 / bits).clamp(1, MAX_WIDTH), 0)
+        }
+    }
+
+    pub fn apply_period(&mut self, period: usize) {
+        let (width, padding) = self.width_for_period(period);
+        self.set_width(width);
+        self.shape.row_padding = padding;
+        self.pan_x = 0.0;
+        self.status = format!("Width set from a {period} byte period");
+    }
+
+    // ------------------------------------------------------------------
+    // Texture
+    // ------------------------------------------------------------------
+
+    /// Re-rasterise the visible window if anything affecting it changed.
+    pub fn ensure_texture(&mut self, ctx: &Context, rows: usize) -> Option<&TextureHandle> {
+        let shape = self.shape;
+        let rows = rows.clamp(1, (MAX_TEXTURE_PIXELS / shape.width.max(1)).max(1));
+        let key = RasterKey { version: self.document.version(), shape, top_row: self.top_row, rows };
+        if self.raster_key == Some(key) && self.texture.is_some() {
+            return self.texture.as_ref();
+        }
+        let started = Instant::now();
+        let stride = shape.row_stride();
+        let needed = stride * rows + 1;
+        self.byte_buffer.resize(needed, 0);
+        let start = shape.byte_offset + self.top_row * stride;
+        self.document.read_into(start, &mut self.byte_buffer[..needed]);
+        if shape.bit_offset != 0 {
+            raster::shift_left_bits(&mut self.byte_buffer[..needed], shape.bit_offset);
+        }
+        let mut pixels = vec![Color32::BLACK; shape.width * rows];
+        raster::rasterise(shape.format, shape.palette, &self.byte_buffer[..needed], shape.width, rows, stride, &mut pixels);
+        let image = ColorImage::new([shape.width, rows], pixels);
+        match &mut self.texture {
+            Some(texture) => texture.set(image, TextureOptions::NEAREST),
+            None => self.texture = Some(ctx.load_texture("raster-view", image, TextureOptions::NEAREST)),
+        }
+        self.raster_key = Some(key);
+        self.last_raster_ms = started.elapsed().as_secs_f32() * 1000.0;
+        self.last_raster_pixels = shape.width * rows;
+        self.texture.as_ref()
+    }
+
+    // ------------------------------------------------------------------
+    // Input
+    // ------------------------------------------------------------------
+
+    fn handle_shortcuts(&mut self, ctx: &Context) {
+        let text_field_focused = ctx.memory(|memory| memory.focused().is_some());
+
+        let cmd = Modifiers::COMMAND;
+        let cmd_shift = Modifiers::COMMAND | Modifiers::SHIFT;
+        // Global shortcuts work even while a text field has focus.
+        if ctx.input_mut(|i| i.consume_key(cmd, Key::O)) {
+            self.open_dialog();
+        }
+        if ctx.input_mut(|i| i.consume_key(cmd_shift, Key::S)) {
+            self.save_as_dialog();
+        } else if ctx.input_mut(|i| i.consume_key(cmd, Key::S)) {
+            self.save();
+        }
+        if ctx.input_mut(|i| i.consume_key(cmd, Key::N)) {
+            self.new_document();
+        }
+        if ctx.input_mut(|i| i.consume_key(cmd, Key::D)) {
+            self.toggle_compressed_view();
+        }
+        if ctx.input_mut(|i| i.consume_key(cmd, Key::E)) {
+            self.export_dialog(false);
+        }
+        if ctx.input_mut(|i| i.consume_key(cmd, Key::Enter)) {
+            self.open_media();
+        }
+        if ctx.input_mut(|i| i.consume_key(cmd, Key::Comma)) {
+            self.open_settings();
+        }
+        if ctx.input_mut(|i| i.consume_key(cmd, Key::J)) {
+            self.dock.open = layout::toggle_tools(&mut self.layout);
+        }
+        if ctx.input_mut(|i| i.consume_key(cmd, Key::L)) {
+            self.dock.open = true;
+            self.dock.tab = DockTab::Assistant;
+        }
+        if ctx.input_mut(|i| i.consume_key(cmd, Key::K)) || ctx.input_mut(|i| i.consume_key(cmd_shift, Key::P)) {
+            self.palette.toggle();
+        }
+        if ctx.input_mut(|i| i.consume_key(cmd, Key::F)) {
+            self.focus_search = true;
+        }
+        if ctx.input_mut(|i| i.consume_key(cmd, Key::G)) {
+            self.focus_goto = true;
+        }
+        // Shifted bindings first: egui's matching ignores Shift on a binding
+        // that does not mention it, so plain F3 would also swallow Shift+F3.
+        if ctx.input_mut(|i| i.consume_key(Modifiers::SHIFT, Key::F3)) {
+            self.find_previous();
+        }
+        if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::F3)) {
+            self.find_next();
+        }
+        if ctx.input_mut(|i| i.consume_key(cmd, Key::B)) {
+            self.begin_bookmark();
+        }
+        if ctx.input_mut(|i| i.consume_key(Modifiers::SHIFT, Key::F2)) {
+            self.goto_bookmark(false);
+        }
+        if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::F2)) {
+            self.goto_bookmark(true);
+        }
+        if self.palette.open {
+            // The palette owns the keyboard while it is open.
+            return;
+        }
+        if self.media.is_open() && !text_field_focused && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Space)) {
+            self.media.toggle_play();
+        }
+        if ctx.input_mut(|i| i.consume_key(cmd, Key::OpenBracket)) {
+            self.back_to_parent();
+        }
+        if text_field_focused {
+            return;
+        }
+
+        if ctx.input_mut(|i| i.consume_key(cmd_shift, Key::Z)) || ctx.input_mut(|i| i.consume_key(cmd, Key::Y)) {
+            self.redo();
+        } else if ctx.input_mut(|i| i.consume_key(cmd, Key::Z)) {
+            self.undo();
+        }
+        if ctx.input_mut(|i| i.consume_key(cmd, Key::A)) {
+            self.select_all();
+        }
+        if ctx.input_mut(|i| i.consume_key(cmd, Key::C)) {
+            self.copy(ctx);
+        }
+        if ctx.input_mut(|i| i.consume_key(cmd, Key::X)) {
+            self.cut(ctx);
+        }
+        if ctx.input_mut(|i| i.consume_key(cmd, Key::V)) {
+            self.paste(None);
+        }
+        let pasted_text = ctx.input(|i| {
+            i.events.iter().find_map(|event| match event {
+                egui::Event::Paste(text) => Some(text.clone()),
+                _ => None,
+            })
+        });
+        if let Some(text) = pasted_text {
+            self.paste(Some(text));
+        }
+
+        let shift = ctx.input(|i| i.modifiers.shift);
+        let alt = ctx.input(|i| i.modifiers.alt);
+        let stride = self.shape.row_stride() as i64;
+        let page = (self.visible_rows.max(2) as i64 - 1) * stride;
+        let pixel_bytes = self.shape.format.bytes_per_pixel().max(1) as i64;
+
+        let consume = |key: Key| ctx.input_mut(|i| i.consume_key(Modifiers::NONE, key) || i.consume_key(Modifiers::SHIFT, key));
+        if alt {
+            if ctx.input_mut(|i| i.consume_key(Modifiers::ALT, Key::ArrowLeft)) {
+                self.adjust_bit_offset(-1);
+            }
+            if ctx.input_mut(|i| i.consume_key(Modifiers::ALT, Key::ArrowRight)) {
+                self.adjust_bit_offset(1);
+            }
+        } else {
+            if consume(Key::ArrowLeft) {
+                self.move_cursor_by(-pixel_bytes, shift);
+            }
+            if consume(Key::ArrowRight) {
+                self.move_cursor_by(pixel_bytes, shift);
+            }
+            if consume(Key::ArrowUp) {
+                self.move_cursor_by(-stride, shift);
+            }
+            if consume(Key::ArrowDown) {
+                self.move_cursor_by(stride, shift);
+            }
+        }
+        if consume(Key::PageUp) {
+            self.move_cursor_by(-page, shift);
+        }
+        if consume(Key::PageDown) {
+            self.move_cursor_by(page, shift);
+        }
+        if consume(Key::Home) {
+            self.set_cursor(0, shift);
+            self.top_row = 0;
+            self.reveal_cursor_in_hex(true);
+        }
+        if consume(Key::End) {
+            let end = self.document.len();
+            self.set_cursor(end, shift);
+            self.scroll_cursor_into_view();
+            self.reveal_cursor_in_hex(true);
+        }
+        if consume(Key::Escape) {
+            self.anchor = None;
+            self.pending_low_nibble = false;
+            self.show_help = false;
+        }
+        if consume(Key::Delete) {
+            self.delete_target();
+        }
+        if consume(Key::Backspace) {
+            self.backspace();
+        }
+        if consume(Key::Insert) {
+            self.toggle_edit_mode();
+        }
+        if consume(Key::OpenBracket) {
+            let step = if shift { 16 } else { 1 };
+            self.set_width(self.shape.width.saturating_sub(step).max(1));
+        }
+        if consume(Key::CloseBracket) {
+            let step = if shift { 16 } else { 1 };
+            self.set_width(self.shape.width + step);
+        }
+        if consume(Key::Comma) {
+            self.adjust_bit_offset(-8);
+        }
+        if consume(Key::Period) {
+            self.adjust_bit_offset(8);
+        }
+        if consume(Key::H) {
+            self.highlight_patterns = !self.highlight_patterns;
+        }
+        if consume(Key::Questionmark) || consume(Key::Slash) || consume(Key::F1) {
+            self.show_help = !self.show_help;
+        }
+        if consume(Key::Minus) {
+            self.zoom_step(-1);
+        }
+        if consume(Key::Plus) || consume(Key::Equals) {
+            self.zoom_step(1);
+        }
+
+        // Typed hex digits edit the byte under the cursor.
+        let typed: Vec<char> = ctx.input(|i| {
+            i.events
+                .iter()
+                .filter_map(|event| match event {
+                    egui::Event::Text(text) => Some(text.chars().collect::<Vec<_>>()),
+                    _ => None,
+                })
+                .flatten()
+                .collect()
+        });
+        for character in typed {
+            if let Some(digit) = character.to_digit(16) {
+                self.type_hex_digit(digit as u8);
+            }
+        }
+    }
+
+    pub fn toggle_edit_mode(&mut self) {
+        self.edit_mode = match self.edit_mode {
+            EditMode::Overwrite => EditMode::Insert,
+            EditMode::Insert => EditMode::Overwrite,
+        };
+        self.pending_low_nibble = false;
+    }
+
+    fn handle_dropped_files(&mut self, ctx: &Context) {
+        let dropped = ctx.input(|i| i.raw.dropped_files.first().map(|file| file.path().to_path_buf()));
+        if let Some(path) = dropped {
+            self.load_path(&path);
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Layout
+    // ------------------------------------------------------------------
+
+    fn show_menu_bar(&mut self, ui: &mut egui::Ui) {
+        egui::MenuBar::new().ui(ui, |ui| {
+            ui.menu_button("File", |ui| {
+                if ui.button("New   Cmd+N").clicked() { self.new_document(); ui.close(); }
+                if ui.button("Open…   Cmd+O").clicked() { self.open_dialog(); ui.close(); }
+                if ui.button("Save   Cmd+S").clicked() { self.save(); ui.close(); }
+                if ui.button("Save as…   Shift+Cmd+S").clicked() { self.save_as_dialog(); ui.close(); }
+                ui.separator();
+                if ui.button("Settings…   Cmd+,").clicked() { self.open_settings(); ui.close(); }
+                ui.separator();
+                if ui.button("Extract selection or stream to file…   Cmd+E").clicked() { self.export_dialog(false); ui.close(); }
+                if ui.button("Extract decompressed contents to file…").clicked() { self.export_dialog(true); ui.close(); }
+            });
+            ui.menu_button("Edit", |ui| {
+                if ui.add_enabled(self.document.can_undo(), egui::Button::new("Undo   Cmd+Z")).clicked() { self.undo(); ui.close(); }
+                if ui.add_enabled(self.document.can_redo(), egui::Button::new("Redo   Shift+Cmd+Z")).clicked() { self.redo(); ui.close(); }
+                ui.separator();
+                if ui.button("Cut   Cmd+X").clicked() { let ctx = ui.ctx().clone(); self.cut(&ctx); ui.close(); }
+                if ui.button("Copy   Cmd+C").clicked() { let ctx = ui.ctx().clone(); self.copy(&ctx); ui.close(); }
+                if ui.button("Paste   Cmd+V").clicked() { self.paste(None); ui.close(); }
+                if ui.button("Select all   Cmd+A").clicked() { self.select_all(); ui.close(); }
+                ui.separator();
+                if ui.button("Delete   Backspace").clicked() { self.delete_target(); ui.close(); }
+                let mode = match self.edit_mode { EditMode::Overwrite => "Switch to insert mode   Ins", EditMode::Insert => "Switch to overwrite mode   Ins" };
+                if ui.button(mode).clicked() { self.toggle_edit_mode(); ui.close(); }
+                ui.separator();
+                if ui.button("Flip compressed / decompressed view   Cmd+D").clicked() { self.toggle_compressed_view(); ui.close(); }
+                if ui.button("Select the stream at the cursor").clicked() { self.select_stream_at_cursor(); ui.close(); }
+                if ui.button("Decompress here in place").clicked() { self.decompress_in_place(); ui.close(); }
+                if ui.button("Probe for compression at cursor").clicked() { self.probe_at_cursor(); ui.close(); }
+                ui.menu_button("Compress selection as", |ui| {
+                    for codec in Codec::COMPRESSIBLE {
+                        if ui.button(codec.label()).clicked() { self.compress_selection(codec); ui.close(); }
+                    }
+                });
+                if ui.add_enabled(!self.parents.is_empty(), egui::Button::new("Back to parent document   Cmd+[")).clicked() { self.back_to_parent(); ui.close(); }
+            });
+            ui.menu_button("Go", |ui| {
+                if ui.button("Command palette   Cmd+K").clicked() { self.palette.toggle(); ui.close(); }
+                if ui.button("Find…   Cmd+F").clicked() { self.focus_search = true; ui.close(); }
+                if ui.button("Find next   F3").clicked() { self.find_next(); ui.close(); }
+                if ui.button("Find previous   Shift+F3").clicked() { self.find_previous(); ui.close(); }
+                if ui.button("Go to offset…   Cmd+G").clicked() { self.focus_goto = true; ui.close(); }
+                if ui.button("Open media at cursor   Cmd+Enter").clicked() { self.open_media(); ui.close(); }
+                ui.separator();
+                if ui.button("Add bookmark   Cmd+B").clicked() { self.begin_bookmark(); ui.close(); }
+                if ui.button("Next bookmark   F2").clicked() { self.goto_bookmark(true); ui.close(); }
+                if ui.button("Previous bookmark   Shift+F2").clicked() { self.goto_bookmark(false); ui.close(); }
+            });
+            ui.menu_button("View", |ui| {
+                if ui.button("Zoom in   +").clicked() { self.zoom_step(1); ui.close(); }
+                if ui.button("Zoom out   -").clicked() { self.zoom_step(-1); ui.close(); }
+                if ui.button("Fit width").clicked() { self.fit_width_requested = true; ui.close(); }
+                ui.separator();
+                if ui.button("Origin = cursor").clicked() { self.align_view_to_cursor(); ui.close(); }
+                if ui.button("Reset origin").clicked() { self.shape.byte_offset = 0; self.shape.bit_offset = 0; self.top_row = 0; ui.close(); }
+                ui.separator();
+                if ui.button("Detect width").clicked() { self.start_period_scan(); ui.close(); }
+                if ui.button("Collapse or expand tools   Cmd+J").clicked() { self.dock.open = layout::toggle_tools(&mut self.layout); ui.close(); }
+                ui.menu_button("Layout", |ui| {
+                    for preset in Preset::ALL {
+                        if ui.button(preset.label()).clicked() { self.apply_preset(preset); ui.close(); }
+                    }
+                    ui.separator();
+                    ui.label(RichText::new("Drag a tab to any edge to split, onto another pane to stack it, or out to float it.").small().color(theme::TEXT_DIM));
+                    ui.separator();
+                    if ui.add_enabled(self.toolbar_rows.is_some(), egui::Button::new("Arrange toolbar automatically"))
+                        .on_hover_text("Forget the order you dragged the toolbar groups into and pack them into the fewest rows")
+                        .clicked()
+                    {
+                        self.set_toolbar_rows(None);
+                        ui.close();
+                    }
+                    ui.label(RichText::new("Drag a toolbar group by its caption or edge to move it.").small().color(theme::TEXT_DIM));
+                });
+                ui.menu_button("Panels", |ui| {
+                    for pane in Pane::all() {
+                        let open = self.panel_is_open(pane);
+                        let label = if open { format!("✓ {}", pane.title()) } else { format!("   {}", pane.title()) };
+                        if ui.button(label).on_hover_text(if open { "Bring forward" } else { "Reopen" }).clicked() {
+                            self.show_panel(pane);
+                            ui.close();
+                        }
+                    }
+                });
+                ui.separator();
+                let hilbert = self.bench.layout == crate::workbench::Layout::Hilbert;
+                if ui.selectable_label(!hilbert, "Layout: rows").clicked() { self.bench.layout = crate::workbench::Layout::Rows; ui.close(); }
+                if ui.selectable_label(hilbert, "Layout: Hilbert curve").clicked() { self.bench.layout = crate::workbench::Layout::Hilbert; ui.close(); }
+                ui.checkbox(&mut self.bench.analysis.show_pointers, "Pointer arrows");
+                ui.checkbox(&mut self.bench.show_file_map, "File map");
+                if ui.button("Guess image shape").clicked() { self.guess_image_shape(); ui.close(); }
+                ui.separator();
+                if ui.button("Reload plugins").clicked() { self.reload_plugins(); ui.close(); }
+            });
+            ui.menu_button("Tools", |ui| {
+                if ui.button("Explain this file").clicked() { self.dock.open = true; self.dock.tab = DockTab::Report; self.start_report(); ui.close(); }
+                if self.assistant_available() {
+                    if ui.button("Ask about this file…   Cmd+L").clicked() { self.dock.open = true; self.dock.tab = DockTab::Assistant; ui.close(); }
+                } else {
+                    ui.add_enabled(false, egui::Button::new("Ask about this file…   Cmd+L")).on_disabled_hover_text(crate::assistant::NO_KEY_MESSAGE);
+                    if ui.button("Add API key to enable Ask…").clicked() { self.open_settings(); ui.close(); }
+                }
+                if ui.button("Template…").clicked() { self.dock.toggle(DockTab::Template); ui.close(); }
+                if ui.button("Infer a template from the selection").clicked() { self.infer_template(); ui.close(); }
+                if ui.button("Disassemble at cursor").clicked() { self.dock.open = true; self.dock.tab = DockTab::Disassembly; ui.close(); }
+                if ui.button("Unpack everything").clicked() { self.dock.open = true; self.dock.tab = DockTab::Unpacked; self.start_unpack(); ui.close(); }
+                if ui.button("Checksums").clicked() { self.dock.toggle(DockTab::Checksums); ui.close(); }
+                ui.separator();
+                if ui.button("Byte statistics").clicked() { self.dock.open = true; self.dock.tab = DockTab::Statistics; crate::analysis_stats::start_statistics(self); ui.close(); }
+                if ui.button("Strings").clicked() { self.dock.toggle(DockTab::Strings); ui.close(); }
+                if ui.button("Record columns").clicked() { self.dock.toggle(DockTab::Columns); ui.close(); }
+                if ui.button("Protocol analysis").clicked() { self.dock.open = true; self.dock.tab = DockTab::Protocol; crate::analysis_tools::start_protocol(self); ui.close(); }
+                if ui.button("XOR keys").clicked() { self.dock.toggle(DockTab::Xor); ui.close(); }
+                if ui.button("Compare with file…").clicked() {
+                    self.dock.open = true;
+                    self.dock.tab = DockTab::Diff;
+                    if let Some(path) = rfd::FileDialog::new().set_title("Compare with").pick_file() {
+                        self.bench.analysis.diff_other = Some(path.display().to_string());
+                        crate::analysis_tabs::start_diff(self, path);
+                    }
+                    ui.close();
+                }
+                ui.separator();
+                if ui.button("Plot selection").clicked() { self.open_plot(); ui.close(); }
+                if ui.button("Play selection as audio").clicked() { self.play_bytes_as_audio(); ui.close(); }
+                ui.menu_button("Audio format", |ui| {
+                    for format in crate::plot::PcmFormat::ALL {
+                        ui.selectable_value(&mut self.bench.pcm_format, format, format.label());
+                    }
+                    ui.separator();
+                    for rate in [8000u32, 11_025, 22_050, 44_100, 48_000] {
+                        ui.selectable_value(&mut self.bench.pcm_rate, rate, format!("{rate} Hz"));
+                    }
+                    ui.separator();
+                    ui.selectable_value(&mut self.bench.pcm_channels, 1, "Mono");
+                    ui.selectable_value(&mut self.bench.pcm_channels, 2, "Stereo");
+                });
+                ui.separator();
+                if ui.button("Open URL, device or serial port…").clicked() { self.dock.open = true; self.dock.tab = DockTab::Live; ui.close(); }
+                let mut watching = self.bench.watch_enabled;
+                if ui.checkbox(&mut watching, "Watch file for changes").changed() { self.set_watch(watching); }
+            });
+            ui.menu_button("Help", |ui| {
+                if ui.button("Keyboard shortcuts   ?").clicked() { self.show_help = true; ui.close(); }
+            });
+        });
+    }
+
+    fn show_toolbar(&mut self, ui: &mut egui::Ui) {
+        ui.add_space(2.0);
+        let mut packer = RowPacker::begin(ui, "toolbar", self.toolbar_rows.as_deref());
+        packer.captioned(ui, "format", "Format", |ui| {
+            egui::ComboBox::from_id_salt("pixel-format")
+                .selected_text(self.shape.format.label())
+                .width(132.0)
+                .show_ui(ui, |ui| {
+                    for format in PixelFormat::ALL {
+                        ui.selectable_value(&mut self.shape.format, format, format.label());
+                    }
+                })
+                .response
+                .on_hover_text("How bytes become pixels");
+            if self.shape.format.bits_per_pixel() <= 16 && self.shape.format != PixelFormat::ByteClass && self.shape.format != PixelFormat::Rgb565 {
+                egui::ComboBox::from_id_salt("palette")
+                    .selected_text(self.shape.palette.label())
+                    .width(90.0)
+                    .show_ui(ui, |ui| {
+                        for palette in Palette::ALL {
+                            ui.selectable_value(&mut self.shape.palette, palette, palette.label());
+                        }
+                    })
+                    .response
+                    .on_hover_text("Colour ramp for single-channel formats");
+            }
+        });
+
+        packer.captioned(ui, "width", "Width (pixels per row)", |ui| {
+            ui.spacing_mut().slider_width = 120.0;
+            let mut width = self.shape.width;
+            let slider = ui.add(
+                egui::Slider::new(&mut width, 1..=4096)
+                    .logarithmic(true)
+                    .clamping(egui::SliderClamping::Never)
+                    .show_value(false),
+            );
+            let drag = ui.add(egui::DragValue::new(&mut width).range(1..=MAX_WIDTH).speed(1.0));
+            if slider.changed() || drag.changed() {
+                self.set_width(width);
+            }
+            slider.on_hover_text("Drag to find the stride of repeating structures.\n[ and ] step by 1, Shift for 16");
+            ui.menu_button("Presets", |ui| {
+                ui.label(RichText::new("Common widths").small().color(theme::TEXT_DIM));
+                ui.horizontal_wrapped(|ui| {
+                    for width in [8usize, 16, 32, 64, 128, 256, 320, 512, 640, 1024, 2048] {
+                        if ui.small_button(width.to_string()).clicked() {
+                            self.set_width(width);
+                            ui.close();
+                        }
+                    }
+                });
+                ui.separator();
+                ui.label(RichText::new("Image layouts").small().color(theme::TEXT_DIM));
+                let layouts: [(&str, PixelFormat, usize); 8] = [
+                    ("QVGA 320 grey", PixelFormat::Gray8, 320),
+                    ("QVGA 320 RGB565", PixelFormat::Rgb565, 320),
+                    ("VGA 640 RGB", PixelFormat::Rgb8, 640),
+                    ("VGA 640 RGBA", PixelFormat::Rgba8, 640),
+                    ("HD 1280 RGBA", PixelFormat::Rgba8, 1280),
+                    ("1-bit 128 (LCD)", PixelFormat::Bit1Msb, 128),
+                    ("Byte class 256", PixelFormat::ByteClass, 256),
+                    ("Tiles 8 px 1-bit", PixelFormat::Bit1Msb, 8),
+                ];
+                for (label, format, width) in layouts {
+                    if ui.button(label).clicked() {
+                        self.shape.format = format;
+                        self.set_width(width);
+                        self.shape.row_padding = 0;
+                        ui.close();
+                    }
+                }
+                ui.separator();
+                if ui.button("Guess image shape").on_hover_text("Use the detected period and a format that divides it").clicked() {
+                    self.guess_image_shape();
+                    ui.close();
+                }
+            });
+            ui.label(RichText::new(format!("{} B/row", self.shape.row_bytes())).color(theme::TEXT_DIM));
+            ui.label(RichText::new("pad").color(theme::TEXT_DIM));
+            ui.add(egui::DragValue::new(&mut self.shape.row_padding).range(0..=MAX_WIDTH * 4).suffix(" B"))
+                .on_hover_text("Bytes skipped after each row (for row headers or stride padding)");
+        });
+
+        packer.captioned(ui, "origin", "Origin", |ui| {
+            let max_offset = self.document.len();
+            ui.add(egui::DragValue::new(&mut self.shape.byte_offset).range(0..=max_offset).speed(1.0).prefix("byte "))
+                .on_hover_text("Document offset shown at the top-left pixel\n, and . step by one byte");
+            ui.add(egui::DragValue::new(&mut self.shape.bit_offset).range(0..=7).prefix("bit "))
+                .on_hover_text("Extra bit shift\nAlt+Left / Alt+Right step by one bit");
+            if ui.button("To cursor").on_hover_text("Make the cursor the top-left pixel").clicked() {
+                self.align_view_to_cursor();
+            }
+        });
+
+        packer.captioned(ui, "zoom", "Zoom", |ui| {
+            if ui.button("-").clicked() {
+                self.zoom_step(-1);
+            }
+            ui.label(RichText::new(format!("{}×", self.zoom)).monospace());
+            if ui.button("+").clicked() {
+                self.zoom_step(1);
+            }
+            if ui.button("Fit").on_hover_text("Set the width to fill the view").clicked() {
+                self.fit_width_requested = true;
+            }
+        });
+
+        packer.captioned(ui, "goto", "Go to", |ui| {
+            let goto = ui.add(egui::TextEdit::singleline(&mut self.goto_text).desired_width(90.0).hint_text("0x1F4 or 500"));
+            if self.focus_goto {
+                goto.request_focus();
+                self.focus_goto = false;
+            }
+            if goto.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
+                self.go_to();
+            }
+            if ui.button("Go").clicked() {
+                self.go_to();
+            }
+        });
+
+        packer.captioned(ui, "find", "Find", |ui| {
+            egui::ComboBox::from_id_salt("search-mode")
+                .selected_text(self.search_mode.label())
+                .width(70.0)
+                .show_ui(ui, |ui| {
+                    for mode in SearchMode::ALL {
+                        if ui.selectable_value(&mut self.search_mode, mode, mode.label()).changed() {
+                            self.search_count = None;
+                        }
+                    }
+                });
+            let field = ui.add(egui::TextEdit::singleline(&mut self.search_text).desired_width(140.0).hint_text("bytes, text or number"));
+            if self.focus_search {
+                field.request_focus();
+                self.focus_search = false;
+            }
+            if field.changed() {
+                self.search_count = None;
+            }
+            if field.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
+                self.find_next();
+            }
+            if ui.button("Next").on_hover_text("F3").clicked() {
+                self.find_next();
+            }
+            if ui.button("Prev").on_hover_text("Shift+F3").clicked() {
+                self.find_previous();
+            }
+            if self.search_mode == SearchMode::Integer {
+                ui.checkbox(&mut self.search_little_endian, "LE");
+            }
+        });
+
+        packer.captioned(ui, "insert", "Insert at cursor", |ui| {
+            ui.add(egui::DragValue::new(&mut self.insert_count).range(1..=usize::MAX / 2).speed(1.0).suffix(" ×"))
+                .on_hover_text("How many bytes to insert");
+            ui.add(egui::TextEdit::singleline(&mut self.insert_value_text).desired_width(70.0).hint_text("hex pattern"))
+                .on_hover_text("Byte pattern to repeat, e.g. 00 or DE AD");
+            if ui.button("Insert").clicked() {
+                self.insert_from_fields();
+            }
+        });
+
+        let has_target = self.target_range().is_some();
+        let selection_caption = match self.selection() {
+            Some((_, len)) => format!("Selection ({len} B)"),
+            None => "Byte at cursor".to_string(),
+        };
+        packer.captioned(ui, "selection", &selection_caption, |ui| {
+            ui.add_enabled_ui(has_target, |ui| {
+                if ui.button(RichText::new("Delete").color(theme::DANGER)).on_hover_text("Backspace / Del").clicked() {
+                    self.delete_target();
+                }
+                ui.add(egui::TextEdit::singleline(&mut self.fill_value_text).desired_width(60.0).hint_text("hex"))
+                    .on_hover_text("Pattern for Fill");
+                if ui.button("Fill").on_hover_text("Overwrite with the pattern").clicked() {
+                    self.fill_target();
+                }
+                if ui.button("Invert").on_hover_text("Flip every bit").clicked() {
+                    self.transform_target("Inverted", |bytes| {
+                        let mut out = bytes.to_vec();
+                        ops::invert_bits(&mut out);
+                        out
+                    });
+                }
+                if ui.button("Reverse").on_hover_text("Reverse byte order").clicked() {
+                    self.transform_target("Reversed bytes", |bytes| bytes.iter().rev().copied().collect());
+                }
+                if ui.button("Mirror bits").on_hover_text("Reverse the bits within each byte").clicked() {
+                    self.transform_target("Mirrored bits", |bytes| {
+                        let mut out = bytes.to_vec();
+                        ops::reverse_bits_in_bytes(&mut out);
+                        out
+                    });
+                }
+            });
+        });
+
+        packer.captioned(ui, "shift", "Shift bits", |ui| {
+            ui.add_enabled_ui(has_target, |ui| {
+                if ui.button("◀").on_hover_text("Shift bits towards the start").clicked() {
+                    let amount = self.shift_amount;
+                    self.transform_target("Shifted bits left", |bytes| ops::shift_bits(bytes, amount));
+                }
+                ui.add(egui::DragValue::new(&mut self.shift_amount).range(1..=i64::MAX / 4).suffix(" bits"));
+                if ui.button("▶").on_hover_text("Shift bits towards the end").clicked() {
+                    let amount = self.shift_amount;
+                    self.transform_target("Shifted bits right", |bytes| ops::shift_bits(bytes, -amount));
+                }
+            });
+        });
+
+        packer.captioned(ui, "move", "Move", |ui| {
+            ui.add_enabled_ui(has_target, |ui| {
+                if ui.button("◀").on_hover_text("Move the bytes towards the start").clicked() {
+                    self.move_target(-self.move_amount);
+                }
+                ui.add(egui::DragValue::new(&mut self.move_amount).range(1..=i64::MAX / 4).suffix(" B"));
+                if ui.button("▶").on_hover_text("Move the bytes towards the end").clicked() {
+                    self.move_target(self.move_amount);
+                }
+            });
+        });
+
+        packer.captioned(ui, "typing", "Typing", |ui| {
+            let (label, hint) = match self.edit_mode {
+                EditMode::Overwrite => ("Overwrite", "Typed hex replaces bytes. Press Insert to switch."),
+                EditMode::Insert => ("Insert", "Typed hex inserts new bytes. Press Insert to switch."),
+            };
+            if ui.selectable_label(self.edit_mode == EditMode::Insert, label).on_hover_text(hint).clicked() {
+                self.toggle_edit_mode();
+            }
+            ui.add_enabled_ui(self.document.can_undo(), |ui| {
+                if ui.button("Undo").on_hover_text("Cmd+Z").clicked() {
+                    self.undo();
+                }
+            });
+            ui.add_enabled_ui(self.document.can_redo(), |ui| {
+                if ui.button("Redo").on_hover_text("Shift+Cmd+Z").clicked() {
+                    self.redo();
+                }
+            });
+        });
+
+        packer.captioned(ui, "analysis", "Analysis", |ui| {
+            let enabled = !self.document.is_empty();
+            if ui.add_enabled(enabled, egui::Button::new("Detect width"))
+                .on_hover_text("Find repeating periods after the view origin and suggest widths")
+                .clicked()
+            {
+                self.start_period_scan();
+            }
+            if ui.selectable_label(self.panel_is_open(Pane::PeriodChart), "Chart").on_hover_text("Show the period chart").clicked() {
+                self.toggle_panel(Pane::PeriodChart);
+            }
+            ui.separator();
+            if ui
+                .selectable_label(self.highlight_patterns, "Patterns")
+                .on_hover_text("Highlight counters, timestamps, text, signatures and more (H). They are detected either way and listed in Findings; choose the default in Settings.")
+                .clicked()
+            {
+                self.highlight_patterns = !self.highlight_patterns;
+            }
+            let counts = self.pattern_counts();
+            ui.menu_button("Kinds", |ui| {
+                for category in Category::ALL {
+                    if counts[category.index()] == 0 && !self.pattern_kinds[category.index()] {
+                        continue;
+                    }
+                    ui.horizontal(|ui| {
+                        let (rect, _) = ui.allocate_exact_size(egui::Vec2::splat(10.0), egui::Sense::hover());
+                        ui.painter().rect_filled(rect, 2.0, category.colour());
+                        ui.checkbox(&mut self.pattern_kinds[category.index()], format!("{} ({})", category.label(), counts[category.index()]));
+                    });
+                }
+                ui.separator();
+                if ui.button("All").clicked() {
+                    self.pattern_kinds = [true; Category::ALL.len()];
+                }
+                if ui.button("None").clicked() {
+                    self.pattern_kinds = [false; Category::ALL.len()];
+                }
+            });
+            ui.add_visible(self.pattern_pending.is_some(), egui::Spinner::new().size(14.0))
+                .on_hover_text("Scanning the visible region");
+        });
+
+        if let Some((start, format)) = self.media_at_cursor() {
+            packer.captioned(ui, "media", &format!("Media: {} at {start:#x}", format.name), |ui| {
+                if ui.button(RichText::new(format.kind.verb()).strong()).on_hover_text("Cmd+Enter").clicked() {
+                    self.open_media();
+                }
+            });
+        }
+
+        let stream = self.compressed_stream_at_cursor();
+        let caption = if let Some(parent) = self.parents.last() {
+            format!("Viewing decompressed contents of {}", parent.name)
+        } else if let Some(pattern) = &stream {
+            format!("Compression: {}", pattern.description().split(" compressed").next().unwrap_or("stream"))
+        } else {
+            "Compression".to_string()
+        };
+        packer.captioned(ui, "compression", &caption, |ui| {
+            let has_data = !self.document.is_empty();
+            let derived = !self.parents.is_empty();
+            let flip_label = if derived { "Back to compressed" } else { "Decompress" };
+            let flip_hint = if derived {
+                "Return to the compressed bytes (Cmd+D)"
+            } else {
+                "Open the decompressed block as a new document (Cmd+D)"
+            };
+            ui.add_enabled_ui(has_data || derived, |ui| {
+                if ui.selectable_label(derived, flip_label).on_hover_text(flip_hint).clicked() {
+                    self.toggle_compressed_view();
+                }
+            });
+            ui.add_enabled_ui(has_data, |ui| {
+                if ui.button("In place").on_hover_text("Replace the compressed block with its contents (undoable)").clicked() {
+                    self.decompress_in_place();
+                }
+                if let Some(codec) = self.inplace_codec {
+                    let label = format!("Re-pack as {}", codec.label());
+                    ui.add_enabled_ui(self.selection().is_some(), |ui| {
+                        if ui.button(label).on_hover_text("Compress the selection with the codec it was unpacked from (undoable)").clicked() {
+                            self.recompress_selection();
+                        }
+                    });
+                }
+                if ui.button("Probe").on_hover_text("Report which codecs decode at the cursor").clicked() {
+                    self.probe_at_cursor();
+                }
+                if stream.is_some() && ui.button("Select stream").on_hover_text("Select exactly the compressed bytes").clicked() {
+                    self.select_stream_at_cursor();
+                }
+            });
+            ui.separator();
+            let ctx = ui.ctx().clone();
+            ui.menu_button("Extract", |ui| {
+                let what = if self.selection().is_some() { "selection" } else { "stream at cursor" };
+                if ui.button(format!("Save {what} to file…   Cmd+E")).clicked() { self.export_dialog(false); ui.close(); }
+                if ui.button("Save decompressed contents to file…").clicked() { self.export_dialog(true); ui.close(); }
+                ui.separator();
+                if ui.button(format!("Copy {what} as hex")).clicked() { self.copy_extract_as_hex(&ctx); ui.close(); }
+                if ui.button("Copy decompressed contents as hex").clicked() { self.copy_decompressed_as_hex(&ctx); ui.close(); }
+            });
+            ui.separator();
+            ui.add_enabled_ui(self.selection().is_some(), |ui| {
+                egui::ComboBox::from_id_salt("compress-codec")
+                    .selected_text(self.compress_codec.label())
+                    .width(90.0)
+                    .show_ui(ui, |ui| {
+                        for codec in Codec::COMPRESSIBLE {
+                            ui.selectable_value(&mut self.compress_codec, codec, codec.label());
+                        }
+                    });
+                if ui.button("Compress selection").on_hover_text("Replace the selection with its compressed form (undoable)").clicked() {
+                    self.compress_selection(self.compress_codec);
+                }
+            });
+        });
+        if let Some(rows) = packer.finish(ui) {
+            self.set_toolbar_rows(Some(rows));
+        }
+        ui.add_space(2.0);
+    }
+
+    fn show_status_bar(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            let dim = theme::TEXT_DIM;
+            if self.document.is_modified() {
+                ui.label(RichText::new("●").color(theme::CURSOR)).on_hover_text("Unsaved changes");
+            }
+            if !self.parents.is_empty()
+                && ui.button("Back").on_hover_text("Return to the document this was decompressed from (Cmd+[)").clicked()
+            {
+                self.back_to_parent();
+            }
+            ui.label(RichText::new(self.display_name()).strong());
+            ui.label(RichText::new(human_size(self.document.len())).color(dim));
+            ui.separator();
+            ui.label(RichText::new("cursor").color(dim));
+            ui.monospace(format!("{:#x}", self.cursor));
+            if let Some((start, len)) = self.selection() {
+                ui.separator();
+                ui.label(RichText::new("selection").color(dim));
+                ui.monospace(format!("{start:#x}–{:#x}", start + len));
+                ui.label(RichText::new(format!("{len} B")).color(dim));
+            }
+            if let Some((offset, byte)) = self.hover.and_then(|offset| self.document.byte_at(offset).map(|byte| (offset, byte))) {
+                ui.separator();
+                ui.label(RichText::new("hover").color(dim));
+                ui.monospace(format!("{offset:#x} = {byte:02X}"));
+                if let Some(pattern) = self.pattern_at(offset) {
+                    ui.label(RichText::new(pattern.description()).color(pattern.category.colour()));
+                }
+            }
+            ui.separator();
+            ui.label(RichText::new("row").color(dim));
+            ui.monospace(format!("{} / {}", self.top_row, self.shape.total_rows(self.document.len())));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.label(RichText::new(format!("{:.2} ms", self.last_raster_ms)).color(dim))
+                    .on_hover_text(format!("Last raster: {} pixels", self.last_raster_pixels));
+                ui.separator();
+                ui.label(RichText::new(&self.status).color(dim));
+            });
+        });
+    }
+
+    fn show_bookmark_prompt(&mut self, ctx: &Context) {
+        let Some((offset, len, mut name)) = self.bookmark_prompt.clone() else { return };
+        let mut keep_open = true;
+        let mut commit = false;
+        egui::Window::new("Bookmark")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.label(if len > 0 { format!("{len} bytes at {offset:#x}") } else { format!("Offset {offset:#x}") });
+                let field = ui.add(egui::TextEdit::singleline(&mut name).desired_width(240.0).hint_text("name"));
+                if !field.has_focus() && !field.lost_focus() {
+                    field.request_focus();
+                }
+                // While the prompt is open, Enter always means Add.
+                if ui.input(|i| i.key_pressed(Key::Enter)) {
+                    commit = true;
+                }
+                ui.horizontal(|ui| {
+                    if ui.button("Add").clicked() {
+                        commit = true;
+                    }
+                    if ui.button("Cancel").clicked() || ui.input(|i| i.key_pressed(Key::Escape)) {
+                        keep_open = false;
+                    }
+                });
+            });
+        if commit {
+            self.add_bookmark(offset, len, name);
+            self.bookmark_prompt = None;
+        } else if keep_open {
+            self.bookmark_prompt = Some((offset, len, name));
+        } else {
+            self.bookmark_prompt = None;
+        }
+    }
+
+    fn show_help_window(&mut self, ctx: &Context) {
+        let mut open = self.show_help;
+        egui::Window::new("Keyboard shortcuts")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                let rows: &[(&str, &str)] = &[
+                    ("0–9 A–F", "Type hex: edit the byte at the cursor"),
+                    ("Ins", "Toggle overwrite / insert mode"),
+                    ("Arrow keys", "Move the cursor by a pixel / row (Shift to select)"),
+                    ("PgUp PgDn Home End", "Move by a page / to the ends"),
+                    ("Click, drag", "Place the cursor, select a range"),
+                    ("Backspace Del", "Delete the selection or byte"),
+                    ("Cmd+Z Shift+Cmd+Z", "Undo, redo"),
+                    ("Cmd+C Cmd+X Cmd+V Cmd+A", "Copy (as hex), cut, paste, select all"),
+                    ("[ ]", "Width -1 / +1 (Shift: 16)"),
+                    (", .", "Origin -1 / +1 byte"),
+                    ("Alt+Left Alt+Right", "Origin -1 / +1 bit"),
+                    ("- +", "Zoom out / in (also Cmd+ + scroll, pinch)"),
+                    ("Scroll", "Rows; Shift+scroll pans horizontally"),
+                    ("Cmd+O Cmd+S Shift+Cmd+S Cmd+N", "Open, save, save as, new"),
+                    ("Esc", "Clear the selection"),
+                    ("Cmd+K", "Command palette: every action, searchable"),
+                    ("Cmd+F  F3  Shift+F3", "Find bytes, text or a number; next and previous match"),
+                    ("Cmd+G", "Go to offset"),
+                    ("Cmd+B  F2  Shift+F2", "Bookmark the cursor or selection; next and previous bookmark"),
+                    ("Right-click", "Actions for the byte or finding under the pointer"),
+                    ("Cmd+Enter  Space", "Open the image, audio or video at the cursor; play and pause"),
+                    ("Cmd+J  Cmd+L", "Tools dock; ask about the file"),
+                    ("H", "Toggle pattern highlights"),
+                    ("Cmd+D", "Flip between a compressed block and its contents"),
+                    ("Cmd+E", "Extract the selection or stream to a file"),
+                    ("Cmd+[", "Back to the parent document"),
+                    ("?", "Toggle this window"),
+                ];
+                egui::Grid::new("help-grid").num_columns(2).spacing([16.0, 6.0]).show(ui, |ui| {
+                    for (keys, description) in rows {
+                        theme::keycap(ui, keys);
+                        ui.label(*description);
+                        ui.end_row();
+                    }
+                });
+            });
+        self.show_help = open;
+    }
+
+    /// What to call the current document in the title and status bar.
+    pub fn display_name(&self) -> String {
+        self.derived_name.clone().unwrap_or_else(|| {
+            self.document
+                .path()
+                .and_then(|path| path.file_name())
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "untitled".to_string())
+        })
+    }
+
+    /// Only sends the viewport command when the title actually changes:
+    /// re-sending it every frame makes macOS re-present the window.
+    fn update_title(&mut self, ctx: &Context) {
+        let name = self.display_name();
+        let modified = if self.document.is_modified() { "*" } else { "" };
+        let title = format!("{name}{modified} — theviewer");
+        if title != self.last_title {
+            ctx.send_viewport_cmd(ViewportCommand::Title(title.clone()));
+            self.last_title = title;
+        }
+    }
+}
+
+impl eframe::App for ViewerApp {
+    fn on_exit(&mut self) {
+        self.save_sidecar();
+        self.save_layout();
+    }
+
+    fn logic(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
+        self.handle_dropped_files(ctx);
+        self.poll_analysis(ctx);
+        self.handle_shortcuts(ctx);
+        self.poll_workbench(ctx);
+        self.refresh_cursor_structure();
+        self.update_title(ctx);
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        // Whichever view the pointer is over sets this during the frame.
+        self.hover = None;
+        egui::Panel::top("menu").show(ui, |ui| self.show_menu_bar(ui));
+        egui::Panel::top("toolbar").show(ui, |ui| self.show_toolbar(ui));
+        egui::Panel::bottom("status").show(ui, |ui| self.show_status_bar(ui));
+        egui::CentralPanel::default()
+            .frame(egui::Frame::NONE.fill(theme::BACKGROUND))
+            .show(ui, |ui| self.show_workspace(ui));
+        if self.show_help {
+            let ctx = ui.ctx().clone();
+            self.show_help_window(&ctx);
+        }
+        let ctx = ui.ctx().clone();
+        self.media.show(&ctx);
+        self.show_plot_window(&ctx);
+        self.show_settings_window(&ctx);
+        self.show_bookmark_prompt(&ctx);
+        commands::show_palette(self, &ctx);
+    }
+}
+
+/// Human readable byte count, e.g. "1.2 MiB (1258291 B)".
+pub fn human_size(bytes: usize) -> String {
+    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} B")
+    } else {
+        format!("{value:.1} {} ({bytes} B)", UNITS[unit])
+    }
+}
+
+/// "name: error; name: error" for every report that failed, or empty.
+fn failed_reports(reports: &[LoadReport]) -> String {
+    reports
+        .iter()
+        .filter_map(|report| report.result.as_ref().err().map(|error| format!("{}: {error}", report.name)))
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+/// What a plugin action may do to the open document. Edits go through the
+/// normal undoable document operations.
+impl ActionHost for ViewerApp {
+    fn document_len(&self) -> usize {
+        self.document.len()
+    }
+
+    fn cursor(&self) -> usize {
+        self.cursor
+    }
+
+    fn selection(&self) -> Option<(usize, usize)> {
+        ViewerApp::selection(self)
+    }
+
+    fn read(&mut self, start: usize, len: usize) -> Vec<u8> {
+        self.document.read_range(start, len)
+    }
+
+    fn replace(&mut self, start: usize, len: usize, bytes: &[u8]) {
+        self.document.replace(start, len, bytes);
+    }
+
+    fn select(&mut self, start: usize, len: usize) {
+        self.restore_selection(start.min(self.document.len()), len);
+        self.reveal_cursor_in_hex(true);
+    }
+
+    fn set_status(&mut self, text: &str) {
+        self.status = text.to_string();
+    }
+}

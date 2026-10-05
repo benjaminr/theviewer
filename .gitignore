@@ -1,0 +1,7 @@
+/target
+
+# macOS folder metadata
+.DS_Store
+
+# Bookmarks and view settings the viewer saves beside files it opens
+*.theviewer.toml

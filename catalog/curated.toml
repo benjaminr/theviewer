@@ -1,0 +1,1470 @@
+# Hand-curated signatures: formats Tika does not cover well, plus extents so
+# a hit becomes a block rather than a marker. Compression streams (gzip, zlib,
+# bzip2, xz, zstd, LZ4) are deliberately absent: compress.rs verifies those.
+#
+# Semantics: `magic` lists alternatives (any one matches). An alternative is a
+# single match table or `{ matches = [...] }` where every match must hold. A
+# match's `children` must have at least one holding. Offsets are relative to
+# the start of the file; `"a..b"` lets the value start anywhere in the range.
+
+# ---------------------------------------------------------------------------
+# Executables and bytecode
+# ---------------------------------------------------------------------------
+
+[[signature]]
+id = "executable/elf32"
+name = "ELF 32-bit executable"
+category = "Executable"
+priority = 65
+references = ["https://refspecs.linuxfoundation.org/elf/elf.pdf"]
+magic = [{ matches = [{ offset = 0, bytes = "7f454c46" }, { offset = 4, bytes = "01" }] }]
+
+[[signature]]
+id = "executable/elf64"
+name = "ELF 64-bit executable"
+category = "Executable"
+priority = 65
+references = ["https://refspecs.linuxfoundation.org/elf/elf.pdf"]
+magic = [{ matches = [{ offset = 0, bytes = "7f454c46" }, { offset = 4, bytes = "02" }] }]
+
+[[signature]]
+id = "executable/pe"
+name = "Windows PE executable"
+category = "Executable"
+extensions = ["exe", "dll", "sys", "efi"]
+priority = 70
+references = ["https://learn.microsoft.com/windows/win32/debug/pe-format"]
+magic = [{ matches = [{ offset = 0, bytes = "4d5a" }, { offset = 0, pointer = { offset = 60, size = 4, endian = "little" }, bytes = "50450000" }] }]
+
+[[signature]]
+id = "executable/macho-64-x86_64"
+name = "Mach-O 64-bit x86_64"
+category = "Executable"
+priority = 65
+references = ["https://github.com/apple-oss-distributions/xnu/blob/main/EXTERNAL_HEADERS/mach-o/loader.h"]
+magic = [{ matches = [{ offset = 0, bytes = "cffaedfe" }, { offset = 4, bytes = "07000001" }] }]
+
+[[signature]]
+id = "executable/macho-64-arm64"
+name = "Mach-O 64-bit arm64"
+category = "Executable"
+priority = 65
+magic = [{ matches = [{ offset = 0, bytes = "cffaedfe" }, { offset = 4, bytes = "0c000001" }] }]
+
+[[signature]]
+id = "executable/macho-64"
+name = "Mach-O 64-bit"
+category = "Executable"
+priority = 60
+magic = [{ offset = 0, bytes = "cffaedfe" }, { offset = 0, bytes = "feedfacf" }]
+
+[[signature]]
+id = "executable/macho-32"
+name = "Mach-O 32-bit"
+category = "Executable"
+priority = 60
+magic = [{ offset = 0, bytes = "cefaedfe" }, { offset = 0, bytes = "feedface" }]
+
+[[signature]]
+id = "executable/macho-fat"
+name = "Mach-O universal (fat) binary"
+category = "Executable"
+priority = 65
+# nfat_arch (big endian at 4) is small, which also separates this from Java class files.
+magic = [{ matches = [{ offset = 0, bytes = "cafebabe" }, { offset = 4, bytes = "000000" }, { offset = 7, bytes = "00", mask = "e0" }] }]
+
+[[signature]]
+id = "bytecode/java-class"
+name = "Java class file"
+category = "Executable"
+extensions = ["class"]
+priority = 65
+references = ["https://docs.oracle.com/javase/specs/jvms/se21/html/jvms-4.html"]
+# Major version 45..95 lives in byte 7 (byte 6 is 0); fat binaries keep byte 7 below 32.
+magic = [
+  { matches = [{ offset = 0, bytes = "cafebabe" }, { offset = 6, bytes = "00" }, { offset = 7, bytes = "20", mask = "e0" }] },
+  { matches = [{ offset = 0, bytes = "cafebabe" }, { offset = 6, bytes = "00" }, { offset = 7, bytes = "40", mask = "e0" }] },
+]
+
+[[signature]]
+id = "bytecode/dalvik-dex"
+name = "Dalvik executable (DEX)"
+category = "Executable"
+extensions = ["dex"]
+references = ["https://source.android.com/docs/core/runtime/dex-format"]
+extent = { kind = "field", offset = 32, size = 4, endian = "little" }
+magic = [{ offset = 0, bytes = "6465780a30" }]
+
+[[signature]]
+id = "bytecode/lua"
+name = "Lua bytecode"
+category = "Executable"
+extensions = ["luac"]
+magic = [{ offset = 0, bytes = "1b4c7561" }]
+
+[[signature]]
+id = "bytecode/wasm"
+name = "WebAssembly module"
+category = "Executable"
+extensions = ["wasm"]
+priority = 60
+references = ["https://webassembly.github.io/spec/core/binary/modules.html"]
+magic = [{ matches = [{ offset = 0, bytes = "0061736d" }, { offset = 4, bytes = "01000000" }] }]
+
+[[signature]]
+id = "bytecode/llvm-bitcode"
+name = "LLVM bitcode"
+category = "Executable"
+extensions = ["bc"]
+magic = [{ offset = 0, bytes = "4243c0de" }]
+
+[[signature]]
+id = "bytecode/erlang-beam"
+name = "Erlang BEAM module"
+category = "Executable"
+extensions = ["beam"]
+extent = { kind = "field", offset = 4, size = 4, endian = "big", add = 8 }
+magic = [{ matches = [{ offset = 0, string = "FOR1" }, { offset = 8, string = "BEAM" }] }]
+
+[[signature]]
+id = "bytecode/pyc-3.8"
+name = "Python 3.8 bytecode (.pyc)"
+category = "Executable"
+extensions = ["pyc"]
+magic = [{ offset = 0, bytes = "550d0d0a" }]
+
+[[signature]]
+id = "bytecode/pyc-3.9"
+name = "Python 3.9 bytecode (.pyc)"
+category = "Executable"
+extensions = ["pyc"]
+magic = [{ offset = 0, bytes = "610d0d0a" }]
+
+[[signature]]
+id = "bytecode/pyc-3.10"
+name = "Python 3.10 bytecode (.pyc)"
+category = "Executable"
+extensions = ["pyc"]
+magic = [{ offset = 0, bytes = "6f0d0d0a" }]
+
+[[signature]]
+id = "bytecode/pyc-3.11"
+name = "Python 3.11 bytecode (.pyc)"
+category = "Executable"
+extensions = ["pyc"]
+magic = [{ offset = 0, bytes = "a70d0d0a" }]
+
+[[signature]]
+id = "bytecode/pyc-3.12"
+name = "Python 3.12 bytecode (.pyc)"
+category = "Executable"
+extensions = ["pyc"]
+magic = [{ offset = 0, bytes = "cb0d0d0a" }]
+
+[[signature]]
+id = "bytecode/pyc-3.13"
+name = "Python 3.13 bytecode (.pyc)"
+category = "Executable"
+extensions = ["pyc"]
+magic = [{ offset = 0, bytes = "f30d0d0a" }]
+
+[[signature]]
+id = "serial/java-serialized"
+name = "Java serialised object stream"
+category = "Structure"
+references = ["https://docs.oracle.com/javase/8/docs/platform/serialization/spec/protocol.html"]
+magic = [{ offset = 0, bytes = "aced0005" }]
+
+# ---------------------------------------------------------------------------
+# Firmware
+# ---------------------------------------------------------------------------
+
+[[signature]]
+id = "firmware/uimage"
+name = "U-Boot uImage"
+category = "Executable"
+extensions = ["uimage"]
+references = ["https://github.com/u-boot/u-boot/blob/master/include/image.h"]
+extent = { kind = "field", offset = 12, size = 4, endian = "big", add = 64 }
+magic = [{ offset = 0, bytes = "27051956" }]
+
+[[signature]]
+id = "firmware/fit-image"
+name = "U-Boot FIT image (flattened device tree)"
+category = "Executable"
+extensions = ["itb"]
+priority = 55
+extent = { kind = "field", offset = 4, size = 4, endian = "big" }
+magic = [{ offset = 0, bytes = "d00dfeed" }]
+
+[[signature]]
+id = "firmware/uefi-volume"
+name = "UEFI firmware volume"
+category = "Structure"
+references = ["https://uefi.org/specs/PI/1.8/V3_Firmware_Storage_Code_Definitions.html"]
+extent = { kind = "field", offset = 32, size = 8, endian = "little" }
+magic = [{ offset = 40, string = "_FVH" }]
+
+[[signature]]
+id = "firmware/android-boot"
+name = "Android boot image"
+category = "Executable"
+references = ["https://source.android.com/docs/core/architecture/bootloader/boot-image-header"]
+magic = [{ offset = 0, string = "ANDROID!" }]
+
+[[signature]]
+id = "firmware/arm-zimage"
+name = "ARM Linux zImage"
+category = "Executable"
+magic = [{ offset = 36, bytes = "18286f01" }]
+
+[[signature]]
+id = "firmware/arm64-image"
+name = "ARM64 Linux kernel image"
+category = "Executable"
+references = ["https://www.kernel.org/doc/html/latest/arch/arm64/booting.html"]
+magic = [{ offset = 56, string = "ARMd" }]
+
+[[signature]]
+id = "firmware/trx"
+name = "Broadcom TRX firmware"
+category = "Archive"
+extent = { kind = "field", offset = 4, size = 4, endian = "little" }
+magic = [{ offset = 0, string = "HDR0" }]
+
+[[signature]]
+id = "firmware/intel-hex"
+name = "Intel HEX record"
+category = "Document"
+extensions = ["hex", "ihex"]
+references = ["https://en.wikipedia.org/wiki/Intel_HEX"]
+confidence = 0.6
+magic = [{ offset = 0, string = ":020000040000FA" }, { offset = 0, string = ":10000000" }, { offset = 0, string = ":020000020000FC" }]
+
+[[signature]]
+id = "firmware/srec"
+name = "Motorola S-record"
+category = "Document"
+extensions = ["srec", "s19", "s28", "s37"]
+confidence = 0.3
+magic = [{ offset = 0, string = "S0" }]
+
+# ---------------------------------------------------------------------------
+# Partition tables and filesystems
+# ---------------------------------------------------------------------------
+
+[[signature]]
+id = "partition/mbr"
+name = "Master boot record"
+category = "Filesystem"
+priority = 55
+references = ["https://en.wikipedia.org/wiki/Master_boot_record"]
+extent = { kind = "fixed", len = 512 }
+magic = [{ matches = [{ offset = 510, bytes = "55aa" }, { offset = 446, bytes = "00", mask = "7f" }] }]
+
+[[signature]]
+id = "partition/gpt-header"
+name = "GPT partition table header"
+category = "Filesystem"
+priority = 60
+references = ["https://uefi.org/specs/UEFI/2.10/05_GUID_Partition_Table_Format.html"]
+extent = { kind = "field", offset = 12, size = 4, endian = "little" }
+magic = [{ offset = 0, string = "EFI PART" }]
+
+[[signature]]
+id = "partition/gpt-disk"
+name = "GPT disk image (protective MBR + GPT)"
+category = "Filesystem"
+priority = 65
+magic = [{ matches = [{ offset = 512, string = "EFI PART" }, { offset = 510, bytes = "55aa" }] }]
+
+[[signature]]
+id = "fs/fat12"
+name = "FAT12 filesystem"
+category = "Filesystem"
+magic = [{ matches = [{ offset = 54, string = "FAT12   " }, { offset = 510, bytes = "55aa" }] }]
+
+[[signature]]
+id = "fs/fat16"
+name = "FAT16 filesystem"
+category = "Filesystem"
+magic = [{ matches = [{ offset = 54, string = "FAT16   " }, { offset = 510, bytes = "55aa" }] }]
+
+[[signature]]
+id = "fs/fat32"
+name = "FAT32 filesystem"
+category = "Filesystem"
+magic = [{ matches = [{ offset = 82, string = "FAT32   " }, { offset = 510, bytes = "55aa" }] }]
+
+[[signature]]
+id = "fs/exfat"
+name = "exFAT filesystem"
+category = "Filesystem"
+magic = [{ offset = 3, string = "EXFAT   " }]
+
+[[signature]]
+id = "fs/ntfs"
+name = "NTFS filesystem"
+category = "Filesystem"
+magic = [{ offset = 3, string = "NTFS    " }]
+
+[[signature]]
+id = "fs/ext"
+name = "ext2/ext3/ext4 filesystem"
+category = "Filesystem"
+references = ["https://www.kernel.org/doc/html/latest/filesystems/ext4/globals.html"]
+# Magic 0xEF53 little endian at 1080; state at 1082 is 1 (clean) or 2 (errors).
+magic = [{ matches = [{ offset = 1080, bytes = "53ef" }, { offset = 1082, bytes = "00", mask = "fc" }, { offset = 1083, bytes = "00" }] }]
+
+[[signature]]
+id = "fs/squashfs"
+name = "SquashFS filesystem"
+category = "Filesystem"
+extensions = ["squashfs", "sqsh"]
+references = ["https://dr-emann.github.io/squashfs/"]
+extent = { kind = "field", offset = 40, size = 8, endian = "little" }
+magic = [{ offset = 0, string = "hsqs" }]
+
+[[signature]]
+id = "fs/squashfs-be"
+name = "SquashFS filesystem (big endian)"
+category = "Filesystem"
+magic = [{ offset = 0, string = "sqsh" }]
+
+[[signature]]
+id = "fs/cramfs"
+name = "cramfs filesystem"
+category = "Filesystem"
+extent = { kind = "field", offset = 4, size = 4, endian = "little" }
+magic = [{ offset = 0, bytes = "453dcd28" }]
+
+[[signature]]
+id = "fs/cramfs-be"
+name = "cramfs filesystem (big endian)"
+category = "Filesystem"
+magic = [{ offset = 0, bytes = "283dcd28" }]
+
+[[signature]]
+id = "fs/jffs2"
+name = "JFFS2 node"
+category = "Filesystem"
+confidence = 0.6
+magic = [{ offset = 0, bytes = "851900e0", mask = "ffff00ff" }, { offset = 0, bytes = "1985e000", mask = "ffffff00" }]
+
+[[signature]]
+id = "fs/ubi"
+name = "UBI erase block"
+category = "Filesystem"
+magic = [{ offset = 0, string = "UBI#" }]
+
+[[signature]]
+id = "fs/ubifs"
+name = "UBIFS node"
+category = "Filesystem"
+magic = [{ offset = 0, bytes = "31181006" }]
+
+[[signature]]
+id = "fs/iso9660"
+name = "ISO 9660 CD-ROM image"
+category = "Filesystem"
+extensions = ["iso"]
+priority = 60
+references = ["https://wiki.osdev.org/ISO_9660"]
+magic = [{ offset = 32769, string = "CD001" }, { offset = 34817, string = "CD001" }, { offset = 36865, string = "CD001" }]
+
+[[signature]]
+id = "fs/hfsplus"
+name = "HFS+ volume"
+category = "Filesystem"
+magic = [{ offset = 1024, bytes = "482b0004" }]
+
+[[signature]]
+id = "fs/hfsx"
+name = "HFSX volume"
+category = "Filesystem"
+magic = [{ offset = 1024, bytes = "48580005" }]
+
+[[signature]]
+id = "fs/apfs"
+name = "APFS container superblock"
+category = "Filesystem"
+magic = [{ offset = 32, string = "NXSB" }]
+
+[[signature]]
+id = "fs/btrfs"
+name = "Btrfs filesystem"
+category = "Filesystem"
+magic = [{ offset = 65600, string = "_BHRfS_M" }]
+
+[[signature]]
+id = "fs/xfs"
+name = "XFS filesystem"
+category = "Filesystem"
+magic = [{ offset = 0, string = "XFSB" }]
+
+[[signature]]
+id = "fs/f2fs"
+name = "F2FS filesystem"
+category = "Filesystem"
+magic = [{ offset = 1024, bytes = "1020f5f2" }]
+
+[[signature]]
+id = "fs/romfs"
+name = "romfs filesystem"
+category = "Filesystem"
+extent = { kind = "field", offset = 8, size = 4, endian = "big" }
+magic = [{ offset = 0, string = "-rom1fs-" }]
+
+[[signature]]
+id = "fs/luks"
+name = "LUKS encrypted volume header"
+category = "Filesystem"
+references = ["https://gitlab.com/cryptsetup/LUKS2-docs"]
+magic = [{ offset = 0, bytes = "4c554b53babe" }]
+
+[[signature]]
+id = "fs/qcow"
+name = "QEMU QCOW disk image"
+category = "Filesystem"
+extensions = ["qcow2", "qcow"]
+priority = 60
+magic = [{ matches = [{ offset = 0, bytes = "514649fb" }, { offset = 4, bytes = "000000" }] }]
+
+[[signature]]
+id = "fs/vmdk"
+name = "VMware VMDK disk image"
+category = "Filesystem"
+extensions = ["vmdk"]
+priority = 60
+magic = [{ offset = 0, string = "KDMV" }]
+
+[[signature]]
+id = "fs/vhd"
+name = "Virtual hard disk (VHD) footer"
+category = "Filesystem"
+extensions = ["vhd"]
+priority = 60
+magic = [{ offset = 0, string = "conectix" }]
+
+[[signature]]
+id = "fs/vhdx"
+name = "Hyper-V VHDX disk image"
+category = "Filesystem"
+extensions = ["vhdx"]
+magic = [{ offset = 0, string = "vhdxfile" }]
+
+[[signature]]
+id = "fs/vdi"
+name = "VirtualBox VDI disk image"
+category = "Filesystem"
+extensions = ["vdi"]
+magic = [{ offset = 0, string = "<<< Oracle VM VirtualBox Disk Image >>>" }]
+
+# ---------------------------------------------------------------------------
+# Cryptography and keys
+# ---------------------------------------------------------------------------
+
+[[signature]]
+id = "crypto/pem"
+name = "PEM encoded object"
+category = "Document"
+extensions = ["pem", "crt", "key"]
+extent = { kind = "until", bytes = "2d2d2d2d2d454e44", limit = 1048576 }
+magic = [{ offset = 0, string = "-----BEGIN " }]
+
+[[signature]]
+id = "crypto/openssh-private-key"
+name = "OpenSSH private key"
+category = "Structure"
+magic = [{ offset = 0, bytes = "6f70656e7373682d6b65792d763100" }]
+
+[[signature]]
+id = "crypto/ssh-public-key"
+name = "SSH public key"
+category = "Document"
+extensions = ["pub"]
+magic = [{ offset = 0, string = "ssh-rsa " }, { offset = 0, string = "ssh-ed25519 " }, { offset = 0, string = "ecdsa-sha2-nistp" }]
+
+[[signature]]
+id = "crypto/pgp-public-key-packet"
+name = "OpenPGP public key packet"
+category = "Structure"
+confidence = 0.3
+magic = [{ matches = [{ offset = 0, bytes = "99" }, { offset = 3, bytes = "04" }] }]
+
+[[signature]]
+id = "crypto/der-certificate"
+name = "DER encoded certificate (ASN.1 SEQUENCE)"
+category = "Structure"
+extensions = ["der", "cer"]
+confidence = 0.5
+extent = { kind = "field", offset = 2, size = 2, endian = "big", add = 4 }
+magic = [{ matches = [{ offset = 0, bytes = "3082" }, { offset = 4, bytes = "3082" }] }]
+
+[[signature]]
+id = "crypto/age"
+name = "age encrypted file"
+category = "Structure"
+magic = [{ offset = 0, string = "age-encryption.org/v1" }]
+
+# ---------------------------------------------------------------------------
+# Databases and data files
+# ---------------------------------------------------------------------------
+
+[[signature]]
+id = "db/sqlite"
+name = "SQLite 3 database"
+category = "Structure"
+extensions = ["sqlite", "db", "sqlite3"]
+priority = 65
+references = ["https://www.sqlite.org/fileformat.html"]
+extent = { kind = "product", offset_a = 16, size_a = 2, offset_b = 28, size_b = 4, endian = "big", one_means_65536 = true }
+magic = [{ offset = 0, bytes = "53514c69746520666f726d6174203300" }]
+
+[[signature]]
+id = "db/leveldb-table-trailer"
+name = "LevelDB / RocksDB table trailer magic"
+category = "Structure"
+confidence = 0.5
+magic = [{ offset = 0, bytes = "57fb808b247547db" }]
+
+[[signature]]
+id = "db/git-packfile"
+name = "Git packfile"
+category = "Archive"
+extensions = ["pack"]
+references = ["https://git-scm.com/docs/gitformat-pack"]
+magic = [{ matches = [{ offset = 0, string = "PACK" }, { offset = 4, bytes = "000000" }, { offset = 7, bytes = "02", mask = "fe" }] }]
+
+[[signature]]
+id = "db/git-index"
+name = "Git index"
+category = "Structure"
+references = ["https://git-scm.com/docs/gitformat-index"]
+magic = [{ matches = [{ offset = 0, string = "DIRC" }, { offset = 4, bytes = "000000" }, { offset = 7, bytes = "00", mask = "f8" }] }]
+
+[[signature]]
+id = "db/berkeley-btree"
+name = "Berkeley DB (btree)"
+category = "Structure"
+magic = [{ offset = 12, bytes = "62310500" }]
+
+[[signature]]
+id = "db/redis-rdb"
+name = "Redis RDB dump"
+category = "Structure"
+extensions = ["rdb"]
+magic = [{ offset = 0, string = "REDIS0" }]
+
+[[signature]]
+id = "data/parquet"
+name = "Apache Parquet"
+category = "Structure"
+extensions = ["parquet"]
+magic = [{ offset = 0, string = "PAR1" }]
+
+[[signature]]
+id = "data/arrow"
+name = "Apache Arrow IPC file"
+category = "Structure"
+extensions = ["arrow", "feather"]
+magic = [{ offset = 0, string = "ARROW1" }]
+
+[[signature]]
+id = "data/avro"
+name = "Apache Avro object container"
+category = "Structure"
+extensions = ["avro"]
+magic = [{ offset = 0, bytes = "4f626a01" }]
+
+[[signature]]
+id = "data/hdf5"
+name = "HDF5 data file"
+category = "Structure"
+extensions = ["h5", "hdf5"]
+priority = 60
+magic = [{ offset = 0, bytes = "894844460d0a1a0a" }]
+
+[[signature]]
+id = "data/netcdf"
+name = "NetCDF classic data file"
+category = "Structure"
+extensions = ["nc"]
+magic = [{ offset = 0, bytes = "43444601" }, { offset = 0, bytes = "43444602" }]
+
+[[signature]]
+id = "data/orc"
+name = "Apache ORC"
+category = "Structure"
+extensions = ["orc"]
+magic = [{ offset = 0, string = "ORC" }]
+
+[[signature]]
+id = "data/numpy"
+name = "NumPy array (.npy)"
+category = "Structure"
+extensions = ["npy"]
+magic = [{ offset = 0, bytes = "934e554d5059" }]
+
+[[signature]]
+id = "data/rdata"
+name = "R data file"
+category = "Structure"
+extensions = ["rdata", "rda"]
+magic = [{ offset = 0, string = "RDX2\n" }, { offset = 0, string = "RDX3\n" }]
+
+[[signature]]
+id = "data/python-pickle"
+name = "Python pickle (protocol 4+)"
+category = "Structure"
+extensions = ["pkl", "pickle"]
+confidence = 0.5
+magic = [{ offset = 0, bytes = "800495" }, { offset = 0, bytes = "800595" }]
+
+[[signature]]
+id = "serial/cbor"
+name = "CBOR (self-described)"
+category = "Structure"
+extensions = ["cbor"]
+magic = [{ offset = 0, bytes = "d9d9f7" }]
+
+[[signature]]
+id = "serial/bplist"
+name = "Apple binary property list"
+category = "Document"
+extensions = ["plist"]
+priority = 60
+magic = [{ offset = 0, string = "bplist00" }]
+
+[[signature]]
+id = "serial/utf8-bom"
+name = "UTF-8 text with byte order mark"
+category = "Document"
+confidence = 0.5
+magic = [{ offset = 0, bytes = "efbbbf" }]
+
+[[signature]]
+id = "serial/xml-utf16le"
+name = "XML document (UTF-16LE)"
+category = "Document"
+magic = [{ offset = 0, bytes = "fffe3c003f0078006d006c00" }]
+
+# ---------------------------------------------------------------------------
+# Media containers and codecs
+# ---------------------------------------------------------------------------
+
+[[signature]]
+id = "media/riff"
+name = "RIFF container"
+category = "Signature"
+priority = 55
+extent = { kind = "riff" }
+magic = [{ offset = 0, string = "RIFF" }]
+
+[[signature]]
+id = "media/wav"
+name = "WAVE audio (RIFF)"
+category = "Signature"
+extensions = ["wav"]
+priority = 70
+extent = { kind = "riff" }
+magic = [{ matches = [{ offset = 0, string = "RIFF" }, { offset = 8, string = "WAVE" }] }]
+
+[[signature]]
+id = "media/avi"
+name = "AVI video (RIFF)"
+category = "Signature"
+extensions = ["avi"]
+priority = 70
+extent = { kind = "riff" }
+magic = [{ matches = [{ offset = 0, string = "RIFF" }, { offset = 8, string = "AVI " }] }]
+
+[[signature]]
+id = "media/webp"
+name = "WebP image (RIFF)"
+category = "Image"
+extensions = ["webp"]
+priority = 70
+extent = { kind = "riff" }
+magic = [{ matches = [{ offset = 0, string = "RIFF" }, { offset = 8, string = "WEBP" }] }]
+
+[[signature]]
+id = "media/ani"
+name = "Animated cursor (RIFF)"
+category = "Image"
+extensions = ["ani"]
+priority = 70
+extent = { kind = "riff" }
+magic = [{ matches = [{ offset = 0, string = "RIFF" }, { offset = 8, string = "ACON" }] }]
+
+[[signature]]
+id = "media/mp4"
+name = "ISO base media file (MP4 family)"
+category = "Signature"
+extensions = ["mp4", "m4v", "mov", "3gp"]
+priority = 55
+extent = { kind = "mp4_boxes" }
+magic = [{ offset = 4, string = "ftyp" }]
+
+[[signature]]
+id = "media/m4a"
+name = "MPEG-4 audio (M4A)"
+category = "Signature"
+extensions = ["m4a"]
+priority = 70
+extent = { kind = "mp4_boxes" }
+magic = [{ offset = 4, string = "ftypM4A " }]
+
+[[signature]]
+id = "media/quicktime"
+name = "QuickTime movie"
+category = "Signature"
+extensions = ["mov"]
+priority = 70
+extent = { kind = "mp4_boxes" }
+magic = [{ offset = 4, string = "ftypqt  " }]
+
+[[signature]]
+id = "media/heif"
+name = "HEIF / HEIC image"
+category = "Image"
+extensions = ["heic", "heif"]
+priority = 70
+extent = { kind = "mp4_boxes" }
+magic = [{ offset = 4, string = "ftypheic" }, { offset = 4, string = "ftypheix" }, { offset = 4, string = "ftypmif1" }, { offset = 4, string = "ftypmsf1" }]
+
+[[signature]]
+id = "media/avif"
+name = "AVIF image"
+category = "Image"
+extensions = ["avif"]
+priority = 70
+extent = { kind = "mp4_boxes" }
+magic = [{ offset = 4, string = "ftypavif" }, { offset = 4, string = "ftypavis" }]
+
+[[signature]]
+id = "media/matroska"
+name = "Matroska video"
+category = "Signature"
+extensions = ["mkv", "mka"]
+priority = 65
+magic = [{ matches = [{ offset = 0, bytes = "1a45dfa3" }, { offset = "8..64", string = "matroska" }] }]
+
+[[signature]]
+id = "media/webm"
+name = "WebM video"
+category = "Signature"
+extensions = ["webm"]
+priority = 65
+magic = [{ matches = [{ offset = 0, bytes = "1a45dfa3" }, { offset = "8..64", string = "webm" }] }]
+
+[[signature]]
+id = "media/ogg-page"
+name = "Ogg page"
+category = "Signature"
+extensions = ["ogg"]
+priority = 55
+magic = [{ matches = [{ offset = 0, string = "OggS" }, { offset = 4, bytes = "00" }] }]
+
+[[signature]]
+id = "media/ogg-opus"
+name = "Ogg Opus audio"
+category = "Signature"
+extensions = ["opus"]
+priority = 70
+magic = [{ matches = [{ offset = 0, string = "OggS" }, { offset = 28, string = "OpusHead" }] }]
+
+[[signature]]
+id = "media/ogg-vorbis"
+name = "Ogg Vorbis audio"
+category = "Signature"
+extensions = ["ogg", "oga"]
+priority = 70
+magic = [{ matches = [{ offset = 0, string = "OggS" }, { offset = 28, bytes = "01766f72626973" }] }]
+
+[[signature]]
+id = "media/ogg-theora"
+name = "Ogg Theora video"
+category = "Signature"
+extensions = ["ogv"]
+priority = 70
+magic = [{ matches = [{ offset = 0, string = "OggS" }, { offset = 28, bytes = "807468656f7261" }] }]
+
+[[signature]]
+id = "media/id3v2"
+name = "ID3v2 tag (MP3 metadata)"
+category = "Signature"
+extensions = ["mp3"]
+priority = 60
+references = ["https://id3.org/id3v2.4.0-structure"]
+extent = { kind = "id3v2" }
+magic = [{ matches = [{ offset = 0, string = "ID3" }, { offset = 3, bytes = "00", mask = "f8" }, { offset = 4, bytes = "00" }] }]
+
+[[signature]]
+id = "media/mp3-frame"
+name = "MPEG audio frame header"
+category = "Signature"
+confidence = 0.3
+magic = [{ offset = 0, bytes = "fffa", mask = "fffe" }, { offset = 0, bytes = "fff2", mask = "fffe" }]
+
+[[signature]]
+id = "media/flac"
+name = "FLAC audio"
+category = "Signature"
+extensions = ["flac"]
+priority = 60
+magic = [{ matches = [{ offset = 0, string = "fLaC" }, { offset = 4, bytes = "00", mask = "7f" }] }]
+
+[[signature]]
+id = "media/aiff"
+name = "AIFF audio"
+category = "Signature"
+extensions = ["aiff", "aif"]
+priority = 60
+extent = { kind = "field", offset = 4, size = 4, endian = "big", add = 8 }
+magic = [{ matches = [{ offset = 0, string = "FORM" }, { offset = 8, string = "AIFF" }] }, { matches = [{ offset = 0, string = "FORM" }, { offset = 8, string = "AIFC" }] }]
+
+[[signature]]
+id = "media/mpeg-ts"
+name = "MPEG transport stream"
+category = "Signature"
+extensions = ["ts"]
+magic = [{ matches = [{ offset = 0, bytes = "47" }, { offset = 188, bytes = "47" }, { offset = 376, bytes = "47" }] }]
+
+[[signature]]
+id = "media/mpeg-ps"
+name = "MPEG program stream pack header"
+category = "Signature"
+extensions = ["mpg", "vob"]
+magic = [{ offset = 0, bytes = "000001ba" }]
+
+[[signature]]
+id = "media/h264-sps"
+name = "H.264 Annex B stream (SPS)"
+category = "Signature"
+extensions = ["h264"]
+confidence = 0.5
+magic = [{ offset = 0, bytes = "0000000107", mask = "ffffffff1f" }]
+
+[[signature]]
+id = "media/bmp"
+name = "Windows bitmap image"
+category = "Image"
+extensions = ["bmp"]
+priority = 60
+extent = { kind = "field", offset = 2, size = 4, endian = "little" }
+magic = [{ matches = [{ offset = 0, string = "BM" }, { offset = 14, bytes = "28000000" }] }, { matches = [{ offset = 0, string = "BM" }, { offset = 14, bytes = "0c000000" }] }, { matches = [{ offset = 0, string = "BM" }, { offset = 14, bytes = "6c000000" }] }, { matches = [{ offset = 0, string = "BM" }, { offset = 14, bytes = "7c000000" }] }]
+
+[[signature]]
+id = "media/png"
+name = "PNG image"
+category = "Image"
+extensions = ["png"]
+priority = 60
+extent = { kind = "png_chunks" }
+magic = [{ offset = 0, bytes = "89504e470d0a1a0a" }]
+
+[[signature]]
+id = "media/dds"
+name = "DirectDraw surface texture"
+category = "Image"
+extensions = ["dds"]
+magic = [{ matches = [{ offset = 0, string = "DDS " }, { offset = 4, bytes = "7c000000" }] }]
+
+[[signature]]
+id = "media/ktx"
+name = "KTX texture"
+category = "Image"
+extensions = ["ktx"]
+magic = [{ offset = 0, bytes = "ab4b5458203131bb0d0a1a0a" }]
+
+[[signature]]
+id = "media/ktx2"
+name = "KTX2 texture"
+category = "Image"
+extensions = ["ktx2"]
+magic = [{ offset = 0, bytes = "ab4b5458203230bb0d0a1a0a" }]
+
+[[signature]]
+id = "media/exr"
+name = "OpenEXR image"
+category = "Image"
+extensions = ["exr"]
+magic = [{ offset = 0, bytes = "762f3101" }]
+
+[[signature]]
+id = "media/xcf"
+name = "GIMP XCF image"
+category = "Image"
+extensions = ["xcf"]
+magic = [{ offset = 0, string = "gimp xcf " }]
+
+[[signature]]
+id = "media/jxl"
+name = "JPEG XL image"
+category = "Image"
+extensions = ["jxl"]
+magic = [{ offset = 0, bytes = "0000000c4a584c200d0a870a" }, { offset = 0, bytes = "ff0a" }]
+
+# ---------------------------------------------------------------------------
+# Fonts
+# ---------------------------------------------------------------------------
+
+[[signature]]
+id = "font/otf"
+name = "OpenType font (CFF)"
+category = "Document"
+extensions = ["otf"]
+magic = [{ matches = [{ offset = 0, string = "OTTO" }, { offset = 4, bytes = "00" }] }]
+
+[[signature]]
+id = "font/ttf"
+name = "TrueType font"
+category = "Document"
+extensions = ["ttf"]
+confidence = 0.6
+magic = [{ matches = [{ offset = 0, bytes = "00010000" }, { offset = 4, bytes = "00" }, { offset = 5, bytes = "00", mask = "c0" }] }, { matches = [{ offset = 0, string = "true" }, { offset = 4, bytes = "00" }] }]
+
+[[signature]]
+id = "font/ttc"
+name = "TrueType collection"
+category = "Document"
+extensions = ["ttc"]
+magic = [{ offset = 0, string = "ttcf" }]
+
+[[signature]]
+id = "font/woff"
+name = "WOFF web font"
+category = "Document"
+extensions = ["woff"]
+extent = { kind = "field", offset = 8, size = 4, endian = "big" }
+magic = [{ offset = 0, string = "wOFF" }]
+
+[[signature]]
+id = "font/woff2"
+name = "WOFF2 web font"
+category = "Document"
+extensions = ["woff2"]
+extent = { kind = "field", offset = 8, size = 4, endian = "big" }
+magic = [{ offset = 0, string = "wOF2" }]
+
+# ---------------------------------------------------------------------------
+# Windows
+# ---------------------------------------------------------------------------
+
+[[signature]]
+id = "win/registry-hive"
+name = "Windows registry hive"
+category = "Structure"
+references = ["https://github.com/msuhanov/regf/blob/master/Windows%20registry%20file%20format%20specification.md"]
+extent = { kind = "field", offset = 40, size = 4, endian = "little", add = 4096 }
+magic = [{ offset = 0, string = "regf" }]
+
+[[signature]]
+id = "win/evtx-file"
+name = "Windows event log (EVTX) file header"
+category = "Structure"
+extensions = ["evtx"]
+extent = { kind = "fixed", len = 4096 }
+magic = [{ offset = 0, bytes = "456c6646696c6500" }]
+
+[[signature]]
+id = "win/evtx-chunk"
+name = "Windows event log (EVTX) chunk"
+category = "Structure"
+extent = { kind = "fixed", len = 65536 }
+magic = [{ offset = 0, bytes = "456c6643686e6b00" }]
+
+[[signature]]
+id = "win/ole2"
+name = "OLE2 compound document (Office 97-2003, MSI)"
+category = "Document"
+extensions = ["doc", "xls", "ppt", "msi"]
+priority = 55
+magic = [{ offset = 0, bytes = "d0cf11e0a1b11ae1" }]
+
+[[signature]]
+id = "win/lnk"
+name = "Windows shortcut (LNK)"
+category = "Document"
+extensions = ["lnk"]
+priority = 60
+magic = [{ offset = 0, bytes = "4c0000000114020000000000c000000000000046" }]
+
+[[signature]]
+id = "win/cab"
+name = "Microsoft cabinet archive"
+category = "Archive"
+extensions = ["cab"]
+priority = 60
+extent = { kind = "field", offset = 8, size = 4, endian = "little" }
+magic = [{ matches = [{ offset = 0, string = "MSCF" }, { offset = 4, bytes = "00000000" }] }]
+
+[[signature]]
+id = "win/minidump"
+name = "Windows minidump"
+category = "Structure"
+extensions = ["dmp"]
+magic = [{ offset = 0, string = "MDMP" }]
+
+[[signature]]
+id = "win/wim"
+name = "Windows imaging (WIM) archive"
+category = "Archive"
+extensions = ["wim"]
+magic = [{ offset = 0, bytes = "4d5357494d000000" }]
+
+[[signature]]
+id = "win/chm"
+name = "Compiled HTML help (CHM)"
+category = "Document"
+extensions = ["chm"]
+magic = [{ matches = [{ offset = 0, string = "ITSF" }, { offset = 4, bytes = "03000000" }] }]
+
+[[signature]]
+id = "win/prefetch"
+name = "Windows prefetch"
+category = "Structure"
+extensions = ["pf"]
+magic = [{ matches = [{ offset = 4, string = "SCCA" }, { offset = 1, bytes = "000000" }] }, { offset = 0, bytes = "4d414d04" }]
+
+[[signature]]
+id = "win/ese-database"
+name = "Extensible storage engine (ESE) database"
+category = "Structure"
+extensions = ["edb"]
+magic = [{ offset = 4, bytes = "efcdab89" }]
+
+[[signature]]
+id = "win/pdb"
+name = "Program database (PDB 7)"
+category = "Structure"
+extensions = ["pdb"]
+magic = [{ offset = 0, string = "Microsoft C/C++ MSF 7.00\r\n" }]
+
+# ---------------------------------------------------------------------------
+# macOS
+# ---------------------------------------------------------------------------
+
+[[signature]]
+id = "mac/dmg-koly"
+name = "Apple disk image (DMG) trailer"
+category = "Filesystem"
+extensions = ["dmg"]
+extent = { kind = "fixed", len = 512 }
+magic = [{ matches = [{ offset = 0, string = "koly" }, { offset = 4, bytes = "00000004" }] }]
+
+[[signature]]
+id = "mac/ds-store"
+name = "macOS .DS_Store"
+category = "Structure"
+magic = [{ offset = 0, bytes = "0000000142756431" }]
+
+[[signature]]
+id = "mac/applesingle"
+name = "AppleSingle file"
+category = "Archive"
+magic = [{ offset = 0, bytes = "00051600" }]
+
+[[signature]]
+id = "mac/appledouble"
+name = "AppleDouble resource fork"
+category = "Archive"
+magic = [{ offset = 0, bytes = "00051607" }]
+
+[[signature]]
+id = "mac/bookmark"
+name = "macOS bookmark / alias data"
+category = "Structure"
+magic = [{ offset = 0, bytes = "626f6f6b000000006d61726b" }]
+
+[[signature]]
+id = "mac/code-signature"
+name = "Apple code signature superblob"
+category = "Structure"
+extent = { kind = "field", offset = 4, size = 4, endian = "big" }
+magic = [{ offset = 0, bytes = "fade0cc0" }]
+
+[[signature]]
+id = "mac/keychain"
+name = "macOS keychain"
+category = "Structure"
+magic = [{ offset = 0, string = "kych" }]
+
+# ---------------------------------------------------------------------------
+# Network captures and protocols
+# ---------------------------------------------------------------------------
+
+[[signature]]
+id = "capture/pcap-le"
+name = "pcap capture (little endian, microseconds)"
+category = "Protocol"
+extensions = ["pcap"]
+priority = 60
+references = ["https://www.ietf.org/archive/id/draft-gharris-opsawg-pcap-02.html"]
+magic = [{ matches = [{ offset = 0, bytes = "d4c3b2a1" }, { offset = 4, bytes = "0200" }] }]
+
+[[signature]]
+id = "capture/pcap-be"
+name = "pcap capture (big endian, microseconds)"
+category = "Protocol"
+extensions = ["pcap"]
+priority = 60
+magic = [{ matches = [{ offset = 0, bytes = "a1b2c3d4" }, { offset = 4, bytes = "0002" }] }]
+
+[[signature]]
+id = "capture/pcap-le-ns"
+name = "pcap capture (little endian, nanoseconds)"
+category = "Protocol"
+extensions = ["pcap"]
+priority = 60
+magic = [{ matches = [{ offset = 0, bytes = "4d3cb2a1" }, { offset = 4, bytes = "0200" }] }]
+
+[[signature]]
+id = "capture/pcap-be-ns"
+name = "pcap capture (big endian, nanoseconds)"
+category = "Protocol"
+extensions = ["pcap"]
+priority = 60
+magic = [{ matches = [{ offset = 0, bytes = "a1b23c4d" }, { offset = 4, bytes = "0002" }] }]
+
+[[signature]]
+id = "capture/pcapng"
+name = "pcapng capture (section header block)"
+category = "Protocol"
+extensions = ["pcapng"]
+priority = 60
+references = ["https://www.ietf.org/archive/id/draft-tuexen-opsawg-pcapng-05.html"]
+extent = { kind = "field", offset = 4, size = 4, endian = "little" }
+magic = [{ matches = [{ offset = 0, bytes = "0a0d0d0a" }, { offset = 8, bytes = "1a2b3c4d" }] }]
+
+[[signature]]
+id = "capture/pcapng-be"
+name = "pcapng capture (big endian section header)"
+category = "Protocol"
+extensions = ["pcapng"]
+priority = 60
+extent = { kind = "field", offset = 4, size = 4, endian = "big" }
+magic = [{ matches = [{ offset = 0, bytes = "0a0d0d0a" }, { offset = 8, bytes = "4d3c2b1a" }] }]
+
+[[signature]]
+id = "capture/snoop"
+name = "snoop capture"
+category = "Protocol"
+magic = [{ offset = 0, bytes = "736e6f6f70000000" }]
+
+[[signature]]
+id = "protocol/tls-record"
+name = "TLS record"
+category = "Protocol"
+confidence = 0.5
+references = ["https://www.rfc-editor.org/rfc/rfc8446#section-5.1"]
+magic = [{ matches = [{ offset = 0, bytes = "1603" }, { offset = 2, bytes = "00", mask = "fc" }, { offset = 3, bytes = "00", mask = "c0" }] }]
+
+[[signature]]
+id = "protocol/tls-client-hello"
+name = "TLS ClientHello"
+category = "Protocol"
+priority = 60
+confidence = 0.8
+magic = [{ matches = [{ offset = 0, bytes = "1603" }, { offset = 2, bytes = "00", mask = "fc" }, { offset = 5, bytes = "01" }, { offset = 9, bytes = "0303" }] }]
+
+[[signature]]
+id = "protocol/ssh-banner"
+name = "SSH protocol banner"
+category = "Protocol"
+magic = [{ offset = 0, string = "SSH-2.0-" }, { offset = 0, string = "SSH-1.99-" }]
+
+[[signature]]
+id = "protocol/http-request"
+name = "HTTP request line"
+category = "Protocol"
+confidence = 0.6
+magic = [
+  { offset = 0, string = "GET /" },
+  { offset = 0, string = "POST /" },
+  { offset = 0, string = "PUT /" },
+  { offset = 0, string = "HEAD /" },
+  { offset = 0, string = "DELETE /" },
+  { offset = 0, string = "OPTIONS /" },
+  { offset = 0, string = "PATCH /" },
+  { offset = 0, string = "CONNECT " },
+]
+
+[[signature]]
+id = "protocol/http-response"
+name = "HTTP response status line"
+category = "Protocol"
+confidence = 0.6
+magic = [{ offset = 0, string = "HTTP/1." }, { offset = 0, string = "HTTP/2" }]
+
+[[signature]]
+id = "protocol/sip"
+name = "SIP message"
+category = "Protocol"
+confidence = 0.6
+magic = [{ offset = 0, string = "SIP/2.0" }, { offset = 0, string = "INVITE sip:" }, { offset = 0, string = "REGISTER sip:" }]
+
+[[signature]]
+id = "protocol/rtsp"
+name = "RTSP message"
+category = "Protocol"
+confidence = 0.6
+magic = [{ offset = 0, string = "RTSP/1.0" }, { offset = 0, string = "DESCRIBE rtsp://" }, { offset = 0, string = "SETUP rtsp://" }]
+
+[[signature]]
+id = "protocol/smb1"
+name = "SMB1 message (with NetBIOS header)"
+category = "Protocol"
+magic = [{ offset = 4, bytes = "ff534d42" }]
+
+[[signature]]
+id = "protocol/smb2"
+name = "SMB2/3 message (with NetBIOS header)"
+category = "Protocol"
+magic = [{ offset = 4, bytes = "fe534d42" }]
+
+[[signature]]
+id = "protocol/ntlmssp"
+name = "NTLMSSP message"
+category = "Protocol"
+magic = [{ offset = 0, bytes = "4e544c4d53535000" }]
+
+[[signature]]
+id = "protocol/bgp"
+name = "BGP message"
+category = "Protocol"
+confidence = 0.6
+magic = [{ matches = [{ offset = 0, bytes = "ffffffffffffffffffffffffffffffff" }, { offset = 18, bytes = "00", mask = "f8" }] }]
+
+[[signature]]
+id = "protocol/dhcp"
+name = "DHCP message"
+category = "Protocol"
+references = ["https://www.rfc-editor.org/rfc/rfc2131"]
+magic = [{ matches = [{ offset = 236, bytes = "63825363" }, { offset = 1, bytes = "0106" }] }]
+
+[[signature]]
+id = "protocol/dicom"
+name = "DICOM medical image"
+category = "Document"
+extensions = ["dcm"]
+priority = 60
+magic = [{ offset = 128, string = "DICM" }]
+
+# ---------------------------------------------------------------------------
+# Archives not covered, or covered without extents
+# ---------------------------------------------------------------------------
+
+[[signature]]
+id = "archive/tar-ustar"
+name = "tar archive (ustar)"
+category = "Archive"
+extensions = ["tar"]
+priority = 60
+magic = [{ offset = 257, bytes = "757374617200" }, { offset = 257, bytes = "7573746172202000" }]
+
+[[signature]]
+id = "archive/zip-local-header"
+name = "ZIP archive (local file header)"
+category = "Archive"
+extensions = ["zip", "jar", "apk"]
+priority = 55
+extent = { kind = "zip_local" }
+magic = [{ offset = 0, bytes = "504b0304" }]
+
+[[signature]]
+id = "archive/zip-central-directory"
+name = "ZIP central directory entry"
+category = "Archive"
+magic = [{ offset = 0, bytes = "504b0102" }]
+
+[[signature]]
+id = "archive/zip-end-of-central-directory"
+name = "ZIP end of central directory"
+category = "Archive"
+extent = { kind = "fixed", len = 22 }
+magic = [{ offset = 0, bytes = "504b0506" }]
+
+[[signature]]
+id = "archive/zip64-end-of-central-directory"
+name = "ZIP64 end of central directory"
+category = "Archive"
+magic = [{ offset = 0, bytes = "504b0606" }]
+
+[[signature]]
+id = "archive/lzip"
+name = "lzip compressed data"
+category = "Archive"
+extensions = ["lz"]
+magic = [{ matches = [{ offset = 0, string = "LZIP" }, { offset = 4, bytes = "01" }] }]
+
+[[signature]]
+id = "archive/lrzip"
+name = "lrzip compressed data"
+category = "Archive"
+extensions = ["lrz"]
+magic = [{ offset = 0, string = "LRZI" }]
+
+[[signature]]
+id = "archive/zpaq"
+name = "ZPAQ archive"
+category = "Archive"
+extensions = ["zpaq"]
+magic = [{ offset = 0, string = "7kSt" }]
+
+[[signature]]
+id = "archive/cpio-newc"
+name = "cpio archive (new ASCII)"
+category = "Archive"
+extensions = ["cpio"]
+priority = 60
+magic = [{ offset = 0, string = "070701" }, { offset = 0, string = "070702" }]
+
+[[signature]]
+id = "archive/cpio-odc"
+name = "cpio archive (old ASCII)"
+category = "Archive"
+extensions = ["cpio"]
+priority = 60
+magic = [{ offset = 0, string = "070707" }]
+
+[[signature]]
+id = "archive/ar"
+name = "ar archive (.a, .deb)"
+category = "Archive"
+extensions = ["a", "deb", "ar"]
+priority = 60
+magic = [{ offset = 0, string = "!<arch>\n" }]
+
+[[signature]]
+id = "archive/chd"
+name = "MAME compressed hunks of data (CHD)"
+category = "Archive"
+extensions = ["chd"]
+magic = [{ offset = 0, string = "MComprHD" }]
+
+[[signature]]
+id = "archive/doom-wad"
+name = "Doom WAD archive"
+category = "Archive"
+extensions = ["wad"]
+magic = [{ offset = 0, string = "IWAD" }, { offset = 0, string = "PWAD" }]
+
+# ---------------------------------------------------------------------------
+# Console ROMs and emulation
+# ---------------------------------------------------------------------------
+
+[[signature]]
+id = "rom/nes20"
+name = "NES 2.0 ROM"
+category = "Executable"
+extensions = ["nes"]
+priority = 60
+magic = [{ matches = [{ offset = 0, bytes = "4e45531a" }, { offset = 7, bytes = "08", mask = "0c" }] }]
+
+[[signature]]
+id = "rom/ines"
+name = "iNES ROM"
+category = "Executable"
+extensions = ["nes"]
+magic = [{ offset = 0, bytes = "4e45531a" }]
+
+[[signature]]
+id = "rom/gameboy"
+name = "Game Boy ROM (Nintendo logo)"
+category = "Executable"
+extensions = ["gb", "gbc"]
+magic = [{ offset = 260, bytes = "ceed6666cc0d000b" }]
+
+[[signature]]
+id = "rom/gba"
+name = "Game Boy Advance ROM (Nintendo logo)"
+category = "Executable"
+extensions = ["gba"]
+magic = [{ offset = 4, bytes = "24ffae51699aa221" }]
+
+[[signature]]
+id = "rom/nds"
+name = "Nintendo DS ROM (Nintendo logo)"
+category = "Executable"
+extensions = ["nds"]
+magic = [{ offset = 192, bytes = "24ffae51699aa221" }]
+
+[[signature]]
+id = "rom/n64-z64"
+name = "Nintendo 64 ROM (big endian, z64)"
+category = "Executable"
+extensions = ["z64"]
+magic = [{ offset = 0, bytes = "80371240" }]
+
+[[signature]]
+id = "rom/n64-v64"
+name = "Nintendo 64 ROM (byte swapped, v64)"
+category = "Executable"
+extensions = ["v64"]
+magic = [{ offset = 0, bytes = "37804012" }]
+
+[[signature]]
+id = "rom/n64-n64"
+name = "Nintendo 64 ROM (little endian)"
+category = "Executable"
+extensions = ["n64"]
+magic = [{ offset = 0, bytes = "40123780" }]
+
+[[signature]]
+id = "rom/gamecube"
+name = "GameCube disc image"
+category = "Filesystem"
+extensions = ["gcm", "iso"]
+magic = [{ offset = 28, bytes = "c2339f3d" }]
+
+[[signature]]
+id = "rom/wii"
+name = "Wii disc image"
+category = "Filesystem"
+extensions = ["wbfs", "iso"]
+magic = [{ offset = 24, bytes = "5d1c9ea3" }]
+
+[[signature]]
+id = "rom/3ds-ncsd"
+name = "Nintendo 3DS cartridge image (NCSD)"
+category = "Filesystem"
+extensions = ["3ds", "cci"]
+magic = [{ offset = 256, string = "NCSD" }]
+
+[[signature]]
+id = "rom/3ds-ncch"
+name = "Nintendo 3DS content container (NCCH)"
+category = "Archive"
+extensions = ["cxi", "cfa"]
+magic = [{ offset = 256, string = "NCCH" }]
+
+[[signature]]
+id = "rom/psx-exe"
+name = "PlayStation executable"
+category = "Executable"
+extensions = ["exe", "psx"]
+priority = 75
+magic = [{ offset = 0, string = "PS-X EXE" }]
+
+[[signature]]
+id = "rom/sega-megadrive"
+name = "Sega Mega Drive / Genesis ROM"
+category = "Executable"
+extensions = ["md", "gen", "bin"]
+magic = [{ offset = 256, string = "SEGA MEGA DRIVE" }, { offset = 256, string = "SEGA GENESIS" }]
+
+[[signature]]
+id = "rom/xbox-xbe"
+name = "Xbox executable (XBE)"
+category = "Executable"
+extensions = ["xbe"]
+magic = [{ offset = 0, string = "XBEH" }]
+
+[[signature]]
+id = "rom/xbox360-xex"
+name = "Xbox 360 executable (XEX2)"
+category = "Executable"
+extensions = ["xex"]
+magic = [{ offset = 0, string = "XEX2" }]
