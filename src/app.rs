@@ -961,7 +961,8 @@ impl ViewerApp {
             .unwrap_or(1.0);
     }
 
-    fn set_width(&mut self, width: usize) {
+    /// Set the pixels per row, within the allowed range.
+    pub fn set_width(&mut self, width: usize) {
         self.shape.width = width.clamp(1, MAX_WIDTH);
         self.clamp_top_row();
     }
@@ -2503,6 +2504,7 @@ impl ViewerApp {
                 if ui.button("Byte statistics").clicked() { self.dock.open = true; self.dock.tab = DockTab::Statistics; crate::analysis_stats::start_statistics(self); ui.close(); }
                 if ui.button("Strings").clicked() { self.dock.toggle(DockTab::Strings); ui.close(); }
                 if ui.button("Record columns").clicked() { self.dock.toggle(DockTab::Columns); ui.close(); }
+                if ui.button("Bits and encodings").clicked() { self.dock.toggle(DockTab::Bits); ui.close(); }
                 if ui.button("Protocol analysis").clicked() { self.dock.open = true; self.dock.tab = DockTab::Protocol; crate::analysis_tools::start_protocol(self); ui.close(); }
                 if ui.button("XOR keys").clicked() { self.dock.toggle(DockTab::Xor); ui.close(); }
                 if ui.button("Crypto: encrypted blocks, keys, ciphers").clicked() { self.dock.toggle(DockTab::Crypto); ui.close(); }

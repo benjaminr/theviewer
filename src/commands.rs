@@ -87,6 +87,7 @@ pub fn commands() -> Vec<Command> {
         Command { id: "view.pointers", title: "Toggle pointer arrows", keys: "", run: |app, _| app.bench.analysis.show_pointers = !app.bench.analysis.show_pointers },
         Command { id: "tools.statistics", title: "Byte statistics and randomness tests", keys: "", run: |app, _| { app.dock.open = true; app.dock.tab = crate::dock::DockTab::Statistics; crate::analysis_stats::start_statistics(app); } },
         Command { id: "tools.strings", title: "Find strings", keys: "", run: |app, _| { app.dock.open = true; app.dock.tab = crate::dock::DockTab::Strings; } },
+        Command { id: "tools.bits", title: "Bits and encodings: bit periods, bit planes, line codes, number types, length fields", keys: "", run: |app, _| app.dock.toggle(crate::dock::DockTab::Bits) },
         Command { id: "tools.columns", title: "Profile record columns", keys: "", run: |app, _| { app.dock.open = true; app.dock.tab = crate::dock::DockTab::Columns; } },
         Command { id: "tools.protocol", title: "Analyse a message stream (protocol)", keys: "", run: |app, _| { app.dock.open = true; app.dock.tab = crate::dock::DockTab::Protocol; crate::analysis_tools::start_protocol(app); } },
         Command { id: "tools.xor", title: "Recover XOR keys", keys: "", run: |app, _| { app.dock.open = true; app.dock.tab = crate::dock::DockTab::Xor; } },

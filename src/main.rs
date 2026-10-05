@@ -37,7 +37,7 @@ usage: theviewer [FILE] [--format NAME] [--palette NAME] [--width PIXELS] [--off
   --detect   scan for repeating periods on startup and open the structure panel
   --open     open the image, audio or video at the cursor
   --layout   start with a panel layout: default right left focus
-  --tool     open the tools dock on a tab: report ask template columns protocol statistics strings xor crypto checksums disassembly unpacked diff compare live
+  --tool     open the tools dock on a tab: report ask template columns protocol bits statistics strings xor crypto checksums disassembly unpacked diff compare live
 ";
 
 /// How to print a report without opening a window.
