@@ -29,7 +29,7 @@ use crate::unpack::{self, Node};
 use crate::{patterns, player};
 
 /// Largest prefix of a file the report and unpacker read into memory.
-const ANALYSIS_READ_LIMIT: usize = 256 * 1024 * 1024;
+pub(crate) const ANALYSIS_READ_LIMIT: usize = 256 * 1024 * 1024;
 /// Largest file kept in the recording history.
 const RECORDING_FILE_LIMIT: usize = 256 * 1024 * 1024;
 /// How often watched files and serial captures are checked.

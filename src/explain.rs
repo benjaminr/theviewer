@@ -243,10 +243,16 @@ fn scan_offsets(len: usize) -> Vec<usize> {
     }
 }
 
+/// The `[start, end)` windows a whole-file scan covers: all of a small file,
+/// with overlaps so nothing straddling a boundary is missed, or an even
+/// sample of a large one.
+pub(crate) fn scan_windows(len: usize) -> Vec<(usize, usize)> {
+    scan_offsets(len).into_iter().map(|start| (start, (start + SCAN_WINDOW).min(len))).collect()
+}
+
 fn confident_regions(bytes: &[u8], registry: &Registry) -> Vec<Region> {
     let mut found: Vec<(Region, f32)> = Vec::new();
-    for start in scan_offsets(bytes.len()) {
-        let end = (start + SCAN_WINDOW).min(bytes.len());
+    for (start, end) in scan_windows(bytes.len()) {
         let context = ScanContext { base: start, document_len: bytes.len(), strides: Vec::new() };
         for finding in registry.scan(&bytes[start..end], &context) {
             let Some(kind) = finding_kind(&finding) else { continue };

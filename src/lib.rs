@@ -21,6 +21,7 @@ pub mod dock;
 pub mod document;
 pub mod explain;
 pub mod findings;
+pub mod headless;
 pub mod hex;
 pub mod hilbert;
 pub mod layout;

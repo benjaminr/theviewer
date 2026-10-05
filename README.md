@@ -238,6 +238,8 @@ the full list.
 theviewer firmware.bin --format rgb8 --width 320 --offset 0x1000 --zoom 2
 theviewer records.dat --detect
 theviewer capture.bin --tool protocol --layout right
+theviewer firmware.bin --report          # print the report, no window
+theviewer firmware.bin --json > report.json
 ```
 
 | Option | Effect |
@@ -252,6 +254,8 @@ theviewer capture.bin --tool protocol --layout right
 | `--open` | Open the image, audio or video at the cursor |
 | `--tool NAME` | Open a tool: `report` `ask` `template` `columns` `protocol` `statistics` `strings` `xor` `checksums` `disassembly` `unpacked` `diff` `live` |
 | `--layout NAME` | Start with a panel layout: `default` `right` `left` `focus` |
+| `--report` | Print the file's report as text and exit, without opening a window |
+| `--json` | Print the report as JSON and exit: the summary, regions, likely record widths and confident findings, for scripts and CI |
 
 ## Extending it
 
