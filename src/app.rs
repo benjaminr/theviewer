@@ -336,6 +336,7 @@ pub fn build_registry_with(host: Option<&SharedLuaHost>) -> Registry {
     }
     registry.add_detector(catalog);
     registry.add_detector(crate::cortex_m::CortexMVectorDetector);
+    registry.add_detector(crate::crypto_constants::CryptoConstantDetector);
     for parser in parsers::builtin_parsers() {
         registry.add_parser_arc(parser);
     }
@@ -549,7 +550,8 @@ impl ViewerApp {
             app.open_media();
         }
         if let Some(name) = &launch.tool
-            && let Some(tab) = DockTab::ALL.into_iter().find(|tab| tab.label().eq_ignore_ascii_case(name))
+            // "dot-plot" names the "Dot plot" tab.
+            && let Some(tab) = DockTab::ALL.into_iter().find(|tab| tab.label().replace(' ', "-").eq_ignore_ascii_case(&name.replace(' ', "-")))
         {
             app.dock.open = true;
             app.dock.tab = tab;
@@ -2490,6 +2492,9 @@ impl ViewerApp {
             });
             ui.menu_button("Tools", |ui| {
                 if ui.button("Explain this file").clicked() { self.dock.open = true; self.dock.tab = DockTab::Report; self.start_report(); ui.close(); }
+                if ui.button("Dot plot (self-similarity)").clicked() { self.dock.toggle(DockTab::DotPlot); ui.close(); }
+                if ui.button("Find images").clicked() { self.dock.toggle(DockTab::Images); ui.close(); }
+                if ui.button("Firmware: processor, load address, vectors").clicked() { self.dock.toggle(DockTab::Firmware); ui.close(); }
                 if self.assistant_available() {
                     if ui.button("Ask about this file…   Cmd+L").clicked() { self.dock.open = true; self.dock.tab = DockTab::Assistant; ui.close(); }
                 } else {

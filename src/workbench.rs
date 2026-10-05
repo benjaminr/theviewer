@@ -257,14 +257,28 @@ impl ViewerApp {
             DockTab::Checksums => self.show_checksums_tab(ui),
             DockTab::Diff => self.show_diff_tab(ui),
             DockTab::Columns => crate::analysis_tools::show_columns(self, ui),
-            DockTab::Protocol => crate::analysis_tools::show_protocol(self, ui),
+            DockTab::Protocol => {
+                crate::analysis_tools::show_protocol(self, ui);
+                ui.separator();
+                egui::CollapsingHeader::new("Align messages").id_salt("align-messages").show(ui, |ui| {
+                    panels::show(self, ui, |p| &mut p.alignment, crate::panel_alignment::show_alignment);
+                });
+            }
             DockTab::Statistics => crate::analysis_stats::show_statistics(self, ui),
             DockTab::Strings => crate::analysis_stats::show_strings(self, ui),
             DockTab::Xor => crate::analysis_stats::show_xor(self, ui),
-            DockTab::Crypto => panels::show(self, ui, |p| &mut p.crypto, crate::panel_crypto::show_crypto),
+            DockTab::Crypto => {
+                egui::CollapsingHeader::new("Known constants").id_salt("crypto-constants").default_open(true).show(ui, |ui| {
+                    panels::show(self, ui, |p| &mut p.crypto_constants, crate::panel_crypto_constants::show_crypto_constants);
+                });
+                panels::show(self, ui, |p| &mut p.crypto, crate::panel_crypto::show_crypto);
+            }
             DockTab::Compare => panels::show(self, ui, |p| &mut p.compare, crate::panel_compare::show_compare),
             DockTab::Bits => panels::show(self, ui, |p| &mut p.bits, crate::panel_bits::show_bits),
             DockTab::Forensics => panels::show(self, ui, |p| &mut p.forensics, crate::panel_forensics::show_forensics),
+            DockTab::DotPlot => panels::show(self, ui, |p| &mut p.dot_plot, crate::panel_dotplot::show_dot_plot),
+            DockTab::Images => panels::show(self, ui, |p| &mut p.images, crate::panel_image_finder::show_image_finder),
+            DockTab::Firmware => panels::show(self, ui, |p| &mut p.firmware, crate::panel_firmware::show_firmware),
             DockTab::Assistant | DockTab::Live => {}
         }
     }
@@ -1004,6 +1018,10 @@ impl ViewerApp {
 
     fn show_checksums_tab(&mut self, ui: &mut Ui) {
         crate::analysis_tabs::show_checksums(self, ui);
+        ui.separator();
+        egui::CollapsingHeader::new("Solve a custom CRC").id_salt("crc-solver").show(ui, |ui| {
+            panels::show(self, ui, |p| &mut p.crc_solver, crate::panel_crc_solver::show_crc_solver);
+        });
     }
 
     fn show_diff_tab(&mut self, ui: &mut Ui) {

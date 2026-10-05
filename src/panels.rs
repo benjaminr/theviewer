@@ -7,10 +7,16 @@
 use eframe::egui::Ui;
 
 use crate::app::ViewerApp;
+use crate::panel_alignment::AlignmentState;
 use crate::panel_bits::BitsState;
 use crate::panel_compare::CompareState;
 use crate::panel_forensics::ForensicsState;
+use crate::panel_crc_solver::CrcSolverState;
 use crate::panel_crypto::CryptoState;
+use crate::panel_crypto_constants::CryptoConstantsState;
+use crate::panel_dotplot::DotPlotState;
+use crate::panel_firmware::FirmwareState;
+use crate::panel_image_finder::ImageFinderState;
 
 /// The state of every self-contained tool panel.
 #[derive(Default)]
@@ -19,6 +25,12 @@ pub struct PanelStates {
     pub compare: CompareState,
     pub bits: BitsState,
     pub forensics: ForensicsState,
+    pub dot_plot: DotPlotState,
+    pub images: ImageFinderState,
+    pub firmware: FirmwareState,
+    pub crypto_constants: CryptoConstantsState,
+    pub crc_solver: CrcSolverState,
+    pub alignment: AlignmentState,
 }
 
 /// Draw a panel, lending it its state from `app` for the frame. The state is

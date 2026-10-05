@@ -30,10 +30,13 @@ pub enum DockTab {
     Compare,
     Bits,
     Forensics,
+    DotPlot,
+    Images,
+    Firmware,
 }
 
 impl DockTab {
-    pub const ALL: [DockTab; 17] = [
+    pub const ALL: [DockTab; 20] = [
         DockTab::Report,
         DockTab::Assistant,
         DockTab::Template,
@@ -51,14 +54,17 @@ impl DockTab {
         DockTab::Compare,
         DockTab::Bits,
         DockTab::Forensics,
+        DockTab::DotPlot,
+        DockTab::Images,
+        DockTab::Firmware,
     ];
 
     /// Tabs grouped by purpose, for the tab bar.
     pub const GROUPS: [&'static [DockTab]; 5] = [
-        &[DockTab::Report, DockTab::Assistant],
+        &[DockTab::Report, DockTab::Assistant, DockTab::DotPlot, DockTab::Images],
         &[DockTab::Template, DockTab::Columns, DockTab::Protocol, DockTab::Bits],
         &[DockTab::Statistics, DockTab::Strings, DockTab::Xor, DockTab::Crypto, DockTab::Checksums],
-        &[DockTab::Disassembly, DockTab::Unpacked, DockTab::Forensics, DockTab::Diff, DockTab::Compare],
+        &[DockTab::Disassembly, DockTab::Firmware, DockTab::Unpacked, DockTab::Forensics, DockTab::Diff, DockTab::Compare],
         &[DockTab::Live],
     ];
 
@@ -81,6 +87,9 @@ impl DockTab {
             DockTab::Compare => "Compare",
             DockTab::Bits => "Bits",
             DockTab::Forensics => "Forensics",
+            DockTab::DotPlot => "Dot plot",
+            DockTab::Images => "Images",
+            DockTab::Firmware => "Firmware",
         }
     }
 
@@ -103,6 +112,9 @@ impl DockTab {
             DockTab::Compare => "Many files: what varies, what follows an outside value, and a recording's timeline",
             DockTab::Bits => "Bit-level frames, bit planes, line codes, number types and length fields",
             DockTab::Forensics => "Embedded filesystems, and what kind of data each block holds",
+            DockTab::DotPlot => "The file compared with itself: repeats show as diagonal lines",
+            DockTab::Images => "Find uncompressed pictures, fonts and framebuffers",
+            DockTab::Firmware => "Processor, load address and vector table of a raw firmware image",
         }
     }
 }
