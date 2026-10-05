@@ -11,6 +11,7 @@ use eframe::egui::{self, Color32, ColorImage, Context, Key, Modifiers, RichText,
 
 use crate::analysis::{self, PeriodScan};
 use crate::catalog::Catalog;
+use crate::dialogs::{Answer, FileRequest};
 use crate::packing::RowPacker;
 use crate::preferences::{self, Preferences};
 use crate::parsers;
@@ -232,6 +233,8 @@ pub struct ViewerApp {
     pub persist_layout: bool,
     /// Startup defaults chosen in Settings.
     pub preferences: Preferences,
+    /// An open or save dialog that is showing, and what to do with its answer.
+    pub file_request: Option<(FileRequest, FileAction)>,
     /// The toolbar arrangement the person dragged into place, as rows of
     /// group keys; `None` packs the groups automatically.
     pub toolbar_rows: Option<Vec<Vec<String>>>,
@@ -354,6 +357,24 @@ pub fn build_registry_with(host: Option<&SharedLuaHost>) -> Registry {
     registry
 }
 
+/// What to do with the path a file dialog returns.
+pub enum FileAction {
+    Open,
+    SaveAs,
+    /// Write the selection or stream at the cursor, or its decompressed contents.
+    Extract { decompressed: bool },
+    /// Compare the document with the chosen file.
+    Compare,
+    /// Write these bytes, described as `name` in the status bar.
+    SaveBytes { name: String, bytes: Arc<Vec<u8>> },
+}
+
+/// Whether a dialog picks an existing file or a place to save one.
+pub enum DialogKind {
+    Open,
+    Save,
+}
+
 /// Initial settings supplied on the command line.
 #[derive(Debug, Default, Clone)]
 pub struct Launch {
@@ -443,6 +464,7 @@ impl ViewerApp {
             persist_layout: false,
             toolbar_rows: None,
             preferences: Preferences::default(),
+            file_request: None,
             assistant: Assistant::default(),
             credentials: None,
             settings: SettingsWindow::default(),
@@ -659,8 +681,52 @@ impl ViewerApp {
     }
 
     pub fn open_dialog(&mut self) {
-        if let Some(path) = rfd::FileDialog::new().set_title("Open file").pick_file() {
-            self.load_path(&path);
+        self.ask_for_file(DialogKind::Open, rfd::AsyncFileDialog::new().set_title("Open file"), FileAction::Open);
+    }
+
+    /// Show a file dialog without blocking the window; `action` runs when a
+    /// path is chosen. Only one dialog is shown at a time.
+    pub fn ask_for_file(&mut self, kind: DialogKind, dialog: rfd::AsyncFileDialog, action: FileAction) {
+        if self.file_request.is_some() {
+            self.status = "A file dialog is already open".to_string();
+            return;
+        }
+        let request = match kind {
+            DialogKind::Open => FileRequest::open(dialog),
+            DialogKind::Save => FileRequest::save(dialog),
+        };
+        self.file_request = Some((request, action));
+    }
+
+    /// Act on a file dialog's answer once it arrives.
+    fn poll_file_request(&mut self, ctx: &Context) {
+        let Some((request, _)) = &self.file_request else { return };
+        let Some(answer) = request.poll(ctx) else { return };
+        let Some((_, action)) = self.file_request.take() else { return };
+        if let Answer::Chosen(path) = answer {
+            self.complete_file_action(action, &path);
+        }
+    }
+
+    fn complete_file_action(&mut self, action: FileAction, path: &Path) {
+        match action {
+            FileAction::Open => self.load_path(path),
+            FileAction::SaveAs => self.save_to(path),
+            FileAction::Extract { decompressed: true } => self.export_decompressed_to(path),
+            FileAction::Extract { decompressed: false } => self.export_bytes_to(path),
+            FileAction::Compare => {
+                // The comparison's result is collected by the Diff tab, so show it.
+                self.dock.open = true;
+                self.dock.tab = DockTab::Diff;
+                self.bench.analysis.diff_other = Some(path.display().to_string());
+                crate::analysis_tabs::start_diff(self, path.to_path_buf());
+            }
+            FileAction::SaveBytes { name, bytes } => {
+                self.status = match std::fs::write(path, bytes.as_slice()) {
+                    Ok(()) => format!("Saved {name} to {}", path.display()),
+                    Err(error) => format!("Could not save {name} to {}: {error}", path.display()),
+                };
+            }
         }
     }
 
@@ -673,13 +739,11 @@ impl ViewerApp {
     }
 
     pub fn save_as_dialog(&mut self) {
-        let mut dialog = rfd::FileDialog::new().set_title("Save as");
+        let mut dialog = rfd::AsyncFileDialog::new().set_title("Save as");
         if let Some(name) = self.document.path().and_then(|p| p.file_name()) {
             dialog = dialog.set_file_name(name.to_string_lossy());
         }
-        if let Some(path) = dialog.save_file() {
-            self.save_to(&path);
-        }
+        self.ask_for_file(DialogKind::Save, dialog, FileAction::SaveAs);
     }
 
     fn save_to(&mut self, path: &Path) {
@@ -1869,14 +1933,8 @@ impl ViewerApp {
             }
         };
         let name = self.suggested_export_name(&suffix);
-        let dialog = rfd::FileDialog::new().set_title("Extract bytes to").set_file_name(name);
-        if let Some(path) = dialog.save_file() {
-            if decompressed {
-                self.export_decompressed_to(&path);
-            } else {
-                self.export_bytes_to(&path);
-            }
-        }
+        let dialog = rfd::AsyncFileDialog::new().set_title("Extract bytes to").set_file_name(name);
+        self.ask_for_file(DialogKind::Save, dialog, FileAction::Extract { decompressed });
     }
 
     /// Report every codec that decodes at the cursor without changing anything.
@@ -2450,10 +2508,7 @@ impl ViewerApp {
                 if ui.button("Compare with file…").clicked() {
                     self.dock.open = true;
                     self.dock.tab = DockTab::Diff;
-                    if let Some(path) = rfd::FileDialog::new().set_title("Compare with").pick_file() {
-                        self.bench.analysis.diff_other = Some(path.display().to_string());
-                        crate::analysis_tabs::start_diff(self, path);
-                    }
+                    self.ask_for_file(DialogKind::Open, rfd::AsyncFileDialog::new().set_title("Compare with"), FileAction::Compare);
                     ui.close();
                 }
                 ui.separator();
@@ -3010,6 +3065,7 @@ impl eframe::App for ViewerApp {
 
     fn logic(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
         self.handle_dropped_files(ctx);
+        self.poll_file_request(ctx);
         self.poll_analysis(ctx);
         self.handle_shortcuts(ctx);
         self.poll_workbench(ctx);

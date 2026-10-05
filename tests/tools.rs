@@ -586,3 +586,41 @@ fn opening_another_file_stops_watching_the_previous_one() {
     std::fs::remove_file(watched).ok();
     std::fs::remove_file(other).ok();
 }
+
+#[test]
+fn file_dialog_answers_open_compare_and_save_without_blocking() {
+    use theviewer::app::FileAction;
+    use theviewer::dialogs::{Answer, FileRequest};
+    let first = temp_path("dialog-first.bin");
+    let second = temp_path("dialog-second.bin");
+    let saved = temp_path("dialog-saved.bin");
+    std::fs::write(&first, b"first file").unwrap();
+    std::fs::write(&second, b"second file, longer").unwrap();
+    let mut harness = harness_for(first.clone());
+
+    // Opening: the chosen file loads on the next frame.
+    harness.state_mut().file_request = Some((FileRequest::answered(Answer::Chosen(second.clone())), FileAction::Open));
+    steps(&mut harness, 2);
+    assert_eq!(harness.state().document.len(), 19);
+    assert!(harness.state().file_request.is_none(), "the answered request is cleared");
+
+    // Cancelling does nothing.
+    harness.state_mut().file_request = Some((FileRequest::answered(Answer::Cancelled), FileAction::Open));
+    steps(&mut harness, 2);
+    assert_eq!(harness.state().document.len(), 19);
+
+    // Comparing starts a diff against the chosen file.
+    harness.state_mut().file_request = Some((FileRequest::answered(Answer::Chosen(first.clone())), FileAction::Compare));
+    wait_for(&mut harness, |app| app.bench.analysis.diff.is_some());
+    assert!(harness.state().bench.analysis.diff.is_some(), "the comparison finished");
+
+    // Saving bytes writes them.
+    let bytes = std::sync::Arc::new(b"node bytes".to_vec());
+    let action = FileAction::SaveBytes { name: "node".into(), bytes };
+    harness.state_mut().file_request = Some((FileRequest::answered(Answer::Chosen(saved.clone())), action));
+    steps(&mut harness, 2);
+    assert_eq!(std::fs::read(&saved).unwrap(), b"node bytes");
+    for path in [first, second, saved] {
+        std::fs::remove_file(path).ok();
+    }
+}

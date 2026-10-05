@@ -14,6 +14,7 @@ pub mod columns;
 pub mod commands;
 pub mod compress;
 pub mod config;
+pub mod dialogs;
 pub mod diff;
 pub mod disasm;
 pub mod dock;

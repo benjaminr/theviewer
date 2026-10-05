@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 
 use eframe::egui::{self, Color32, ColorImage, Context, Pos2, Rect, RichText, Sense, Stroke, TextureHandle, TextureOptions, Ui, Vec2, pos2, vec2};
 
+use crate::dialogs::{Answer, FileRequest};
 use crate::media::{self, AudioInfo, DecodedImage, FrameStream, MediaFormat, MediaKind, VideoInfo};
 use crate::theme;
 
@@ -38,6 +39,8 @@ pub struct MediaPlayer {
     /// Opened lazily the first time something plays, and kept for reuse.
     audio_device: Option<rodio::MixerDeviceSink>,
     audio_device_error: Option<String>,
+    /// A Save dialog that is showing, with the bytes it will write.
+    save_request: Option<(FileRequest, Arc<Vec<u8>>)>,
 }
 
 struct MediaWindow {
@@ -151,10 +154,29 @@ impl MediaPlayer {
         self.audio_device.as_ref()
     }
 
+    /// Write the media once its Save dialog is answered; returns what
+    /// happened, for the window's status line.
+    fn poll_save(&mut self, ctx: &Context) -> Option<String> {
+        let (request, _) = self.save_request.as_ref()?;
+        let answer = request.poll(ctx)?;
+        let (_, bytes) = self.save_request.take()?;
+        match answer {
+            Answer::Chosen(path) => Some(match std::fs::write(&path, bytes.as_slice()) {
+                Ok(()) => format!("Saved to {}", path.display()),
+                Err(error) => format!("Could not save to {}: {error}", path.display()),
+            }),
+            Answer::Cancelled => None,
+        }
+    }
+
     /// Draw the window, if anything is open.
     pub fn show(&mut self, ctx: &Context) {
+        let saved = self.poll_save(ctx);
         // Take the window out so the audio device beside it can be borrowed too.
         let Some(mut window) = self.window.take() else { return };
+        if let Some(status) = saved {
+            window.status = status;
+        }
         let mut open = true;
         let title = window.title.clone();
         egui::Window::new(RichText::new(&title).strong())
@@ -181,11 +203,9 @@ impl MediaPlayer {
                 }
                 if ui.button("Save…").on_hover_text("Save these bytes to a file").clicked() {
                     let name = format!("media-{:#x}.{}", window.start, media::extension_for(&window.format));
-                    if let Some(path) = rfd::FileDialog::new().set_file_name(name).save_file() {
-                        window.status = match std::fs::write(&path, window.bytes.as_slice()) {
-                            Ok(()) => format!("Saved to {}", path.display()),
-                            Err(error) => error.to_string(),
-                        };
+                    if self.save_request.is_none() {
+                        let request = FileRequest::save(rfd::AsyncFileDialog::new().set_file_name(name));
+                        self.save_request = Some((request, Arc::clone(&window.bytes)));
                     }
                 }
             });

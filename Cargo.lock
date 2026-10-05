@@ -4351,6 +4351,7 @@ dependencies = [
  "memmap2",
  "mlua",
  "pcap-parser",
+ "pollster 0.4.0",
  "rayon",
  "rfd",
  "rodio",

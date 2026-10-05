@@ -362,11 +362,9 @@ fn poll_diff(app: &mut ViewerApp) {
 pub fn show_diff(app: &mut ViewerApp, ui: &mut Ui) {
     poll_diff(app);
     ui.horizontal(|ui| {
-        if ui.button("Compare with file…").clicked()
-            && let Some(path) = rfd::FileDialog::new().set_title("Compare with").pick_file()
-        {
-            app.bench.analysis.diff_other = Some(path.display().to_string());
-            start_diff(app, path);
+        if ui.button("Compare with file…").clicked() {
+            let dialog = rfd::AsyncFileDialog::new().set_title("Compare with");
+            app.ask_for_file(crate::app::DialogKind::Open, dialog, crate::app::FileAction::Compare);
         }
         if app.bench.analysis.diff_pending.is_some() {
             ui.spinner();

@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use eframe::egui::{self, Color32, ColorImage, Context, Rect, RichText, Sense, Stroke, StrokeKind, TextureHandle, TextureOptions, Ui, pos2, vec2};
 
-use crate::app::ViewerApp;
+use crate::app::{DialogKind, FileAction, ViewerApp};
 use crate::assistant::{self, FileContext, ToolCall};
 use crate::document::Document;
 use crate::dock::{self, DockTab};
@@ -619,13 +619,10 @@ impl ViewerApp {
             }
             Some(NodeAction::Jump(offset)) => self.jump_to_offset(offset),
             Some(NodeAction::Save(path)) => {
-                if let Some(node) = root.find(&path)
-                    && let Some(file) = rfd::FileDialog::new().set_file_name(node.name.replace('/', "_")).save_file()
-                {
-                    self.status = match std::fs::write(&file, node.data.as_slice()) {
-                        Ok(()) => format!("Saved {} to {}", node.name, file.display()),
-                        Err(error) => error.to_string(),
-                    };
+                if let Some(node) = root.find(&path) {
+                    let dialog = rfd::AsyncFileDialog::new().set_file_name(node.name.replace('/', "_"));
+                    let action = FileAction::SaveBytes { name: node.name.clone(), bytes: Arc::clone(&node.data) };
+                    self.ask_for_file(DialogKind::Save, dialog, action);
                 }
             }
             None => {}
