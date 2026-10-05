@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 use eframe::egui::{self, Color32, ColorImage, Context, Rect, RichText, Sense, Stroke, StrokeKind, TextureHandle, TextureOptions, Ui, pos2, vec2};
 
 use crate::app::{DialogKind, FileAction, ViewerApp};
+use crate::panels::{self, PanelStates};
 use crate::assistant::{self, FileContext, ToolCall};
 use crate::document::Document;
 use crate::dock::{self, DockTab};
@@ -74,6 +75,9 @@ pub struct Workbench {
 
     pub unpacked: Option<Node>,
 
+    /// State of the self-contained tool panels.
+    pub panels: PanelStates,
+
     serial: Option<SerialCapture>,
     serial_seen: usize,
     watcher: Option<FileWatcher>,
@@ -111,6 +115,7 @@ impl Default for Workbench {
             template_error: None,
             template_records: 8,
             unpacked: None,
+            panels: PanelStates::default(),
             serial: None,
             serial_seen: 0,
             watcher: None,
@@ -256,6 +261,7 @@ impl ViewerApp {
             DockTab::Statistics => crate::analysis_stats::show_statistics(self, ui),
             DockTab::Strings => crate::analysis_stats::show_strings(self, ui),
             DockTab::Xor => crate::analysis_stats::show_xor(self, ui),
+            DockTab::Crypto => panels::show(self, ui, |p| &mut p.crypto, crate::panel_crypto::show_crypto),
             DockTab::Assistant | DockTab::Live => {}
         }
     }

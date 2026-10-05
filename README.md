@@ -133,6 +133,7 @@ right-click menu. Each one is a panel you can dock anywhere.
 | **Statistics** | Byte histogram, randomness tests (entropy, chi-square, serial correlation, Monte Carlo π) with a plain verdict, a byte-pair fingerprint, entropy along the file, and the most repeated sequences. |
 | **Strings** | ASCII, UTF-8 and UTF-16 strings, tagged when they look like URLs, paths, IP addresses, UUIDs, versions or keys. |
 | **XOR** | Recovers single-byte and repeating XOR keys. Preview the result or apply it as an edit. |
+| **Crypto** | Spots ECB-style encryption from repeated cipher blocks; finds PEM and DER certificates and keys, OpenSSH keys and likely raw keys; and tries rolling XOR, ADD, rotation and combined ciphers, or drags a known plaintext such as `PK\x03\x04` across the data to reveal the key. Decodes open as a document or apply as an edit. |
 | **Disassembly** | x86, ARM, RISC-V, MIPS and PowerPC, with the architecture read from executable headers or guessed, and branch targets you can follow. |
 | **Unpacked** | Extracts ZIP, tar and compressed streams recursively into a tree you can browse, open or save. |
 | **Checksums** | CRC-32, Adler-32, MD5, SHA-1, SHA-256 and simple sums of a selection, and *Find the checksum*, which works out which stored value checks which bytes. |
