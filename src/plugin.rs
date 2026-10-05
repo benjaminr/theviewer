@@ -402,7 +402,7 @@ impl Registry {
         let mut findings: Vec<Finding> = self
             .detectors
             .par_iter()
-            .flat_map_iter(|detector| detector.scan(window, context))
+            .flat_map_iter(|detector| isolated(|| detector.scan(window, context)))
             .collect();
         findings.sort_by(|a, b| a.start.cmp(&b.start).then(a.category.cmp(&b.category)));
         findings
@@ -412,20 +412,52 @@ impl Registry {
     pub fn parse_at(&self, bytes: &[u8], base: usize) -> Vec<Finding> {
         self.parsers
             .iter()
-            .filter(|parser| parser.looks_like(bytes))
-            .filter_map(|parser| parser.parse(bytes, base))
+            .filter(|parser| isolated(|| parser.looks_like(bytes)))
+            .filter_map(|parser| isolated(|| parser.parse(bytes, base)))
             .collect()
     }
 
     /// Codecs whose header matches the start of `bytes`.
     pub fn codecs_detecting(&self, bytes: &[u8]) -> Vec<&Arc<dyn CodecPlugin>> {
-        self.codecs.iter().filter(|codec| codec.detect(bytes)).collect()
+        self.codecs.iter().filter(|codec| isolated(|| codec.detect(bytes))).collect()
     }
+}
+
+/// Run one plugin's work. If it panics on unusual input, it counts as having
+/// found nothing, so one faulty detector or parser cannot take every other
+/// plugin's results (or the thread running the scan) down with it.
+fn isolated<T: Default>(work: impl FnOnce() -> T) -> T {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(work)).unwrap_or_default()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct Faulty;
+    impl Detector for Faulty {
+        fn id(&self) -> &str {
+            "faulty"
+        }
+        fn name(&self) -> &str {
+            "Faulty"
+        }
+        fn categories(&self) -> Vec<Category> {
+            vec![Category::Custom]
+        }
+        fn scan(&self, _window: &[u8], _context: &ScanContext) -> Vec<Finding> {
+            panic!("a detector bug");
+        }
+    }
+
+    #[test]
+    fn a_panicking_detector_does_not_lose_the_other_detectors_findings() {
+        let mut registry = Registry::new();
+        registry.add_detector(Faulty);
+        registry.add_detector(Marker);
+        let findings = registry.scan(&[0xAB], &ScanContext::default());
+        assert!(!findings.is_empty(), "the working detector still reports");
+    }
 
     struct Marker;
 

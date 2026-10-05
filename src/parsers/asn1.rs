@@ -101,8 +101,19 @@ fn primitive_value(tag: u8, content: &[u8]) -> String {
         0x05 => String::new(),
         0x06 => decode_oid(content),
         0x0C | 0x13 | 0x14 | 0x16 | 0x17 | 0x18 => text_preview(content, 64),
-        0x03 => format!("{} bits", content.len().saturating_sub(1) * 8 - content.first().copied().unwrap_or(0) as usize),
+        0x03 => bit_string_length(content),
         _ => hex_preview(content, 16),
+    }
+}
+
+/// A BIT STRING's length: its first byte says how many bits of the last byte
+/// are unused, which malformed data can make larger than the data itself.
+fn bit_string_length(content: &[u8]) -> String {
+    let unused = content.first().copied().unwrap_or(0) as usize;
+    let available = content.len().saturating_sub(1) * 8;
+    match available.checked_sub(unused) {
+        Some(bits) => format!("{bits} bits"),
+        None => format!("malformed: {unused} unused bits but only {available} bits of data"),
     }
 }
 
@@ -213,6 +224,13 @@ fn describe_certificate(object: &[u8], base: usize) -> Option<Finding> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_bit_string_claiming_more_unused_bits_than_it_has_is_reported_not_crashed_on() {
+        assert_eq!(bit_string_length(&[0x07]), "malformed: 7 unused bits but only 0 bits of data");
+        assert_eq!(bit_string_length(&[0x03, 0xFF, 0xF8]), "13 bits");
+        assert_eq!(bit_string_length(&[]), "0 bits");
+    }
 
     fn der_sequence_of_integers(values: &[i64]) -> Vec<u8> {
         let mut content = Vec::new();
