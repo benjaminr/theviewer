@@ -412,6 +412,133 @@ hands it to the workspace's `hold_for_confirmation` with a reply to run
 when the person answers (or after two minutes, refused). Ask's tool calls,
 plugins' handlers and the attached MCP server all go through it.
 
+## 4. History, playback and recipes
+
+Because every way in goes through the same methods, an analysis is a
+sequence of method calls. Recording that sequence gives four things from one
+mechanism:
+
+- **History**: a list of what was done, in order, by whom.
+- **Undo** across edits *and* analysis steps.
+- **Playback**: stepping through an analysis again, watching each step.
+- **Recipes**: a saved analysis applied to other files, from the app, the
+  command line or MCP.
+
+### Every action is a method call
+
+Recording only works if nothing bypasses the API. Panels, menus, shortcuts,
+the palette and the context menu call methods as `Caller::Panel`, the same
+way Lua, Ask and MCP do. Where a panel does something no method expresses,
+a method is added rather than a side path. The method's params must carry
+everything needed to repeat the action (split parameters, link choice,
+"decode as", the template), never state read silently from a panel. Methods
+return the ids of what they create (packet sets, jobs, documents), so later
+steps can refer to them.
+
+### The journal
+
+Each call is a journal entry:
+
+```json
+{
+  "step": 14,
+  "at": "2026-10-06T14:02:11Z",
+  "caller": "panel",
+  "method": "packets.sets.create",
+  "params": { "doc": "doc-1", "from": "length_field", "start": 256, "len": 4096,
+              "field": { "at": 0, "size": 2, "endian": "big", "adds": 2 } },
+  "doc": "doc-1",
+  "version_before": 412,
+  "version_after": 412,
+  "result": { "set": "set-2", "frames": 61 },
+  "derived_from": { "start": { "step": 12, "path": "result.matches[0].offset" } }
+}
+```
+
+- **Edits, view changes, jobs and facts the user publishes are recorded.**
+  Plain reads are kept only when a later step used their result, as the
+  provenance of that value. Hovering and scrolling are not recorded.
+- **The journal belongs to the session.** It is shown in a **History** tab:
+  - each step has its caller and a plain description (the same text the
+    confirmation window uses);
+  - steps that changed the document are marked;
+  - clicking a step shows the document and view as they were after it.
+
+### Undo
+
+- **Edits undo as now:** one labelled step at a time.
+- **Steps that change no bytes** (a packet set, "decode as", an applied
+  template) undo through their own inverse where one exists, such as
+  removing the set or restoring the previous choice.
+- **"Go back to step N"** works otherwise: start from the document as it
+  was after step N, or from the original file, and replay steps 1 to N.
+  Because steps are deterministic, the result is the same.
+
+### Portable steps
+
+An absolute offset such as 0x1F40 is right for one file and wrong for the
+next. A parameter value may therefore be an *anchor* instead of a literal,
+resolved when the step runs:
+
+| Anchor | Means |
+| --- | --- |
+| `{"step": 12, "path": "result.matches[0].offset"}` | a value an earlier step returned |
+| `{"find": {"hex": "7EA5"}, "nth": 0}` | where a search matches |
+| `{"structure": "png", "field": "IHDR.width"}` | a parsed field's offset, length or value |
+| `{"finding": {"category": "compressed", "nth": 0}}` | a finding's span |
+| `{"selection": "current"}` | whatever is selected when the recipe runs |
+| `{"param": "key"}` | a value the person supplies when running the recipe |
+
+While recording, the journal notes where a value came from, when the app
+knows it. For example, a split started from a search match records that
+match as the anchor. In the History tab you can turn any literal into an
+anchor, or into a named parameter.
+
+### Recipes
+
+A recipe is a saved journal, `*.theviewer-recipe.json`:
+
+```json
+{
+  "recipe": 1,
+  "api_version": "1.x",
+  "name": "Telemetry frames",
+  "description": "Split the capture after the header and decode the frames",
+  "parameters": { "key": { "type": "string", "description": "XOR key, hex" } },
+  "recorded_on": { "name": "flight-03.bin", "size": 1048576, "sha256": "…" },
+  "plugins": [ { "name": "acme_telemetry.lua", "sha256": "…" } ],
+  "steps": [ { "method": "…", "params": { }, "note": "…" } ]
+}
+```
+
+- **Running a recipe** calls each step through `api::call` as
+  `Caller::Recipe(name)`, with the same permission rules as any other
+  caller. Before anything changes it shows a preview: what each step will do
+  to this file, and which anchors resolved where.
+- **Failure:** a step that fails, or an anchor that does not resolve, stops
+  the run. The person can skip the step, fix it or stop, and edits so far
+  undo as one step.
+- **Places to run one:**
+  - the History tab ("Save as recipe…", "Run recipe…"), with playback at a
+    chosen speed or one step at a time;
+  - `theviewer replay RECIPE FILE… [--param key=value] [--save | --out DIR]`
+    for batches, writing a JSON report per file;
+  - the API, as `recipes.run`, `recipes.list` and `recipes.describe`, and so
+    Ask and MCP too.
+- **Saving and sharing:** recipes live in `~/.config/theviewer/recipes/` and
+  can be shared as files. A recipe names the API version and the plugins it
+  used, and running it warns when a plugin is missing or has changed.
+
+### What this asks of the earlier phases
+
+- **Methods** are complete and return ids (see above).
+- **The bus is not the journal.** The journal records *intent* (method
+  calls); the bus records *effects* (facts and events). Playback replays
+  the calls, and the bus republishes the effects as it does live.
+- **Determinism.** A method with the same params on the same bytes, with
+  the same plugins, gives the same result. Background jobs a step starts
+  are awaited during replay (the `Job` effect gives the id to wait on).
+
 ## Delivery plan
 
 Each phase is useful on its own and keeps the app working.
@@ -443,6 +570,15 @@ Each phase is useful on its own and keeps the app working.
      detection, tshark and templates.
    - Retire the request fields and per-panel polling where the bus covers
      them.
+6. **Every action through the API.**
+   - Panels, menus, shortcuts, the palette and the context menu call
+     methods as `Caller::Panel`, adding methods where something is missing,
+     so nothing the person does bypasses the journal.
+7. **History, playback and recipes.**
+   - The journal, the History tab, undo across analysis steps and
+     "go back to step N".
+   - Anchors and parameters, recipes saved and run in the app, with
+     `theviewer replay` and the `recipes.*` methods.
 
 ## Decisions
 
