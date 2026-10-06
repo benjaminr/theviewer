@@ -37,6 +37,8 @@ pub struct AlignmentJob {
     pub source: String,
     /// Document offset of each input message.
     pub offsets: Vec<usize>,
+    /// Full length of each input message (the bytes aligned may be fewer).
+    pub lengths: Vec<usize>,
     pub report: AlignmentReport,
 }
 
@@ -62,6 +64,7 @@ impl AlignmentState {
 struct GatheredMessages {
     source: String,
     offsets: Vec<usize>,
+    lengths: Vec<usize>,
     bytes: Vec<Vec<u8>>,
 }
 
@@ -94,6 +97,16 @@ pub fn show_alignment(state: &mut AlignmentState, app: &mut ViewerApp, ui: &mut 
     }
     let Some(job) = &state.job else { return };
     ui.separator();
+    if let Some(cluster) = job.report.clusters.get(state.selected_cluster)
+        && ui.button(format!("Open type {} in packet viewer", state.selected_cluster)).on_hover_text("List this type's messages as packets").clicked()
+    {
+        let name = format!("message type {}", state.selected_cluster);
+        match crate::packets::sources::from_cluster(&job.offsets, &job.lengths, &cluster.members, &name) {
+            Ok(set) => crate::panel_packets::open_in_packet_viewer(app, set),
+            Err(error) => state.input_error = Some(error.to_string()),
+        }
+    }
+    let Some(job) = &state.job else { return };
     let mut jump = None;
     show_job(job, &mut state.selected_cluster, &mut jump, ui);
     if let Some(offset) = jump {
@@ -142,7 +155,7 @@ fn start_alignment(state: &mut AlignmentState, app: &mut ViewerApp) {
     let (sender, receiver) = mpsc::channel();
     thread::spawn(move || {
         let report = alignment::analyse(&gathered.bytes, &options);
-        let _ = sender.send(AlignmentJob { source: gathered.source, offsets: gathered.offsets, report });
+        let _ = sender.send(AlignmentJob { source: gathered.source, offsets: gathered.offsets, lengths: gathered.lengths, report });
     });
     state.pending = Some(receiver);
 }
@@ -158,8 +171,9 @@ fn gather_messages(app: &mut ViewerApp) -> Result<GatheredMessages, String> {
         && !messages.is_empty()
     {
         let offsets: Vec<usize> = messages.iter().map(|&(offset, _)| base + offset).collect();
+        let lengths: Vec<usize> = messages.iter().map(|&(_, len)| len).collect();
         let bytes = messages.iter().map(|&(offset, len)| app.document.read_range(base + offset, len.min(READ_LIMIT))).collect();
-        return Ok(GatheredMessages { source: "protocol analysis".to_string(), offsets, bytes });
+        return Ok(GatheredMessages { source: "protocol analysis".to_string(), offsets, lengths, bytes });
     }
     let (start, len) = app.selection().ok_or("Run the protocol analysis first, or select the messages (one per raster row).")?;
     let stride = app.shape.row_stride().max(1);
@@ -170,7 +184,8 @@ fn gather_messages(app: &mut ViewerApp) -> Result<GatheredMessages, String> {
     let bytes = app.document.read_range(start, len.min(rows * stride));
     let records = alignment::split_into_records(&bytes, stride);
     let offsets = (0..records.len()).map(|row| start + row * stride).collect();
-    Ok(GatheredMessages { source: format!("selection rows of {stride} bytes"), offsets, bytes: records })
+    let lengths = records.iter().map(Vec::len).collect();
+    Ok(GatheredMessages { source: format!("selection rows of {stride} bytes"), offsets, lengths, bytes: records })
 }
 
 fn show_job(job: &AlignmentJob, selected: &mut usize, jump: &mut Option<usize>, ui: &mut Ui) {

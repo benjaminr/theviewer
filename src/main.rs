@@ -38,7 +38,7 @@ usage: theviewer [FILE] [--format NAME] [--palette NAME] [--width PIXELS] [--off
   --detect   scan for repeating periods on startup and open the structure panel
   --open     open the image, audio or video at the cursor
   --layout   start with a panel layout for this session (your saved one is kept): default right left focus
-  --tool     open the tools dock on a tab: report structure-map size-map ask dot-plot trigrams images template columns protocol bits statistics characterise strings xor crypto checksums learn disassembly firmware unpacked forensics diff compare live
+  --tool     open the tools dock on a tab: report structure-map size-map ask dot-plot trigrams images template columns protocol packets bits statistics characterise strings xor crypto checksums learn disassembly firmware unpacked forensics diff compare live
 ";
 
 /// How to print a report without opening a window.

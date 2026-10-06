@@ -91,6 +91,7 @@ pub fn show_findings_panel(app: &mut ViewerApp, ui: &mut Ui) {
     let mut decompress: Option<Finding> = None;
     let mut bookmark: Option<Finding> = None;
     let mut play: Option<Finding> = None;
+    let mut capture: Option<usize> = None;
     egui::ScrollArea::vertical().id_salt("findings-list").max_height(LIST_HEIGHT).show(ui, |ui| {
         for finding in visible.iter().take(MAX_ROWS) {
             let row = ui.horizontal(|ui| {
@@ -122,6 +123,10 @@ pub fn show_findings_panel(app: &mut ViewerApp, ui: &mut Ui) {
                     play = Some(finding.clone());
                     ui.close();
                 }
+                if (finding.id == "pcap" || finding.id == "pcapng") && ui.button("Open in packet viewer").clicked() {
+                    capture = Some(finding.start);
+                    ui.close();
+                }
                 if ui.button("Bookmark").clicked() {
                     bookmark = Some(finding.clone());
                     ui.close();
@@ -146,6 +151,9 @@ pub fn show_findings_panel(app: &mut ViewerApp, ui: &mut Ui) {
     if let Some(finding) = play {
         app.set_cursor(finding.start, false);
         app.open_media();
+    }
+    if let Some(start) = capture {
+        crate::panel_packets::open_capture_at(app, start);
     }
     if let Some(finding) = bookmark {
         app.add_bookmark(finding.start, finding.len, finding.title.clone());

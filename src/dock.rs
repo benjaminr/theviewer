@@ -38,10 +38,11 @@ pub enum DockTab {
     SizeMap,
     Characterise,
     Learn,
+    Packets,
 }
 
 impl DockTab {
-    pub const ALL: [DockTab; 25] = [
+    pub const ALL: [DockTab; 26] = [
         DockTab::Report,
         DockTab::Assistant,
         DockTab::Template,
@@ -67,12 +68,13 @@ impl DockTab {
         DockTab::SizeMap,
         DockTab::Characterise,
         DockTab::Learn,
+        DockTab::Packets,
     ];
 
     /// Tabs grouped by purpose, for the tab bar.
     pub const GROUPS: [&'static [DockTab]; 5] = [
         &[DockTab::Report, DockTab::StructureMap, DockTab::SizeMap, DockTab::Assistant, DockTab::DotPlot, DockTab::Trigrams, DockTab::Images],
-        &[DockTab::Template, DockTab::Columns, DockTab::Protocol, DockTab::Bits],
+        &[DockTab::Template, DockTab::Columns, DockTab::Protocol, DockTab::Packets, DockTab::Bits],
         &[DockTab::Statistics, DockTab::Characterise, DockTab::Strings, DockTab::Xor, DockTab::Crypto, DockTab::Checksums, DockTab::Learn],
         &[DockTab::Disassembly, DockTab::Firmware, DockTab::Unpacked, DockTab::Forensics, DockTab::Diff, DockTab::Compare],
         &[DockTab::Live],
@@ -105,6 +107,7 @@ impl DockTab {
             DockTab::SizeMap => "Size map",
             DockTab::Characterise => "Characterise",
             DockTab::Learn => "Learn",
+            DockTab::Packets => "Packets",
         }
     }
 
@@ -135,6 +138,7 @@ impl DockTab {
             DockTab::SizeMap => "What takes up the space: regions or unpacked contents as nested rectangles",
             DockTab::Characterise => "Compressibility by codec, raw audio and video streams, and text encoding and language",
             DockTab::Learn => "Learn a new format from samples, and fuzzy-match files and shared fragments",
+            DockTab::Packets => "Packets from captures, message framing or the selection: dissect, filter, follow streams, edit and export as pcap",
         }
     }
 }

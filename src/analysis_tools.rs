@@ -39,6 +39,11 @@ pub struct ToolsState {
 }
 
 impl ToolsState {
+    /// Whether a protocol analysis is running.
+    pub fn protocol_pending(&self) -> bool {
+        self.protocol_pending.is_some()
+    }
+
     pub fn document_changed(&mut self) {
         self.columns = None;
         self.protocol = None;
@@ -54,6 +59,14 @@ pub struct ProtocolView {
     pub report: protocol::ProtocolReport,
     pub candidates: Vec<FramingCandidate>,
     pub chosen: usize,
+}
+
+impl ProtocolView {
+    /// The bytes that were analysed; message offsets count from their start,
+    /// which is document offset `base`.
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
 }
 
 fn kind_colour(kind: ColumnKind) -> Color32 {
@@ -216,7 +229,8 @@ pub fn start_protocol(app: &mut ViewerApp) {
     app.bench.tools.protocol_pending = Some(receiver);
 }
 
-fn poll_protocol(app: &mut ViewerApp) {
+/// Collect a finished protocol analysis, if one has arrived.
+pub fn poll_protocol(app: &mut ViewerApp) {
     let Some(receiver) = &app.bench.tools.protocol_pending else { return };
     if let Ok((base, bytes, report, candidates)) = receiver.try_recv() {
         app.bench.tools.protocol_pending = None;
@@ -314,6 +328,9 @@ pub fn show_protocol(app: &mut ViewerApp, ui: &mut Ui) {
         report.length_mean
     ))
     .color(theme::TEXT_DIM));
+    if ui.button("Open in packet viewer").on_hover_text("List these messages as packets: dissect, filter, edit and export them").clicked() {
+        crate::panel_packets::open_protocol_messages(app);
+    }
     if !report.type_counts.is_empty() {
         let types: Vec<String> = report.type_counts.iter().map(|(value, count)| format!("{value}×{count}")).collect();
         ui.label(RichText::new(format!("Message types: {}", types.join("  "))).small());

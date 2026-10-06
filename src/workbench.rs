@@ -221,6 +221,7 @@ impl Workbench {
         self.unpacked = None;
         self.analysis.document_changed();
         self.tools.document_changed();
+        self.panels.packets.document_replaced();
         self.pending.retain(|pending| matches!(pending, Pending::Source(_)));
     }
 
@@ -363,6 +364,7 @@ impl ViewerApp {
             DockTab::Trigrams => panels::show(self, ui, |p| &mut p.trigrams, crate::panel_trigram::show_trigram),
             DockTab::Characterise => panels::show(self, ui, |p| &mut p.characterise, crate::panel_characterise::show_characterise),
             DockTab::Learn => panels::show(self, ui, |p| &mut p.learn, crate::panel_learn::show_learn),
+            DockTab::Packets => panels::show(self, ui, |p| &mut p.packets, crate::panel_packets::show_packets),
             DockTab::SizeMap => panels::show(self, ui, |p| &mut p.size_map, crate::panel_treemap::show_treemap),
             DockTab::StructureMap => panels::show(self, ui, |p| &mut p.structure_map, crate::panel_structure_map::show_structure_map),
             DockTab::Images => panels::show(self, ui, |p| &mut p.images, crate::panel_image_finder::show_image_finder),

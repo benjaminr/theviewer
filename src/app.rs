@@ -598,6 +598,7 @@ impl ViewerApp {
                 DockTab::Unpacked => app.start_unpack(),
                 DockTab::Statistics => crate::analysis_stats::start_statistics(&mut app),
                 DockTab::Protocol => crate::analysis_tools::start_protocol(&mut app),
+                DockTab::Packets => crate::panel_packets::auto_load(&mut app),
                 DockTab::Trigrams => {
                     let mut trigrams = std::mem::take(&mut app.bench.panels.trigrams);
                     crate::panel_trigram::start_counting(&mut trigrams, &mut app);
@@ -1492,6 +1493,7 @@ impl ViewerApp {
                 ui.close();
             }
         });
+        self.packets_context_menu(ui, offset);
         if ui.button("Set view origin here").clicked() {
             self.align_view_to_cursor();
             ui.close();
@@ -1509,6 +1511,32 @@ impl ViewerApp {
             self.start_period_scan();
             ui.close();
         }
+    }
+
+    /// The "Packets" submenu of the right-click menu.
+    fn packets_context_menu(&mut self, ui: &mut egui::Ui, offset: usize) {
+        let capture = crate::panel_packets::capture_containing(self, offset);
+        let has_selection = self.selection().is_some();
+        ui.menu_button("Packets", |ui| {
+            if ui.add_enabled(has_selection, egui::Button::new("Add selection as packet")).on_disabled_hover_text("Select the packet's bytes first").clicked() {
+                crate::panel_packets::add_selection_as_packet(self);
+                ui.close();
+            }
+            if ui.add_enabled(has_selection, egui::Button::new("Split selection by row width")).on_disabled_hover_text("Select the records first").clicked() {
+                crate::panel_packets::split_selection_by_row_width(self);
+                ui.close();
+            }
+            if let Some(start) = capture
+                && ui.button(format!("Open capture at {start:#x}")).clicked()
+            {
+                crate::panel_packets::open_capture_at(self, start);
+                ui.close();
+            }
+            if ui.button("Packets from protocol framing").clicked() {
+                crate::panel_packets::open_protocol_messages(self);
+                ui.close();
+            }
+        });
     }
 
     /// Scripted actions registered by plugins (none until a plugin host is attached).
@@ -2650,6 +2678,7 @@ impl ViewerApp {
                 if ui.button("Record columns").clicked() { self.dock.toggle(DockTab::Columns); ui.close(); }
                 if ui.button("Bits and encodings").clicked() { self.dock.toggle(DockTab::Bits); ui.close(); }
                 if ui.button("Protocol analysis").clicked() { self.dock.open = true; self.dock.tab = DockTab::Protocol; crate::analysis_tools::start_protocol(self); ui.close(); }
+                if ui.button("Packet viewer").clicked() { self.dock.toggle(DockTab::Packets); ui.close(); }
                 if ui.button("XOR keys").clicked() { self.dock.toggle(DockTab::Xor); ui.close(); }
                 if ui.button("Crypto: encrypted blocks, keys, ciphers").clicked() { self.dock.toggle(DockTab::Crypto); ui.close(); }
                 if ui.button("Compare many files…").clicked() { self.dock.toggle(DockTab::Compare); ui.close(); }

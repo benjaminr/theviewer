@@ -148,6 +148,7 @@ right-click menu. Each one is a panel you can dock anywhere.
 | **Images** | Finds uncompressed pictures, fonts, splash screens and framebuffers by trying widths and pixel formats across the file; click a result to show it in the view at the right width and format. |
 | **Columns** | For a table of fixed-size records: a profile of each byte position (constant, counter, timestamp, a few values, text, random) and the fields it adds up to. One click applies them as a template. |
 | **Protocol** | For captures, serial logs and streams of messages: finds the framing (sync words, delimiters, length prefixes or fixed size), splits the messages, and identifies types, sequence numbers, lengths, timestamps and checksums. *Align messages* groups messages into types and lines them up, so constant, counting and length fields line up even when messages differ in length. |
+| **Packets** | A packet list for captures and message streams. Load the protocol framing's messages, a pcap or pcapng capture found inside the file, the selection as one packet, or the selection cut by length or at a delimiter. Each packet is dissected (Ethernet, VLAN, ARP, IPv4, IPv6, ICMP, TCP, UDP, DNS, HTTP, NTP, Modbus/TCP, MQTT; raw frames by a template or the protocol tool's field guesses), with conversations, endpoints and *Follow stream*. Filter with terms such as `udp port:53 len>60 hex:DEADBEEF`, and export the shown packets as a pcap file Wireshark opens. |
 | **Bits** | For data that is not byte-aligned or not plain binary: finds frame lengths in bits (such as a 37-bit radio frame) and their sync words; shows each bit plane as an image; decodes Manchester, differential Manchester, NRZI, 8b/10b, Gray code and BCD, picking the decoder and bit offset automatically; guesses what the field at the cursor holds (integer, float, fixed-point or a timestamp, and which byte order); and finds length prefixes, tag-length-value chains and offset tables. |
 | **Template** | Describe a structure in a small language, such as `struct Chunk { id: char[4]  len: u32  data: bytes[len] }`, and see it decoded as a tree and a table. It can also propose a template from a few selected records. See [docs/templates.md](docs/templates.md). |
 | **Statistics** | Byte histogram, randomness tests (entropy, chi-square, serial correlation, Monte Carlo π) with a plain verdict, a byte-pair fingerprint, entropy along the file, and the most repeated sequences. |
@@ -165,6 +166,20 @@ right-click menu. Each one is a panel you can dock anywhere.
 | **Compare** | Many files at once (captures, firmware versions, saved states): which byte ranges stay constant, vary or count up across them; which fields follow a value you enter for each file, such as a temperature or a setting; and, for a live recording, a timeline of which bytes changed when. |
 | **Live** | Opens a URL, a serial port (`serial:/dev/cu.usbserial@115200`), a block device (`/dev/rdisk2`, needs sudo) or process memory (`pid:1234`, Linux only). Can watch a file as it grows and record its history. |
 | **Ask** | Ask Claude about the file (see below). *Characterise* has Claude run the analysis tools and describe the whole file. |
+
+**The packet viewer follows the document.** Selecting a packet or a field in
+*Packets* selects its bytes in the view, and moving the cursor in the view
+into a packet selects that packet and the field under the cursor. Edit a
+packet in its hex dump or by typing a new value for a field (ports, lengths,
+addresses, flags), then *Fix checksums* to recompute the IPv4, TCP and UDP
+checksums. Several packets can be selected with Shift or Cmd click and
+deleted (a capture's records go with them, so it stays readable), saved,
+opened as a document, or inverted, filled or XORed, whole or one field in
+each. Every change is an ordinary edit you can undo, and the list is found
+and dissected again a moment after any edit, wherever it was made. Open it
+from *Tools › Packet viewer*, *Open in packet viewer* in the Protocol tab,
+the message alignment and the findings list, or *Packets* in the
+right-click menu.
 
 Also in the menus: *Plot selection* draws bytes as a time series, histogram,
 scatter or frequency spectrum, and *Play selection as audio* plays any bytes
@@ -269,6 +284,7 @@ the full list.
 theviewer firmware.bin --format rgb8 --width 320 --offset 0x1000 --zoom 2
 theviewer records.dat --detect
 theviewer capture.bin --tool protocol --layout right
+theviewer dump.bin --tool packets          # load the first capture, else the message framing
 theviewer firmware.bin --report          # print the report, no window
 theviewer firmware.bin --json > report.json
 ```
@@ -283,7 +299,7 @@ theviewer firmware.bin --json > report.json
 | `--zoom FACTOR` | Pixel scale, such as `2` or `0.5` |
 | `--detect` | Look for the record width straight away |
 | `--open` | Open the image, audio or video at the cursor |
-| `--tool NAME` | Open a tool: `report` `ask` `template` `columns` `protocol` `statistics` `strings` `xor` `checksums` `disassembly` `unpacked` `diff` `live` |
+| `--tool NAME` | Open a tool: `report` `ask` `template` `columns` `protocol` `packets` `statistics` `strings` `xor` `checksums` `disassembly` `unpacked` `diff` `live` |
 | `--layout NAME` | Start with a panel layout for this session: `default` `right` `left` `focus`. Your saved arrangement is left as it is. |
 | `--report` | Print the file's report as text and exit, without opening a window |
 | `--json` | Print the report as JSON and exit: the summary, regions, likely record widths and confident findings, for scripts and CI |
@@ -337,6 +353,7 @@ never your Keychain.
 | `media.rs` `player.rs` | Media detection and decoding; the image, audio and video viewer. |
 | `explain.rs` `hilbert.rs` `region_colours.rs` | The whole-file report and map; the Hilbert and Morton curve layouts; colours by region, block class and entropy. |
 | `columns.rs` `protocol.rs` `templates.rs` | Record profiling, protocol analysis, and the template language. |
+| `packets.rs` `packets/` `panel_packets.rs` `panel_packets_view.rs` | Packet sources (framing, pcap and pcapng, splits), dissection, conversations and streams, the filter language, pcap export and in-place editing; the packet viewer panel. |
 | `stats.rs` `strings.rs` `xor.rs` | Statistics and randomness tests, strings, XOR key recovery. |
 | `disasm.rs` `pointers.rs` `checksums.rs` `diff.rs` | Disassembly, the pointer graph, checksums, file comparison. |
 | `sources.rs` `plot.rs` | Live sources, watching and recording; plots and bytes as audio. |

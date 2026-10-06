@@ -652,3 +652,74 @@ fn ask_can_map_the_file_measure_ranges_and_look_for_code() {
     assert!(!app.run_assistant_tool(&call).is_empty());
     std::fs::remove_file(path).ok();
 }
+
+/// An Ethernet frame carrying UDP from 10.0.0.2:`source_port` to 10.0.0.1:`destination_port`.
+fn ethernet_udp(source_port: u16, destination_port: u16, payload: &[u8]) -> Vec<u8> {
+    let builder = etherparse::PacketBuilder::ethernet2([2, 0, 0, 0, 0, 1], [2, 0, 0, 0, 0, 2]).ipv4([10, 0, 0, 2], [10, 0, 0, 1], 64).udp(source_port, destination_port);
+    let mut frame = Vec::new();
+    builder.write(&mut frame, payload).unwrap();
+    frame
+}
+
+/// A little-endian microsecond pcap of Ethernet frames, one second apart.
+fn pcap_of(frames: &[Vec<u8>]) -> Vec<u8> {
+    let mut file = Vec::new();
+    for word in [0xA1B2_C3D4u32, 0x0004_0002, 0, 0, 65_535, 1] {
+        file.extend_from_slice(&word.to_le_bytes());
+    }
+    for (index, frame) in frames.iter().enumerate() {
+        for word in [1_700_000_000 + index as u32, 0, frame.len() as u32, frame.len() as u32] {
+            file.extend_from_slice(&word.to_le_bytes());
+        }
+        file.extend_from_slice(frame);
+    }
+    file
+}
+
+#[test]
+fn the_packet_viewer_finds_an_embedded_capture_filters_it_and_selects_a_packet_in_the_document() {
+    let dns_query = b"\x12\x34\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00\x07example\x03com\x00\x00\x01\x00\x01";
+    let frames = vec![ethernet_udp(4000, 53, dns_query), ethernet_udp(4001, 9999, b"telemetry one"), ethernet_udp(4002, 9999, b"telemetry two")];
+    let mut document = xorshift_bytes(3000, 5);
+    let capture_at = document.len();
+    document.extend_from_slice(&pcap_of(&frames));
+    document.extend(xorshift_bytes(500, 6));
+    let path = temp_path("embedded-capture.bin");
+    std::fs::write(&path, &document).unwrap();
+    // Tools on the left give the packet list the window's full height.
+    let launch = Launch { path: Some(path.clone()), layout: Some("left".to_string()), ..Default::default() };
+    let mut harness = Harness::builder().with_size(egui::vec2(1500.0, 1000.0)).build_eframe(move |creation| {
+        theviewer::theme::apply(&creation.egui_ctx);
+        ViewerApp::new(launch)
+    });
+    steps(&mut harness, 3);
+
+    harness.state_mut().dock.toggle(DockTab::Packets);
+    steps(&mut harness, 3);
+    harness.get_by_label("Find captures").click();
+    wait_for(&mut harness, |app| !app.bench.panels.packets.is_busy());
+    steps(&mut harness, 2);
+    harness.get_by_label_contains(&format!("pcap at {capture_at:#x}")).scroll_to_me();
+    steps(&mut harness, 2);
+    harness.get_by_label_contains(&format!("pcap at {capture_at:#x}")).click();
+    wait_for(&mut harness, |app| app.bench.panels.packets.rows().len() == 3 && !app.bench.panels.packets.is_busy());
+    steps(&mut harness, 2);
+    let rows = harness.state().bench.panels.packets.rows();
+    assert_eq!(rows[0].summary.protocol, "DNS");
+    assert_eq!(rows[0].summary.info, "Standard query 0x1234 A example.com");
+
+    harness.state_mut().bench.panels.packets.set_filter("udp port:9999");
+    steps(&mut harness, 3);
+    assert_eq!(harness.state().bench.panels.packets.visible_rows(), &[1, 2]);
+    assert!(harness.query_by_label_contains("2 of 3 shown").is_some());
+
+    harness.get_by_label_contains("4002 → 9999").scroll_to_me();
+    steps(&mut harness, 2);
+    harness.get_by_label_contains("4002 → 9999").click_accesskit();
+    steps(&mut harness, 3);
+    let app = harness.state();
+    let packet = app.bench.panels.packets.packet_set().unwrap().packets[2].clone();
+    assert_eq!(app.selection(), Some((packet.offset, packet.len)), "the packet's bytes are selected in the document");
+    assert_eq!(&document[packet.offset..packet.end()], frames[2].as_slice());
+    std::fs::remove_file(path).ok();
+}
