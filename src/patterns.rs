@@ -5,6 +5,7 @@
 //! Every detector works on a window of bytes plus the document offset the
 //! window starts at, and returns [`Pattern`]s in document coordinates.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use rayon::prelude::*;
@@ -790,17 +791,29 @@ fn scan_numeric_sequences(window: &[u8], context: &ScanContext, strides: &[usize
     // A wide monotonic field whose movement comes from a narrower counter
     // inside it (a counter byte with noise below it reads as an ever
     // increasing "timestamp") is explained by that counter: demote it.
-    let counters: Vec<(usize, usize, usize, usize, usize)> = candidates
-        .iter()
-        .filter(|c| c.kind == PatternKind::Counter && !c.weak)
-        .map(|c| (c.start, c.end(), c.element, c.stride, c.count))
-        .collect();
+    // Counters are grouped by stride and sorted by start, so each wide field
+    // is checked only against the counters that could overlap it; checking
+    // every pair took minutes on windows with tens of thousands of each.
+    let mut counters_by_stride: HashMap<usize, Vec<(usize, usize, usize, usize)>> = HashMap::new();
+    for counter in candidates.iter().filter(|c| c.kind == PatternKind::Counter && !c.weak) {
+        counters_by_stride.entry(counter.stride).or_default().push((counter.start, counter.end(), counter.element, counter.count));
+    }
+    let mut longest_counter: HashMap<usize, usize> = HashMap::new();
+    for (stride, counters) in &mut counters_by_stride {
+        counters.sort_unstable();
+        longest_counter.insert(*stride, counters.iter().map(|&(start, end, _, _)| end - start).max().unwrap_or(0));
+    }
     for candidate in &mut candidates {
         if !matches!(candidate.kind, PatternKind::Timestamp | PatternKind::OffsetTable) {
             continue;
         }
-        let explained = counters.iter().any(|&(start, end, element, stride, count)| {
-            if stride != candidate.stride || element >= candidate.element || count * 2 < candidate.count {
+        let Some(counters) = counters_by_stride.get(&candidate.stride) else { continue };
+        let earliest_start = candidate.start.saturating_sub(longest_counter[&candidate.stride]);
+        let from = counters.partition_point(|&(start, ..)| start < earliest_start);
+        let to = counters.partition_point(|&(start, ..)| start < candidate.end());
+        let stride = candidate.stride;
+        let explained = counters[from..to].iter().any(|&(start, end, element, count)| {
+            if element >= candidate.element || count * 2 < candidate.count {
                 return false;
             }
             // Same stride: compare where the counter sits within the wide field.
@@ -1209,6 +1222,19 @@ mod tests {
 
     fn of_kind(patterns: &[Pattern], kind: PatternKind) -> Vec<&Pattern> {
         patterns.iter().filter(|p| p.kind == kind).collect()
+    }
+
+    #[test]
+    fn a_window_of_many_short_rising_runs_is_scanned_in_reasonable_time() {
+        // u32 values 1, 2, 3, 4, 100 over and over: every five values make a
+        // short counter and a short offset table, tens of thousands of each
+        // in one window. Checking each table against every counter took
+        // minutes; checking it against the counters near it takes moments.
+        let window: Vec<u8> = (0..2usize << 20).step_by(4).flat_map(|at| [1u32, 2, 3, 4, 100][(at / 4) % 5].to_le_bytes()).collect();
+        let started = std::time::Instant::now();
+        let patterns = scan_numeric_sequences(&window, &context(window.len()), &[4]);
+        assert!(started.elapsed() < std::time::Duration::from_secs(10), "took {:?}", started.elapsed());
+        assert!(!of_kind(&patterns, PatternKind::Counter).is_empty());
     }
 
     #[test]
