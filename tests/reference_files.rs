@@ -197,3 +197,19 @@ fn every_catalogue_name_in_the_file_notes_is_a_real_signature() {
     }
     assert!(unknown.is_empty(), "keys that no catalogue signature uses: {unknown:?}");
 }
+
+#[test]
+fn the_catalogues_own_names_for_common_formats_open_their_notes() {
+    for (finding_id, note) in [
+        ("signature:media/png", "png"),
+        ("signature:media/bmp", "bmp"),
+        ("signature:archive/tar-ustar", "tar"),
+        ("signature:archive/zip-central-directory", "zip"),
+        ("signature:archive/cpio-newc", "cpio"),
+        ("signature:archive/ar", "ar"),
+        ("signature:media/mp3-frame", "mpeg-audio"),
+    ] {
+        let found = theviewer::reference::lookup(finding_id).map(|entry| entry.id.as_str());
+        assert_eq!(found, Some(note), "{finding_id}");
+    }
+}

@@ -14,7 +14,7 @@
 [[format]]
 id = "png"
 name = "Portable Network Graphics"
-keys = ["PNG", "PNG image", "image/png"]
+keys = ["PNG", "PNG image", "image/png", "media/png"]
 summary = "A lossless raster image format: filtered rows of pixels compressed with deflate, wrapped in checksummed chunks."
 organisation = """
 An eight-byte signature (89 50 4E 47 0D 0A 1A 0A) is followed by a chain of chunks. Each chunk is a 4-byte big-endian data length, a 4-byte ASCII type, the data, and a CRC-32 over the type and data. The length counts the data only, so the next chunk starts 12 + length bytes on.
@@ -297,7 +297,7 @@ meaning = "The single byte 0x3B that ends the GIF. Anything after it is extra da
 [[format]]
 id = "bmp"
 name = "Windows bitmap"
-keys = ["BMP", "BMP image", "image/bmp", "DIB"]
+keys = ["BMP", "BMP image", "image/bmp", "DIB", "media/bmp"]
 summary = "The Windows device-independent bitmap: uncompressed (or simply run-length compressed) pixel rows behind a small header."
 organisation = """
 A 14-byte file header starts with 'BM', then the file size, two reserved words and the offset of the pixel data, all little-endian. A DIB header follows whose first four bytes give its own size, and so its version: 12 for the old OS/2 core header, 40 for BITMAPINFOHEADER, 108 for V4 and 124 for V5, which add colour masks, colour space and ICC profile details.
@@ -359,7 +359,7 @@ meaning = "1, 4 or 8 for palette images; 16, 24 or 32 for direct colour (BGR ord
 [[format]]
 id = "zip"
 name = "ZIP archive"
-keys = ["ZIP", "ZIP archive", "application/zip"]
+keys = ["ZIP", "ZIP archive", "application/zip", "archive/zip-local-header", "archive/zip-central-directory", "archive/zip-end-of-central-directory", "archive/zip64-end-of-central-directory"]
 summary = "An archive of individually compressed files with a central directory at the end; also the container for JAR, APK, Office Open XML, OpenDocument and EPUB files."
 organisation = """
 Each member is stored as a local file header ('PK' 03 04), the file name, an extra field, then the file data. The 30-byte header gives the version needed, flags, compression method, DOS time and date, CRC-32 and the compressed and uncompressed sizes. All values are little-endian.
@@ -405,7 +405,7 @@ section = "4.3.8"
 [[format]]
 id = "tar"
 name = "tar archive"
-keys = ["tar", "tar archive", "ustar", "application/x-tar", "application/x-gtar"]
+keys = ["tar", "tar archive", "ustar", "application/x-tar", "application/x-gtar", "archive/tar-ustar"]
 summary = "The Unix tape archive: files laid end to end in 512-byte blocks, each behind a text header. Usually compressed as a whole (.tar.gz, .tar.xz)."
 organisation = """
 Everything is in 512-byte blocks. Each member starts with a header block holding its name (100 bytes), mode, owner ids, size and modification time as octal ASCII digits, a checksum, a type flag, a link target and, in the POSIX ustar form, the magic 'ustar' at offset 257, user and group names and a 155-byte name prefix.
@@ -442,7 +442,7 @@ meaning = "The member's contents, occupying whole 512-byte blocks; the last bloc
 [[format]]
 id = "ar"
 name = "ar archive"
-keys = ["ar archive", "application/x-archive"]
+keys = ["ar archive", "application/x-archive", "archive/ar"]
 summary = "The simple Unix archive used for static libraries (.a) and Debian packages (.deb)."
 organisation = """
 The file opens with the eight bytes '!<arch>' and a newline. Each member then has a 60-byte text header: name (16 bytes), modification time (12), owner and group ids (6 each), octal mode (8), decimal size (10) and the two-byte terminator '`' newline. The member's data follows and is padded with a newline to an even length.
@@ -466,7 +466,7 @@ meaning = "Every member after the global header, each with a 60-byte header and 
 [[format]]
 id = "cpio"
 name = "cpio archive"
-keys = ["cpio archive", "application/x-cpio"]
+keys = ["cpio archive", "application/x-cpio", "archive/cpio-newc", "archive/cpio-odc"]
 summary = "A stream archive of headers, names and file data, used for Linux initramfs images and RPM payloads."
 organisation = """
 The 'newc' form found here starts each entry with the six ASCII characters '070701' (or '070702' when data checksums are present), then thirteen fields of eight hexadecimal digits: inode, mode, owner, group, link count, modification time, file size, device numbers, name size and checksum. The header is 110 bytes.
@@ -1858,7 +1858,7 @@ url = "https://github.com/lz4/lz4/blob/dev/doc/lz4_Block_format.md"
 [[format]]
 id = "mpeg-audio"
 name = "MPEG audio (MP3, MP2, MP1)"
-keys = ["media:mpeg-audio", "MPEG audio", "audio/mpeg"]
+keys = ["media:mpeg-audio", "MPEG audio", "audio/mpeg", "media/mp3-frame"]
 summary = "MPEG-1 and MPEG-2 audio layers I to III, of which layer III is MP3: a run of self-contained frames, each with a 4-byte header."
 organisation = """
 Each frame starts with an 11-bit sync of ones, then the version (MPEG-1, MPEG-2, or the unofficial MPEG-2.5), the layer, a protection bit (clear when a 16-bit CRC follows the header), the bitrate and sampling rate indices, a padding bit, a private bit, the channel mode and mode extension, and copyright, original and emphasis bits.
