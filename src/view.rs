@@ -67,7 +67,7 @@ pub fn show_raster(app: &mut ViewerApp, ui: &mut Ui) {
         && let Some(pointer) = image_response.interact_pointer_pos()
     {
         let byte = byte_under(app, pointer, origin, zoom);
-        app.set_cursor(byte, false);
+        app.place_cursor(byte);
     }
     {
         let offset = app.cursor;
@@ -822,7 +822,7 @@ pub fn click_byte(app: &mut ViewerApp, byte: usize, modifiers: egui::Modifiers) 
     if modifiers.command || app.multi_select_mode {
         app.add_to_selection_at(byte);
     } else {
-        app.set_cursor(byte, modifiers.shift);
+        app.move_cursor_as_person(byte, modifiers.shift);
     }
 }
 

@@ -1085,15 +1085,19 @@ impl ViewerApp {
 
     /// Add a range to the selection (Cmd-click), or take it out again when
     /// it is already one of the selected ranges.
+    /// The ranges the panel works out are selected as `selection.set`.
     pub fn toggle_selection_range(&mut self, start: usize, len: usize) {
         let mut ranges = self.selection_ranges();
-        if let Some(index) = ranges.iter().position(|&range| range == (start, len)) {
+        let primary = if let Some(index) = ranges.iter().position(|&range| range == (start, len)) {
             ranges.remove(index);
-            let primary = ranges.last().copied();
-            self.select_ranges(ranges, primary);
+            ranges.last().copied()
         } else {
             ranges.push((start, len));
-            self.select_ranges(ranges, Some((start, len)));
+            Some((start, len))
+        };
+        let cursor = primary.map_or(self.cursor, |(start, len)| start + len);
+        if !self.select_as_person(crate::selection_menu::selection_of(ranges), cursor) {
+            return;
         }
         self.select_matching_packets();
         self.status = self.selection_summary().map_or_else(|| "Nothing selected".to_string(), |summary| format!("Selected {summary}"));
@@ -1244,11 +1248,14 @@ impl ViewerApp {
         }
     }
 
-    fn move_cursor_by(&mut self, delta: i64, extend: bool) {
+    /// An arrow or page key: move the cursor `delta` bytes through the
+    /// layout, as `cursor.set`, or with Shift extend the selection there,
+    /// as `selection.set`.
+    pub(crate) fn move_cursor_by(&mut self, delta: i64, extend: bool) {
         // Steps are taken in the layout, so the cursor hops over skipped bytes.
         let view = (self.folds.to_view(self.cursor) as i64 + delta).clamp(0, self.view_len() as i64) as usize;
         let target = self.folds.to_document(view).min(self.document.len());
-        self.set_cursor(target, extend);
+        self.move_cursor_as_person(target, extend);
         self.scroll_cursor_into_view();
         self.reveal_cursor_in_hex(false);
     }
@@ -1900,7 +1907,7 @@ impl ViewerApp {
         if let Some(finding) = &finding {
             ui.label(RichText::new(&finding.title).color(finding.category.colour()));
             if ui.button("Select this finding").clicked() {
-                self.select_pattern(finding);
+                self.select_finding(finding);
                 ui.close();
             }
             if finding.category == Category::Compressed && ui.button("Decompress").clicked() {
@@ -2219,10 +2226,10 @@ impl ViewerApp {
         }
     }
 
+    /// Select every byte, as `selection.set`.
     pub fn select_all(&mut self) {
-        self.clear_secondary_selection();
-        self.anchor = Some(0);
-        self.cursor = self.document.len();
+        let len = self.document.len();
+        self.select_as_person(Some(Selection::Range(0, len)), len);
     }
 
     // ------------------------------------------------------------------
@@ -3088,13 +3095,13 @@ impl ViewerApp {
             self.move_cursor_by(page, shift);
         }
         if consume(Key::Home) {
-            self.set_cursor(0, shift);
+            self.move_cursor_as_person(0, shift);
             self.top_row = 0;
             self.reveal_cursor_in_hex(true);
         }
         if consume(Key::End) {
             let end = self.document.len();
-            self.set_cursor(end, shift);
+            self.move_cursor_as_person(end, shift);
             self.scroll_cursor_into_view();
             self.reveal_cursor_in_hex(true);
         }
@@ -3102,8 +3109,7 @@ impl ViewerApp {
             self.multi_select_mode = !self.multi_select_mode;
         }
         if consume(Key::Escape) && !self.cancel_move_drag() {
-            self.anchor = None;
-            self.clear_secondary_selection();
+            self.clear_selection_as_person();
             self.multi_select_mode = false;
             self.pending_low_nibble = false;
             self.show_help = false;

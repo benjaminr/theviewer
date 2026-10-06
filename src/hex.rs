@@ -182,9 +182,8 @@ fn show_structure_tree(app: &mut ViewerApp, ui: &mut Ui) {
         }
     });
     if let Some((start, len)) = chosen {
-        app.anchor = Some(start);
-        app.cursor = start + len.max(1);
-        app.pending_low_nibble = false;
+        let end = start + len.max(1);
+        app.select_as_person(Some(crate::selection::Selection::Range(start, end - start)), end);
         app.reveal_cursor_in_hex(true);
         app.reveal_cursor_centred();
     }
@@ -322,7 +321,7 @@ fn show_hex_dump(app: &mut ViewerApp, ui: &mut Ui) {
         && response.secondary_clicked()
     {
         let byte = byte_at_pointer(pointer, app);
-        app.set_cursor(byte, false);
+        app.place_cursor(byte);
     }
     if !app.document.is_empty() {
         let offset = app.cursor;

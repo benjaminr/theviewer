@@ -17,6 +17,7 @@ use crate::app::{DialogKind, FileAction, ViewerApp};
 use crate::compress::{self, Codec};
 use crate::document::Document;
 use crate::ops;
+use crate::plugin::Finding;
 use crate::selection::Selection;
 use crate::selection_ops::{self, CopyFormat, Operation};
 use crate::theme;
@@ -98,15 +99,125 @@ impl ViewerApp {
         true
     }
 
-    /// Put the cursor at `cursor` and select `selection`, of any kind;
-    /// `None` selects nothing.
+    /// Select `selection`, of any kind, with the cursor at `cursor`: at the
+    /// start or end of one of its ranges, which is then the one Shift
+    /// extends (a column's cursor is at its end); `None` selects nothing and
+    /// puts the cursor there.
     pub fn set_selection(&mut self, cursor: usize, selection: Option<Selection>) {
         match selection {
-            Some(Selection::Range(start, len)) => self.restore_selection(start, len),
-            Some(Selection::Ranges(ranges)) => self.select_ranges(ranges, None),
+            Some(Selection::Range(start, len)) if len > 0 => {
+                self.select_ranges(vec![(start, len)], None);
+                self.face_cursor_to_start(cursor);
+            }
+            Some(Selection::Range(start, _)) => self.set_cursor(start, false),
+            Some(Selection::Ranges(ranges)) => {
+                let primary = ranges.iter().copied().find(|&(start, len)| cursor == start || cursor == start + len);
+                self.select_ranges(ranges, primary);
+                self.face_cursor_to_start(cursor);
+            }
             Some(Selection::Columns(column)) => self.select_column(column),
             None => self.set_cursor(cursor, false),
         }
+    }
+
+    /// Turn the anchor-to-cursor range round when `cursor` is its start, so
+    /// Shift extends it backwards from its end.
+    fn face_cursor_to_start(&mut self, cursor: usize) {
+        if let Some((start, len)) = self.selection()
+            && cursor == start
+        {
+            self.anchor = Some(start + len);
+            self.cursor = start;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The person's cursor and selection
+// ---------------------------------------------------------------------------
+
+impl ViewerApp {
+    /// The person puts the cursor at `offset` (a click, a key), selecting
+    /// nothing, as `cursor.set`. The views stay where the action leaves
+    /// them. Returns whether it moved.
+    pub fn place_cursor(&mut self, offset: usize) -> bool {
+        let offset = offset.min(self.document.len());
+        self.keeping_the_hex_dump_still(|app| app.perform("cursor.set", serde_json::json!({ "offset": offset })).is_ok())
+    }
+
+    /// The person selects `selection` (nothing when `None`) with the cursor
+    /// at `cursor`, as `selection.set`. The cursor is in the step when it
+    /// sits where the API allows (an end of one of the ranges, a column's
+    /// end); otherwise it goes to the end of the last range. The views stay
+    /// where the action leaves them. Returns whether it was selected.
+    pub fn select_as_person(&mut self, selection: Option<Selection>, cursor: usize) -> bool {
+        let cursor = cursor.min(self.document.len());
+        let ranges = selection.as_ref().map(|selected| selected.ranges(self.document.len())).unwrap_or_default();
+        let cursor_fits = match &selection {
+            None => true,
+            Some(Selection::Columns(_)) => ranges.last().is_some_and(|&(start, len)| cursor == start + len),
+            Some(_) => ranges.iter().any(|&(start, len)| cursor == start || cursor == start + len),
+        };
+        let mut params = serde_json::json!({ "selection": selection });
+        if cursor_fits {
+            params["cursor"] = serde_json::json!(cursor);
+        }
+        self.keeping_the_hex_dump_still(|app| app.perform("selection.set", params).is_ok())
+    }
+
+    /// The person moves the cursor to `target` (a click, an arrow key);
+    /// with `extend` (Shift held) the selection runs from its anchor to
+    /// `target` instead, beside any other selected ranges.
+    pub fn move_cursor_as_person(&mut self, target: usize, extend: bool) {
+        let target = target.min(self.document.len());
+        if !extend {
+            self.place_cursor(target);
+            return;
+        }
+        let anchor = self.anchor.unwrap_or(self.cursor);
+        let mut ranges = self.extra_ranges.clone();
+        ranges.push((anchor.min(target), anchor.abs_diff(target)));
+        self.select_as_person(selection_of(ranges), target);
+    }
+
+    /// Esc: the person selects nothing, leaving the cursor where it is, as
+    /// `selection.set`; nothing is called when nothing is selected.
+    pub fn clear_selection_as_person(&mut self) {
+        self.pending_low_nibble = false;
+        if self.anchor.is_some() || !self.extra_ranges.is_empty() || self.column_selection.is_some() {
+            let cursor = self.cursor;
+            self.select_as_person(None, cursor);
+        }
+    }
+
+    /// The person selects a finding's bytes (the Findings list, the
+    /// context menu), as `selection.set`, and brings them into view.
+    pub fn select_finding(&mut self, finding: &Finding) {
+        let (start, end) = (finding.start.min(self.document.len()), finding.end().min(self.document.len()));
+        if self.select_as_person(Some(Selection::Range(start, end - start)), end) {
+            self.select_pattern(finding);
+        }
+    }
+
+    /// Run `action`, which selects through the API, keeping the hex dump
+    /// scrolled where it was: the API's selection scrolls the dump to show
+    /// a client's selection, but the person's own actions scroll the views
+    /// themselves, as they did before.
+    pub(crate) fn keeping_the_hex_dump_still(&mut self, action: impl FnOnce(&mut ViewerApp) -> bool) -> bool {
+        let hex_top_row = self.hex_top_row;
+        let done = action(self);
+        self.hex_top_row = hex_top_row;
+        done
+    }
+}
+
+/// `ranges` as a selection: nothing, one range or several, merged where
+/// they touch.
+pub fn selection_of(ranges: Vec<(usize, usize)>) -> Option<Selection> {
+    match crate::selection::normalise_ranges(ranges).as_slice() {
+        [] => None,
+        &[(start, len)] => Some(Selection::Range(start, len)),
+        many => Some(Selection::Ranges(many.to_vec())),
     }
 }
 

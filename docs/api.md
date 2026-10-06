@@ -582,6 +582,7 @@ Select one range, several ranges or a column of every record in a document, or n
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
+| `cursor` | integer | no | Where the cursor goes: the start or end of one of the selected ranges, which is then the range Shift extends from its other end (a column's cursor is at its end); the end of the last range when omitted. With nothing selected, any offset; the cursor stays when omitted. |
 | `doc` | string | no | Document id, path or "current" (the default). |
 | `selection` | Selection | no | What to select: {"range": [start, len]}, {"ranges": [[start, len], …]} or {"columns": {…}}; null or omitted selects nothing. |
 

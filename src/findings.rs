@@ -168,7 +168,7 @@ pub fn show_findings_panel(app: &mut ViewerApp, ui: &mut Ui) {
                 }
                 // The operations act on the finding (or on the selection it is part of).
                 if !app.is_selected(finding.start) {
-                    app.select_pattern(finding);
+                    app.select_finding(finding);
                 }
                 crate::selection_menu::menu_button(app, ui);
                 if finding.category == Category::Compressed && ui.button("Decompress").clicked() {
@@ -198,7 +198,7 @@ pub fn show_findings_panel(app: &mut ViewerApp, ui: &mut Ui) {
     });
 
     if let Some(finding) = chosen {
-        app.select_pattern(&finding);
+        app.select_finding(&finding);
     }
     if let Some(finding) = added {
         let len = finding.len.min(app.document.len().saturating_sub(finding.start));

@@ -28,6 +28,7 @@ pub(super) fn examples() -> Vec<(&'static str, serde_json::Value)> {
         ("selection.get", json!({})),
         ("cursor.get", json!({})),
         ("selection.set", json!({"selection": {"range": [1, 3]}})),
+        ("selection.set", json!({"selection": {"ranges": [[1, 3], [8, 2]]}, "cursor": 1})),
         ("cursor.set", json!({"offset": 5})),
     ]
 }
@@ -95,6 +96,11 @@ pub struct SetSelectionParams {
     /// or {"columns": {…}}; null or omitted selects nothing.
     #[serde(default)]
     pub selection: Option<Selection>,
+    /// Where the cursor goes: the start or end of one of the selected ranges, which is then the
+    /// range Shift extends from its other end (a column's cursor is at its end); the end of the
+    /// last range when omitted. With nothing selected, any offset; the cursor stays when omitted.
+    #[serde(default)]
+    pub cursor: Option<u64>,
 }
 
 /// Parameters of `cursor.set`.
@@ -111,15 +117,33 @@ pub struct SetCursorParams {
 pub fn set_selection(workspace: &mut dyn Workspace, caller: &Caller, params: SetSelectionParams) -> Result<SelectionResult, ApiError> {
     let (doc, document) = workspace::document(workspace, params.doc.as_deref())?;
     let len = document.len();
-    let cursor = match &params.selection {
-        Some(selected) => {
+    let cursor = match (&params.selection, params.cursor) {
+        (Some(selected), cursor) => {
             check_inside(selected, len)?;
-            selected.ranges(len).last().map_or(0, |&(start, range_len)| start + range_len)
+            cursor_in(selected, &selected.ranges(len), cursor)?
         }
-        None => workspace.view(&doc).unwrap_or_default().cursor.min(len),
+        (None, Some(cursor)) => values::span_within(len, cursor, Some(0))?.0,
+        (None, None) => workspace.view(&doc).unwrap_or_default().cursor.min(len),
     };
     workspace.select(&doc, cursor, params.selection, caller);
     get_selection(workspace, DocParams { doc: Some(doc) })
+}
+
+/// Where the cursor goes in `selected` (whose ranges are `ranges`): at
+/// `cursor` when that is the start or end of one of the ranges (a column's
+/// end), else refused; at the end of the last range when not given.
+fn cursor_in(selected: &Selection, ranges: &[(usize, usize)], cursor: Option<u64>) -> Result<usize, ApiError> {
+    let end = ranges.last().map_or(0, |&(start, len)| start + len);
+    let Some(cursor) = cursor else { return Ok(end) };
+    let cursor = usize::try_from(cursor).unwrap_or(usize::MAX);
+    let at_an_end = match selected {
+        Selection::Columns(_) => cursor == end,
+        _ => ranges.iter().any(|&(start, len)| cursor == start || cursor == start + len),
+    };
+    if !at_an_end {
+        return Err(ApiError::invalid_params(format!("the cursor {cursor:#x} must sit at the start or end of a selected range (a column's cursor at its end)")));
+    }
+    Ok(cursor)
 }
 
 pub fn set_cursor(workspace: &mut dyn Workspace, caller: &Caller, params: SetCursorParams) -> Result<CursorResult, ApiError> {
@@ -183,11 +207,28 @@ mod tests {
         assert_eq!(call(&mut workspace, "selection.get", json!({})).unwrap()["selection"], serde_json::Value::Null, "moving the cursor selects nothing");
         let past = crate::api::call(&mut workspace, &caller, "selection.set", json!({"selection": {"range": [60, 8]}})).unwrap_err();
         assert_eq!(past.code, crate::api::ErrorCode::OutOfRange);
+        let adrift = crate::api::call(&mut workspace, &caller, "selection.set", json!({"selection": {"range": [8, 8]}, "cursor": 10})).unwrap_err();
+        assert_eq!(adrift.code, crate::api::ErrorCode::InvalidParams, "the cursor must sit at an end of a range");
         let producers: Vec<String> = crate::api::Workspace::bus(&mut workspace)
             .recent()
             .filter(|message| message.topic() == crate::bus::Topic::SelectionChanged)
             .map(|message| message.producer().to_string())
             .collect();
         assert_eq!(producers, ["mcp:claude-code", "mcp:claude-code"]);
+    }
+
+    #[test]
+    fn a_selection_may_put_the_cursor_at_the_start_of_a_range_to_extend_it_backwards() {
+        let mut workspace = workspace_with("a.bin", &[0; 64]);
+        call(&mut workspace, "selection.set", json!({"selection": {"ranges": [[0, 4], [8, 4]]}, "cursor": 0})).unwrap();
+        assert_eq!(call(&mut workspace, "cursor.get", json!({})).unwrap()["offset"], 0);
+        call(&mut workspace, "selection.set", json!({"selection": {"range": [8, 4]}})).unwrap();
+        assert_eq!(call(&mut workspace, "cursor.get", json!({})).unwrap()["offset"], 12, "the end of the last range when not given");
+        call(&mut workspace, "selection.set", json!({"selection": null, "cursor": 20})).unwrap();
+        assert_eq!(call(&mut workspace, "cursor.get", json!({})).unwrap()["offset"], 20, "with nothing selected the cursor goes anywhere");
+        let column = json!({"columns": {"first_row_start": 0, "stride": 16, "column": 2, "width": 2, "rows": 3}});
+        let error = call(&mut workspace, "selection.set", json!({"selection": column, "cursor": 2})).unwrap_err();
+        assert_eq!(error.code, crate::api::ErrorCode::InvalidParams, "a column's cursor is at its end");
+        assert_eq!(call(&mut workspace, "selection.set", json!({"selection": null, "cursor": 65})).unwrap_err().code, crate::api::ErrorCode::OutOfRange);
     }
 }
