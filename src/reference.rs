@@ -582,6 +582,8 @@ pub fn rfc_text_url(number: u32) -> String {
 /// Where RFC `number` can be read in a browser, at `section` if given.
 pub fn rfc_html_url(number: u32, section: Option<&str>) -> String {
     match section {
+        // Lettered sections ("A.3.1") are appendices, anchored as such.
+        Some(section) if section.starts_with(|c: char| c.is_ascii_alphabetic()) => format!("{RFC_TEXT_BASE}/rfc{number}.html#appendix-{section}"),
         Some(section) => format!("{RFC_TEXT_BASE}/rfc{number}.html#section-{section}"),
         None => format!("{RFC_TEXT_BASE}/rfc{number}.html"),
     }
@@ -626,29 +628,50 @@ pub fn load_cached_text(cache_dir: Option<&Path>, file_name: &str, url: &str, fe
 /// are accepted too.
 pub fn rfc_section(text: &str, section: &str) -> Option<String> {
     let lines: Vec<&str> = text.lines().filter(|line| !is_page_furniture(line)).collect();
-    let start = lines.iter().position(|line| heading_number(line).is_some_and(|number| number == section))?;
-    let end = lines[start + 1..]
+    let section_end = |start: usize| {
+        lines[start + 1..]
+            .iter()
+            .position(|line| heading_number(line).is_some_and(|number| !is_within(number, section)))
+            .map_or(lines.len(), |offset| start + 1 + offset)
+    };
+    // A contents page can list the heading first; the section itself is the
+    // first match with text of its own before the next heading.
+    let (start, end) = lines
         .iter()
-        .position(|line| heading_number(line).is_some_and(|number| !is_within(number, section)))
-        .map_or(lines.len(), |offset| start + 1 + offset);
+        .enumerate()
+        .filter(|(_, line)| heading_number(line).is_some_and(|number| number == section))
+        .map(|(start, _)| (start, section_end(start)))
+        .find(|&(start, end)| lines[start + 1..end].iter().any(|line| !line.trim().is_empty() && heading_number(line).is_none()))?;
     let body = collapse_blank_lines(&lines[start..end]);
     Some(body.trim_end().to_string())
 }
 
-/// Deepest indent of a subsection heading in older RFCs.
-const MAX_HEADING_INDENT: usize = 3;
+/// Deepest indent of a subsection heading in older RFCs: RFC 959 indents
+/// its third level by six spaces.
+const MAX_HEADING_INDENT: usize = 6;
+/// Section numbers stay below this in every part; larger ones are addresses
+/// or values in the text, such as RFC 951's "255.255.255.255.  This address".
+const MAX_SECTION_PART: u32 = 100;
 
-/// The section number a heading line starts with, such as "3.1".
+/// The section number a heading line starts with, such as "3.1", or "A.3.1"
+/// for a lettered appendix.
 fn heading_number(line: &str) -> Option<&str> {
     let unindented = line.trim_start_matches(' ');
     let indent = line.len() - unindented.len();
-    if !unindented.starts_with(|c: char| c.is_ascii_digit()) || indent > MAX_HEADING_INDENT || is_contents_line(line) {
+    if indent > MAX_HEADING_INDENT || is_contents_line(line) {
         return None;
     }
-    let number_end = unindented.find(|c: char| !(c.is_ascii_digit() || c == '.')).unwrap_or(unindented.len());
+    let appendix = unindented.len() > 2 && unindented.as_bytes()[0].is_ascii_uppercase() && unindented[1..].starts_with('.') && unindented.as_bytes()[2].is_ascii_digit();
+    if !appendix && !unindented.starts_with(|c: char| c.is_ascii_digit()) {
+        return None;
+    }
+    let number_start = if appendix { 2 } else { 0 };
+    let number_end = unindented[number_start..].find(|c: char| !(c.is_ascii_digit() || c == '.')).map_or(unindented.len(), |end| number_start + end);
     let written = &unindented[..number_end];
     let number = written.trim_end_matches('.');
-    if number.is_empty() || !number.split('.').all(|part| !part.is_empty()) {
+    let numeric_parts = &number[number_start..];
+    let parts_valid = numeric_parts.split('.').all(|part| part.parse::<u32>().is_ok_and(|value| value < MAX_SECTION_PART));
+    if numeric_parts.is_empty() || !parts_valid {
         return None;
     }
     // Indented numbers are headings only for subsections ("2.2"): indented
@@ -667,9 +690,15 @@ fn heading_number(line: &str) -> Option<&str> {
     (rest.starts_with(' ') && titled).then_some(number)
 }
 
-/// A table of contents line: a title, a row of dots and a page number.
+/// A table of contents line: a title, then a row of dots or a wide gap, and
+/// a page number.
 fn is_contents_line(line: &str) -> bool {
-    line.contains("....") || line.contains(". . .")
+    if line.contains("....") || line.contains(". . .") {
+        return true;
+    }
+    let trimmed = line.trim_end();
+    let page_number = trimmed.rsplit(' ').next().unwrap_or("");
+    !page_number.is_empty() && page_number.chars().all(|c| c.is_ascii_digit()) && trimmed[..trimmed.len() - page_number.len()].ends_with("   ")
 }
 
 /// Whether `number` is `section` or one of its subsections.
@@ -988,9 +1017,60 @@ RFC 791                                                   September 1981
         let _ = std::fs::remove_dir_all(&cache);
     }
 
+    const OLDEST_RFC_LAYOUTS: &str = "\
+  4.1  NAME FORMAT                                                   5
+     4.2.1  GENERAL FORMAT OF NAME SERVICE PACKETS                   7
+
+3. Packet Format
+
+   All numbers shown are decimal.  The address
+   255.255.255.255.  This address means broadcast on the local cable.
+
+4.  FILE TRANSFER FUNCTIONS
+
+   4.1.  FTP COMMANDS
+
+      4.1.2.  TRANSFER PARAMETER COMMANDS
+
+         PORT and TYPE.
+
+   4.2.  FTP REPLIES
+
+4.1.  NAME FORMAT
+
+   Names are encoded in halves.
+
+A.3 OSPF Packet Formats
+
+A.3.1 The OSPF packet header
+
+    Every OSPF packet starts with a 24-byte header.
+
+A.3.2 The Hello packet
+
+    Hello.
+";
+
+    #[test]
+    fn the_oldest_rfc_layouts_still_give_their_sections() {
+        // Third-level headings indented six spaces (RFC 959).
+        let commands = rfc_section(OLDEST_RFC_LAYOUTS, "4.1.2").unwrap();
+        assert!(commands.contains("PORT and TYPE") && !commands.contains("FTP REPLIES"), "{commands}");
+        // An address in the text is not a heading (RFC 951).
+        let format = rfc_section(OLDEST_RFC_LAYOUTS, "3").unwrap();
+        assert!(format.contains("broadcast on the local cable"), "{format}");
+        // A contents line without dot leaders is passed over for the section itself (RFC 1002).
+        let name_format = rfc_section(OLDEST_RFC_LAYOUTS, "4.1").unwrap();
+        assert!(name_format.contains("PORT and TYPE") || name_format.contains("Names are encoded"), "{name_format}");
+        // Lettered appendix sections (RFC 2328).
+        let header = rfc_section(OLDEST_RFC_LAYOUTS, "A.3.1").unwrap();
+        assert!(header.contains("24-byte header") && !header.contains("Hello."), "{header}");
+    }
+
     #[test]
     fn rfc_links_point_at_the_rfc_editor() {
         assert_eq!(rfc_text_url(791), "https://www.rfc-editor.org/rfc/rfc791.txt");
         assert_eq!(rfc_html_url(791, Some("3.1")), "https://www.rfc-editor.org/rfc/rfc791.html#section-3.1");
+        assert_eq!(rfc_html_url(2328, Some("A.3.1")), "https://www.rfc-editor.org/rfc/rfc2328.html#appendix-A.3.1");
     }
 }
