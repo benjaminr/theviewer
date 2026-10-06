@@ -111,6 +111,7 @@ pub fn builtin_reactions() -> Vec<Reaction> {
         Reaction { topic: Topic::JobFinished, name: "Packets loads the protocol analysis's messages it waited for", react: crate::panel_packets::follow_protocol_job },
         Reaction { topic: Topic::ReferenceFocus, name: "Reference shows the format asked for", react: crate::panel_reference::follow_focus },
         Reaction { topic: Topic::DocumentEdited, name: "Tools note the edit and refresh once it settles", react: crate::freshness::note_edit },
+        Reaction { topic: Topic::RegionsMapped, name: "The views colour and label by the report's regions", react: keep_mapped_regions },
         Reaction { topic: Topic::PluginLog, name: "The status bar shows plugin errors", react: show_plugin_error },
     ]
 }
@@ -311,6 +312,32 @@ pub fn job_finished(job: &str, title: &str, ok: bool, outcome: impl Into<String>
     Draft::new(format!("tool:{kind}"), Payload::JobFinished(JobFinished { job: job.to_string(), title: title.to_string(), ok, outcome: outcome.into() }))
 }
 
+/// Keep the regions mapped for the document shown, for the raster's and the
+/// curves' colours, the size map and the trigrams' labels, whether or not
+/// the report is showing.
+fn keep_mapped_regions(app: &mut ViewerApp, message: &Arc<Message>) {
+    if message.draft.document.as_deref() != Some(app.document_id().as_str()) {
+        return;
+    }
+    let regions = match message.payload_as::<RegionsMapped>() {
+        Some(mapped) if !message.draft.retracts => mapped.regions.iter().map(region_of).collect(),
+        _ => Vec::new(),
+    };
+    app.mapped_regions = Arc::new(regions);
+}
+
+/// A mapped region as the views draw it.
+fn region_of(mapped: &MappedRegion) -> crate::explain::Region {
+    crate::explain::Region {
+        start: mapped.start,
+        len: mapped.len,
+        kind: crate::explain::RegionKind::from_label(&mapped.kind),
+        label: mapped.label.clone(),
+        detail: mapped.detail.clone(),
+        confident: mapped.confident,
+    }
+}
+
 /// Errors from plugins, in a background scan or anywhere else, go to the
 /// status bar so they are seen.
 fn show_plugin_error(app: &mut ViewerApp, message: &Arc<Message>) {
@@ -406,5 +433,20 @@ mod tests {
         let findings = app.bus.facts().find(|fact| fact.topic() == Topic::FindingsPublished && fact.producer() == "tool:templates").expect("the pinned records");
         assert_eq!(findings.topic().kind(), Kind::Fact);
         assert!(!findings.payload_as::<FindingsPublished>().unwrap().findings.is_empty());
+    }
+
+    #[test]
+    fn the_report_s_regions_reach_the_views_through_the_bus_until_another_document_opens() {
+        let mut app = app_with(&[0u8; 4096]);
+        let region = MappedRegion { start: 0, len: 4096, kind: "text".into(), label: "notes".into(), detail: "ASCII".into(), confident: true };
+        app.publish("tool:report", Payload::RegionsMapped(RegionsMapped { regions: vec![region] }));
+        app.bus.publish(Draft::new("tool:report", Payload::RegionsMapped(RegionsMapped { regions: Vec::new() })).about("doc-9", 0));
+        app.run_bus();
+        assert_eq!(app.mapped_regions.len(), 1, "regions about another document are not drawn");
+        assert_eq!(app.mapped_regions[0].kind, crate::explain::RegionKind::Text);
+        assert_eq!(app.mapped_regions[0].detail, "ASCII");
+        app.open_bytes(vec![1; 16], "other.bin".to_string());
+        app.run_bus();
+        assert!(app.mapped_regions.is_empty());
     }
 }

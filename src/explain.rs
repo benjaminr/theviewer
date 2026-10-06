@@ -35,6 +35,28 @@ pub enum RegionKind {
 }
 
 impl RegionKind {
+    pub const ALL: [RegionKind; 14] = [
+        RegionKind::Header,
+        RegionKind::Code,
+        RegionKind::Text,
+        RegionKind::Data,
+        RegionKind::Compressed,
+        RegionKind::Encrypted,
+        RegionKind::Padding,
+        RegionKind::Image,
+        RegionKind::Audio,
+        RegionKind::Video,
+        RegionKind::Archive,
+        RegionKind::Filesystem,
+        RegionKind::Executable,
+        RegionKind::Unknown,
+    ];
+
+    /// The kind whose label is `label`; anything else is unknown.
+    pub fn from_label(label: &str) -> RegionKind {
+        RegionKind::ALL.into_iter().find(|kind| kind.label() == label).unwrap_or(RegionKind::Unknown)
+    }
+
     pub fn label(self) -> &'static str {
         match self {
             RegionKind::Header => "header",

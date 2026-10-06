@@ -361,6 +361,9 @@ pub struct ViewerApp {
     scroll_accumulator: f32,
     /// What tools, panels and plugins have published: facts and events.
     pub bus: crate::bus::Bus,
+    /// The file's regions as the report published them on `regions.mapped`,
+    /// kept by a reaction for the views that colour or label by region.
+    pub mapped_regions: Arc<Vec<crate::explain::Region>>,
     /// What the app last published of its own state.
     pub(crate) bus_watch: crate::bus::window::BusWatch,
     /// Run for each message the bus delivers.
@@ -623,6 +626,7 @@ impl ViewerApp {
             insert_dialog_open: false,
             scroll_accumulator: 0.0,
             bus: crate::bus::Bus::new(),
+            mapped_regions: Arc::default(),
             bus_watch: Default::default(),
             reactions: crate::bus::window::builtin_reactions(),
             plugin_methods: Vec::new(),
@@ -2263,6 +2267,7 @@ impl ViewerApp {
         let previous_name = self.display_name();
         self.document = document;
         self.bench.document_changed();
+        self.mapped_regions = Arc::default();
         self.derived_name = derived_name;
         self.publish_document_replaced(previous_name);
         self.cursor = 0;
@@ -2687,7 +2692,7 @@ impl ViewerApp {
         let shape = self.shape;
         let rows = rows.clamp(1, (MAX_TEXTURE_PIXELS / shape.width.max(1)).max(1));
         let row_difference = self.row_difference;
-        let zoomed_out_colours = self.colours_regions_now().then(|| crate::region_colours::regions_fingerprint(&self.bench.regions));
+        let zoomed_out_colours = self.colours_regions_now().then(|| crate::region_colours::regions_fingerprint(&self.mapped_regions));
         let folds_generation = self.folds.generation();
         let key = RasterKey { version: self.document.version(), shape, top_row: self.top_row, rows, row_difference, zoomed_out_colours, folds_generation };
         if self.raster_key == Some(key) && self.texture.is_some() {
@@ -2729,8 +2734,8 @@ impl ViewerApp {
     /// blocks are coloured from the laid-out bytes rather than the regions.
     fn colour_pixels_by_region(&mut self, rows: usize, pixels: &mut [Color32]) {
         let len = self.view_len();
-        if !self.bench.regions.is_empty() && self.folds.is_empty() {
-            crate::region_colours::region_pixels(&self.shape, self.top_row, len, &self.bench.regions, pixels);
+        if !self.mapped_regions.is_empty() && self.folds.is_empty() {
+            crate::region_colours::region_pixels(&self.shape, self.top_row, len, &self.mapped_regions, pixels);
             return;
         }
         let start = self.raster_first_view_byte();

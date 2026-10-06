@@ -10,6 +10,7 @@
 //!
 //! The layout itself is [`crate::treemap::squarify`].
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use eframe::egui::{self, Align2, Color32, FontId, Painter, Rect, RichText, Sense, Stroke, Ui, pos2, vec2};
@@ -122,7 +123,7 @@ pub fn show_treemap(state: &mut TreemapState, app: &mut ViewerApp, ui: &mut Ui) 
 // ---------------------------------------------------------------------------
 
 fn show_regions(state: &mut TreemapState, app: &mut ViewerApp, ui: &mut Ui) -> Option<MapAction> {
-    if app.bench.regions.is_empty() {
+    if app.mapped_regions.is_empty() {
         ui.horizontal(|ui| {
             if ui.button("Explain this file").clicked() {
                 app.start_report();
@@ -140,8 +141,8 @@ fn show_regions(state: &mut TreemapState, app: &mut ViewerApp, ui: &mut Ui) -> O
 
     let (response, painter) = allocate_map(ui);
     state.map_rect = Some(response.rect);
-    let regions = &app.bench.regions;
-    let cells = region_cells(regions, response.rect);
+    let regions = Arc::clone(&app.mapped_regions);
+    let cells = region_cells(&regions, response.rect);
     for &(index, rect) in &cells {
         draw_region(&painter, &regions[index], rect);
     }
@@ -461,11 +462,19 @@ mod tests {
     #[test]
     fn clicking_a_region_tile_jumps_to_that_region() {
         let mut app = app_with_bytes(4096);
-        app.bench.regions = vec![region(0, 1024, RegionKind::Header, "header"), region(1024, 3072, RegionKind::Text, "text")];
+        // The report publishes its map on the bus, which the size map reads.
+        let regions = [region(0, 1024, RegionKind::Header, "header"), region(1024, 3072, RegionKind::Text, "text")];
+        let mapped = regions
+            .iter()
+            .map(|region| crate::bus::topics::MappedRegion { start: region.start, len: region.len, kind: region.kind.label().to_string(), label: region.label.clone(), detail: String::new(), confident: false })
+            .collect();
+        app.publish("tool:report", crate::bus::Payload::RegionsMapped(crate::bus::topics::RegionsMapped { regions: mapped }));
+        app.run_bus();
+        assert!(app.bench.regions.is_empty(), "the size map does not need the report's own state");
         let mut harness = harness_for(app);
         harness.step();
         let map = harness.state().0.map_rect.expect("the map was drawn");
-        let cells = region_cells(&harness.state().1.bench.regions, map);
+        let cells = region_cells(&harness.state().1.mapped_regions, map);
         let &(_, text_rect) = cells.iter().find(|(index, _)| *index == 1).expect("the text region has a tile");
         click_at(&mut harness, text_rect.center(), egui::PointerButton::Primary);
         assert_eq!(harness.state().1.cursor, 1024);

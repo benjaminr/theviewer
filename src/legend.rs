@@ -398,7 +398,7 @@ fn show_colouring(app: &ViewerApp, ui: &mut Ui) {
         return;
     }
     if app.colours_regions_now() {
-        let source = if app.bench.regions.is_empty() { "block class and entropy" } else { "report region" };
+        let source = if app.mapped_regions.is_empty() { "block class and entropy" } else { "report region" };
         ui.label(RichText::new(format!("Zoomed out: coloured by {source}")).small().color(theme::TEXT))
             .on_hover_text("Below 1× each part is coloured by what it is. Turn off in View › Colour by region when zoomed out.");
         return;

@@ -260,7 +260,7 @@ pub fn start_counting(state: &mut TrigramState, app: &mut ViewerApp) {
     let selection = app.selection().filter(|&(selected, selected_len)| selected_len < len && selected >= start);
     let labels = match state.label_source {
         LabelSource::Segments => LabelInput::Bytes { start, bytes: app.document.read_range(start, len.min(SEGMENT_LIMIT)) },
-        LabelSource::ReportRegions => LabelInput::Regions(app.bench.regions.clone()),
+        LabelSource::ReportRegions => LabelInput::Regions(app.mapped_regions.to_vec()),
         LabelSource::Nothing => LabelInput::Nothing,
     };
     let (sender, receiver) = mpsc::channel();
@@ -411,7 +411,7 @@ fn show_toolbar(state: &mut TrigramState, app: &mut ViewerApp, ui: &mut Ui) {
             ui.label(RichText::new("Counting trigrams…").color(theme::TEXT_DIM));
         }
     });
-    if state.label_source == LabelSource::ReportRegions && app.bench.regions.is_empty() {
+    if state.label_source == LabelSource::ReportRegions && app.mapped_regions.is_empty() {
         ui.horizontal(|ui| {
             ui.label(RichText::new("The report has not been run, so there are no regions to label with.").small().color(theme::TEXT_DIM));
             if ui.small_button("Run the report").clicked() {

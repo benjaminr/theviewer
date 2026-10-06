@@ -282,6 +282,9 @@ pub struct MappedRegion {
     pub kind: String,
     /// Such as "zlib stream".
     pub label: String,
+    /// What was found there, in a sentence or two.
+    #[serde(default)]
+    pub detail: String,
     /// Identified by a parser or verified decoder, rather than guessed.
     pub confident: bool,
 }

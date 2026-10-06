@@ -411,7 +411,14 @@ impl ViewerApp {
             .bench
             .regions
             .iter()
-            .map(|region| MappedRegion { start: region.start, len: region.len, kind: region.kind.label().to_string(), label: region.label.clone(), confident: region.confident })
+            .map(|region| MappedRegion {
+                start: region.start,
+                len: region.len,
+                kind: region.kind.label().to_string(),
+                label: region.label.clone(),
+                detail: region.detail.clone(),
+                confident: region.confident,
+            })
             .collect();
         let end = regions.last().map_or(0, |region| region.start + region.len);
         self.bus.publish(self.draft("tool:report", Payload::RegionsMapped(RegionsMapped { regions })).span(0, end));
@@ -512,8 +519,8 @@ impl ViewerApp {
         let controls = Rect::from_min_size(rect.min, vec2(rect.width(), CURVE_CONTROLS_HEIGHT.min(rect.height())));
         let rect = Rect::from_min_max(pos2(rect.min.x, controls.max.y), rect.max);
         let colour = self.bench.curve_colour;
-        let needs_report = colour == CurveColour::RegionType && self.bench.regions.is_empty();
-        let regions = if colour == CurveColour::RegionType { crate::region_colours::regions_fingerprint(&self.bench.regions) } else { 0 };
+        let needs_report = colour == CurveColour::RegionType && self.mapped_regions.is_empty();
+        let regions = if colour == CurveColour::RegionType { crate::region_colours::regions_fingerprint(&self.mapped_regions) } else { 0 };
         let stale = self.bench.hilbert.as_ref().is_none_or(|view| {
             view.version != self.document.version()
                 || view.format != self.shape.format
@@ -527,7 +534,7 @@ impl ViewerApp {
             let cells = 1usize << (2 * order);
             let bytes = sampled_bytes(&mut self.document, cells);
             let bytes_per_cell = (len as f64 / cells as f64).max(1.0);
-            let along = curve_cell_colours(&bytes, bytes_per_cell, colour, self.shape.format, self.shape.palette, &self.bench.regions);
+            let along = curve_cell_colours(&bytes, bytes_per_cell, colour, self.shape.format, self.shape.palette, &self.mapped_regions);
             let pixels = hilbert::render_along(curve, order, &along);
             let side = 1usize << order;
             let image = ColorImage::new([side, side], pixels);
