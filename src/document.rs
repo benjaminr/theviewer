@@ -5,7 +5,12 @@
 //! pieces that point into either backing store. This keeps inserts and deletes
 //! cheap even on multi-gigabyte files, and reads of any window stay a handful
 //! of `memcpy` calls.
+//!
+//! Every change is also noted in a bounded edit log (positions and lengths,
+//! not bytes), from which the workspace bus publishes `document.edited` and
+//! carries what is known about unchanged regions through the edit.
 
+use std::collections::VecDeque;
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
@@ -13,6 +18,12 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use memmap2::Mmap;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+
+/// Most changes the edit log remembers. Older ones are forgotten, and
+/// offsets from before them can no longer be mapped forward.
+const EDIT_LOG_LIMIT: usize = 4096;
 
 /// Where a piece's bytes live.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -64,6 +75,55 @@ impl EditRecord {
     }
 }
 
+/// One change to the bytes as the edit log records it: at `at`, `removed`
+/// bytes were replaced by `inserted` bytes, which made version `version`.
+/// Undo and redo are changes too.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct Edit {
+    /// The document version this change made.
+    pub version: u64,
+    /// Offset of the change.
+    pub at: usize,
+    /// Bytes taken out at `at`.
+    pub removed: usize,
+    /// Bytes put in at `at`.
+    pub inserted: usize,
+}
+
+impl Edit {
+    /// Where the span `[start, start + len)` lies after this change, or
+    /// `None` when the change touched it. A change that ends where the span
+    /// starts (an insert there, say) moves it; one that starts where it ends
+    /// leaves it be.
+    pub fn map_span(&self, start: usize, len: usize) -> Option<(usize, usize)> {
+        let end = start + len;
+        if self.at + self.removed <= start && (self.at < start || self.removed == 0) {
+            let moved = (start + self.inserted).checked_sub(self.removed)?;
+            return Some((moved, len));
+        }
+        if self.at >= end && (len > 0 || self.at > start) {
+            return Some((start, len));
+        }
+        None
+    }
+}
+
+/// Map a span described at `from_version` through `edits` (in version
+/// order), to where it lies after the last of them. `None` when an edit
+/// touched it, or when `edits` does not carry on from `from_version` (some
+/// changes in between are unknown).
+pub fn map_span_through(edits: &[Edit], from_version: u64, start: usize, len: usize) -> Option<(usize, usize)> {
+    let mut span = (start, len);
+    let later = edits.iter().filter(|edit| edit.version > from_version);
+    for (expected, edit) in (from_version + 1..).zip(later) {
+        if edit.version != expected {
+            return None;
+        }
+        span = edit.map_span(span.0, span.1)?;
+    }
+    Some(span)
+}
+
 /// Everything one undo or redo reverses or repeats: usually one edit, or
 /// every edit made inside a group.
 type UndoStep = Vec<EditRecord>;
@@ -86,6 +146,8 @@ pub struct Document {
     group_depth: usize,
     /// Incremented on every mutation so caches can detect staleness.
     version: u64,
+    /// The latest changes, oldest first, at most [`EDIT_LOG_LIMIT`].
+    edit_log: VecDeque<Edit>,
 }
 
 impl Default for Document {
@@ -116,6 +178,7 @@ impl Document {
             open_group: None,
             group_depth: 0,
             version: 0,
+            edit_log: VecDeque::new(),
         }
     }
 
@@ -149,6 +212,7 @@ impl Document {
             open_group: None,
             group_depth: 0,
             version: 0,
+            edit_log: VecDeque::new(),
         })
     }
 
@@ -166,6 +230,25 @@ impl Document {
 
     pub fn version(&self) -> u64 {
         self.version
+    }
+
+    /// The changes made after `version`, oldest first; `None` when the edit
+    /// log no longer reaches back that far.
+    pub fn edits_since(&self, version: u64) -> Option<Vec<Edit>> {
+        if version >= self.version {
+            return Some(Vec::new());
+        }
+        let oldest = self.edit_log.front()?.version;
+        if oldest > version + 1 {
+            return None;
+        }
+        Some(self.edit_log.iter().filter(|edit| edit.version > version).copied().collect())
+    }
+
+    /// Where the span `[start, start + len)` described at `version` lies
+    /// now, or `None` when an edit since touched it or is forgotten.
+    pub fn map_span(&self, version: u64, start: usize, len: usize) -> Option<(usize, usize)> {
+        map_span_through(&self.edits_since(version)?, version, start, len)
     }
 
     /// A shareable handle to the original (on-disk) bytes.
@@ -339,6 +422,10 @@ impl Document {
         self.raw_delete(record.pos, record.removed.len());
         self.raw_insert(record.pos, &record.inserted);
         self.version += 1;
+        if self.edit_log.len() == EDIT_LOG_LIMIT {
+            self.edit_log.pop_front();
+        }
+        self.edit_log.push_back(Edit { version: self.version, at: record.pos, removed: record.removed.len(), inserted: record.inserted.len() });
     }
 
     fn commit(&mut self, record: EditRecord) {
@@ -607,6 +694,54 @@ mod tests {
         let real = document.read_into(1, &mut buffer);
         assert_eq!(real, 2);
         assert_eq!(&buffer, b"bc\0\0\0\0");
+    }
+
+    #[test]
+    fn every_change_including_undo_is_logged_with_the_version_it_made() {
+        let mut document = doc(b"abcdef");
+        document.insert(2, b"XY");
+        document.delete(0, 1);
+        document.undo();
+        let edits = document.edits_since(0).unwrap();
+        assert_eq!(
+            edits,
+            [
+                Edit { version: 1, at: 2, removed: 0, inserted: 2 },
+                Edit { version: 2, at: 0, removed: 1, inserted: 0 },
+                Edit { version: 3, at: 0, removed: 0, inserted: 1 },
+            ]
+        );
+        assert_eq!(document.edits_since(2).unwrap().len(), 1);
+        assert!(document.edits_since(3).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_span_after_an_insert_moves_and_one_the_edit_touches_is_lost() {
+        let mut document = doc(&[0u8; 0x10000]);
+        document.insert(0x100, &[1, 2, 3, 4]);
+        assert_eq!(document.map_span(0, 0x9000, 16), Some((0x9004, 16)), "a finding after the insert moves with it");
+        assert_eq!(document.map_span(0, 0x10, 16), Some((0x10, 16)), "one before it stays");
+        assert_eq!(document.map_span(0, 0xF8, 16), None, "one the insert lands inside is touched");
+        assert_eq!(document.map_span(0, 0x100, 4), Some((0x104, 4)), "an insert where the span starts pushes it along");
+        assert_eq!(document.map_span(0, 0xFC, 4), Some((0xFC, 4)), "an insert where the span ends leaves it be");
+        document.overwrite(0x2000, b"zz");
+        assert_eq!(document.map_span(0, 0x9000, 16), Some((0x9004, 16)), "an overwrite elsewhere changes nothing");
+        assert_eq!(document.map_span(0, 0x1FFC, 8), None, "an overwrite inside the span touches it");
+        document.delete(0, 0x10);
+        assert_eq!(document.map_span(1, 0x9004, 16), Some((0x8FF4, 16)), "mapped from a later version");
+    }
+
+    #[test]
+    fn spans_cannot_be_mapped_across_forgotten_edits() {
+        let mut document = doc(&[0u8; 64]);
+        for round in 0..EDIT_LOG_LIMIT + 2 {
+            document.overwrite(63, &[1 + (round % 2) as u8]);
+        }
+        assert_eq!(document.edits_since(0), None, "the oldest changes are forgotten");
+        assert_eq!(document.map_span(0, 0, 4), None);
+        let recent = document.version() - 3;
+        assert_eq!(document.map_span(recent, 0, 4), Some((0, 4)));
+        assert_eq!(map_span_through(&[Edit { version: 5, at: 100, removed: 0, inserted: 1 }], 3, 0, 4), None, "version 4 is missing");
     }
 
     #[test]
