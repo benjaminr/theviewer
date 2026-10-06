@@ -11,6 +11,7 @@
 //! RFC text is only fetched when the user asks for it, on a background
 //! thread, and kept under `~/.cache/theviewer/rfc` for next time.
 
+use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::thread;
 use std::time::Duration;
@@ -18,8 +19,8 @@ use std::time::Duration;
 use eframe::egui::{self, Align2, Color32, FontId, Rect, RichText, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
 
 use crate::app::ViewerApp;
-use crate::bus::Payload;
-use crate::bus::topics::ProtocolIdentified;
+use crate::bus::topics::{ProtocolIdentified, ReferenceFocus};
+use crate::bus::{Message, Payload};
 use crate::dock::DockTab;
 use crate::packets::{self, Flow, Layer, PacketSet};
 use crate::panel_packets::{self, PacketLayers};
@@ -434,11 +435,24 @@ pub fn notes_for_assistant(stack: &[StackEntry]) -> Vec<String> {
     notes
 }
 
-/// Open the Reference tab on the format known by `key` (a finding id or
-/// layer name), once the cursor is inside it.
-pub fn open_reference_for(app: &mut ViewerApp, key: &str) {
-    app.bench.panels.reference.follow(key);
+/// Ask the Reference tab, as `producer`, to show the format known by `key`
+/// (a finding id or layer name) once the cursor is inside it.
+pub fn focus_reference(app: &ViewerApp, producer: &str, key: &str) {
+    app.publish(producer, Payload::ReferenceFocus(ReferenceFocus { key: key.to_string() }));
+}
+
+/// Open the Reference tab on the format known by `key`, as [`focus_reference`].
+pub fn open_reference_for(app: &mut ViewerApp, producer: &str, key: &str) {
+    focus_reference(app, producer, key);
     app.dock.toggle(DockTab::Reference);
+}
+
+/// Show the format a `reference.focus` message asks for. Runs whether or
+/// not the tab is showing, so it is there when the tab is opened.
+pub fn follow_focus(app: &mut ViewerApp, message: &Arc<Message>) {
+    if let Some(focus) = message.payload_as::<ReferenceFocus>() {
+        app.bench.panels.reference.follow(&focus.key);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1240,6 +1254,17 @@ fn paint_ruler(painter: &egui::Painter, rect: Rect, left: f32, byte_width: f32) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_reference_tab_takes_up_a_format_asked_for_on_the_bus_even_while_hidden() {
+        let mut app = ViewerApp::new(crate::app::Launch::default());
+        focus_reference(&app, "panel:packets", "Internet Protocol version 4");
+        assert_eq!(app.bench.panels.reference.wanted, None, "nothing happens until the bus is delivered");
+        app.run_bus();
+        assert_eq!(app.bench.panels.reference.wanted.as_deref(), Some("Internet Protocol version 4"));
+        let focus = app.bus.recent().find(|message| message.topic() == crate::bus::Topic::ReferenceFocus).unwrap();
+        assert_eq!(focus.producer(), "panel:packets");
+    }
 
     #[test]
     fn the_diagram_draws_a_headers_named_parts_rather_than_one_box() {

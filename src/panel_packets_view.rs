@@ -550,7 +550,7 @@ fn act_on_tree(state: &mut PacketsState, app: &mut ViewerApp, action: TreeAction
             // The Reference tab follows the layer the chosen field belongs to.
             let layer = state.detail.as_ref().and_then(|detail| detail.dissection.layers.iter().rev().find(|layer| offset >= layer.offset && offset < layer.offset + layer.len.max(1)));
             if let Some(layer) = layer {
-                app.bench.panels.reference.follow(&layer.name);
+                crate::panel_reference::focus_reference(app, panel::PACKETS_PRODUCER, &layer.name);
             }
             state.selected_field = Some((offset, len));
             state.hex.position = offset;
@@ -559,7 +559,7 @@ fn act_on_tree(state: &mut PacketsState, app: &mut ViewerApp, action: TreeAction
         }
         TreeAction::Reference { offset, len, name } => {
             act_on_tree(state, app, TreeAction::Select { offset, len, name: name.clone() }, packet_offset);
-            crate::panel_reference::open_reference_for(app, &name);
+            crate::panel_reference::open_reference_for(app, panel::PACKETS_PRODUCER, &name);
         }
         TreeAction::StartEdit { offset, len, little_endian, text } => {
             state.selected_field = Some((offset, len));

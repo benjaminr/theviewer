@@ -154,7 +154,7 @@ fn show_structure_tree(app: &mut ViewerApp, ui: &mut Ui) {
             app.show_structure_fields = !app.show_structure_fields;
         }
         if notes.is_some() && ui.small_button("Reference").on_hover_text("How this format is organised, what its fields mean and where it is specified").clicked() {
-            crate::panel_reference::open_reference_for(app, &structure.id);
+            crate::panel_reference::open_reference_for(app, "panel:inspector", &structure.id);
         }
         let path: Vec<String> = structure.field_path(cursor).iter().map(|f| f.name.clone()).collect();
         if !path.is_empty() {
