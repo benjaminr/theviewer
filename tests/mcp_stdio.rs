@@ -192,6 +192,84 @@ fn a_client_lists_calls_edits_reads_subscribes_and_disconnects() {
     std::fs::remove_dir_all(plugins).ok();
 }
 
+/// A pcap capture of DNS queries over UDP from 10.0.0.2 to 10.0.0.1.
+fn dns_capture(queries: u16) -> Vec<u8> {
+    let mut file = Vec::new();
+    file.extend(0xA1B2_C3D4u32.to_le_bytes());
+    file.extend(2u16.to_le_bytes());
+    file.extend(4u16.to_le_bytes());
+    file.extend([0; 8]);
+    file.extend(65_535u32.to_le_bytes());
+    file.extend(1u32.to_le_bytes());
+    for id in 0..queries {
+        let mut message = id.to_be_bytes().to_vec();
+        message.extend([0x01, 0x00, 0, 1, 0, 0, 0, 0, 0, 0]);
+        message.extend(b"\x07example\x03com\x00");
+        message.extend([0, 1, 0, 1]);
+        let builder = etherparse::PacketBuilder::ethernet2([2, 0, 0, 0, 0, 1], [2, 0, 0, 0, 0, 2]).ipv4([10, 0, 0, 2], [10, 0, 0, 1], 64).udp(4000 + id, 53);
+        let mut frame = Vec::new();
+        builder.write(&mut frame, &message).unwrap();
+        file.extend(u32::from(id).to_le_bytes());
+        file.extend(0u32.to_le_bytes());
+        file.extend((frame.len() as u32).to_le_bytes());
+        file.extend((frame.len() as u32).to_le_bytes());
+        file.extend(frame);
+    }
+    file
+}
+
+/// The JSON a resource read gave.
+fn resource_json(answer: &Value) -> Value {
+    serde_json::from_str(answer["result"]["contents"][0]["text"].as_str().unwrap_or_else(|| panic!("no text: {answer}"))).unwrap()
+}
+
+#[test]
+fn a_client_takes_packets_as_a_set_reads_them_as_a_resource_hears_when_they_change_and_runs_a_job() {
+    let file = temp_path("capture.pcap");
+    std::fs::write(&file, dns_capture(3)).unwrap();
+    let mut client = Client::start(&["mcp", "--plugins", "/no/such/dir", file.to_str().unwrap()]);
+    client.request("initialize", json!({ "protocolVersion": "2025-11-25", "capabilities": {}, "clientInfo": { "name": "packets", "version": "1" } }));
+    client.send(&json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }));
+
+    let created = client.call_tool("packets_sets_create", json!({ "from": "capture" }));
+    assert_eq!((created["set"].clone(), created["count"].clone()), (json!("set-1"), json!(3)));
+    let listed = client.call_tool("packets_list", json!({ "set": "set-1", "filter": "dns" }));
+    assert_eq!(listed["total"], 3);
+    let dissected = client.call_tool("packets_dissect", json!({ "set": "set-1", "index": 0 }));
+    assert!(dissected["dissection"]["protocols"].as_array().unwrap().contains(&json!("dns")));
+
+    let uri = "theviewer://doc/doc-1/packets/set-1";
+    let resources = client.request("resources/list", json!({}));
+    assert!(resources["result"]["resources"].as_array().unwrap().iter().any(|resource| resource["uri"] == uri), "the set is listed as a resource");
+    let read = resource_json(&client.request("resources/read", json!({ "uri": uri })));
+    assert_eq!(read["packets"]["packets"].as_array().unwrap().len(), 3);
+    assert_eq!(read["set"]["from"], "capture");
+
+    assert_eq!(client.request("resources/subscribe", json!({ "uri": uri }))["result"], json!({}));
+    client.call_tool("packets_decode_as", json!({ "set": "set-1", "detect": false }));
+    let updated = client.wait_for_notification("notifications/resources/updated", PATIENCE).expect("a new decoding is heard of");
+    assert_eq!(updated["params"]["uri"], uri);
+    client.call_tool("bytes_write", json!({ "start": 40, "data": "00" }));
+    let edited = client.wait_for_notification("notifications/resources/updated", PATIENCE).expect("an edit is heard of");
+    assert_eq!(edited["params"]["uri"], uri);
+
+    let job = client.call_tool("analysis_overview_job", json!({ "max_findings": 1 }))["job"].as_str().unwrap().to_string();
+    let deadline = Instant::now() + PATIENCE;
+    let status = loop {
+        let status = client.call_tool("jobs_status", json!({ "job": job }));
+        if status["state"] != "running" || Instant::now() > deadline {
+            break status;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    assert_eq!(status["state"], "finished", "{status}");
+    assert!(status["result"]["headline"].is_string(), "the job's result is the overview");
+    assert!(client.call_tool("jobs_list", json!({}))["jobs"].as_array().unwrap().iter().any(|listed| listed["job"] == job.as_str()));
+
+    assert!(client.finish().success());
+    std::fs::remove_file(file).ok();
+}
+
 #[test]
 fn a_file_that_cannot_be_opened_stops_the_server_with_a_message() {
     let output = Command::new(env!("CARGO_BIN_EXE_theviewer")).args(["mcp", "--plugins", "/no/such/dir", "/no/such/file.bin"]).stdin(Stdio::null()).output().unwrap();

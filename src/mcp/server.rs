@@ -715,7 +715,7 @@ mod tests {
         );
         assert_eq!(response(&messages, 1)["result"]["resources"][0]["uri"], "theviewer://doc/doc-1");
         assert!(response(&messages, 1)["result"]["nextCursor"].is_string(), "the reference notes take more than a page");
-        assert_eq!(response(&messages, 2)["result"]["resourceTemplates"].as_array().unwrap().len(), 5);
+        assert_eq!(response(&messages, 2)["result"]["resourceTemplates"].as_array().unwrap().len(), 6);
         assert_eq!(response(&messages, 3)["result"]["contents"][0]["blob"], "aGVsbG8=");
         assert_eq!(response(&messages, 4)["result"]["prompts"].as_array().unwrap().len(), 3);
         assert!(response(&messages, 5)["result"]["messages"][0]["content"]["text"].as_str().unwrap().contains("analysis_overview"));

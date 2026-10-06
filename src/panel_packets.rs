@@ -484,6 +484,32 @@ pub fn open_in_packet_viewer(app: &mut ViewerApp, set: PacketSet) {
     app.dock.toggle(DockTab::Packets);
 }
 
+/// Show the packet set `id` made through the API in the panel, with the
+/// decoding it was given, when it is about the document shown.
+pub fn show_api_set(app: &mut ViewerApp, id: &str) {
+    let Some(stored) = app.packet_sets.get(id) else { return };
+    if stored.info.doc != app.document_id() {
+        return;
+    }
+    let (set, info, template) = (stored.packets.clone(), stored.info.clone(), stored.params.template.clone());
+    let state = &mut app.bench.panels.packets;
+    state.load(set);
+    state.frame_choice = match (info.decode_as, info.detect) {
+        (Some(protocol), _) => FrameChoice::Protocol(protocol),
+        (None, true) => FrameChoice::Detect,
+        (None, false) => FrameChoice::Raw,
+    };
+    state.raw.decode_as = info.decode_as;
+    if let Some(source) = template
+        && let Ok(parsed) = Template::parse(&source)
+    {
+        state.raw_label = format!("Template: {}", parsed.name());
+        state.raw.template = Some(parsed);
+        state.raw_template_source = Some(source);
+    }
+    state.raw_generation += 1;
+}
+
 /// Load the protocol analysis's messages, starting the analysis first if it
 /// has not been run.
 pub fn open_protocol_messages(app: &mut ViewerApp) {
@@ -2149,5 +2175,19 @@ mod tests {
         app.run_bus();
         let (fact, _) = app.bus.latest_from::<FieldsDecoded>(&app.document_id(), PACKETS_PRODUCER).unwrap();
         assert!(!app.bus.is_stale(fact), "said again for the edited bytes");
+    }
+
+    #[test]
+    fn a_packet_set_made_through_the_api_shows_in_the_packet_viewer_with_its_decoding() {
+        let mut app = ViewerApp::new(Launch::default());
+        app.open_bytes(modbus_stream(4), "modbus.bin".to_string());
+        let caller = crate::api::Caller::Mcp("test".into());
+        let created = crate::api::call(&mut app, &caller, "packets.sets.create", serde_json::json!({"from": "length_field", "length_field": {"offset": 4, "encoding": "u16", "big_endian": true, "counts": "after_field"}, "decode_as": "modbus_tcp"})).unwrap();
+        assert_eq!(created["count"], 4, "{created}");
+        let state = &app.bench.panels.packets;
+        assert_eq!(state.incoming.as_ref().map(|set| set.len()), Some(4), "loaded for the panel to dissect");
+        assert_eq!(state.frame_choice, FrameChoice::Protocol(FrameProtocol::ModbusTcp));
+        crate::api::call(&mut app, &caller, "packets.decode_as", serde_json::json!({"set": "set-1", "detect": false})).unwrap();
+        assert_eq!(app.bench.panels.packets.frame_choice, FrameChoice::Raw, "a new decoding shows too");
     }
 }

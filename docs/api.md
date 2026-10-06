@@ -2,7 +2,7 @@
 
 <!-- Generated from the method table in src/api.rs by `cargo run --bin api_docs`. Do not edit by hand. -->
 
-Every method can be called from the command line (`theviewer api METHOD '{json params}' FILE`), Lua plugins call them as `theviewer.api.<namespace>.<method>{…}`, Ask uses the methods that read or edit as its tools, and `theviewer mcp FILE…` offers every method to MCP clients such as Claude Code as a tool named with underscores for dots (`bytes_read`), with resources for each document (`theviewer://doc/{id}`, its `bytes/{start}-{end}`, `findings` and `facts`) and the reference notes (`theviewer://reference/{id}`). Documents are named by id (`doc-1`), by path or as `"current"`, which an omitted `doc` also means. Spans are `start` and `len` in bytes; an omitted `len` runs to the end of the document. Bytes are hex strings unless `encoding` says `base64` or `text`. List methods take `limit` and return `next`, a cursor to pass back for the next page. One call reads or returns at most 16 MiB.
+Every method can be called from the command line (`theviewer api METHOD '{json params}' FILE`), Lua plugins call them as `theviewer.api.<namespace>.<method>{…}`, Ask uses the methods that read or edit as its tools, and `theviewer mcp FILE…` offers every method to MCP clients such as Claude Code as a tool named with underscores for dots (`bytes_read`), with resources for each document (`theviewer://doc/{id}`, its `bytes/{start}-{end}`, `findings`, `facts` and `packets/{set}`) and the reference notes (`theviewer://reference/{id}`). Documents are named by id (`doc-1`), by path or as `"current"`, which an omitted `doc` also means. Spans are `start` and `len` in bytes; an omitted `len` runs to the end of the document. Bytes are hex strings unless `encoding` says `base64` or `text`. List methods take `limit` and return `next`, a cursor to pass back for the next page. One call reads or returns at most 16 MiB.
 
 Methods whose effect is `edit` change the document. Each call is one undo step, labelled with what it did and who called it ("XOR by mcp:claude-code"), and published on `document.edited` as the caller's. Any edit takes `expect_version`: when the document has changed since, the call fails with `version_conflict` and changes nothing. `history.transaction` runs several calls as one step and reverses them all when one fails. In the app, an edit or view change from a plugin, Ask or another client is checked against that client's setting under Settings › Permissions (always allow, always ask, never allow; a new client is asked about): when it asks, a window shows the change for the person to allow once, always allow or deny. On the command line and through `theviewer mcp` every call is allowed: the files are the ones the person named. Methods plugins register join the table at run time; `api.describe` lists them as experimental.
 
@@ -65,6 +65,14 @@ Errors are `{code, message, data}`, with these codes:
 | [`codecs.probe`](#codecsprobe) | read | Try every built-in decompressor at the start of a span, headerless ones included, and list those that decode. |
 | [`packets.dissect_bytes`](#packetsdissect_bytes) | read | Dissect one packet, from a span or from hex bytes, into protocol layers and fields, a summary and its flow. |
 | [`packets.detect_frames`](#packetsdetect_frames) | read | Find the protocol a set of frames of unknown format is, by trying every frame decoder on them. |
+| [`packets.sets.create`](#packetssetscreate) | read | Take a set of packets from a document: a capture in it, a range cut into fixed records, by a length field, at a pattern or with the protocol framing, or the selection's ranges, with how to decode frames of unknown format; returns the set's id and what was worked out (the capture found, the framing), so the call can be made again exactly. |
+| [`packets.sets.list`](#packetssetslist) | read | The packet sets made, with their ids, documents, sources, packet counts and decoding. |
+| [`packets.list`](#packetslist) | read | A set's packets the display filter keeps, a page at a time: each one's index, offset, length, summary columns, protocols and addresses. |
+| [`packets.dissect`](#packetsdissect) | read | Dissect one packet of a set into protocol layers and fields, as the set decodes frames of unknown format. |
+| [`packets.decode_as`](#packetsdecode_as) | read | Choose the protocol a set's frames of unknown format are decoded as, or detection, and a template for frames no protocol reads. |
+| [`packets.export_pcap`](#packetsexport_pcap) | read | A set's packets (those a filter keeps) as a pcap file, returned or written to a path given (which needs leave to edit). |
+| [`packets.conversations`](#packetsconversations) | read | The conversations in a set (the packets a filter keeps): each pair of endpoints with its transport, packets and bytes each way, and a filter for it. |
+| [`packets.follow_stream`](#packetsfollow_stream) | read | The payloads of a packet's conversation in order, each with its direction, and the stream as text. |
 | [`analysis.overview`](#analysisoverview) | read | Map the whole document: a summary of what it is, its regions with offsets, likely record widths and confident findings. |
 | [`analysis.overview_job`](#analysisoverview_job) | job | Start analysis.overview as a background job and return its id at once; the report arrives as job.finished's result and from jobs.status, for large files and clients that should not wait. |
 | [`analysis.statistics`](#analysisstatistics) | read | Measure a span: entropy, chi-square, serial correlation, printable, zero and high-byte fractions, distinct values and a verdict. |
@@ -767,6 +775,163 @@ Find the protocol a set of frames of unknown format is, by trying every frame de
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `detection` | FrameDetection | no | The protocol nearly every frame reads as in full, or nothing when none clearly does. |
+
+### packets.sets.create
+
+Take a set of packets from a document: a capture in it, a range cut into fixed records, by a length field, at a pattern or with the protocol framing, or the selection's ranges, with how to decode frames of unknown format; returns the set's id and what was worked out (the capture found, the framing), so the call can be made again exactly.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `decode_as` | `"ethernet"` \| `"raw_ip"` \| `"dns"` \| `"snmp"` \| `"ntp"` \| `"modbus_tcp"` \| `"mqtt"` \| `"tls"` \| `"dhcp"` \| `"tftp"` \| `"rtp"` \| `"rtcp"` \| `"http"` \| `"dns_over_tcp"` \| `"tpkt"` \| `"nbss"` | no | The protocol frames of unknown format are decoded as; detected from a sample of them when omitted (unless `detect` is false). |
+| `detect` | boolean | no | Whether to detect the protocol of frames of unknown format when `decode_as` is not given (true by default). |
+| `doc` | string | no | Document id, path or "current" (the default). |
+| `framing` | Framing | no | For `protocol_framing`: how the range is cut into messages; found by the protocol analysis when omitted. |
+| `from` | `"capture"` \| `"split_fixed"` \| `"length_field"` \| `"pattern"` \| `"selection"` \| `"protocol_framing"` | yes | Where the packets come from. |
+| `len` | integer | no | Bytes in the range; to the end of the document when omitted. |
+| `length_field` | LengthFieldSpec | no | For `length_field`: where each frame's length is and what it counts. |
+| `link` | `"ethernet"` \| `"raw_ip"` \| `"linux_sll"` \| `"linux_sll2"` \| `"bsd_loopback"` \| `"open_bsd_loopback"` \| `"ppp"` \| `"ppp_hdlc"` \| `"ieee80211"` \| `"radiotap"` \| `"unknown"` | no | What every packet's first byte is, such as "ethernet" or "raw_ip"; each packet's own (its capture's, or frames of unknown format) when omitted. |
+| `pattern` | string | no | For `pattern`: hex bytes with ?? for any byte (`AA 55 ?? 01`), or "text" in double quotes. |
+| `pattern_mode` | `"starts_packet"` \| `"ends_packet"` \| `"separates"` | no | For `pattern`: where the pattern goes (it starts each packet by default). |
+| `ranges` | array of pair | no | For `selection`: the ranges, each `[start, len]`; the document's selection when omitted. |
+| `record_len` | integer | no | For `split_fixed`: bytes per record. |
+| `start` | integer | no | Start of the range to split, or a capture's header (the first capture found when omitted); 0 by default. |
+| `template` | string | no | Binary template source applied to each frame no protocol reads. |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `capped` | boolean | yes | Whether the source had more packets than a set holds. |
+| `count` | integer | yes | Packets in the set. |
+| `decode_as` | `"ethernet"` \| `"raw_ip"` \| `"dns"` \| `"snmp"` \| `"ntp"` \| `"modbus_tcp"` \| `"mqtt"` \| `"tls"` \| `"dhcp"` \| `"tftp"` \| `"rtp"` \| `"rtcp"` \| `"http"` \| `"dns_over_tcp"` \| `"tpkt"` \| `"nbss"` | no | The protocol chosen for frames of unknown format. |
+| `description` | string | yes | How the packets were found. |
+| `detect` | boolean | yes |  |
+| `doc` | string | yes | The document its packets are in. |
+| `framing` | Framing | no | The framing that cut the messages, for `protocol_framing`. |
+| `from` | `"capture"` \| `"split_fixed"` \| `"length_field"` \| `"pattern"` \| `"selection"` \| `"protocol_framing"` | yes | Where a set's packets come from. |
+| `link` | `"ethernet"` \| `"raw_ip"` \| `"linux_sll"` \| `"linux_sll2"` \| `"bsd_loopback"` \| `"open_bsd_loopback"` \| `"ppp"` \| `"ppp_hdlc"` \| `"ieee80211"` \| `"radiotap"` \| `"unknown"` | no | The link every packet is read as, when one was chosen. |
+| `name` | string | yes | Such as "pcap capture at 0x40". |
+| `ranges` | array of pair | yes | Where the packets were taken from, as [start, len], once worked out (a capture found, the selection's ranges). |
+| `set` | string | yes | The set's id, such as "set-1", for the other packet methods. |
+| `template` | boolean | yes | Whether a template decodes frames no protocol reads. |
+
+### packets.sets.list
+
+The packet sets made, with their ids, documents, sources, packet counts and decoding.
+
+Parameters: None.
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `sets` | array of SetInfo | yes |  |
+
+### packets.list
+
+A set's packets the display filter keeps, a page at a time: each one's index, offset, length, summary columns, protocols and addresses.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `filter` | string | no | A display filter, as the Packets panel takes: protocol names, addresses, ports, `len > 60`, Wireshark field names and more. |
+| `limit` | integer | no | Most packets to return (100 by default). |
+| `next` | string | no | The `next` cursor of the previous page. |
+| `set` | string | yes |  |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `detected` | `"ethernet"` \| `"raw_ip"` \| `"dns"` \| `"snmp"` \| `"ntp"` \| `"modbus_tcp"` \| `"mqtt"` \| `"tls"` \| `"dhcp"` \| `"tftp"` \| `"rtp"` \| `"rtcp"` \| `"http"` \| `"dns_over_tcp"` \| `"tpkt"` \| `"nbss"` | no | The protocol frames of unknown format were detected as, if they were. |
+| `next` | string | no | Pass back as `next` for more; absent after the last. |
+| `packets` | array of PacketEntry | yes |  |
+| `set` | string | yes |  |
+| `total` | integer | yes | Packets the filter keeps. |
+
+### packets.dissect
+
+Dissect one packet of a set into protocol layers and fields, as the set decodes frames of unknown format.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `index` | integer | yes | The packet's index in the set. |
+| `set` | string | yes |  |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `dissection` | DissectionResult | yes | Everything learned from one packet. |
+| `index` | integer | yes |  |
+| `len` | integer | yes |  |
+| `offset` | integer | yes | Document offset of the packet's first byte; layer and field offsets count from it. |
+
+### packets.decode_as
+
+Choose the protocol a set's frames of unknown format are decoded as, or detection, and a template for frames no protocol reads.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `detect` | boolean | no | Whether to detect the protocol when none is given (true by default). |
+| `protocol` | `"ethernet"` \| `"raw_ip"` \| `"dns"` \| `"snmp"` \| `"ntp"` \| `"modbus_tcp"` \| `"mqtt"` \| `"tls"` \| `"dhcp"` \| `"tftp"` \| `"rtp"` \| `"rtcp"` \| `"http"` \| `"dns_over_tcp"` \| `"tpkt"` \| `"nbss"` | no | The protocol frames of unknown format are decoded as; omitted, they are detected (unless `detect` is false). |
+| `set` | string | yes |  |
+| `template` | string | no | Template source for frames no protocol reads; omitted, the set's template is dropped. |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `capped` | boolean | yes | Whether the source had more packets than a set holds. |
+| `count` | integer | yes | Packets in the set. |
+| `decode_as` | `"ethernet"` \| `"raw_ip"` \| `"dns"` \| `"snmp"` \| `"ntp"` \| `"modbus_tcp"` \| `"mqtt"` \| `"tls"` \| `"dhcp"` \| `"tftp"` \| `"rtp"` \| `"rtcp"` \| `"http"` \| `"dns_over_tcp"` \| `"tpkt"` \| `"nbss"` | no | The protocol chosen for frames of unknown format. |
+| `description` | string | yes | How the packets were found. |
+| `detect` | boolean | yes |  |
+| `doc` | string | yes | The document its packets are in. |
+| `framing` | Framing | no | The framing that cut the messages, for `protocol_framing`. |
+| `from` | `"capture"` \| `"split_fixed"` \| `"length_field"` \| `"pattern"` \| `"selection"` \| `"protocol_framing"` | yes | Where a set's packets come from. |
+| `link` | `"ethernet"` \| `"raw_ip"` \| `"linux_sll"` \| `"linux_sll2"` \| `"bsd_loopback"` \| `"open_bsd_loopback"` \| `"ppp"` \| `"ppp_hdlc"` \| `"ieee80211"` \| `"radiotap"` \| `"unknown"` | no | The link every packet is read as, when one was chosen. |
+| `name` | string | yes | Such as "pcap capture at 0x40". |
+| `ranges` | array of pair | yes | Where the packets were taken from, as [start, len], once worked out (a capture found, the selection's ranges). |
+| `set` | string | yes | The set's id, such as "set-1", for the other packet methods. |
+| `template` | boolean | yes | Whether a template decodes frames no protocol reads. |
+
+### packets.export_pcap
+
+A set's packets (those a filter keeps) as a pcap file, returned or written to a path given (which needs leave to edit).
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `encoding` | `"hex"` \| `"base64"` \| `"text"` | no | How the returned file is written: base64 (the default) or hex. |
+| `filter` | string | no | Only the packets this display filter keeps. |
+| `path` | string | no | Write the pcap file here instead of returning it; needs leave to edit, as writing a file does. |
+| `set` | string | yes |  |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `count` | integer | yes | Packets written. |
+| `data` | string | no | The file, when no path was given. |
+| `len` | integer | yes | Bytes in the pcap file. |
+| `path` | string | no | Where it was written, when a path was given. |
+
+### packets.conversations
+
+The conversations in a set (the packets a filter keeps): each pair of endpoints with its transport, packets and bytes each way, and a filter for it.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `filter` | string | no | Only the packets this display filter keeps. |
+| `set` | string | yes |  |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `conversations` | array of ConversationEntry | yes |  |
+
+### packets.follow_stream
+
+The payloads of a packet's conversation in order, each with its direction, and the stream as text.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `index` | integer | yes | The packet's index in the set. |
+| `set` | string | yes |  |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `conversation` | ConversationEntry | no | The conversation followed; absent when the packet has no addresses and ports, and so nothing to follow. |
+| `parts` | array of StreamPart | yes | The payloads in order, each with who sent it. |
+| `retransmissions` | integer | yes | TCP segments sent again and left out. |
+| `text` | string | yes | The whole stream as text, each direction's turns marked. |
+| `truncated` | boolean | yes | Whether the stream was longer than is kept. |
 
 ### analysis.overview
 

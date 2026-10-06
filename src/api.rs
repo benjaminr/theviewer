@@ -34,6 +34,7 @@ pub mod events;
 pub mod findings;
 pub mod jobs;
 pub mod numbers;
+pub mod packet_sets;
 pub mod packets;
 pub mod permissions;
 pub mod reference;
@@ -384,6 +385,14 @@ pub static METHODS: &[Method] = &[
     method!("codecs.probe", Read, codecs::probe, codecs::ProbeParams, codecs::ProbeResult, "Try every built-in decompressor at the start of a span, headerless ones included, and list those that decode."),
     method!("packets.dissect_bytes", Read, packets::dissect_bytes, packets::DissectParams, packets::DissectionResult, "Dissect one packet, from a span or from hex bytes, into protocol layers and fields, a summary and its flow."),
     method!("packets.detect_frames", Read, packets::detect_frames, packets::DetectFramesParams, packets::DetectFramesResult, "Find the protocol a set of frames of unknown format is, by trying every frame decoder on them."),
+    method!("packets.sets.create", Read, caller packet_sets::create, packet_sets::CreateParams, packet_sets::SetInfo, "Take a set of packets from a document: a capture in it, a range cut into fixed records, by a length field, at a pattern or with the protocol framing, or the selection's ranges, with how to decode frames of unknown format; returns the set's id and what was worked out (the capture found, the framing), so the call can be made again exactly."),
+    method!("packets.sets.list", Read, packet_sets::list_sets, values::NoParams, packet_sets::SetList, "The packet sets made, with their ids, documents, sources, packet counts and decoding."),
+    method!("packets.list", Read, packet_sets::list, packet_sets::ListParams, packet_sets::PacketList, "A set's packets the display filter keeps, a page at a time: each one's index, offset, length, summary columns, protocols and addresses."),
+    method!("packets.dissect", Read, packet_sets::dissect, packet_sets::PacketParams, packet_sets::PacketDissection, "Dissect one packet of a set into protocol layers and fields, as the set decodes frames of unknown format."),
+    method!("packets.decode_as", Read, caller packet_sets::decode_as, packet_sets::DecodeAsParams, packet_sets::SetInfo, "Choose the protocol a set's frames of unknown format are decoded as, or detection, and a template for frames no protocol reads."),
+    method!("packets.export_pcap", Read, caller packet_sets::export_pcap, packet_sets::ExportParams, packet_sets::ExportResult, "A set's packets (those a filter keeps) as a pcap file, returned or written to a path given (which needs leave to edit)."),
+    method!("packets.conversations", Read, packet_sets::conversations, packet_sets::ConversationsParams, packet_sets::ConversationList, "The conversations in a set (the packets a filter keeps): each pair of endpoints with its transport, packets and bytes each way, and a filter for it."),
+    method!("packets.follow_stream", Read, packet_sets::follow_stream, packet_sets::PacketParams, packet_sets::StreamResult, "The payloads of a packet's conversation in order, each with its direction, and the stream as text."),
     method!("analysis.overview", Read, analysis::overview, analysis::OverviewParams, crate::headless::FileReport, "Map the whole document: a summary of what it is, its regions with offsets, likely record widths and confident findings."),
     method!("analysis.overview_job", Job, caller analysis::overview_job, analysis::OverviewParams, jobs::JobStartedResult, "Start analysis.overview as a background job and return its id at once; the report arrives as job.finished's result and from jobs.status, for large files and clients that should not wait."),
     method!("analysis.statistics", Read, analysis::statistics, analysis::SpanParams, analysis::StatisticsResult, "Measure a span: entropy, chi-square, serial correlation, printable, zero and high-byte fractions, distinct values and a verdict."),
@@ -552,7 +561,7 @@ pub fn reference_markdown() -> String {
 Lua plugins call them as `theviewer.api.<namespace>.<method>{…}`, Ask uses the methods that read \
 or edit as its tools, and `theviewer mcp FILE…` offers every method to MCP clients such as Claude \
 Code as a tool named with underscores for dots (`bytes_read`), with resources for each document \
-(`theviewer://doc/{id}`, its `bytes/{start}-{end}`, `findings` and `facts`) and the reference notes \
+(`theviewer://doc/{id}`, its `bytes/{start}-{end}`, `findings`, `facts` and `packets/{set}`) and the reference notes \
 (`theviewer://reference/{id}`). Documents are named by id (`doc-1`), by path or as \
 `\"current\"`, which an omitted `doc` also means. Spans are `start` and `len` in bytes; an omitted \
 `len` runs to the end of the document. Bytes are hex strings unless `encoding` says `base64` or \
@@ -848,6 +857,14 @@ mod tests {
             ("codecs.probe", json!({"start": 0})),
             ("packets.dissect_bytes", json!({"start": 0, "len": 40, "link": "unknown"})),
             ("packets.detect_frames", json!({"frames": [{"start": 0, "len": 8}, {"start": 8, "len": 8}]})),
+            ("packets.sets.create", json!({"from": "split_fixed", "record_len": 8, "len": 64, "decode_as": "dns", "link": "unknown"})),
+            ("packets.sets.list", json!({})),
+            ("packets.list", json!({"set": "set-1", "filter": "len>4", "limit": 2})),
+            ("packets.dissect", json!({"set": "set-1", "index": 0})),
+            ("packets.decode_as", json!({"set": "set-1", "detect": false})),
+            ("packets.export_pcap", json!({"set": "set-1"})),
+            ("packets.conversations", json!({"set": "set-1"})),
+            ("packets.follow_stream", json!({"set": "set-1", "index": 0})),
             ("analysis.overview", json!({"max_findings": 5})),
             ("analysis.overview_job", json!({"max_findings": 1})),
             ("jobs.list", json!({})),

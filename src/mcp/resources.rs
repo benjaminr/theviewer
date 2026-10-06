@@ -8,6 +8,9 @@
 //! * `theviewer://doc/{id}/findings`: the findings published on the bus
 //!   (by plugins, clients and templates) and what the detectors recognise.
 //! * `theviewer://doc/{id}/facts`: every fact the bus keeps about it.
+//! * `theviewer://doc/{id}/packets/{set}`: the packets of a set made with
+//!   `packets.sets.create`, as `packets.list` gives them (the first
+//!   [`PACKETS_LISTED`]).
 //! * `theviewer://reference/{id}`: notes on a format or protocol (Markdown).
 //!
 //! `{id}` is a document's id, an open document's path, or `current`.
@@ -30,6 +33,8 @@ pub const SCHEME: &str = "theviewer://";
 pub const MAX_RESOURCE_BYTES: usize = 1024 * 1024;
 /// Most findings the detectors' part of a findings resource lists.
 const DETECTED_LIMIT: usize = 100;
+/// Most packets a packet set's resource lists.
+pub const PACKETS_LISTED: usize = 1000;
 
 const JSON: &str = "application/json";
 const MARKDOWN: &str = "text/markdown";
@@ -42,6 +47,8 @@ pub enum DocumentPart {
     Bytes { start: usize, end: usize, hex: bool },
     Findings,
     Facts,
+    /// The packets of the set with this id.
+    Packets { set: String },
 }
 
 /// A resource URI, understood.
@@ -65,8 +72,9 @@ pub fn parse_uri(uri: &str) -> Result<Resource, String> {
                 [] => DocumentPart::Info,
                 ["findings"] => DocumentPart::Findings,
                 ["facts"] => DocumentPart::Facts,
+                ["packets", set] if !set.is_empty() => DocumentPart::Packets { set: set.to_string() },
                 ["bytes", range] => parse_range(range, query)?,
-                _ => return Err(format!("'{uri}' is not one of a document's resources: its info, bytes/{{start}}-{{end}}, findings or facts")),
+                _ => return Err(format!("'{uri}' is not one of a document's resources: its info, bytes/{{start}}-{{end}}, findings, facts or packets/{{set}}")),
             };
             Ok(Resource::Document { doc: doc.to_string(), part })
         }
@@ -96,12 +104,13 @@ pub fn document_uri(id: &str, part: &DocumentPart) -> String {
         DocumentPart::Info => format!("{SCHEME}doc/{id}"),
         DocumentPart::Findings => format!("{SCHEME}doc/{id}/findings"),
         DocumentPart::Facts => format!("{SCHEME}doc/{id}/facts"),
+        DocumentPart::Packets { set } => format!("{SCHEME}doc/{id}/packets/{set}"),
         DocumentPart::Bytes { start, end, hex } => format!("{SCHEME}doc/{id}/bytes/{start}-{end}{}", if *hex { "?encoding=hex" } else { "" }),
     }
 }
 
-/// Every resource: each open document's info, findings and facts, then
-/// the reference notes.
+/// Every resource: each open document's info, findings, facts and packet
+/// sets, then the reference notes.
 pub fn list(workspace: &dyn Workspace) -> Vec<Value> {
     let mut resources = Vec::new();
     for document in workspace.documents() {
@@ -118,6 +127,13 @@ pub fn list(workspace: &dyn Workspace) -> Vec<Value> {
             "uri": document_uri(id, &DocumentPart::Facts), "name": format!("{id}/facts"), "title": format!("{name}: facts"),
             "description": format!("Every fact the workspace bus keeps about {name}, each marked stale once the document changed under it."), "mimeType": JSON,
         }));
+        for stored in workspace.packet_sets().list().filter(|stored| stored.info.doc == *id) {
+            let set = &stored.info.set;
+            resources.push(json!({
+                "uri": document_uri(id, &DocumentPart::Packets { set: set.clone() }), "name": format!("{id}/packets/{set}"), "title": format!("{name}: {}", stored.info.name),
+                "description": format!("The {} packets of {set} ({}), with their summaries and protocols.", stored.info.count, stored.info.description), "mimeType": JSON,
+            }));
+        }
     }
     for entry in reference::library().entries() {
         resources.push(json!({
@@ -135,6 +151,7 @@ pub fn templates() -> Vec<Value> {
         json!({ "uriTemplate": format!("{SCHEME}doc/{{id}}/bytes/{{start}}-{{end}}"), "name": "bytes", "title": "Document bytes", "description": format!("Bytes start up to (not including) end, at most {MAX_RESOURCE_BYTES}, as a blob; add ?encoding=hex for a hex dump. Offsets are decimal or 0x hex."), "mimeType": "application/octet-stream" }),
         json!({ "uriTemplate": format!("{SCHEME}doc/{{id}}/findings"), "name": "findings", "title": "Document findings", "description": "What the detectors recognise in a document, and the findings published about it on the bus.", "mimeType": JSON }),
         json!({ "uriTemplate": format!("{SCHEME}doc/{{id}}/facts"), "name": "facts", "title": "Document facts", "description": "Every fact the workspace bus keeps about a document.", "mimeType": JSON }),
+        json!({ "uriTemplate": format!("{SCHEME}doc/{{id}}/packets/{{set}}"), "name": "packets", "title": "Packet set", "description": format!("The packets of a set packets_sets_create made (the first {PACKETS_LISTED}), each with its offset, length, summary and protocols."), "mimeType": JSON }),
         json!({ "uriTemplate": format!("{SCHEME}reference/{{id}}"), "name": "reference", "title": "Reference notes", "description": "Notes on a format or protocol: layout, field meanings and specifications. reference_search finds ids.", "mimeType": MARKDOWN }),
     ]
 }
@@ -172,6 +189,15 @@ pub fn read(workspace: &mut dyn Workspace, caller: &Caller, uri: &str) -> Result
         }
         Resource::Document { doc, part: DocumentPart::Info } => Ok(json_contents(&call("documents.info", json!({ "doc": doc }))?)),
         Resource::Document { doc, part: DocumentPart::Facts } => Ok(json_contents(&call("events.facts", json!({ "doc": doc }))?)),
+        Resource::Document { doc, part: DocumentPart::Packets { set } } => {
+            let listed = call("packets.list", json!({ "set": set, "limit": PACKETS_LISTED }))?;
+            let id = call("documents.info", json!({ "doc": doc }))?["id"].clone();
+            let about = call("packets.sets.list", json!({}))?["sets"].as_array().into_iter().flatten().find(|info| info["set"] == set.as_str()).cloned().unwrap_or_default();
+            if about["doc"] != id {
+                return Err(ReadError::NotFound(format!("{set} is not a packet set of {doc}; packets_sets_list shows each set's document")));
+            }
+            Ok(json_contents(&json!({ "set": about, "packets": listed })))
+        }
         Resource::Document { doc, part: DocumentPart::Findings } => {
             let published = call("events.facts", json!({ "doc": doc, "topic": "findings.published" }))?;
             let detected = call("findings.query", json!({ "doc": doc, "limit": DETECTED_LIMIT }))?;
@@ -193,6 +219,9 @@ pub fn read(workspace: &mut dyn Workspace, caller: &Caller, uri: &str) -> Result
     }
 }
 
+/// How packet sets' ids start, which is the key their `frames.defined` has.
+const PACKET_SET_PREFIX: &str = "set-";
+
 /// Which documents' resources delivered messages changed, by document id.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct DocumentChanges {
@@ -202,6 +231,8 @@ pub struct DocumentChanges {
     findings: BTreeSet<String>,
     /// Some fact was published or withdrawn.
     facts: BTreeSet<String>,
+    /// Packet sets made or decoded anew, as (document, set).
+    packet_sets: BTreeSet<(String, String)>,
 }
 
 impl DocumentChanges {
@@ -216,6 +247,10 @@ impl DocumentChanges {
                 self.findings.insert(document.clone());
                 self.facts.insert(document);
             }
+            Payload::FramesDefined(_) if message.draft.key.starts_with(PACKET_SET_PREFIX) => {
+                self.packet_sets.insert((document.clone(), message.draft.key.clone()));
+                self.facts.insert(document);
+            }
             payload if payload.topic().kind() == Kind::Fact => {
                 self.facts.insert(document);
             }
@@ -224,7 +259,7 @@ impl DocumentChanges {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.edited.is_empty() && self.findings.is_empty() && self.facts.is_empty()
+        self.edited.is_empty() && self.findings.is_empty() && self.facts.is_empty() && self.packet_sets.is_empty()
     }
 
     /// Whether the resource at `uri` changed. Its document may be named by
@@ -236,6 +271,7 @@ impl DocumentChanges {
             || match part {
                 DocumentPart::Findings => self.findings.contains(&id),
                 DocumentPart::Facts => self.facts.contains(&id),
+                DocumentPart::Packets { set } => self.packet_sets.contains(&(id.clone(), set)),
                 DocumentPart::Info | DocumentPart::Bytes { .. } => false,
             }
     }
@@ -274,7 +310,7 @@ mod tests {
         assert_eq!(&uris[..3], ["theviewer://doc/doc-1", "theviewer://doc/doc-1/findings", "theviewer://doc/doc-1/facts"]);
         assert!(uris.contains(&"theviewer://reference/ipv4"));
         assert_eq!(resources[0]["title"], "sample.bin: info");
-        assert_eq!(templates().len(), 5);
+        assert_eq!(templates().len(), 6, "a packet set's too");
     }
 
     #[test]

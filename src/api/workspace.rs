@@ -14,6 +14,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use super::permissions::{self, Caller, Decision, HeldCall};
+use super::packet_sets::PacketSets;
 use super::{ApiError, Effect, RegisteredMethod};
 use crate::app::ViewerApp;
 use crate::bus::topics::{CursorMoved, DocumentEdited, DocumentOpened, FindingsPublished, SelectionChanged, TemplateApplied};
@@ -104,6 +105,12 @@ pub trait Workspace {
     fn registered_methods(&self) -> Vec<Arc<RegisteredMethod>> {
         Vec::new()
     }
+    /// The packet sets made through the API.
+    fn packet_sets(&self) -> &PacketSets;
+    fn packet_sets_mut(&mut self) -> &mut PacketSets;
+    /// Show packet set `id` where packets are shown, after it was made or
+    /// its decoding changed; a workspace with nowhere to show it does nothing.
+    fn show_packet_set(&mut self, _id: &str) {}
 }
 
 /// `document.edited` with the changes `document` made since `published`,
@@ -169,11 +176,12 @@ pub struct HeadlessWorkspace {
     /// The message whose plugin handler is running, which the edits and
     /// selections it makes are published as caused by.
     cause: Option<MessageId>,
+    packet_sets: PacketSets,
 }
 
 impl HeadlessWorkspace {
     pub fn new(registry: Arc<Registry>) -> Self {
-        HeadlessWorkspace { documents: Vec::new(), current: None, registry, opened: 0, bus: Bus::new(), methods: Vec::new(), cause: None }
+        HeadlessWorkspace { documents: Vec::new(), current: None, registry, opened: 0, bus: Bus::new(), methods: Vec::new(), cause: None, packet_sets: PacketSets::default() }
     }
 
     /// Offer the methods plugins registered.
@@ -340,6 +348,14 @@ impl Workspace for HeadlessWorkspace {
     fn registered_methods(&self) -> Vec<Arc<RegisteredMethod>> {
         self.methods.clone()
     }
+
+    fn packet_sets(&self) -> &PacketSets {
+        &self.packet_sets
+    }
+
+    fn packet_sets_mut(&mut self) -> &mut PacketSets {
+        &mut self.packet_sets
+    }
 }
 
 /// The window shows one document at a time; the documents it was derived
@@ -493,6 +509,20 @@ impl Workspace for ViewerApp {
 
     fn registered_methods(&self) -> Vec<Arc<RegisteredMethod>> {
         self.plugin_methods.clone()
+    }
+
+    fn packet_sets(&self) -> &PacketSets {
+        &self.packet_sets
+    }
+
+    fn packet_sets_mut(&mut self) -> &mut PacketSets {
+        &mut self.packet_sets
+    }
+
+    /// A set made through the API shows in the Packets panel, when it is
+    /// about the document shown.
+    fn show_packet_set(&mut self, id: &str) {
+        crate::panel_packets::show_api_set(self, id);
     }
 }
 

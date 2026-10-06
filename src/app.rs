@@ -386,6 +386,8 @@ pub struct ViewerApp {
     scroll_accumulator: f32,
     /// What tools, panels and plugins have published: facts and events.
     pub bus: crate::bus::Bus,
+    /// The packet sets made through the API.
+    pub packet_sets: crate::api::packet_sets::PacketSets,
     /// The file's regions as the report published them on `regions.mapped`,
     /// kept by a reaction for the views that colour or label by region.
     pub mapped_regions: Arc<Vec<crate::explain::Region>>,
@@ -652,6 +654,7 @@ impl ViewerApp {
             insert_dialog_open: false,
             scroll_accumulator: 0.0,
             bus: crate::bus::Bus::new(),
+            packet_sets: Default::default(),
             mapped_regions: Arc::default(),
             bus_watch: Default::default(),
             reactions: crate::bus::window::builtin_reactions(),
