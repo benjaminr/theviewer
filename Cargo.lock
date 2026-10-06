@@ -4394,6 +4394,7 @@ version = "0.2.0"
 dependencies = [
  "aho-corasick",
  "anyhow",
+ "base64",
  "bzip2",
  "capstone",
  "crc32fast",

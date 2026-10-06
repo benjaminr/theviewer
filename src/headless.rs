@@ -29,15 +29,22 @@ const MAX_FINDINGS: usize = 2000;
 /// Everything the headless report says about a file.
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct FileReport {
+    /// The file's path or name.
     pub file: String,
+    /// Length in bytes.
     pub size: usize,
     /// Bytes actually analysed (large files are read up to a limit).
     pub analysed: usize,
     pub entropy_bits_per_byte: f64,
+    /// One line on what the file is.
     pub headline: String,
+    /// What the report says about the file, each about a span of it.
     pub sentences: Vec<ReportSentence>,
+    /// The file's regions, from start to end.
     pub regions: Vec<ReportRegion>,
+    /// Likely record widths, best first.
     pub record_widths: Vec<RecordWidth>,
+    /// Confident findings in file order.
     pub findings: Vec<ReportFinding>,
 }
 

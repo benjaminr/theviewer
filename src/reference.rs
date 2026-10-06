@@ -395,6 +395,20 @@ impl Library {
         found
     }
 
+    /// The entries a name stands for: the one its id or a key names, else
+    /// those a port (`udp/67`) or a number (a port, IP protocol number or
+    /// EtherType) names. Empty when nothing matches.
+    pub fn matching(&self, name: &str) -> Vec<&FormatReference> {
+        match self.lookup(name) {
+            Some(entry) => vec![entry],
+            None => self.by_port_or_number(name),
+        }
+    }
+
+    fn by_port_or_number(&self, name: &str) -> Vec<&FormatReference> {
+        parse_port(name).map(|(transport, port)| self.by_port(transport, port)).or_else(|| self.by_number(name)).unwrap_or_default()
+    }
+
     /// An entry's notes as plain text for the assistant, looked up by id or
     /// any of its keys, or by a port (`udp/67`) or number (a port, IP protocol
     /// number or EtherType); when nothing matches, the ids that are known.
@@ -402,9 +416,8 @@ impl Library {
         if let Some(entry) = self.lookup(name) {
             return entry.to_plain_text();
         }
-        let by_number = parse_port(name).map(|(transport, port)| self.by_port(transport, port)).or_else(|| self.by_number(name));
-        match by_number {
-            Some(found) if !found.is_empty() => {
+        match self.by_port_or_number(name) {
+            found if !found.is_empty() => {
                 let mut text = format!("Notes on what '{}' usually carries:\n", name.trim());
                 for entry in found.iter().take(ASSISTANT_MATCHES_IN_FULL) {
                     text.push('\n');

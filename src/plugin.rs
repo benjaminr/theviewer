@@ -419,6 +419,16 @@ impl Registry {
             .collect()
     }
 
+    /// Parse `bytes` with the parser called `parser_id` alone. `None` when
+    /// there is no such parser or it does not recognise the bytes.
+    pub fn parse_with(&self, parser_id: &str, bytes: &[u8], base: usize) -> Option<Finding> {
+        let parser = self.parsers.iter().find(|parser| parser.id() == parser_id)?;
+        if !isolated(|| parser.looks_like(bytes)) {
+            return None;
+        }
+        isolated(|| parser.parse(bytes, base))
+    }
+
     /// Codecs whose header matches the start of `bytes`.
     pub fn codecs_detecting(&self, bytes: &[u8]) -> Vec<&Arc<dyn CodecPlugin>> {
         self.codecs.iter().filter(|codec| isolated(|| codec.detect(bytes))).collect()

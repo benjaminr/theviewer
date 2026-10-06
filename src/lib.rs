@@ -6,6 +6,7 @@ pub mod analysis;
 pub mod analysis_stats;
 pub mod analysis_tabs;
 pub mod analysis_tools;
+pub mod api;
 pub mod app;
 pub mod assistant;
 pub mod base_address;
