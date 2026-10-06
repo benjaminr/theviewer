@@ -218,8 +218,9 @@ pub fn rfc_html_url(number: u32, section: Option<&str>) -> String {
 ///
 /// Section headings in RFC text start at the first column with the number,
 /// a full stop and the title: `3.1.  Internet Header Format`. Older RFCs
-/// leave out the trailing full stop on subsections (`3.1  Title`), so both
-/// forms are accepted.
+/// leave out the trailing full stop on subsections (`3.1  Title`) or indent
+/// subsections by up to three spaces (`   2.2. Data format`), so those forms
+/// are accepted too.
 pub fn rfc_section(text: &str, section: &str) -> Option<String> {
     let lines: Vec<&str> = text.lines().filter(|line| !is_page_furniture(line)).collect();
     let start = lines.iter().position(|line| heading_number(line).is_some_and(|number| number == section))?;
@@ -231,22 +232,41 @@ pub fn rfc_section(text: &str, section: &str) -> Option<String> {
     Some(body.trim_end().to_string())
 }
 
+/// Deepest indent of a subsection heading in older RFCs.
+const MAX_HEADING_INDENT: usize = 3;
+
 /// The section number a heading line starts with, such as "3.1".
 fn heading_number(line: &str) -> Option<&str> {
-    let first = line.chars().next()?;
-    if !first.is_ascii_digit() {
+    let unindented = line.trim_start_matches(' ');
+    let indent = line.len() - unindented.len();
+    if !unindented.starts_with(|c: char| c.is_ascii_digit()) || indent > MAX_HEADING_INDENT || is_contents_line(line) {
         return None;
     }
-    let number_end = line.find(|c: char| !(c.is_ascii_digit() || c == '.')).unwrap_or(line.len());
-    let number = line[..number_end].trim_end_matches('.');
-    let rest = &line[number_end..];
-    // A heading has its title after at least one space; a line such as
-    // "1234 bytes" in a figure would otherwise count, so require a title
-    // that starts with a capital letter.
+    let number_end = unindented.find(|c: char| !(c.is_ascii_digit() || c == '.')).unwrap_or(unindented.len());
+    let written = &unindented[..number_end];
+    let number = written.trim_end_matches('.');
+    if number.is_empty() || !number.split('.').all(|part| !part.is_empty()) {
+        return None;
+    }
+    // Indented numbers are headings only for subsections ("2.2"): indented
+    // "1." starts an item of a numbered list in body text.
+    if indent > 0 && !number.contains('.') {
+        return None;
+    }
+    // A heading has its title after at least one space. Figures hold lines
+    // such as "1234 bytes", so a title in lower case (RFC 5280's
+    // "4.1.1.2.  signatureAlgorithm") counts only after a number ending in
+    // a full stop.
+    let rest = &unindented[number_end..];
     let title = rest.trim_start();
-    let spaced = rest.starts_with(' ');
-    let titled = title.chars().next().is_some_and(|c| c.is_ascii_uppercase());
-    (spaced && titled && !number.is_empty() && number.split('.').all(|part| !part.is_empty())).then_some(number)
+    let first = title.chars().next()?;
+    let titled = first.is_ascii_uppercase() || first.is_ascii_lowercase() && written.ends_with('.');
+    (rest.starts_with(' ') && titled).then_some(number)
+}
+
+/// A table of contents line: a title, a row of dots and a page number.
+fn is_contents_line(line: &str) -> bool {
+    line.contains("....") || line.contains(". . .")
 }
 
 /// Whether `number` is `section` or one of its subsections.
@@ -380,6 +400,40 @@ RFC 791                                                   September 1981
         assert!(!section.contains("September 1981"));
         assert!(!section.contains("Discussion"));
         assert!(rfc_section(RFC_TEXT, "9.9").is_none());
+    }
+
+    const OLDER_RFC_TEXT: &str = "\
+   2.1. Overview ................................................ 3
+   2.2. Data format ............................................. 4
+
+2. Detailed specification
+
+   2.1. Overview
+
+      A zlib stream has the following structure:
+
+       1.  First, a list item.
+
+   2.2. Data format
+
+      CMF and FLG.
+
+4.1.1.2.  signatureAlgorithm
+
+   The algorithm.
+
+4.1.1.3.  signatureValue
+";
+
+    #[test]
+    fn older_rfcs_with_indented_or_lower_case_headings_are_cut_too() {
+        let overview = rfc_section(OLDER_RFC_TEXT, "2.1").unwrap();
+        assert!(overview.starts_with("   2.1. Overview\n"), "{overview}");
+        assert!(overview.contains("First, a list item."));
+        assert!(!overview.contains("CMF"));
+        let algorithm = rfc_section(OLDER_RFC_TEXT, "4.1.1.2").unwrap();
+        assert!(algorithm.contains("The algorithm."));
+        assert!(!algorithm.contains("signatureValue"));
     }
 
     #[test]

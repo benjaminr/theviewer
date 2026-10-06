@@ -1664,7 +1664,7 @@ document = "RFC 1950"
 title = "ZLIB Compressed Data Format Specification version 3.3"
 url = "https://www.rfc-editor.org/rfc/rfc1950"
 rfc = 1950
-section = "2"
+section = "2.2"
 
 [[format]]
 id = "deflate"
@@ -1685,7 +1685,7 @@ document = "RFC 1951"
 title = "DEFLATE Compressed Data Format Specification version 1.3"
 url = "https://www.rfc-editor.org/rfc/rfc1951"
 rfc = 1951
-section = "3"
+section = "3.2"
 
 [[format]]
 id = "gzip"
@@ -1706,7 +1706,7 @@ document = "RFC 1952"
 title = "GZIP file format specification version 4.3"
 url = "https://www.rfc-editor.org/rfc/rfc1952"
 rfc = 1952
-section = "2"
+section = "2.3"
 
 [[format]]
 id = "bzip2"
