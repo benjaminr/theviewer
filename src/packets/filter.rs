@@ -5,6 +5,7 @@
 //! | Term | Matches packets that |
 //! | --- | --- |
 //! | `tcp`, `dns`, `arp`… | contain that protocol |
+//! | `proto:dhcp` | contain that protocol, by our name or tshark's filter name |
 //! | `port:53` | use port 53 at either end |
 //! | `ip:10.0.0.2` | come from or go to that address |
 //! | `len>100` (also `<`, `>=`, `<=`, `=`) | have that many bytes |
@@ -47,6 +48,8 @@ impl Comparison {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Term {
     Protocol(String),
+    /// Any protocol name, ours or one tshark decoded.
+    AnyProtocol(String),
     Port(u16),
     Address(IpAddr),
     Length(Comparison, usize),
@@ -81,6 +84,8 @@ pub struct Filter {
 #[derive(Clone, Copy, Debug)]
 pub struct FilterSubject<'a> {
     pub protocols: &'a [&'static str],
+    /// Protocols tshark named, when the packet was decoded with it.
+    pub tshark_protocols: &'a [String],
     pub flow: Option<&'a Flow>,
     pub summary: &'a Summary,
     /// The packet's bytes as read (possibly fewer than `len`).
@@ -102,6 +107,7 @@ impl Filter {
 fn term_matches(term: &Term, subject: &FilterSubject<'_>) -> bool {
     match term {
         Term::Protocol(name) => subject.protocols.iter().any(|protocol| protocol == name),
+        Term::AnyProtocol(name) => subject.protocols.iter().any(|protocol| protocol == name) || subject.tshark_protocols.iter().any(|protocol| protocol.eq_ignore_ascii_case(name)),
         Term::Port(port) => subject.flow.is_some_and(|flow| flow.source.port == Some(*port) || flow.destination.port == Some(*port)),
         Term::Address(address) => {
             let in_flow = subject.flow.is_some_and(|flow| flow.source.address == *address || flow.destination.address == *address);
@@ -140,7 +146,9 @@ fn parse_term(term: &str) -> Result<Term, FilterError> {
             "port" => value.parse::<u16>().map(Term::Port).map_err(|_| error(term, "a port is a number from 0 to 65535, such as port:53")),
             "ip" => value.parse::<IpAddr>().map(Term::Address).map_err(|_| error(term, "give an IPv4 or IPv6 address, such as ip:10.0.0.2")),
             "hex" => super::parse_hex(value).map(Term::Bytes).map_err(|reason| error(term, reason)),
-            other => Err(error(term, format!("'{other}:' is not a filter; use port:, ip:, hex: or len>"))),
+            "proto" if !value.is_empty() => Ok(Term::AnyProtocol(value.to_lowercase())),
+            "proto" => Err(error(term, "name a protocol, such as proto:dhcp")),
+            other => Err(error(term, format!("'{other}:' is not a filter; use port:, ip:, proto:, hex: or len>"))),
         };
     }
     if PROTOCOL_NAMES.contains(&lower.as_str()) {
@@ -168,6 +176,7 @@ mod tests {
 
     struct Example {
         protocols: Vec<&'static str>,
+        tshark_protocols: Vec<String>,
         flow: Option<Flow>,
         summary: Summary,
         bytes: Vec<u8>,
@@ -175,13 +184,21 @@ mod tests {
 
     impl Example {
         fn subject(&self) -> FilterSubject<'_> {
-            FilterSubject { protocols: &self.protocols, flow: self.flow.as_ref(), summary: &self.summary, bytes: &self.bytes, len: self.bytes.len() }
+            FilterSubject {
+                protocols: &self.protocols,
+                tshark_protocols: &self.tshark_protocols,
+                flow: self.flow.as_ref(),
+                summary: &self.summary,
+                bytes: &self.bytes,
+                len: self.bytes.len(),
+            }
         }
     }
 
     fn dns_packet() -> Example {
         Example {
             protocols: vec!["eth", "ip", "ipv4", "udp", "dns"],
+            tshark_protocols: Vec::new(),
             flow: Some(Flow {
                 transport: Transport::Udp,
                 source: Endpoint { address: "10.0.0.2".parse().unwrap(), port: Some(40000) },
@@ -230,8 +247,18 @@ mod tests {
     }
 
     #[test]
+    fn proto_matches_our_protocols_and_the_ones_tshark_decoded() {
+        let mut packet = dns_packet();
+        assert!(matches("proto:udp", &packet));
+        assert!(!matches("proto:dhcp", &packet));
+        packet.tshark_protocols = vec!["eth".to_string(), "ip".to_string(), "udp".to_string(), "dhcp".to_string()];
+        assert!(matches("proto:DHCP", &packet));
+        assert!(!matches("proto:snmp", &packet));
+    }
+
+    #[test]
     fn mistakes_are_explained_with_the_term_at_fault() {
-        let cases = [("port:http", "port"), ("ip:10.0.0", "address"), ("hex:ABC", "odd"), ("len>lots", "whole number"), ("len!5", "compare"), ("size:5", "not a filter")];
+        let cases = [("proto:", "name a protocol"), ("port:http", "port"), ("ip:10.0.0", "address"), ("hex:ABC", "odd"), ("len>lots", "whole number"), ("len!5", "compare"), ("size:5", "not a filter")];
         for (filter, expected) in cases {
             let error = parse_filter(&format!("udp {filter}")).expect_err(filter);
             assert_eq!(error.term, filter);

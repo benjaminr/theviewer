@@ -13,7 +13,9 @@
 //! Each packet can be dissected into layers ([`dissect`]), summarised into
 //! conversations and endpoints and followed as a stream ([`flows`]), matched
 //! against a small filter language ([`filter`]), and written back out as a
-//! classic pcap file ([`export`]).
+//! classic pcap file ([`export`]). When Wireshark's tshark is installed and
+//! the user asks for it, packets can also be decoded by it ([`tshark`]) and
+//! its layers merged into ours ([`tshark_layers`]).
 //!
 //! Everything here is pure and bounded: no input makes it panic, and every
 //! loop has a cap.
@@ -27,9 +29,11 @@ pub mod flows;
 pub mod grid;
 pub mod sources;
 pub mod split;
+pub mod tshark;
+pub mod tshark_layers;
 
 pub use dissect::{Dissection, Layer, RawFrames, Summary, dissect, dissect_with};
-pub use export::{ExportError, ExportPacket, write_pcap};
+pub use export::{ExportError, ExportPacket, write_pcap, write_pcap_as};
 pub use filter::{Filter, FilterError, FilterSubject, parse_filter};
 pub use flows::{Conversation, ConversationKey, Endpoint, EndpointStats, Flow, Stream, Transport, conversations, endpoints, follow_stream};
 pub use sources::{CaptureLocation, SourceError};
@@ -99,6 +103,10 @@ pub struct Packet {
     /// Seconds since the Unix epoch (or since the capture started), if known.
     pub timestamp: Option<f64>,
     pub link: LinkKind,
+    /// The tcpdump.org LINKTYPE number of the packet's first byte: its
+    /// capture's own (which may be one the viewer reads as frames of unknown
+    /// format, such as 802.11), else the number for `link`.
+    pub link_type: u32,
     /// Where the packet came from, such as "pcap record 12" or "message 5".
     pub origin: String,
     /// The whole container record holding the packet (a pcap record header
@@ -109,7 +117,13 @@ pub struct Packet {
 
 impl Packet {
     pub fn new(offset: usize, len: usize, link: LinkKind, origin: impl Into<String>) -> Self {
-        Packet { offset, len, timestamp: None, link, origin: origin.into(), record: None }
+        Packet { offset, len, timestamp: None, link, link_type: link.pcap_link_type(), origin: origin.into(), record: None }
+    }
+
+    /// The packet as its capture labelled it, by LINKTYPE number.
+    pub fn with_link_type(mut self, link_type: u32) -> Self {
+        self.link_type = link_type;
+        self
     }
 
     pub fn with_record(mut self, offset: usize, len: usize) -> Self {

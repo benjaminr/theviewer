@@ -66,6 +66,17 @@ pub fn write_pcap(packets: &[ExportPacket<'_>]) -> Result<Vec<u8>, ExportError> 
     if kinds.len() > 1 {
         return Err(ExportError::MixedLinkTypes { kinds });
     }
+    write_pcap_as(packets, first.link.pcap_link_type())
+}
+
+/// The packets as a classic pcap file whose header names `link_type` (a
+/// tcpdump.org LINKTYPE number), whatever each packet's own kind. For
+/// packets that kept their capture's link type, such as 802.11 frames,
+/// which the viewer itself treats as frames of unknown format.
+pub fn write_pcap_as(packets: &[ExportPacket<'_>], link_type: u32) -> Result<Vec<u8>, ExportError> {
+    if packets.is_empty() {
+        return Err(ExportError::NoPackets);
+    }
     let total: usize = packets.iter().map(|p| p.bytes.len() + 16).sum();
     let mut file = Vec::with_capacity(24 + total);
     file.extend_from_slice(&PCAP_MAGIC_MICROSECONDS.to_le_bytes());
@@ -74,7 +85,7 @@ pub fn write_pcap(packets: &[ExportPacket<'_>]) -> Result<Vec<u8>, ExportError> 
     file.extend_from_slice(&0i32.to_le_bytes());
     file.extend_from_slice(&0u32.to_le_bytes());
     file.extend_from_slice(&PCAP_SNAPLEN.to_le_bytes());
-    file.extend_from_slice(&first.link.pcap_link_type().to_le_bytes());
+    file.extend_from_slice(&link_type.to_le_bytes());
     let mut previous: Option<f64> = None;
     for (index, packet) in packets.iter().enumerate() {
         let captured = u32::try_from(packet.bytes.len()).map_err(|_| ExportError::PacketTooLarge { index, len: packet.bytes.len() })?;
@@ -151,6 +162,16 @@ mod tests {
         let error = write_pcap(&mixed).unwrap_err();
         assert!(error.to_string().contains("Ethernet and Raw IP"), "{error}");
         assert_eq!(write_pcap(&[]), Err(ExportError::NoPackets));
+    }
+
+    #[test]
+    fn a_capture_can_be_written_with_its_own_link_type_number() {
+        const LINKTYPE_IEEE802_11: u32 = 105;
+        let packets = [ExportPacket { bytes: b"beacon", original_len: 6, timestamp: Some(1.0), link: LinkKind::Unknown }];
+        let file = write_pcap_as(&packets, LINKTYPE_IEEE802_11).unwrap();
+        assert_eq!(u32::from_le_bytes(file[20..24].try_into().unwrap()), LINKTYPE_IEEE802_11);
+        assert_eq!(&file[file.len() - 6..], b"beacon");
+        assert_eq!(write_pcap_as(&[], LINKTYPE_IEEE802_11), Err(ExportError::NoPackets));
     }
 
     #[test]

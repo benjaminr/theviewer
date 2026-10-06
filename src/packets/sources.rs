@@ -408,6 +408,7 @@ fn read_pcap(bytes: &[u8], base: usize) -> Result<(PacketSet, usize), SourceErro
         let timestamp = record.seconds as f64 + record.fraction as f64 / fraction_units;
         let packet = Packet::new(base + at + PCAP_RECORD_HEADER_LEN, record.caplen.min(record.available), link, format!("pcap record {}", set.len() + 1))
             .with_timestamp(Some(timestamp))
+            .with_link_type(link_type)
             .with_record(base + at, (PCAP_RECORD_HEADER_LEN + record.caplen).min(bytes.len() - at));
         if !set.push(packet) {
             break;
@@ -421,6 +422,7 @@ fn read_pcap(bytes: &[u8], base: usize) -> Result<(PacketSet, usize), SourceErro
 #[derive(Clone, Copy, Debug)]
 struct Interface {
     link: LinkKind,
+    link_type: u32,
     units_per_second: u64,
     offset_seconds: i64,
 }
@@ -438,6 +440,7 @@ fn block_facts(block: &Block<'_>) -> BlockFacts {
         Block::SectionHeader(_) => BlockFacts::Section,
         Block::InterfaceDescription(interface) => BlockFacts::Interface(Interface {
             link: LinkKind::from_pcap_link_type(interface.linktype.0 as u32),
+            link_type: interface.linktype.0 as u32,
             units_per_second: interface.ts_resolution().filter(|units| *units > 0).unwrap_or(DEFAULT_PCAPNG_UNITS_PER_SECOND),
             offset_seconds: interface.if_tsoffset,
         }),
@@ -481,12 +484,14 @@ fn read_pcapng(bytes: &[u8], base: usize) -> (PacketSet, usize) {
             BlockFacts::Packet { interface, ticks, data_offset, len } => {
                 let described = interfaces.get(interface).copied();
                 let link = described.map_or(LinkKind::Ethernet, |i| i.link);
+                let link_type = described.map_or(super::LINKTYPE_ETHERNET, |i| i.link_type);
                 let timestamp = ticks.map(|ticks| match described {
                     Some(i) => ticks as f64 / i.units_per_second as f64 + i.offset_seconds as f64,
                     None => ticks as f64 / DEFAULT_PCAPNG_UNITS_PER_SECOND as f64,
                 });
                 let packet = Packet::new(base + at + data_offset, len, link, format!("pcapng packet {}", set.len() + 1))
                     .with_timestamp(timestamp)
+                    .with_link_type(link_type)
                     .with_record(base + at, consumed);
                 if !set.push(packet) {
                     break;

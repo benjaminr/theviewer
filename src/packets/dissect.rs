@@ -88,11 +88,46 @@ pub struct Dissection {
     pub link: LinkKind,
     /// Problems met, such as truncation or a bad checksum.
     pub notes: Vec<String>,
+    /// Indices of the layers decoded by tshark rather than by us
+    /// ([`super::tshark_layers::merge`]).
+    pub tshark_layers: Vec<usize>,
+    /// Wireshark's filter names for those layers and their fields, in the
+    /// same order as `tshark_layers`.
+    pub tshark_names: Vec<WiresharkNames>,
+    /// Every protocol tshark named in the packet, by filter name.
+    pub tshark_protocols: Vec<String>,
 }
 
 impl Dissection {
     pub fn has_protocol(&self, name: &str) -> bool {
         self.protocols.iter().any(|protocol| protocol.eq_ignore_ascii_case(name))
+    }
+
+    /// Whether layer `index` was decoded by tshark.
+    pub fn is_from_tshark(&self, index: usize) -> bool {
+        self.tshark_layers.contains(&index)
+    }
+
+    /// Wireshark's filter names for layer `index`, when tshark decoded it.
+    pub fn wireshark_names(&self, index: usize) -> Option<&WiresharkNames> {
+        self.tshark_layers.iter().position(|&layer| layer == index).and_then(|at| self.tshark_names.get(at))
+    }
+}
+
+/// Wireshark's display-filter names for a layer tshark decoded: the
+/// protocol's (such as `dhcp`) and each field's (such as `dhcp.id`).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct WiresharkNames {
+    pub protocol: String,
+    /// `(path, filter name)`: the path gives the field's index in the
+    /// layer's fields, then in that field's children, and so on.
+    pub fields: Vec<(Vec<usize>, String)>,
+}
+
+impl WiresharkNames {
+    /// The filter name of the field at `path`.
+    pub fn field(&self, path: &[usize]) -> Option<&str> {
+        self.fields.iter().find(|(at, _)| at == path).map(|(_, name)| name.as_str())
     }
 }
 

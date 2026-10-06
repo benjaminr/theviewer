@@ -125,6 +125,21 @@ pub struct PacketRow {
     pub flow: Option<Flow>,
     /// The transport payload, as `(offset, len)` within the packet.
     pub payload: Option<(usize, usize)>,
+    /// Protocols tshark named, once the packet has been decoded with it.
+    pub tshark_protocols: Vec<String>,
+}
+
+impl From<Dissection> for PacketRow {
+    fn from(dissection: Dissection) -> Self {
+        PacketRow {
+            link: dissection.link,
+            summary: dissection.summary,
+            protocols: dissection.protocols,
+            flow: dissection.flow,
+            payload: dissection.payload,
+            tshark_protocols: dissection.tshark_protocols,
+        }
+    }
 }
 
 /// Every packet's bytes, read once for the list, filters and streams.
@@ -583,7 +598,7 @@ fn start_dissection(state: &mut PacketsState, app: &mut ViewerApp, set: PacketSe
             .enumerate()
             .map(|(index, &link)| {
                 let dissection = packets::dissect_with(bytes.packet(index), link, &raw);
-                PacketRow { link: dissection.link, summary: dissection.summary, protocols: dissection.protocols, flow: dissection.flow, payload: dissection.payload }
+                PacketRow::from(dissection)
             })
             .collect();
         let _ = sender.send(DissectionJob { set, bytes: Arc::new(bytes), rows, snapshot });
@@ -835,6 +850,7 @@ pub(crate) fn refresh_filter(state: &mut PacketsState) {
                     let row = &state.rows[index];
                     let subject = packets::FilterSubject {
                         protocols: &row.protocols,
+                        tshark_protocols: &row.tshark_protocols,
                         flow: row.flow.as_ref(),
                         summary: &row.summary,
                         bytes: state.bytes.packet(index),
