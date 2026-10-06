@@ -11,6 +11,31 @@ use crate::packets::flows::Flow;
 use crate::packets::frames::{self, FrameProtocol};
 use crate::packets::{self, Layer, LinkKind, RawFrames, Summary};
 
+/// This module's methods, in the order `api.describe` lists them within
+/// their namespace. A new method is added here, and only here.
+pub(super) const METHODS: &[super::Method] = &[
+    method!("packets.dissect_bytes", Read, dissect_bytes, DissectParams, DissectionResult, "Dissect one packet, from a span or from hex bytes, into protocol layers and fields, a summary and its flow."),
+    method!("packets.detect_frames", Read, detect_frames, DetectFramesParams, DetectFramesResult, "Find the protocol a set of frames of unknown format is, by trying every frame decoder on them."),
+];
+
+/// An example call of each of [`METHODS`], run in order on a fresh
+/// document by the API's tests, whose results must fit the result schema.
+#[cfg(test)]
+pub(super) fn examples() -> Vec<(&'static str, serde_json::Value)> {
+    use serde_json::json;
+    vec![
+        ("packets.dissect_bytes", json!({"start": 0, "len": 40, "link": "unknown"})),
+        ("packets.detect_frames", json!({"frames": [{"start": 0, "len": 8}, {"start": 8, "len": 8}]})),
+    ]
+}
+
+/// What a call to one of this module's methods would do, in plain words,
+/// for the window that asks the person to confirm it; `None` leaves it to
+/// the general "Call method with params".
+pub(super) fn describe_call(_workspace: &mut dyn Workspace, _method: &str, _params: &serde_json::Value) -> Option<String> {
+    None
+}
+
 /// Parameters of `packets.dissect_bytes`. Give the packet as a span of the
 /// document (`start`, `len`) or as `bytes`.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]

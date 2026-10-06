@@ -8,6 +8,33 @@ use super::workspace::{self, Workspace};
 use super::ApiError;
 use crate::bits::{BitOrder, BitStream};
 
+/// This module's methods, in the order `api.describe` lists them within
+/// their namespace. A new method is added here, and only here.
+pub(super) const METHODS: &[super::Method] = &[
+    method!("bytes.read", Read, read, ReadParams, ReadResult, "Read a span of bytes, as hex by default, or as base64 or text."),
+    method!("bytes.hexdump", Read, hexdump, HexdumpParams, HexdumpResult, "A classic hex dump of a span, 16 bytes per line with an ASCII column, at most 1 MiB."),
+    method!("bits.read", Read, read_bits, BitsParams, BitsResult, "Read a span of bits, most or least significant bit of each byte first, as a string of 0s and 1s and, up to 64 bits, as a number."),
+];
+
+/// An example call of each of [`METHODS`], run in order on a fresh
+/// document by the API's tests, whose results must fit the result schema.
+#[cfg(test)]
+pub(super) fn examples() -> Vec<(&'static str, serde_json::Value)> {
+    use serde_json::json;
+    vec![
+        ("bytes.read", json!({"doc": "doc-1", "start": 0, "len": 8, "encoding": "base64"})),
+        ("bytes.hexdump", json!({"start": 0, "len": 32})),
+        ("bits.read", json!({"bit_start": 3, "bit_len": 12, "order": "lsb"})),
+    ]
+}
+
+/// What a call to one of this module's methods would do, in plain words,
+/// for the window that asks the person to confirm it; `None` leaves it to
+/// the general "Call method with params".
+pub(super) fn describe_call(_workspace: &mut dyn Workspace, _method: &str, _params: &serde_json::Value) -> Option<String> {
+    None
+}
+
 /// Most bytes one hex dump shows: 1 MiB, about 5 MB of text.
 const MAX_HEXDUMP_BYTES: usize = 1024 * 1024;
 /// Most bits one `bits.read` returns as a string of 0s and 1s.

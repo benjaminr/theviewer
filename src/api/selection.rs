@@ -10,6 +10,49 @@ use super::workspace::{self, Workspace};
 use super::ApiError;
 use crate::selection::{self, Selection};
 
+/// This module's methods, in the order `api.describe` lists them within
+/// their namespace. A new method is added here, and only here.
+pub(super) const METHODS: &[super::Method] = &[
+    method!("selection.get", Read, get_selection, DocParams, SelectionResult, "What is selected in a document: one range, several ranges or a column of every record."),
+    method!("cursor.get", Read, get_cursor, DocParams, CursorResult, "The cursor's offset in a document."),
+    method!("selection.set", View, caller set_selection, SetSelectionParams, SelectionResult, "Select one range, several ranges or a column of every record in a document, or nothing."),
+    method!("cursor.set", View, caller set_cursor, SetCursorParams, CursorResult, "Move the cursor to an offset, selecting nothing."),
+];
+
+/// An example call of each of [`METHODS`], run in order on a fresh
+/// document by the API's tests, whose results must fit the result schema.
+#[cfg(test)]
+pub(super) fn examples() -> Vec<(&'static str, serde_json::Value)> {
+    use serde_json::json;
+    vec![
+        ("selection.get", json!({})),
+        ("cursor.get", json!({})),
+        ("selection.set", json!({"selection": {"range": [1, 3]}})),
+        ("cursor.set", json!({"offset": 5})),
+    ]
+}
+
+/// What a call to one of this module's methods would do, in plain words,
+/// for the window that asks the person to confirm it; `None` leaves it to
+/// the general "Call method with params".
+pub(super) fn describe_call(_workspace: &mut dyn Workspace, method: &str, params: &serde_json::Value) -> Option<String> {
+    let description = match method {
+        "selection.set" => {
+            let selection: Option<Selection> = params.get("selection").cloned().and_then(|value| serde_json::from_value(value).ok()).flatten();
+            match selection {
+                Some(selected) => {
+                    let ranges = selected.ranges(usize::MAX);
+                    format!("Select {}", super::edits::target_phrase(&ranges, false))
+                }
+                None => "Select nothing".to_string(),
+            }
+        }
+        "cursor.set" => format!("Move the cursor to {:#x}", params.get("offset")?.as_u64()?),
+        _ => return None,
+    };
+    Some(description)
+}
+
 /// Parameters that name just a document.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]

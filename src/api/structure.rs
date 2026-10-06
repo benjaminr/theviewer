@@ -11,6 +11,35 @@ use crate::bus::topics::TemplateApplied;
 use crate::plugin::Finding;
 use crate::templates::{self, Template};
 
+/// This module's methods, in the order `api.describe` lists them within
+/// their namespace. A new method is added here, and only here.
+pub(super) const METHODS: &[super::Method] = &[
+    method!("structure.parse", Read, parse, ParseParams, ParseResult, "Parse the structure starting exactly at an offset (executables, images, archives, captures, ASN.1, filesystems) into a field tree, best match first."),
+    method!("structure.parsers", Read, parsers, super::values::NoParams, ParsersResult, "The structure parsers available, built in and from plugins."),
+    method!("templates.list", Read, list_templates, super::values::NoParams, TemplateList, "The binary templates available: the built-in ones and the user's own."),
+    method!("templates.apply", Read, apply_template, ApplyParams, ApplyResult, "Apply a binary template, by name or as source text, at an offset and return its field tree and records; with pin, also show it as the template tool does."),
+];
+
+/// An example call of each of [`METHODS`], run in order on a fresh
+/// document by the API's tests, whose results must fit the result schema.
+#[cfg(test)]
+pub(super) fn examples() -> Vec<(&'static str, serde_json::Value)> {
+    use serde_json::json;
+    vec![
+        ("structure.parse", json!({"at": 0})),
+        ("structure.parsers", json!({})),
+        ("templates.list", json!({})),
+        ("templates.apply", json!({"name": "Fixed-size records", "limit": 2})),
+    ]
+}
+
+/// What a call to one of this module's methods would do, in plain words,
+/// for the window that asks the person to confirm it; `None` leaves it to
+/// the general "Call method with params".
+pub(super) fn describe_call(_workspace: &mut dyn Workspace, _method: &str, _params: &serde_json::Value) -> Option<String> {
+    None
+}
+
 /// Parameters of `structure.parse`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]

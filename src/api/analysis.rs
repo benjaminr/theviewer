@@ -11,6 +11,41 @@ use super::{ApiError, Caller, MAX_CALL_BYTES};
 use crate::document::Document;
 use crate::headless::{self, FileReport};
 
+/// This module's methods, in the order `api.describe` lists them within
+/// their namespace. A new method is added here, and only here.
+pub(super) const METHODS: &[super::Method] = &[
+    method!("analysis.overview", Read, overview, OverviewParams, crate::headless::FileReport, "Map the whole document: a summary of what it is, its regions with offsets, likely record widths and confident findings."),
+    method!("analysis.overview_job", Job, caller overview_job, OverviewParams, super::jobs::JobStartedResult, "Start analysis.overview as a background job and return its id at once; the report arrives as job.finished's result and from jobs.status, for large files and clients that should not wait."),
+    method!("analysis.statistics", Read, statistics, SpanParams, StatisticsResult, "Measure a span: entropy, chi-square, serial correlation, printable, zero and high-byte fractions, distinct values and a verdict."),
+    method!("analysis.segments", Read, segments, SegmentsParams, SegmentsResult, "Split the document into regions of one kind (text, tables, code, compressed, random, padding) and group them into types."),
+    method!("analysis.compressibility", Read, compressibility, SpanParams, CompressibilityResult, "Compress a span with several codecs and report the ratios, with a verdict: encrypted or random, already compressed, lossy media or structured."),
+    method!("analysis.text_encoding", Read, text_encoding, SpanParams, TextEncodingResult, "Identify the character encoding of a span of text, with previews and the likely language."),
+    method!("analysis.processor", Read, processor, SpanParams, ProcessorResult, "Test whether a span is machine code, and for which processor, by disassembling samples for each architecture."),
+];
+
+/// An example call of each of [`METHODS`], run in order on a fresh
+/// document by the API's tests, whose results must fit the result schema.
+#[cfg(test)]
+pub(super) fn examples() -> Vec<(&'static str, serde_json::Value)> {
+    use serde_json::json;
+    vec![
+        ("analysis.overview", json!({"max_findings": 5})),
+        ("analysis.overview_job", json!({"max_findings": 1})),
+        ("analysis.statistics", json!({"start": 0, "len": 100})),
+        ("analysis.segments", json!({"limit": 3})),
+        ("analysis.compressibility", json!({})),
+        ("analysis.text_encoding", json!({"start": 100})),
+        ("analysis.processor", json!({})),
+    ]
+}
+
+/// What a call to one of this module's methods would do, in plain words,
+/// for the window that asks the person to confirm it; `None` leaves it to
+/// the general "Call method with params".
+pub(super) fn describe_call(_workspace: &mut dyn Workspace, _method: &str, _params: &serde_json::Value) -> Option<String> {
+    None
+}
+
 /// Largest prefix of the document the overview and segmentation read; they
 /// run while the caller waits, so very large files are mapped from the start.
 pub const WHOLE_FILE_READ_LIMIT: usize = 64 * 1024 * 1024;

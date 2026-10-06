@@ -11,6 +11,31 @@ use super::ApiError;
 use super::workspace::{self, Workspace};
 use crate::bus::{Kind, Message, Span, Topic};
 
+/// This module's methods, in the order `api.describe` lists them within
+/// their namespace. A new method is added here, and only here.
+pub(super) const METHODS: &[super::Method] = &[
+    method!("events.facts", Read, facts, FactsParams, FactsResult, "What the tools have learnt about a document and keep: the latest fact per topic, producer and key, by topic, producer or the bytes they cover, each marked stale when the document changed under it."),
+    method!("events.poll", Read, poll, PollParams, PollResult, "The messages (facts and events) published after a cursor, oldest first, optionally of some topics only; pass back next to keep up."),
+];
+
+/// An example call of each of [`METHODS`], run in order on a fresh
+/// document by the API's tests, whose results must fit the result schema.
+#[cfg(test)]
+pub(super) fn examples() -> Vec<(&'static str, serde_json::Value)> {
+    use serde_json::json;
+    vec![
+        ("events.facts", json!({"topic": "record_width.estimated", "span": {"start": 0, "len": 16}})),
+        ("events.poll", json!({"cursor": 0, "topics": ["document.opened"], "limit": 10})),
+    ]
+}
+
+/// What a call to one of this module's methods would do, in plain words,
+/// for the window that asks the person to confirm it; `None` leaves it to
+/// the general "Call method with params".
+pub(super) fn describe_call(_workspace: &mut dyn Workspace, _method: &str, _params: &serde_json::Value) -> Option<String> {
+    None
+}
+
 /// Messages `events.poll` returns when no limit is given.
 const DEFAULT_POLL_LIMIT: usize = 100;
 /// Most messages one `events.poll` returns.

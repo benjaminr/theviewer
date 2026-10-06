@@ -31,6 +31,43 @@ use crate::packets::{self, Dissection, ExportPacket, Flow, FrameProtocol, LinkKi
 use crate::protocol::{self, Framing};
 use crate::templates::Template;
 
+/// This module's methods, in the order `api.describe` lists them within
+/// their namespace. A new method is added here, and only here.
+pub(super) const METHODS: &[super::Method] = &[
+    method!("packets.sets.create", Read, caller create, CreateParams, SetInfo, "Take a set of packets from a document: a capture in it, a range cut into fixed records, by a length field, at a pattern or with the protocol framing, or the selection's ranges, with how to decode frames of unknown format; returns the set's id and what was worked out (the capture found, the framing), so the call can be made again exactly."),
+    method!("packets.sets.list", Read, list_sets, super::values::NoParams, SetList, "The packet sets made, with their ids, documents, sources, packet counts and decoding."),
+    method!("packets.list", Read, list, ListParams, PacketList, "A set's packets the display filter keeps, a page at a time: each one's index, offset, length, summary columns, protocols and addresses."),
+    method!("packets.dissect", Read, dissect, PacketParams, PacketDissection, "Dissect one packet of a set into protocol layers and fields, as the set decodes frames of unknown format."),
+    method!("packets.decode_as", Read, caller decode_as, DecodeAsParams, SetInfo, "Choose the protocol a set's frames of unknown format are decoded as, or detection, and a template for frames no protocol reads."),
+    method!("packets.export_pcap", Read, caller export_pcap, ExportParams, ExportResult, "A set's packets (those a filter keeps) as a pcap file, returned or written to a path given (which needs leave to edit)."),
+    method!("packets.conversations", Read, conversations, ConversationsParams, ConversationList, "The conversations in a set (the packets a filter keeps): each pair of endpoints with its transport, packets and bytes each way, and a filter for it."),
+    method!("packets.follow_stream", Read, follow_stream, PacketParams, StreamResult, "The payloads of a packet's conversation in order, each with its direction, and the stream as text."),
+];
+
+/// An example call of each of [`METHODS`], run in order on a fresh
+/// document by the API's tests, whose results must fit the result schema.
+#[cfg(test)]
+pub(super) fn examples() -> Vec<(&'static str, serde_json::Value)> {
+    use serde_json::json;
+    vec![
+        ("packets.sets.create", json!({"from": "split_fixed", "record_len": 8, "len": 64, "decode_as": "dns", "link": "unknown"})),
+        ("packets.sets.list", json!({})),
+        ("packets.list", json!({"set": "set-1", "filter": "len>4", "limit": 2})),
+        ("packets.dissect", json!({"set": "set-1", "index": 0})),
+        ("packets.decode_as", json!({"set": "set-1", "detect": false})),
+        ("packets.export_pcap", json!({"set": "set-1"})),
+        ("packets.conversations", json!({"set": "set-1"})),
+        ("packets.follow_stream", json!({"set": "set-1", "index": 0})),
+    ]
+}
+
+/// What a call to one of this module's methods would do, in plain words,
+/// for the window that asks the person to confirm it; `None` leaves it to
+/// the general "Call method with params".
+pub(super) fn describe_call(_workspace: &mut dyn Workspace, _method: &str, _params: &serde_json::Value) -> Option<String> {
+    None
+}
+
 /// Most bytes of a capture read to take its packets.
 const CAPTURE_READ_LIMIT: usize = 128 * 1024 * 1024;
 /// Most bytes of a range read to split it.

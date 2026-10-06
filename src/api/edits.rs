@@ -10,7 +10,7 @@
 //! calls as one step, and when one fails every change the others made is
 //! reversed.
 //!
-//! [`describe_call`] says in plain words what a call would do, for the
+//! [`describe_call`] says in plain words what an edit would do, for the
 //! window that asks the person to confirm it.
 
 use schemars::JsonSchema;
@@ -26,6 +26,40 @@ use crate::document::Document;
 use crate::selection::{self, Selection};
 use crate::selection_menu;
 use crate::selection_ops::{self, Operation, preview_hex};
+
+/// This module's methods, in the order `api.describe` lists them within
+/// their namespace. A new method is added here, and only here.
+pub(super) const METHODS: &[super::Method] = &[
+    method!("bytes.write", Edit, caller write, WriteParams, EditResult, "Overwrite bytes in place with new ones, as one undoable step; the document keeps its length."),
+    method!("bytes.insert", Edit, caller insert, InsertParams, EditResult, "Insert bytes at an offset, as one undoable step; the bytes after it move along."),
+    method!("bytes.delete", Edit, caller delete, DeleteParams, EditResult, "Remove a span of bytes, as one undoable step; the bytes after it move back."),
+    method!("bytes.replace", Edit, caller replace, ReplaceParams, EditResult, "Replace a span of bytes with new bytes of any length, as one undoable step."),
+    method!("bits.write", Edit, caller write_bits, BitsWriteParams, EditResult, "Overwrite bits from any bit offset, most or least significant bit of each byte first, as one undoable step; the bits around them are kept."),
+    method!("transform.apply", Edit, caller apply_transform, TransformParams, EditResult, "Apply an operation (XOR, invert, shift bits, swap byte order, number, compress, decompress and more) to every range of a selection, as one undoable step, and select what it produced."),
+    method!("transform.preview", Read, preview_transform, PreviewParams, PreviewResult, "What transform.apply would write into each range of a selection, without changing anything."),
+    method!("history.undo", Edit, caller undo, HistoryParams, HistoryResult, "Undo the document's last step, whoever made it, and put the cursor where it was."),
+    method!("history.redo", Edit, caller redo, HistoryParams, HistoryResult, "Redo the last step undone, and put the cursor where it was."),
+    method!("history.transaction", Edit, caller transaction, TransactionParams, TransactionResult, "Run several calls on one document as one undoable step; when one fails, every change the others made is reversed."),
+];
+
+/// An example call of each of [`METHODS`], run in order on a fresh
+/// document by the API's tests, whose results must fit the result schema.
+#[cfg(test)]
+pub(super) fn examples() -> Vec<(&'static str, serde_json::Value)> {
+    use serde_json::json;
+    vec![
+        ("transform.preview", json!({"selection": {"range": [0, 4]}, "operation": {"op": "invert"}})),
+        ("bytes.write", json!({"start": 0, "data": "00"})),
+        ("bytes.insert", json!({"at": 0, "data": "00"})),
+        ("bytes.delete", json!({"start": 0, "len": 1})),
+        ("bytes.replace", json!({"start": 0, "len": 1, "data": "ffff"})),
+        ("bits.write", json!({"bit_start": 3, "bits": "101"})),
+        ("transform.apply", json!({"selection": {"range": [0, 4]}, "operation": {"op": "xor", "key": "5a"}})),
+        ("history.undo", json!({})),
+        ("history.redo", json!({})),
+        ("history.transaction", json!({"calls": [{"method": "cursor.set", "params": {"offset": 2}}, {"method": "bytes.delete", "params": {"start": 0, "len": 1}}]})),
+    ]
+}
 
 /// Most bits one `bits.write` writes.
 const MAX_BITS: usize = 1024 * 1024;
@@ -573,7 +607,7 @@ pub fn transaction(workspace: &mut dyn Workspace, caller: &Caller, params: Trans
 
 /// "4 bytes at 0x40", or "16 bytes in 3 ranges", or "128 selected bytes"
 /// when the selection is the document's own.
-fn target_phrase(ranges: &[(usize, usize)], from_view: bool) -> String {
+pub(super) fn target_phrase(ranges: &[(usize, usize)], from_view: bool) -> String {
     let total = selection::total_bytes(ranges);
     let bytes = count("", total, "byte").trim_start().to_string();
     match ranges {
@@ -600,17 +634,10 @@ fn bytes_phrase(data: &str, encoding: ByteEncoding) -> (usize, String) {
     }
 }
 
-/// What a call to `method` with `params` would do, in plain words, for the
-/// window that asks the person: "Overwrite 4 bytes at 0x40 with DE AD BE
-/// EF", "XOR 128 selected bytes with 5A".
-pub fn describe_call(workspace: &mut dyn Workspace, method: &str, params: &Value) -> String {
-    describe_known_call(workspace, method, params).unwrap_or_else(|| {
-        let shown = if params.as_object().is_some_and(|object| !object.is_empty()) { format!(" with {params}") } else { String::new() };
-        format!("Call {method}{shown}")
-    })
-}
-
-fn describe_known_call(workspace: &mut dyn Workspace, method: &str, params: &Value) -> Option<String> {
+/// What a call to one of this module's methods would do, in plain words,
+/// for the window that asks the person: "Overwrite 4 bytes at 0x40 with
+/// DE AD BE EF", "XOR 128 selected bytes with 5A".
+pub(super) fn describe_call(workspace: &mut dyn Workspace, method: &str, params: &Value) -> Option<String> {
     let description = match method {
         "bytes.write" => {
             let params: WriteParams = parsed(params)?;
@@ -656,25 +683,9 @@ fn describe_known_call(workspace: &mut dyn Workspace, method: &str, params: &Val
         }
         "history.transaction" => {
             let params: TransactionParams = parsed(params)?;
-            let steps: Vec<String> = params.calls.iter().map(|call| describe_call(workspace, &call.method, &call.params)).collect();
+            let steps: Vec<String> = params.calls.iter().map(|call| super::describe_call(workspace, &call.method, &call.params)).collect();
             format!("{} as one step:\n{}", count("Make", steps.len(), "change"), steps.iter().map(|step| format!("• {step}")).collect::<Vec<_>>().join("\n"))
         }
-        "selection.set" => {
-            let selection: Option<Selection> = params.get("selection").cloned().and_then(|value| serde_json::from_value(value).ok()).flatten();
-            match selection {
-                Some(selected) => {
-                    let ranges = selected.ranges(usize::MAX);
-                    format!("Select {}", target_phrase(&ranges, false))
-                }
-                None => "Select nothing".to_string(),
-            }
-        }
-        "cursor.set" => format!("Move the cursor to {:#x}", params.get("offset")?.as_u64()?),
-        "documents.save" => match params.get("path").and_then(Value::as_str) {
-            Some(path) => format!("Save the document to {path}"),
-            None => "Save the document over its file".to_string(),
-        },
-        "documents.new" => "Open a new, empty document in place of this one".to_string(),
         _ => return None,
     };
     Some(description)
@@ -840,7 +851,7 @@ mod tests {
     #[test]
     fn calls_are_described_in_plain_words() {
         let mut workspace = workspace_with("a.bin", &[0u8; 256]);
-        let describe = |workspace: &mut dyn Workspace, method: &str, params: serde_json::Value| super::describe_call(workspace, method, &params);
+        let describe = |workspace: &mut dyn Workspace, method: &str, params: serde_json::Value| crate::api::describe_call(workspace, method, &params);
         assert_eq!(describe(&mut workspace, "bytes.replace", json!({"start": 0x40, "len": 4, "data": "deadbeef"})), "Replace 4 bytes at 0x40 with DE AD BE EF");
         assert_eq!(describe(&mut workspace, "bytes.replace", json!({"start": 0x40, "len": 4, "data": "dead"})), "Replace 4 bytes at 0x40 with 2 bytes: DE AD");
         assert_eq!(describe(&mut workspace, "bytes.delete", json!({"start": 16, "len": 1})), "Delete 1 byte at 0x10");

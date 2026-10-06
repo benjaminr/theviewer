@@ -13,6 +13,33 @@ use crate::bus::{Draft, Payload};
 use crate::patterns;
 use crate::plugin::{Category, Finding, ScanContext};
 
+/// This module's methods, in the order `api.describe` lists them within
+/// their namespace. A new method is added here, and only here.
+pub(super) const METHODS: &[super::Method] = &[
+    method!("findings.query", Read, query, QueryParams, QueryResult, "Run the detectors over a span and list what they recognise (signatures, compressed streams, counters, timestamps, text, structures), filtered by category, confidence and producer."),
+    method!("findings.publish", Read, caller publish, PublishParams, PublishResult, "Publish findings about a document on the bus as the caller's, for the views, Findings and every other tool to show; they replace the caller's earlier ones under the same key."),
+    method!("findings.retract", Read, caller retract, RetractParams, PublishResult, "Withdraw the findings the caller published under a key."),
+];
+
+/// An example call of each of [`METHODS`], run in order on a fresh
+/// document by the API's tests, whose results must fit the result schema.
+#[cfg(test)]
+pub(super) fn examples() -> Vec<(&'static str, serde_json::Value)> {
+    use serde_json::json;
+    vec![
+        ("findings.query", json!({"min_confidence": 0.0, "categories": ["compressed", "text"]})),
+        ("findings.publish", json!({"findings": [{"id": "x", "source": "test", "category": "custom", "start": 0, "len": 4, "title": "", "detail": "", "confidence": 1.0, "fields": []}]})),
+        ("findings.retract", json!({})),
+    ]
+}
+
+/// What a call to one of this module's methods would do, in plain words,
+/// for the window that asks the person to confirm it; `None` leaves it to
+/// the general "Call method with params".
+pub(super) fn describe_call(_workspace: &mut dyn Workspace, _method: &str, _params: &serde_json::Value) -> Option<String> {
+    None
+}
+
 /// Findings below this confidence are chance matches, left out by default.
 const DEFAULT_MIN_CONFIDENCE: f32 = 0.5;
 

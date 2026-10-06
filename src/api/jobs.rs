@@ -13,6 +13,35 @@ use super::values::NoParams;
 use super::workspace::Workspace;
 use crate::bus::JobStatus;
 
+/// This module's methods, in the order `api.describe` lists them within
+/// their namespace. A new method is added here, and only here.
+pub(super) const METHODS: &[super::Method] = &[
+    method!("jobs.list", Read, list, super::values::NoParams, JobList, "The background jobs tools and callers started (the last 100): what each does, who started it, whether it is running, how far it has got and how it ended."),
+    method!("jobs.status", Read, status, JobParams, crate::bus::JobStatus, "One job's state, progress and outcome, and once it has finished, the result of a job a method started."),
+    method!("jobs.cancel", Read, cancel, JobParams, crate::bus::JobStatus, "Ask a running job to stop; it ends as cancelled, without a result, as soon as it notices."),
+];
+
+/// An example call of each of [`METHODS`], run in order on a fresh
+/// document by the API's tests, whose results must fit the result schema.
+#[cfg(test)]
+pub(super) fn examples() -> Vec<(&'static str, serde_json::Value)> {
+    use serde_json::json;
+    vec![
+        // A job to follow.
+        ("analysis.overview_job", json!({"max_findings": 1})),
+        ("jobs.list", json!({})),
+        ("jobs.status", json!({"job": "overview-1"})),
+        ("jobs.cancel", json!({"job": "overview-1"})),
+    ]
+}
+
+/// What a call to one of this module's methods would do, in plain words,
+/// for the window that asks the person to confirm it; `None` leaves it to
+/// the general "Call method with params".
+pub(super) fn describe_call(_workspace: &mut dyn Workspace, _method: &str, _params: &serde_json::Value) -> Option<String> {
+    None
+}
+
 /// The result of `jobs.list`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct JobList {

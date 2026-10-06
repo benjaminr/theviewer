@@ -8,6 +8,29 @@ use super::workspace::{self, Workspace};
 use super::ApiError;
 use crate::numeric::{self, Interpretation, NumberKind};
 
+/// This module's methods, in the order `api.describe` lists them within
+/// their namespace. A new method is added here, and only here.
+pub(super) const METHODS: &[super::Method] = &[
+    method!("numbers.decode", Read, decode, DecodeParams, DecodeResult, "Read the bytes at an offset as integers, floats, fixed-point numbers and timestamps of each width and byte order."),
+];
+
+/// An example call of each of [`METHODS`], run in order on a fresh
+/// document by the API's tests, whose results must fit the result schema.
+#[cfg(test)]
+pub(super) fn examples() -> Vec<(&'static str, serde_json::Value)> {
+    use serde_json::json;
+    vec![
+        ("numbers.decode", json!({"at": 0})),
+    ]
+}
+
+/// What a call to one of this module's methods would do, in plain words,
+/// for the window that asks the person to confirm it; `None` leaves it to
+/// the general "Call method with params".
+pub(super) fn describe_call(_workspace: &mut dyn Workspace, _method: &str, _params: &serde_json::Value) -> Option<String> {
+    None
+}
+
 /// Field widths the interpretations cover.
 const WIDTHS: [usize; 4] = [1, 2, 4, 8];
 

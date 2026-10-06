@@ -9,6 +9,45 @@ use super::values::NoParams;
 use super::workspace::{self, DocumentInfo, Workspace};
 use super::ApiError;
 
+/// This module's methods, in the order `api.describe` lists them within
+/// their namespace. A new method is added here, and only here.
+pub(super) const METHODS: &[super::Method] = &[
+    method!("documents.list", Read, list, super::values::NoParams, DocumentList, "The open documents, with their ids, names, paths, lengths and versions."),
+    method!("documents.info", Read, info, InfoParams, super::workspace::DocumentInfo, "One document's id, name, path, length, version and whether it has unsaved edits."),
+    method!("documents.open", View, open, OpenParams, super::workspace::DocumentInfo, "Open a file by path, or an open document by id, and make it current; a file already open is made current again. In the window, a parent of the document shown is gone back to, closing what was derived from it."),
+    method!("documents.new", View, new, NewParams, super::workspace::DocumentInfo, "Open a new, empty document and make it current; the window refuses while its document has unsaved edits."),
+    method!("documents.save", Edit, save, SaveParams, super::workspace::DocumentInfo, "Save a document over its file, or to a path, with every edit made so far."),
+];
+
+/// An example call of each of [`METHODS`], run in order on a fresh
+/// document by the API's tests, whose results must fit the result schema.
+#[cfg(test)]
+pub(super) fn examples() -> Vec<(&'static str, serde_json::Value)> {
+    use serde_json::json;
+    vec![
+        ("documents.list", json!({})),
+        ("documents.info", json!({"doc": "current"})),
+        ("documents.open", json!({"path": super::test_support::example_file().display().to_string()})),
+        ("documents.save", json!({"path": super::test_support::example_save_path().display().to_string()})),
+        ("documents.new", json!({"name": "scratch"})),
+    ]
+}
+
+/// What a call to one of this module's methods would do, in plain words,
+/// for the window that asks the person to confirm it; `None` leaves it to
+/// the general "Call method with params".
+pub(super) fn describe_call(_workspace: &mut dyn Workspace, method: &str, params: &serde_json::Value) -> Option<String> {
+    let description = match method {
+        "documents.save" => match params.get("path").and_then(serde_json::Value::as_str) {
+            Some(path) => format!("Save the document to {path}"),
+            None => "Save the document over its file".to_string(),
+        },
+        "documents.new" => "Open a new, empty document in place of this one".to_string(),
+        _ => return None,
+    };
+    Some(description)
+}
+
 /// The result of `documents.list`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct DocumentList {

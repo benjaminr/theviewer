@@ -10,6 +10,35 @@ use super::{ApiError, MAX_CALL_BYTES};
 use crate::compress::{self, Codec};
 use crate::plugin::{CodecKind, CodecPlugin};
 
+/// This module's methods, in the order `api.describe` lists them within
+/// their namespace. A new method is added here, and only here.
+pub(super) const METHODS: &[super::Method] = &[
+    method!("codecs.list", Read, list, super::values::NoParams, CodecList, "The codecs available for decoding, built in and from plugins."),
+    method!("codecs.detect", Read, detect, DetectParams, CodecList, "The codecs whose header starts at an offset."),
+    method!("codecs.decode", Read, decode, DecodeParams, DecodeResult, "Decode (decompress) a span with a codec and return the output."),
+    method!("codecs.probe", Read, probe, ProbeParams, ProbeResult, "Try every built-in decompressor at the start of a span, headerless ones included, and list those that decode."),
+];
+
+/// An example call of each of [`METHODS`], run in order on a fresh
+/// document by the API's tests, whose results must fit the result schema.
+#[cfg(test)]
+pub(super) fn examples() -> Vec<(&'static str, serde_json::Value)> {
+    use serde_json::json;
+    vec![
+        ("codecs.list", json!({})),
+        ("codecs.detect", json!({"at": 0})),
+        ("codecs.decode", json!({"start": 0, "codec": "zlib", "encoding": "text"})),
+        ("codecs.probe", json!({"start": 0})),
+    ]
+}
+
+/// What a call to one of this module's methods would do, in plain words,
+/// for the window that asks the person to confirm it; `None` leaves it to
+/// the general "Call method with params".
+pub(super) fn describe_call(_workspace: &mut dyn Workspace, _method: &str, _params: &serde_json::Value) -> Option<String> {
+    None
+}
+
 /// Bytes read at an offset to check codec headers against.
 const DETECT_WINDOW: usize = 4096;
 

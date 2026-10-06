@@ -1,6 +1,6 @@
 # theviewer data API, version 1.0
 
-<!-- Generated from the method table in src/api.rs by `cargo run --bin api_docs`. Do not edit by hand. -->
+<!-- Generated from the method table (src/api.rs and each module in src/api/) by `cargo run --bin api_docs`. Do not edit by hand. -->
 
 Every method can be called from the command line (`theviewer api METHOD '{json params}' FILE`; with `--save`, the file is saved with the call's edits, so `--save history.transaction` edits and saves in one command), Lua plugins call them as `theviewer.api.<namespace>.<method>{…}`, Ask uses the methods that read or edit as its tools, and `theviewer mcp FILE…` offers every method to MCP clients such as Claude Code as a tool named with underscores for dots (`bytes_read`), with resources for each document (`theviewer://doc/{id}`, its `bytes/{start}-{end}`, `findings`, `facts` and `packets/{set}`) and the reference notes (`theviewer://reference/{id}`). Documents are named by id (`doc-1`), by path or as `"current"`, which an omitted `doc` also means. Spans are `start` and `len` in bytes; an omitted `len` runs to the end of the document. Bytes are hex strings unless `encoding` says `base64` or `text`. List methods take `limit` and return `next`, a cursor to pass back for the next page. One call reads or returns at most 16 MiB.
 
@@ -49,8 +49,8 @@ Errors are `{code, message, data}`, with these codes:
 | [`search.count`](#searchcount) | read | How many times hex bytes, text, UTF-16 text or an integer occur in the document, up to a cap. |
 | [`numbers.decode`](#numbersdecode) | read | Read the bytes at an offset as integers, floats, fixed-point numbers and timestamps of each width and byte order. |
 | [`selection.get`](#selectionget) | read | What is selected in a document: one range, several ranges or a column of every record. |
-| [`cursor.get`](#cursorget) | read | The cursor's offset in a document. |
 | [`selection.set`](#selectionset) | view | Select one range, several ranges or a column of every record in a document, or nothing. |
+| [`cursor.get`](#cursorget) | read | The cursor's offset in a document. |
 | [`cursor.set`](#cursorset) | view | Move the cursor to an offset, selecting nothing. |
 | [`findings.query`](#findingsquery) | read | Run the detectors over a span and list what they recognise (signatures, compressed streams, counters, timestamps, text, structures), filtered by category, confidence and producer. |
 | [`findings.publish`](#findingspublish) | read | Publish findings about a document on the bus as the caller's, for the views, Findings and every other tool to show; they replace the caller's earlier ones under the same key. |
@@ -83,10 +83,10 @@ Errors are `{code, message, data}`, with these codes:
 | [`reference.lookup`](#referencelookup) | read | The reference notes on a format or protocol, by id, finding id, layer name, port (udp/67) or number (port, IP protocol or EtherType): layout, field meanings and specifications. |
 | [`reference.search`](#referencesearch) | read | Reference entries whose notes mention every word of a query, or that a port or number names. |
 | [`events.facts`](#eventsfacts) | read | What the tools have learnt about a document and keep: the latest fact per topic, producer and key, by topic, producer or the bytes they cover, each marked stale when the document changed under it. |
+| [`events.poll`](#eventspoll) | read | The messages (facts and events) published after a cursor, oldest first, optionally of some topics only; pass back next to keep up. |
 | [`jobs.list`](#jobslist) | read | The background jobs tools and callers started (the last 100): what each does, who started it, whether it is running, how far it has got and how it ended. |
 | [`jobs.status`](#jobsstatus) | read | One job's state, progress and outcome, and once it has finished, the result of a job a method started. |
 | [`jobs.cancel`](#jobscancel) | read | Ask a running job to stop; it ends as cancelled, without a result, as soon as it notices. |
-| [`events.poll`](#eventspoll) | read | The messages (facts and events) published after a cursor, oldest first, optionally of some topics only; pass back next to keep up. |
 
 Each method's full JSON schemas are in `theviewer api --describe`.
 
@@ -525,19 +525,6 @@ What is selected in a document: one range, several ranges or a column of every r
 | `selection` | Selection | no | The selection as the app holds it, or nothing when no bytes are selected. |
 | `total_bytes` | integer | yes | Bytes selected in all. |
 
-### cursor.get
-
-The cursor's offset in a document.
-
-| Parameter | Type | Required | Description |
-| --- | --- | --- | --- |
-| `doc` | string | no | Document id, path or "current" (the default). |
-
-| Result field | Type | Required | Description |
-| --- | --- | --- | --- |
-| `doc` | string | yes | Id of the document. |
-| `offset` | integer | yes | Offset of the byte at the cursor. |
-
 ### selection.set
 
 Select one range, several ranges or a column of every record in a document, or nothing.
@@ -553,6 +540,19 @@ Select one range, several ranges or a column of every record in a document, or n
 | `ranges` | array of pair | yes | Every selected range as [start, len], in document order. |
 | `selection` | Selection | no | The selection as the app holds it, or nothing when no bytes are selected. |
 | `total_bytes` | integer | yes | Bytes selected in all. |
+
+### cursor.get
+
+The cursor's offset in a document.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `doc` | string | no | Document id, path or "current" (the default). |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `doc` | string | yes | Id of the document. |
+| `offset` | integer | yes | Offset of the byte at the cursor. |
 
 ### cursor.set
 
@@ -1103,6 +1103,22 @@ What the tools have learnt about a document and keep: the latest fact per topic,
 | --- | --- | --- | --- |
 | `facts` | array of MessageEntry | yes | The facts, by topic, producer and key. |
 
+### events.poll
+
+The messages (facts and events) published after a cursor, oldest first, optionally of some topics only; pass back next to keep up.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `cursor` | integer | no | The `next` of the previous poll; omitted, every message still held. |
+| `limit` | integer | no | Most messages to return (default 100, at most 1000). |
+| `topics` | array of string | no | Only messages on these topics. |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `messages` | array of MessageEntry | yes | Messages delivered after the cursor, oldest first. |
+| `missed` | integer | yes | Messages delivered after the cursor but no longer held. |
+| `next` | integer | yes | Pass back as `cursor` to get the messages after these. |
+
 ### jobs.list
 
 The background jobs tools and callers started (the last 100): what each does, who started it, whether it is running, how far it has got and how it ended.
@@ -1152,22 +1168,6 @@ Ask a running job to stop; it ends as cancelled, without a result, as soon as it
 | `state` | `"running"` \| `"cancelling"` \| `"finished"` \| `"failed"` \| `"cancelled"` | yes | Where a job is. |
 | `title` | string | yes | What the job does, such as "Report". |
 | `total` | integer | no | Units of work in all, when known. |
-
-### events.poll
-
-The messages (facts and events) published after a cursor, oldest first, optionally of some topics only; pass back next to keep up.
-
-| Parameter | Type | Required | Description |
-| --- | --- | --- | --- |
-| `cursor` | integer | no | The `next` of the previous poll; omitted, every message still held. |
-| `limit` | integer | no | Most messages to return (default 100, at most 1000). |
-| `topics` | array of string | no | Only messages on these topics. |
-
-| Result field | Type | Required | Description |
-| --- | --- | --- | --- |
-| `messages` | array of MessageEntry | yes | Messages delivered after the cursor, oldest first. |
-| `missed` | integer | yes | Messages delivered after the cursor but no longer held. |
-| `next` | integer | yes | Pass back as `cursor` to get the messages after these. |
 
 ## Topics
 

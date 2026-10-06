@@ -8,6 +8,12 @@
 //! functions in each namespace module directly; JSON callers go through
 //! [`call`], which checks the parameters against the method's types.
 //!
+//! Each module under `src/api/` declares its own part of the table: its
+//! `METHODS`, a `describe_call` that says in plain words what a call would
+//! do (for the confirmation window), and for the tests an `examples` call
+//! of each method. [`METHODS`] joins the parts, grouped by namespace, so a
+//! new method touches only its module.
+//!
 //! Methods run against a [`Workspace`]: the window's open document, or a
 //! [`HeadlessWorkspace`] of files opened from paths. See
 //! `docs/design/shared-knowledge-and-api.md` for the design.
@@ -25,7 +31,38 @@
 //!   back for the following page.
 //! * One call reads or returns at most [`MAX_CALL_BYTES`].
 
+/// One row of the method table: name, effect, typed function, its params
+/// and result types, and the summary. Methods that act for their caller
+/// (edits are labelled with it, facts published as it) are written
+/// `caller fn`, and take the caller after the workspace. Defined before the
+/// namespace modules, which each declare their own rows with it.
+macro_rules! method {
+    ($name:literal, $effect:ident, caller $function:path, $params:ty, $result:ty, $summary:literal) => {
+        $crate::api::Method {
+            name: $name,
+            summary: $summary,
+            effect: $crate::api::Effect::$effect,
+            stability: $crate::api::Stability::Stable,
+            params: $crate::api::schema_of::<$params>,
+            result: $crate::api::schema_of::<$result>,
+            run: |workspace, caller, params| $crate::api::run_typed(|workspace, typed| $function(workspace, caller, typed), workspace, params),
+        }
+    };
+    ($name:literal, $effect:ident, $function:path, $params:ty, $result:ty, $summary:literal) => {
+        $crate::api::Method {
+            name: $name,
+            summary: $summary,
+            effect: $crate::api::Effect::$effect,
+            stability: $crate::api::Stability::Stable,
+            params: $crate::api::schema_of::<$params>,
+            result: $crate::api::schema_of::<$result>,
+            run: |workspace, _caller, params| $crate::api::run_typed($function, workspace, params),
+        }
+    };
+}
+
 pub mod analysis;
+pub mod application;
 pub mod bytes;
 pub mod codecs;
 pub mod documents;
@@ -41,11 +78,13 @@ pub mod reference;
 pub mod search;
 pub mod selection;
 pub mod structure;
+pub mod tools;
 pub mod values;
+pub mod view;
 pub mod workspace;
 
 use std::fmt;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use schemars::{JsonSchema, Schema};
 use serde::de::DeserializeOwned;
@@ -87,6 +126,7 @@ pub enum Stability {
 }
 
 /// One method of the API, declared once.
+#[derive(Clone, Copy)]
 pub struct Method {
     /// Dotted name, such as `bytes.read`.
     pub name: &'static str,
@@ -313,101 +353,96 @@ fn run_typed<P: DeserializeOwned, R: Serialize>(
     serde_json::to_value(result).map_err(|error| ApiError::new(ErrorCode::InvalidParams, format!("the result could not be written as JSON: {error}")))
 }
 
-/// One row of the method table: name, effect, typed function, its params
-/// and result types, and the summary. Methods that act for their caller
-/// (edits are labelled with it, facts published as it) are written
-/// `caller fn`, and take the caller after the workspace.
-macro_rules! method {
-    ($name:literal, $effect:ident, caller $function:path, $params:ty, $result:ty, $summary:literal) => {
-        Method {
-            name: $name,
-            summary: $summary,
-            effect: Effect::$effect,
-            stability: Stability::Stable,
-            params: schema_of::<$params>,
-            result: schema_of::<$result>,
-            run: |workspace, caller, params| run_typed(|workspace, typed| $function(workspace, caller, typed), workspace, params),
-        }
-    };
-    ($name:literal, $effect:ident, $function:path, $params:ty, $result:ty, $summary:literal) => {
-        Method {
-            name: $name,
-            summary: $summary,
-            effect: Effect::$effect,
-            stability: Stability::Stable,
-            params: schema_of::<$params>,
-            result: schema_of::<$result>,
-            run: |workspace, _caller, params| run_typed($function, workspace, params),
+/// The API's own methods.
+const API_METHODS: &[Method] = &[
+    method!("api.version", Read, version, values::NoParams, VersionResult, "The API version: 1.0. Changes within a major version only add methods, optional parameters and result fields."),
+    method!("api.describe", Read, describe_method, values::NoParams, Description, "Every method with its summary, effect, stability and the JSON schemas of its parameters and result."),
+];
+
+/// Says in plain words what a call would do, for the window that asks the
+/// person to confirm it; `None` for a call the module does not describe.
+type DescribeCall = fn(&mut dyn Workspace, &str, &Value) -> Option<String>;
+
+/// One module's part of the method table: its methods, how it describes
+/// calls to them and, for the tests, an example call of each.
+struct Part {
+    methods: &'static [Method],
+    describe_call: DescribeCall,
+    #[cfg(test)]
+    examples: fn() -> Vec<(&'static str, Value)>,
+}
+
+/// The part of the table the module `$module` declares: its `METHODS`,
+/// `describe_call` and `examples`.
+macro_rules! part {
+    ($module:ident) => {
+        Part {
+            methods: $module::METHODS,
+            describe_call: $module::describe_call,
+            #[cfg(test)]
+            examples: $module::examples,
         }
     };
 }
 
-/// Every method, by namespace.
-pub static METHODS: &[Method] = &[
-    method!("api.version", Read, version, values::NoParams, VersionResult, "The API version: 1.0. Changes within a major version only add methods, optional parameters and result fields."),
-    method!("api.describe", Read, describe_method, values::NoParams, Description, "Every method with its summary, effect, stability and the JSON schemas of its parameters and result."),
-    method!("documents.list", Read, documents::list, values::NoParams, documents::DocumentList, "The open documents, with their ids, names, paths, lengths and versions."),
-    method!("documents.info", Read, documents::info, documents::InfoParams, workspace::DocumentInfo, "One document's id, name, path, length, version and whether it has unsaved edits."),
-    method!("documents.open", View, documents::open, documents::OpenParams, workspace::DocumentInfo, "Open a file by path, or an open document by id, and make it current; a file already open is made current again. In the window, a parent of the document shown is gone back to, closing what was derived from it."),
-    method!("documents.new", View, documents::new, documents::NewParams, workspace::DocumentInfo, "Open a new, empty document and make it current; the window refuses while its document has unsaved edits."),
-    method!("documents.save", Edit, documents::save, documents::SaveParams, workspace::DocumentInfo, "Save a document over its file, or to a path, with every edit made so far."),
-    method!("bytes.read", Read, bytes::read, bytes::ReadParams, bytes::ReadResult, "Read a span of bytes, as hex by default, or as base64 or text."),
-    method!("bytes.hexdump", Read, bytes::hexdump, bytes::HexdumpParams, bytes::HexdumpResult, "A classic hex dump of a span, 16 bytes per line with an ASCII column, at most 1 MiB."),
-    method!("bytes.write", Edit, caller edits::write, edits::WriteParams, edits::EditResult, "Overwrite bytes in place with new ones, as one undoable step; the document keeps its length."),
-    method!("bytes.insert", Edit, caller edits::insert, edits::InsertParams, edits::EditResult, "Insert bytes at an offset, as one undoable step; the bytes after it move along."),
-    method!("bytes.delete", Edit, caller edits::delete, edits::DeleteParams, edits::EditResult, "Remove a span of bytes, as one undoable step; the bytes after it move back."),
-    method!("bytes.replace", Edit, caller edits::replace, edits::ReplaceParams, edits::EditResult, "Replace a span of bytes with new bytes of any length, as one undoable step."),
-    method!("bits.read", Read, bytes::read_bits, bytes::BitsParams, bytes::BitsResult, "Read a span of bits, most or least significant bit of each byte first, as a string of 0s and 1s and, up to 64 bits, as a number."),
-    method!("bits.write", Edit, caller edits::write_bits, edits::BitsWriteParams, edits::EditResult, "Overwrite bits from any bit offset, most or least significant bit of each byte first, as one undoable step; the bits around them are kept."),
-    method!("transform.apply", Edit, caller edits::apply_transform, edits::TransformParams, edits::EditResult, "Apply an operation (XOR, invert, shift bits, swap byte order, number, compress, decompress and more) to every range of a selection, as one undoable step, and select what it produced."),
-    method!("transform.preview", Read, edits::preview_transform, edits::PreviewParams, edits::PreviewResult, "What transform.apply would write into each range of a selection, without changing anything."),
-    method!("history.undo", Edit, caller edits::undo, edits::HistoryParams, edits::HistoryResult, "Undo the document's last step, whoever made it, and put the cursor where it was."),
-    method!("history.redo", Edit, caller edits::redo, edits::HistoryParams, edits::HistoryResult, "Redo the last step undone, and put the cursor where it was."),
-    method!("history.transaction", Edit, caller edits::transaction, edits::TransactionParams, edits::TransactionResult, "Run several calls on one document as one undoable step; when one fails, every change the others made is reversed."),
-    method!("search.find", Read, search::find, search::FindParams, search::FindResult, "The next (or previous) occurrence of hex bytes, text, UTF-16 text or an integer from an offset."),
-    method!("search.find_all", Read, search::find_all, search::FindAllParams, search::FindAllResult, "Every occurrence of hex bytes, text, UTF-16 text or an integer in the document, a page at a time."),
-    method!("search.count", Read, search::count, search::CountParams, search::CountResult, "How many times hex bytes, text, UTF-16 text or an integer occur in the document, up to a cap."),
-    method!("numbers.decode", Read, numbers::decode, numbers::DecodeParams, numbers::DecodeResult, "Read the bytes at an offset as integers, floats, fixed-point numbers and timestamps of each width and byte order."),
-    method!("selection.get", Read, selection::get_selection, selection::DocParams, selection::SelectionResult, "What is selected in a document: one range, several ranges or a column of every record."),
-    method!("cursor.get", Read, selection::get_cursor, selection::DocParams, selection::CursorResult, "The cursor's offset in a document."),
-    method!("selection.set", View, caller selection::set_selection, selection::SetSelectionParams, selection::SelectionResult, "Select one range, several ranges or a column of every record in a document, or nothing."),
-    method!("cursor.set", View, caller selection::set_cursor, selection::SetCursorParams, selection::CursorResult, "Move the cursor to an offset, selecting nothing."),
-    method!("findings.query", Read, findings::query, findings::QueryParams, findings::QueryResult, "Run the detectors over a span and list what they recognise (signatures, compressed streams, counters, timestamps, text, structures), filtered by category, confidence and producer."),
-    method!("findings.publish", Read, caller findings::publish, findings::PublishParams, findings::PublishResult, "Publish findings about a document on the bus as the caller's, for the views, Findings and every other tool to show; they replace the caller's earlier ones under the same key."),
-    method!("findings.retract", Read, caller findings::retract, findings::RetractParams, findings::PublishResult, "Withdraw the findings the caller published under a key."),
-    method!("structure.parse", Read, structure::parse, structure::ParseParams, structure::ParseResult, "Parse the structure starting exactly at an offset (executables, images, archives, captures, ASN.1, filesystems) into a field tree, best match first."),
-    method!("structure.parsers", Read, structure::parsers, values::NoParams, structure::ParsersResult, "The structure parsers available, built in and from plugins."),
-    method!("templates.list", Read, structure::list_templates, values::NoParams, structure::TemplateList, "The binary templates available: the built-in ones and the user's own."),
-    method!("templates.apply", Read, structure::apply_template, structure::ApplyParams, structure::ApplyResult, "Apply a binary template, by name or as source text, at an offset and return its field tree and records; with pin, also show it as the template tool does."),
-    method!("codecs.list", Read, codecs::list, values::NoParams, codecs::CodecList, "The codecs available for decoding, built in and from plugins."),
-    method!("codecs.detect", Read, codecs::detect, codecs::DetectParams, codecs::CodecList, "The codecs whose header starts at an offset."),
-    method!("codecs.decode", Read, codecs::decode, codecs::DecodeParams, codecs::DecodeResult, "Decode (decompress) a span with a codec and return the output."),
-    method!("codecs.probe", Read, codecs::probe, codecs::ProbeParams, codecs::ProbeResult, "Try every built-in decompressor at the start of a span, headerless ones included, and list those that decode."),
-    method!("packets.dissect_bytes", Read, packets::dissect_bytes, packets::DissectParams, packets::DissectionResult, "Dissect one packet, from a span or from hex bytes, into protocol layers and fields, a summary and its flow."),
-    method!("packets.detect_frames", Read, packets::detect_frames, packets::DetectFramesParams, packets::DetectFramesResult, "Find the protocol a set of frames of unknown format is, by trying every frame decoder on them."),
-    method!("packets.sets.create", Read, caller packet_sets::create, packet_sets::CreateParams, packet_sets::SetInfo, "Take a set of packets from a document: a capture in it, a range cut into fixed records, by a length field, at a pattern or with the protocol framing, or the selection's ranges, with how to decode frames of unknown format; returns the set's id and what was worked out (the capture found, the framing), so the call can be made again exactly."),
-    method!("packets.sets.list", Read, packet_sets::list_sets, values::NoParams, packet_sets::SetList, "The packet sets made, with their ids, documents, sources, packet counts and decoding."),
-    method!("packets.list", Read, packet_sets::list, packet_sets::ListParams, packet_sets::PacketList, "A set's packets the display filter keeps, a page at a time: each one's index, offset, length, summary columns, protocols and addresses."),
-    method!("packets.dissect", Read, packet_sets::dissect, packet_sets::PacketParams, packet_sets::PacketDissection, "Dissect one packet of a set into protocol layers and fields, as the set decodes frames of unknown format."),
-    method!("packets.decode_as", Read, caller packet_sets::decode_as, packet_sets::DecodeAsParams, packet_sets::SetInfo, "Choose the protocol a set's frames of unknown format are decoded as, or detection, and a template for frames no protocol reads."),
-    method!("packets.export_pcap", Read, caller packet_sets::export_pcap, packet_sets::ExportParams, packet_sets::ExportResult, "A set's packets (those a filter keeps) as a pcap file, returned or written to a path given (which needs leave to edit)."),
-    method!("packets.conversations", Read, packet_sets::conversations, packet_sets::ConversationsParams, packet_sets::ConversationList, "The conversations in a set (the packets a filter keeps): each pair of endpoints with its transport, packets and bytes each way, and a filter for it."),
-    method!("packets.follow_stream", Read, packet_sets::follow_stream, packet_sets::PacketParams, packet_sets::StreamResult, "The payloads of a packet's conversation in order, each with its direction, and the stream as text."),
-    method!("analysis.overview", Read, analysis::overview, analysis::OverviewParams, crate::headless::FileReport, "Map the whole document: a summary of what it is, its regions with offsets, likely record widths and confident findings."),
-    method!("analysis.overview_job", Job, caller analysis::overview_job, analysis::OverviewParams, jobs::JobStartedResult, "Start analysis.overview as a background job and return its id at once; the report arrives as job.finished's result and from jobs.status, for large files and clients that should not wait."),
-    method!("analysis.statistics", Read, analysis::statistics, analysis::SpanParams, analysis::StatisticsResult, "Measure a span: entropy, chi-square, serial correlation, printable, zero and high-byte fractions, distinct values and a verdict."),
-    method!("analysis.segments", Read, analysis::segments, analysis::SegmentsParams, analysis::SegmentsResult, "Split the document into regions of one kind (text, tables, code, compressed, random, padding) and group them into types."),
-    method!("analysis.compressibility", Read, analysis::compressibility, analysis::SpanParams, analysis::CompressibilityResult, "Compress a span with several codecs and report the ratios, with a verdict: encrypted or random, already compressed, lossy media or structured."),
-    method!("analysis.text_encoding", Read, analysis::text_encoding, analysis::SpanParams, analysis::TextEncodingResult, "Identify the character encoding of a span of text, with previews and the likely language."),
-    method!("analysis.processor", Read, analysis::processor, analysis::SpanParams, analysis::ProcessorResult, "Test whether a span is machine code, and for which processor, by disassembling samples for each architecture."),
-    method!("reference.lookup", Read, reference::lookup, reference::LookupParams, reference::LookupResult, "The reference notes on a format or protocol, by id, finding id, layer name, port (udp/67) or number (port, IP protocol or EtherType): layout, field meanings and specifications."),
-    method!("reference.search", Read, reference::search, reference::SearchParams, reference::SearchResult, "Reference entries whose notes mention every word of a query, or that a port or number names."),
-    method!("events.facts", Read, events::facts, events::FactsParams, events::FactsResult, "What the tools have learnt about a document and keep: the latest fact per topic, producer and key, by topic, producer or the bytes they cover, each marked stale when the document changed under it."),
-    method!("jobs.list", Read, jobs::list, values::NoParams, jobs::JobList, "The background jobs tools and callers started (the last 100): what each does, who started it, whether it is running, how far it has got and how it ended."),
-    method!("jobs.status", Read, jobs::status, jobs::JobParams, crate::bus::JobStatus, "One job's state, progress and outcome, and once it has finished, the result of a job a method started."),
-    method!("jobs.cancel", Read, jobs::cancel, jobs::JobParams, crate::bus::JobStatus, "Ask a running job to stop; it ends as cancelled, without a result, as soon as it notices."),
-    method!("events.poll", Read, events::poll, events::PollParams, events::PollResult, "The messages (facts and events) published after a cursor, oldest first, optionally of some topics only; pass back next to keep up."),
+/// Every module's part, in a fixed order. Each module declares its own
+/// methods, so adding a method touches only its module; adding a module
+/// adds one line here.
+const PARTS: &[Part] = &[
+    Part {
+        methods: API_METHODS,
+        describe_call: describe_nothing,
+        #[cfg(test)]
+        examples: api_examples,
+    },
+    part!(documents),
+    part!(bytes),
+    part!(edits),
+    part!(search),
+    part!(numbers),
+    part!(selection),
+    part!(findings),
+    part!(structure),
+    part!(codecs),
+    part!(packets),
+    part!(packet_sets),
+    part!(analysis),
+    part!(reference),
+    part!(events),
+    part!(jobs),
+    part!(tools),
+    part!(view),
+    part!(application),
 ];
+
+/// For modules whose calls need no description of their own.
+fn describe_nothing(_workspace: &mut dyn Workspace, _method: &str, _params: &Value) -> Option<String> {
+    None
+}
+
+#[cfg(test)]
+fn api_examples() -> Vec<(&'static str, Value)> {
+    vec![("api.version", serde_json::json!({})), ("api.describe", serde_json::json!({}))]
+}
+
+/// Every method, grouped by namespace. The namespaces come in the order
+/// their first method appears in [`PARTS`], and within a namespace the
+/// methods keep their modules' order, so the table, `api.describe` and
+/// `docs/api.md` list them the same way every time.
+pub static METHODS: LazyLock<Vec<Method>> = LazyLock::new(|| grouped_by_namespace(PARTS.iter().flat_map(|part| part.methods.iter().copied()).collect()));
+
+/// `methods` grouped by namespace, the namespaces in the order they first
+/// appear; a stable sort keeps each namespace's methods in order.
+fn grouped_by_namespace(mut methods: Vec<Method>) -> Vec<Method> {
+    let mut namespaces: Vec<&str> = Vec::new();
+    for method in &methods {
+        if !namespaces.contains(&method.namespace()) {
+            namespaces.push(method.namespace());
+        }
+    }
+    methods.sort_by_key(|method| namespaces.iter().position(|namespace| *namespace == method.namespace()));
+    methods
+}
 
 /// The method called `name` in the table.
 pub fn method(name: &str) -> Option<&'static Method> {
@@ -471,7 +506,7 @@ pub fn call_or_hold(workspace: &mut dyn Workspace, caller: Caller, name: &str, p
         }
         Decision::Denied => reply(workspace, Err(permissions::denied(&caller, name))),
         Decision::NeedsConfirmation => {
-            let description = edits::describe_call(workspace, name, &params);
+            let description = describe_call(workspace, name, &params);
             let held = HeldCall { caller, method: name.to_string(), params, description, reply };
             if let Some(held) = workspace.hold_for_confirmation(held) {
                 let error = permissions::needs_confirmation(&held.caller, name);
@@ -479,6 +514,18 @@ pub fn call_or_hold(workspace: &mut dyn Workspace, caller: Caller, name: &str, p
             }
         }
     }
+}
+
+/// What a call to `method` with `params` would do, in plain words, for the
+/// window that asks the person: "Overwrite 4 bytes at 0x40 with DE AD BE
+/// EF", "XOR 128 selected bytes with 5A". The method's module describes
+/// it; a call no module describes is shown as "Call method with params".
+pub fn describe_call(workspace: &mut dyn Workspace, method: &str, params: &Value) -> String {
+    let described = PARTS.iter().find(|part| part.methods.iter().any(|known| known.name == method)).and_then(|part| (part.describe_call)(workspace, method, params));
+    described.unwrap_or_else(|| {
+        let shown = if params.as_object().is_some_and(|object| !object.is_empty()) { format!(" with {params}") } else { String::new() };
+        format!("Call {method}{shown}")
+    })
 }
 
 /// The result of `api.version`.
@@ -555,7 +602,7 @@ pub fn reference_markdown() -> String {
     out.push_str("# theviewer data API, version ");
     out.push_str(&description.version);
     out.push_str("\n\n");
-    out.push_str("<!-- Generated from the method table in src/api.rs by `cargo run --bin api_docs`. Do not edit by hand. -->\n\n");
+    out.push_str("<!-- Generated from the method table (src/api.rs and each module in src/api/) by `cargo run --bin api_docs`. Do not edit by hand. -->\n\n");
     out.push_str(
         "Every method can be called from the command line (`theviewer api METHOD '{json params}' FILE`; \
 with `--save`, the file is saved with the call's edits, so `--save history.transaction` edits and saves \
@@ -695,6 +742,7 @@ fn type_label(schema: &Value, root: &Value) -> String {
 
 #[cfg(test)]
 pub(crate) mod test_support {
+    use std::path::PathBuf;
     use std::sync::{Arc, LazyLock};
 
     use serde_json::Value;
@@ -717,6 +765,27 @@ pub(crate) mod test_support {
     pub fn call(workspace: &mut dyn Workspace, name: &str, params: Value) -> Result<Value, ApiError> {
         super::call(workspace, &Caller::Panel, name, params)
     }
+
+    /// The bytes the method examples run on: a zlib stream, then text.
+    pub fn example_bytes() -> Vec<u8> {
+        let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+        std::io::Write::write_all(&mut encoder, &b"hello ".repeat(50)).unwrap();
+        let mut bytes = encoder.finish().unwrap();
+        bytes.extend(b"The quick brown fox jumps over the lazy dog. ".repeat(20));
+        bytes
+    }
+
+    /// A file holding [`example_bytes`], for the examples that open one.
+    pub fn example_file() -> PathBuf {
+        let path = std::env::temp_dir().join(format!("theviewer-api-examples-{}.bin", std::process::id()));
+        std::fs::write(&path, example_bytes()).unwrap();
+        path
+    }
+
+    /// Where the examples that save a document save it.
+    pub fn example_save_path() -> PathBuf {
+        std::env::temp_dir().join(format!("theviewer-api-examples-saved-{}.bin", std::process::id()))
+    }
 }
 
 #[cfg(test)]
@@ -729,7 +798,7 @@ mod tests {
     #[test]
     fn every_method_has_a_unique_dotted_name_and_a_summary() {
         let mut names = std::collections::HashSet::new();
-        for method in METHODS {
+        for method in METHODS.iter() {
             assert!(names.insert(method.name), "{} is declared twice", method.name);
             assert!(method.name.contains('.') && method.name.chars().all(|c| c.is_ascii_lowercase() || c == '.' || c == '_'), "{}", method.name);
             assert!(method.summary.ends_with('.'), "{} needs a one-sentence summary", method.name);
@@ -738,7 +807,7 @@ mod tests {
 
     #[test]
     fn every_schema_is_an_object_schema_that_closes_its_parameters() {
-        for method in METHODS {
+        for method in METHODS.iter() {
             let params = (method.params)().to_value();
             assert_eq!(params["type"], "object", "{} params", method.name);
             assert_eq!(params["additionalProperties"], false, "{} rejects unknown parameters", method.name);
@@ -824,92 +893,46 @@ mod tests {
     }
 
     #[test]
-    fn every_method_accepts_an_example_and_answers_in_its_result_schema() {
-        let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
-        std::io::Write::write_all(&mut encoder, &b"hello ".repeat(50)).unwrap();
-        let mut bytes = encoder.finish().unwrap();
-        bytes.extend(b"The quick brown fox jumps over the lazy dog. ".repeat(20));
-        let path = std::env::temp_dir().join(format!("theviewer-api-examples-{}.bin", std::process::id()));
-        std::fs::write(&path, &bytes).unwrap();
-        let saved = std::env::temp_dir().join(format!("theviewer-api-examples-saved-{}.bin", std::process::id()));
-        let mut workspace = workspace_with("example.bin", &bytes);
-        let examples = [
-            ("api.version", json!({})),
-            ("api.describe", json!({})),
-            ("documents.list", json!({})),
-            ("documents.info", json!({"doc": "current"})),
-            ("documents.open", json!({"path": path.display().to_string()})),
-            ("bytes.read", json!({"doc": "doc-1", "start": 0, "len": 8, "encoding": "base64"})),
-            ("bytes.hexdump", json!({"start": 0, "len": 32})),
-            ("bits.read", json!({"bit_start": 3, "bit_len": 12, "order": "lsb"})),
-            ("search.find", json!({"query": "fox", "mode": "text"})),
-            ("search.find_all", json!({"query": "6f 78", "mode": "hex", "limit": 5})),
-            ("search.count", json!({"query": "the"})),
-            ("numbers.decode", json!({"at": 0})),
-            ("selection.get", json!({})),
-            ("cursor.get", json!({})),
-            ("findings.query", json!({"min_confidence": 0.0, "categories": ["compressed", "text"]})),
-            ("structure.parse", json!({"at": 0})),
-            ("structure.parsers", json!({})),
-            ("templates.list", json!({})),
-            ("templates.apply", json!({"name": "Fixed-size records", "limit": 2})),
-            ("codecs.list", json!({})),
-            ("codecs.detect", json!({"at": 0})),
-            ("codecs.decode", json!({"start": 0, "codec": "zlib", "encoding": "text"})),
-            ("codecs.probe", json!({"start": 0})),
-            ("packets.dissect_bytes", json!({"start": 0, "len": 40, "link": "unknown"})),
-            ("packets.detect_frames", json!({"frames": [{"start": 0, "len": 8}, {"start": 8, "len": 8}]})),
-            ("packets.sets.create", json!({"from": "split_fixed", "record_len": 8, "len": 64, "decode_as": "dns", "link": "unknown"})),
-            ("packets.sets.list", json!({})),
-            ("packets.list", json!({"set": "set-1", "filter": "len>4", "limit": 2})),
-            ("packets.dissect", json!({"set": "set-1", "index": 0})),
-            ("packets.decode_as", json!({"set": "set-1", "detect": false})),
-            ("packets.export_pcap", json!({"set": "set-1"})),
-            ("packets.conversations", json!({"set": "set-1"})),
-            ("packets.follow_stream", json!({"set": "set-1", "index": 0})),
-            ("analysis.overview", json!({"max_findings": 5})),
-            ("analysis.overview_job", json!({"max_findings": 1})),
-            ("jobs.list", json!({})),
-            ("jobs.status", json!({"job": "overview-1"})),
-            ("jobs.cancel", json!({"job": "overview-1"})),
-            ("analysis.statistics", json!({"start": 0, "len": 100})),
-            ("analysis.segments", json!({"limit": 3})),
-            ("analysis.compressibility", json!({})),
-            ("analysis.text_encoding", json!({"start": 100})),
-            ("analysis.processor", json!({})),
-            ("reference.lookup", json!({"name": "zlib"})),
-            ("reference.search", json!({"query": "compression", "limit": 3})),
-            ("events.facts", json!({"topic": "record_width.estimated", "span": {"start": 0, "len": 16}})),
-            ("events.poll", json!({"cursor": 0, "topics": ["document.opened"], "limit": 10})),
-            ("findings.publish", json!({"findings": [{"id": "x", "source": "test", "category": "custom", "start": 0, "len": 4, "title": "", "detail": "", "confidence": 1.0, "fields": []}]})),
-            ("findings.retract", json!({})),
-            ("transform.preview", json!({"selection": {"range": [0, 4]}, "operation": {"op": "invert"}})),
-            ("bytes.write", json!({"start": 0, "data": "00"})),
-            ("bytes.insert", json!({"at": 0, "data": "00"})),
-            ("bytes.delete", json!({"start": 0, "len": 1})),
-            ("bytes.replace", json!({"start": 0, "len": 1, "data": "ffff"})),
-            ("bits.write", json!({"bit_start": 3, "bits": "101"})),
-            ("transform.apply", json!({"selection": {"range": [0, 4]}, "operation": {"op": "xor", "key": "5a"}})),
-            ("history.undo", json!({})),
-            ("history.redo", json!({})),
-            ("history.transaction", json!({"calls": [{"method": "cursor.set", "params": {"offset": 2}}, {"method": "bytes.delete", "params": {"start": 0, "len": 1}}]})),
-            ("selection.set", json!({"selection": {"range": [1, 3]}})),
-            ("cursor.set", json!({"offset": 5})),
-            ("documents.save", json!({"path": saved.display().to_string()})),
-            ("documents.new", json!({"name": "scratch"})),
-        ];
-        let named: std::collections::HashSet<&str> = examples.iter().map(|(name, _)| *name).collect();
-        for method in METHODS {
-            assert!(named.contains(method.name), "{} needs an example here", method.name);
+    fn every_module_gives_an_example_of_each_of_its_methods() {
+        for part in PARTS {
+            let named: std::collections::HashSet<&str> = (part.examples)().iter().map(|(name, _)| *name).collect();
+            for method in part.methods {
+                assert!(named.contains(method.name), "{} needs an example in its module's examples()", method.name);
+            }
         }
-        for (name, params) in examples {
-            let method = method(name).unwrap();
-            fits_schema(&(method.params)(), &params).unwrap_or_else(|problem| panic!("{name} params: {problem}"));
-            let result = call(&mut workspace, name, params).unwrap_or_else(|error| panic!("{name}: {error}"));
-            fits_schema(&(method.result)(), &result).unwrap_or_else(|problem| panic!("{name} result: {problem}"));
+    }
+
+    #[test]
+    fn every_method_accepts_its_example_and_answers_in_its_result_schema() {
+        for part in PARTS {
+            // Each module's examples run in order on a document of their own.
+            let mut workspace = workspace_with("example.bin", &test_support::example_bytes());
+            for (name, params) in (part.examples)() {
+                let method = method(name).unwrap_or_else(|| panic!("{name} is not in the table"));
+                fits_schema(&(method.params)(), &params).unwrap_or_else(|problem| panic!("{name} params: {problem}"));
+                let result = call(&mut workspace, name, params).unwrap_or_else(|error| panic!("{name}: {error}"));
+                fits_schema(&(method.result)(), &result).unwrap_or_else(|problem| panic!("{name} result: {problem}"));
+            }
         }
-        std::fs::remove_file(path).ok();
-        std::fs::remove_file(saved).ok();
+        std::fs::remove_file(test_support::example_file()).ok();
+        std::fs::remove_file(test_support::example_save_path()).ok();
+    }
+
+    #[test]
+    fn the_table_lists_every_module_s_methods_once_grouped_by_namespace() {
+        let declared: usize = PARTS.iter().map(|part| part.methods.len()).sum();
+        assert_eq!(METHODS.len(), declared, "every module's methods are in the table");
+        let mut finished: Vec<&str> = Vec::new();
+        let mut current = "";
+        for method in METHODS.iter() {
+            if method.namespace() != current {
+                assert!(!finished.contains(&method.namespace()), "{} is apart from the rest of its namespace", method.name);
+                finished.push(current);
+                current = method.namespace();
+            }
+        }
+        let first: Vec<&str> = METHODS.iter().take(4).map(|method| method.name).collect();
+        assert_eq!(first, ["api.version", "api.describe", "documents.list", "documents.info"]);
     }
 
     #[test]
