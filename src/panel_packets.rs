@@ -1235,6 +1235,55 @@ mod tests {
         assert_eq!(harness.state_mut().1.document.read_range(0, original.len()), original, "one undo restores every packet");
     }
 
+    /// Press at `from`, drag to `to` and release, a frame at a time.
+    fn drag_between(harness: &mut PanelHarness, from: egui::Pos2, to: egui::Pos2) {
+        harness.hover_at(from);
+        harness.step();
+        harness.event(egui::Event::PointerButton { pos: from, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE });
+        harness.step();
+        harness.event(egui::Event::PointerMoved(from.lerp(to, 0.5)));
+        harness.step();
+        harness.event(egui::Event::PointerMoved(to));
+        harness.step();
+        harness.event(egui::Event::PointerButton { pos: to, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE });
+        harness.step();
+    }
+
+    #[test]
+    fn dragging_across_packets_selects_a_block_and_an_operation_changes_only_that_block() {
+        let (stream, starts) = length_prefixed_stream();
+        let original = stream.clone();
+        let mut harness = harness_for(stream);
+        {
+            let (state, app) = harness.state_mut();
+            state.grid.split.rule = grid::SplitRule::LengthField;
+            state.grid.split.whole_document = true;
+            state.grid.split.field = packets::split::LengthField { offset: 1, ..Default::default() };
+            grid::split_now(state, app);
+            state.grid.layout = grid::PacketLayout::Hex;
+        }
+        settle(&mut harness);
+        let ruler = harness.state().0.grid.ruler.expect("the hex grid was drawn");
+        // Rows are 16 points tall below the ruler; aim at the middle of a cell.
+        let cell = |row: f32, column: usize| ruler.column_centre(column) + egui::vec2(0.0, 8.0 + 16.0 * row + 4.0);
+        drag_between(&mut harness, cell(1.0, 1), cell(3.0, 2));
+        assert_eq!(harness.state().0.grid.columns, Some((1, 2)), "columns 1 and 2");
+        assert_eq!(harness.state().0.grid.block_rows, Some((1, 3)), "packets 2 to 4");
+        assert!(harness.query_by_label_contains("Block: packets 2–4").is_some());
+
+        harness.state_mut().0.grid.operation_text = "FF".to_string();
+        harness.get_by_label("XOR column").click();
+        settle(&mut harness);
+        let edited = harness.state_mut().1.document.read_range(0, original.len());
+        for (at, (&now, &before)) in edited.iter().zip(&original).enumerate() {
+            let in_block = starts[1..4].iter().any(|&start| at == start + 1 || at == start + 2);
+            assert_eq!(now, if in_block { before ^ 0xFF } else { before }, "byte {at:#x} (in the block: {in_block})");
+        }
+        harness.state_mut().1.undo();
+        settle(&mut harness);
+        assert_eq!(harness.state_mut().1.document.read_range(0, original.len()), original);
+    }
+
     #[test]
     fn auto_detect_fills_in_the_length_field_and_clicking_a_hex_cell_selects_that_byte() {
         let (stream, starts) = length_prefixed_stream();

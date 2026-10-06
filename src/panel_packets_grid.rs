@@ -250,6 +250,8 @@ enum Drag {
     Columns { anchor: usize },
     /// Selecting bytes of one row from document offset `anchor`.
     Bytes { row: usize, anchor: usize },
+    /// Selecting a block of rows and columns from a corner cell.
+    Block { anchor_row: usize, anchor_column: usize },
 }
 
 /// Where the ruler was last drawn: the screen x of column 0's left edge, the
@@ -285,6 +287,9 @@ pub struct GridState {
     pub only_selected: bool,
     /// Selected columns, as `(first, width)`.
     pub columns: Option<(usize, usize)>,
+    /// The rows those columns cover, as `(first row, count)`: a block dragged
+    /// out of the grid. `None` when the whole columns are selected.
+    pub block_rows: Option<(usize, usize)>,
     pub operation_text: String,
     pub little_endian: bool,
     pub counter_start: u64,
@@ -311,6 +316,7 @@ impl Default for GridState {
             align_error: None,
             only_selected: false,
             columns: None,
+            block_rows: None,
             operation_text: String::new(),
             little_endian: false,
             counter_start: 0,
@@ -397,6 +403,7 @@ pub fn split_now(state: &mut PacketsState, app: &mut ViewerApp) {
             let summary = split::frame_lengths(&set).map(|lengths| lengths.to_string()).unwrap_or_default();
             state.load(set);
             state.grid.columns = None;
+            state.grid.block_rows = None;
             state.note = Some(Note { text: format!("Split {len} bytes at {start:#x}: {summary}."), is_error: false });
         }
         Err(error) => state.note = Some(Note { text: error.to_string(), is_error: true }),
@@ -878,11 +885,16 @@ fn paint_selections(state: &PacketsState, app: &ViewerApp, painter: &egui::Paint
         return;
     }
     if let Some((first, width)) = state.grid.columns {
-        let top = geometry.cell_rect(content, first_row, first).min;
-        let bottom = geometry.cell_rect(content, end_row - 1, first + width - 1).max;
-        let band = Rect::from_min_max(top, bottom);
-        painter.rect_filled(band, 0.0, theme::SELECTION);
-        painter.rect_stroke(band, 0.0, Stroke::new(1.0, theme::ACCENT), egui::StrokeKind::Inside);
+        // The whole columns, or just the block's rows, clipped to what is visible.
+        let (block_first, block_end) = state.grid.block_rows.map_or((first_row, end_row), |(row, count)| (row, row + count));
+        let (top_row, bottom_row) = (block_first.max(first_row), block_end.min(end_row));
+        if top_row < bottom_row {
+            let top = geometry.cell_rect(content, top_row, first).min;
+            let bottom = geometry.cell_rect(content, bottom_row - 1, first + width - 1).max;
+            let band = Rect::from_min_max(top, bottom);
+            painter.rect_filled(band, 0.0, theme::SELECTION);
+            painter.rect_stroke(band, 0.0, Stroke::new(1.0, theme::ACCENT), egui::StrokeKind::Inside);
+        }
     }
     let rows = &state.grid.rows;
     let selection = app.selection();
@@ -1060,13 +1072,42 @@ fn column_anchor(state: &PacketsState, column: usize, modifiers: Modifiers) -> u
 fn click_column(state: &mut PacketsState, column: usize, modifiers: Modifiers) {
     let anchor = column_anchor(state, column, modifiers);
     state.grid.columns = Some((anchor.min(column), anchor.abs_diff(column) + 1));
+    state.grid.block_rows = None;
+}
+
+/// The column under screen x, clamped to the grid.
+fn clamped_column(geometry: &Geometry, content: Rect, x: f32) -> usize {
+    ((x - content.min.x - LABEL_WIDTH) / geometry.cell.x).floor().clamp(0.0, geometry.columns.saturating_sub(1) as f32) as usize
+}
+
+/// The row under screen y, clamped to the grid.
+fn clamped_row(geometry: &Geometry, content: Rect, y: f32) -> usize {
+    ((y - content.min.y - HEADER_HEIGHT) / geometry.cell.y).floor().clamp(0.0, geometry.rows.saturating_sub(1) as f32) as usize
+}
+
+/// Select the block between two corner cells.
+fn select_block(state: &mut PacketsState, (row_a, column_a): (usize, usize), (row_b, column_b): (usize, usize)) {
+    state.grid.columns = Some((column_a.min(column_b), column_a.abs_diff(column_b) + 1));
+    state.grid.block_rows = Some((row_a.min(row_b), row_a.abs_diff(row_b) + 1));
 }
 
 fn drag_to(state: &mut PacketsState, app: &mut ViewerApp, geometry: &Geometry, content: Rect, drag: Drag, position: Pos2) {
     match drag {
         Drag::Columns { anchor } => {
-            let column = ((position.x - content.min.x - LABEL_WIDTH) / geometry.cell.x).floor().clamp(0.0, geometry.columns.saturating_sub(1) as f32) as usize;
+            let column = clamped_column(geometry, content, position.x);
             state.grid.columns = Some((anchor.min(column), anchor.abs_diff(column) + 1));
+            state.grid.block_rows = None;
+        }
+        Drag::Block { anchor_row, anchor_column } => {
+            let corner = (clamped_row(geometry, content, position.y), clamped_column(geometry, content, position.x));
+            select_block(state, (anchor_row, anchor_column), corner);
+        }
+        // Leaving the packet the drag started in turns it into a block.
+        Drag::Bytes { row, anchor } if clamped_row(geometry, content, position.y) != row => {
+            let anchor_column = state.grid.rows.placements[row].column_of(anchor).unwrap_or(0);
+            state.grid.drag = Some(Drag::Block { anchor_row: row, anchor_column });
+            let corner = (clamped_row(geometry, content, position.y), clamped_column(geometry, content, position.x));
+            select_block(state, (row, anchor_column), corner);
         }
         Drag::Bytes { row, anchor } => {
             let placement = state.grid.rows.placements[row];
@@ -1107,10 +1148,12 @@ fn target_slices(state: &PacketsState) -> Vec<ColumnSlice> {
     let Some((first, width)) = state.grid.columns else { return Vec::new() };
     let rows = &state.grid.rows;
     let only_selected = state.grid.only_selected && !state.selected.is_empty();
+    let in_block = |row: usize| state.grid.block_rows.is_none_or(|(first_row, count)| row >= first_row && row < first_row + count);
     let targets: Vec<(usize, RowPlacement)> = rows
         .placements
         .iter()
         .enumerate()
+        .filter(|(row, _)| in_block(*row))
         .filter(|(row, _)| !only_selected || state.selected.contains(&rows.packets[*row]))
         .map(|(row, placement)| (row, *placement))
         .collect();
@@ -1173,6 +1216,7 @@ pub fn delete_columns(state: &mut PacketsState, app: &mut ViewerApp) {
     }
     let bytes: usize = removed.iter().map(|&(_, len)| len).sum();
     state.grid.columns = None;
+    state.grid.block_rows = None;
     state.note = Some(Note {
         text: format!("Deleted columns +{first}..+{} from {} packets ({bytes} bytes). Length fields and checksums are not updated; fix them if the format has them. Undo with Cmd+Z.", first + width, slices.len()),
         is_error: false,
@@ -1216,7 +1260,7 @@ enum ColumnAction {
 fn show_column_operations(state: &mut PacketsState, app: &mut ViewerApp, ui: &mut Ui) {
     let Some((first, width)) = state.grid.columns else {
         ui.label(
-            RichText::new("Click the ruler (or Alt-click a byte) to select columns, drag for several; click a row's number to select its packet.").small().color(theme::TEXT_DIM),
+            RichText::new("Drag across packets to select a block, click the ruler (or Alt-click a byte) to select whole columns, and click a row's number to select its packet.").small().color(theme::TEXT_DIM),
         );
         return;
     };
@@ -1225,7 +1269,14 @@ fn show_column_operations(state: &mut PacketsState, app: &mut ViewerApp, ui: &mu
     let mut action = None;
     let grid = &mut state.grid;
     ui.horizontal_wrapped(|ui| {
-        ui.label(RichText::new(format!("Columns +{first}..+{} ({width} B) in {targets} packets", first + width)).strong());
+        let rows_described = match grid.block_rows {
+            Some((row, count)) => {
+                let packet = |row: usize| grid.rows.packets.get(row).map_or(row + 1, |&packet| packet + 1);
+                format!("Block: packets {}–{}, ", packet(row), packet(row + count - 1))
+            }
+            None => "Columns ".to_string(),
+        };
+        ui.label(RichText::new(format!("{rows_described}+{first}..+{} ({width} B) in {targets} packets", first + width)).strong());
         ui.add_enabled(has_selected_packets, egui::Checkbox::new(&mut grid.only_selected, "only the selected packets"));
         if ui.small_button("Clear").clicked() {
             action = Some(ColumnAction::Clear);
@@ -1292,7 +1343,10 @@ fn show_column_operations(state: &mut PacketsState, app: &mut ViewerApp, ui: &mu
         Some(ColumnAction::Operation(operation)) => apply_column_operation(state, app, &operation),
         Some(ColumnAction::Delete) => delete_columns(state, app),
         Some(ColumnAction::Copy { as_csv }) => copy_columns(state, app, ui.ctx(), as_csv),
-        Some(ColumnAction::Clear) => state.grid.columns = None,
+        Some(ColumnAction::Clear) => {
+            state.grid.columns = None;
+            state.grid.block_rows = None;
+        }
         None => {}
     }
 }

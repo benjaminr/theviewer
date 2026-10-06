@@ -193,9 +193,11 @@ pixels when zoomed in if you want it); *Hex* writes the same rows as hex
 with ASCII beside them. Rows can be lined up on a pattern or on the packet's
 end, and a strip above the columns marks each byte offset as constant,
 counter, few values, text or random. Click a byte to select it in the view;
-click the ruler (or Alt-click) to select columns and invert, fill, XOR, add
-to, set, number, byte-swap, copy (hex or CSV) or delete them in every packet
-at once, as one undoable edit.
+drag across packets to select a block (a range of packets by a range of
+byte offsets), or click the ruler (or Alt-click) to select whole columns,
+then invert, fill, XOR, add to, set, number, byte-swap, copy (hex or CSV)
+or delete those bytes in every packet of the selection at once, as one
+undoable edit.
 
 Also in the menus: *Plot selection* draws bytes as a time series, histogram,
 scatter or frequency spectrum, and *Play selection as audio* plays any bytes
