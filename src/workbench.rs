@@ -20,25 +20,16 @@ use crate::dock::{self, DockTab};
 use crate::explain::{self, Region, Report};
 use crate::hilbert;
 use crate::plot::{self, PcmFormat};
-use crate::plugin::{Category, Field, Finding, ScanContext};
+use crate::plugin::{Category, Field, Finding};
 use crate::raster::{self, PixelFormat};
-use crate::search;
 use crate::sources::{self, FileWatcher, Recording, SerialCapture, SourceSpec};
 use crate::templates::{self, Applied, Template};
 use crate::theme;
 use crate::unpack::{self, Node};
-use crate::{patterns, player};
+use crate::player;
 
 /// Largest prefix of a file the report and unpacker read into memory.
 pub(crate) const ANALYSIS_READ_LIMIT: usize = 256 * 1024 * 1024;
-/// Largest prefix Ask's file overview reads; it runs while Claude waits.
-const ASK_OVERVIEW_LIMIT: usize = 64 * 1024 * 1024;
-/// Findings included in Ask's file overview.
-const ASK_OVERVIEW_FINDINGS: usize = 150;
-/// Largest range Ask's statistics and processor tools read.
-const ASK_RANGE_LIMIT: usize = 16 * 1024 * 1024;
-/// Regions listed by Ask's segmentation tool.
-const ASK_SEGMENTS_LISTED: usize = 80;
 /// Largest file kept in the recording history.
 const RECORDING_FILE_LIMIT: usize = 256 * 1024 * 1024;
 /// How often watched files and serial captures are checked.
@@ -870,132 +861,10 @@ impl ViewerApp {
         }
     }
 
-    /// Carry out a tool call from the assistant against the open document.
-    pub fn run_assistant_tool(&mut self, call: &ToolCall) -> String {
-        match call {
-            ToolCall::ReadBytes { offset, length } => {
-                if *offset >= self.document.len() {
-                    return format!("Offset {offset:#x} is past the end of the file ({} bytes).", self.document.len());
-                }
-                assistant::hex_dump(&self.document.read_range(*offset, *length), *offset)
-            }
-            ToolCall::Search { query, hex } => {
-                let mode = if *hex { search::SearchMode::Hex } else { search::SearchMode::Text };
-                let needle = match search::needle_for(mode, query, true) {
-                    Ok(needle) => needle,
-                    Err(message) => return message,
-                };
-                let mut hits = Vec::new();
-                let mut from = 0;
-                while hits.len() < 64 {
-                    match search::find_next(&mut self.document, &needle, from) {
-                        Some(at) => {
-                            hits.push(format!("{at:#x}"));
-                            from = at + 1;
-                        }
-                        None => break,
-                    }
-                }
-                if hits.is_empty() { "No matches.".to_string() } else { format!("{} matches: {}", hits.len(), hits.join(", ")) }
-            }
-            ToolCall::ListFindings { start, length } => {
-                let window = self.document.read_range(*start, *length);
-                let context = ScanContext { base: *start, document_len: self.document.len(), strides: vec![self.shape.row_stride()] };
-                let mut found = self.registry.scan(&window, &context);
-                patterns::resolve_overlaps(&mut found);
-                let lines: Vec<String> = found
-                    .iter()
-                    .filter(|f| f.confidence >= 0.5)
-                    .take(200)
-                    .map(|f| format!("{:#x}..{:#x} [{}] {}", f.start, f.end(), f.category.label(), f.description()))
-                    .collect();
-                if lines.is_empty() { "Nothing recognised in that range.".to_string() } else { lines.join("\n") }
-            }
-            ToolCall::ParseStructure { offset } => {
-                let bytes = self.document.read_range(*offset, TEMPLATE_READ);
-                let mut parsed = self.registry.parse_at(&bytes, *offset);
-                parsed.sort_by(|a, b| b.confidence.total_cmp(&a.confidence));
-                match parsed.first() {
-                    Some(finding) => format!("{} ({} bytes)\n{}", finding.description(), finding.len, render_fields(&finding.fields, 0, 300)),
-                    None => format!("No parser recognises a structure at {offset:#x}."),
-                }
-            }
-            ToolCall::FileOverview => {
-                let bytes = self.document.read_range(0, ASK_OVERVIEW_LIMIT);
-                let name = self.display_name();
-                let report = crate::headless::analyse_bytes(&bytes, &name, &name, self.document.len(), &self.registry);
-                crate::headless::render_text(&crate::headless::FileReport {
-                    findings: report.findings.into_iter().take(ASK_OVERVIEW_FINDINGS).collect(),
-                    ..report
-                })
-            }
-            ToolCall::ByteStatistics { start, length } => {
-                let bytes = self.document.read_range(*start, (*length).min(ASK_RANGE_LIMIT));
-                let stats = crate::stats::byte_stats(&bytes);
-                let verdict = crate::stats::verdict(&stats);
-                format!(
-                    "{} bytes at {start:#x}: {} — {}\nentropy {:.3} bits/byte, chi-square p {:.4}, serial correlation {:+.3}, printable {:.1}%, zero {:.1}%, ≥0x80 {:.1}%, {} distinct values",
-                    bytes.len(),
-                    verdict.label,
-                    verdict.explanation,
-                    stats.entropy,
-                    stats.chi_square_p,
-                    stats.serial_correlation,
-                    stats.printable_fraction * 100.0,
-                    stats.zero_fraction * 100.0,
-                    stats.high_fraction * 100.0,
-                    stats.distinct_values,
-                )
-            }
-            ToolCall::SegmentFile => {
-                let bytes = self.document.read_range(0, ASK_OVERVIEW_LIMIT);
-                let segmentation = crate::segments::segment_file(&bytes, &crate::segments::SegmentOptions::default());
-                let mut lines: Vec<String> = segmentation
-                    .types
-                    .iter()
-                    .map(|kind| format!("type {}: {} ({} regions, {} bytes)", kind.id, kind.label, kind.count, kind.total_bytes))
-                    .collect();
-                lines.extend(segmentation.segments.iter().take(ASK_SEGMENTS_LISTED).map(|segment| {
-                    format!("{:#x}..{:#x} type {} {} — {}", segment.start, segment.end(), segment.type_id, segment.label, segment.reason)
-                }));
-                if segmentation.segments.len() > ASK_SEGMENTS_LISTED {
-                    lines.push(format!("… and {} more regions", segmentation.segments.len() - ASK_SEGMENTS_LISTED));
-                }
-                lines.join("\n")
-            }
-            ToolCall::Compressibility { start, length } => {
-                let bytes = self.document.read_range(*start, (*length).min(ASK_RANGE_LIMIT));
-                let profile = crate::codec_profile::profile_region(&bytes);
-                let mut lines = vec![format!("{}: {}", profile.verdict.label(), profile.reason)];
-                lines.extend(profile.ratios.iter().map(|ratio| match ratio.ratio(profile.sample_len) {
-                    Some(value) => format!("{}: {:.1}% of original size", ratio.probe.label(), value * 100.0),
-                    None => format!("{}: failed", ratio.probe.label()),
-                }));
-                lines.join("\n")
-            }
-            ToolCall::TextEncoding { start, length } => {
-                let bytes = self.document.read_range(*start, (*length).min(ASK_RANGE_LIMIT));
-                let report = crate::charset::characterise_text(&bytes);
-                let mut lines: Vec<String> = report
-                    .encodings
-                    .iter()
-                    .take(3)
-                    .map(|guess| format!("{}: {:.2} — {} — \"{}\"", guess.encoding.label(), guess.confidence, guess.reason, guess.preview))
-                    .collect();
-                lines.extend(report.languages.iter().take(2).map(|guess| format!("language {}: {:.2}", guess.language.label(), guess.confidence)));
-                if lines.is_empty() { "This does not look like text.".to_string() } else { lines.join("\n") }
-            }
-            ToolCall::FormatReference { name } => crate::reference::library().describe_for_assistant(name),
-            ToolCall::IdentifyProcessor { start, length } => {
-                let bytes = self.document.read_range(*start, (*length).min(ASK_RANGE_LIMIT));
-                let report = crate::cpu_detect::identify_architecture(&bytes, *start);
-                let mut lines = vec![report.summary.clone()];
-                lines.extend(report.candidates.iter().take(5).map(|candidate| {
-                    format!("{}: confidence {:.2} — {}", candidate.arch.label(), candidate.confidence, candidate.reason)
-                }));
-                lines.join("\n")
-            }
-        }
+    /// Carry out a tool call from the assistant against the open document,
+    /// through the data API: the method's JSON result, or its error as JSON.
+    pub fn run_assistant_tool(&mut self, call: &ToolCall) -> Result<String, String> {
+        call.run(self)
     }
 
     // -----------------------------------------------------------------------

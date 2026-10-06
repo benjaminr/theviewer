@@ -29,6 +29,13 @@ fn harness_for(path: PathBuf) -> Harness<'static, ViewerApp> {
     harness
 }
 
+/// Run one of Ask's tools against the window's document and read its JSON result.
+fn ask_tool(app: &mut ViewerApp, tool: &str, input: serde_json::Value) -> serde_json::Value {
+    let call = ToolCall::parse(tool, &input).unwrap();
+    let output = app.run_assistant_tool(&call).unwrap_or_else(|error| panic!("{tool}: {error}"));
+    serde_json::from_str(&output).unwrap()
+}
+
 fn steps(harness: &mut Harness<'static, ViewerApp>, count: usize) {
     for _ in 0..count {
         harness.step();
@@ -279,14 +286,16 @@ fn plotting_audio_from_bytes_and_the_assistant_tools() {
 
     // The assistant's tools run against the open document.
     let app = harness.state_mut();
-    let dump = app.run_assistant_tool(&ToolCall::ReadBytes { offset: 0, length: 16 });
-    assert!(dump.starts_with("00000000  46 57 49 4d"), "{dump}");
-    let found = app.run_assistant_tool(&ToolCall::Search { query: "WAVE".into(), hex: false });
-    assert!(found.contains(&format!("{:#x}", wav_at + 8)), "{found}");
-    let listed = app.run_assistant_tool(&ToolCall::ListFindings { start: gzip_at.saturating_sub(16), length: 4096 });
-    assert!(listed.contains("gzip"), "{listed}");
-    let parsed = app.run_assistant_tool(&ToolCall::ParseStructure { offset: 1 });
-    assert!(parsed.contains("No parser"), "{parsed}");
+    let dump = ask_tool(app, "bytes_hexdump", serde_json::json!({ "start": 0, "len": 16 }));
+    assert!(dump["dump"].as_str().unwrap().starts_with("00000000  46 57 49 4d"), "{dump}");
+    let found = ask_tool(app, "search_find_all", serde_json::json!({ "query": "WAVE", "mode": "text" }));
+    assert!(found["matches"].as_array().unwrap().contains(&serde_json::json!(wav_at + 8)), "{found}");
+    let listed = ask_tool(app, "findings_query", serde_json::json!({ "start": gzip_at.saturating_sub(16), "len": 4096 }));
+    assert!(listed.to_string().contains("gzip"), "{listed}");
+    let parsed = ask_tool(app, "structure_parse", serde_json::json!({ "at": 1 }));
+    assert_eq!(parsed["structures"], serde_json::json!([]), "nothing parses at offset 1");
+    let refused = app.run_assistant_tool(&ToolCall::parse("bytes_hexdump", &serde_json::json!({ "start": 1u64 << 40 })).unwrap());
+    assert!(refused.unwrap_err().contains("out_of_range"));
 
     // Without credentials, asking explains where to add a key.
     harness.state_mut().credentials = None;
@@ -639,23 +648,23 @@ fn ask_can_map_the_file_measure_ranges_and_look_for_code() {
     let mut harness = harness_for(path.clone());
     let app = harness.state_mut();
 
-    let overview = app.run_assistant_tool(&ToolCall::parse("file_overview", &serde_json::json!({})).unwrap());
-    assert!(overview.contains("gzip"), "{overview}");
+    let overview = ask_tool(app, "analysis_overview", serde_json::json!({}));
+    assert!(overview.to_string().contains("gzip"), "{overview}");
 
-    let call = ToolCall::parse("byte_statistics", &serde_json::json!({ "start": gzip_at, "length": 256 })).unwrap();
-    let statistics = app.run_assistant_tool(&call);
-    assert!(statistics.contains("entropy"), "{statistics}");
+    let statistics = ask_tool(app, "analysis_statistics", serde_json::json!({ "start": gzip_at, "len": 256 }));
+    assert!(statistics["entropy"].as_f64().unwrap() > 0.0, "{statistics}");
 
-    let call = ToolCall::parse("identify_processor", &serde_json::json!({ "start": 0, "length": 4096 })).unwrap();
-    assert!(!app.run_assistant_tool(&call).is_empty());
-    assert!(ToolCall::parse("byte_statistics", &serde_json::json!({ "start": 0 })).is_err(), "a missing length is rejected");
+    let processor = ask_tool(app, "analysis_processor", serde_json::json!({ "start": 0, "len": 4096 }));
+    assert!(!processor["summary"].as_str().unwrap().is_empty());
+    let missing = app.run_assistant_tool(&ToolCall::parse("analysis_statistics", &serde_json::json!({ "len": "all" })).unwrap());
+    assert!(missing.unwrap_err().contains("invalid_params"), "arguments of the wrong type are rejected");
 
-    let segments = app.run_assistant_tool(&ToolCall::parse("segment_file", &serde_json::json!({})).unwrap());
-    assert!(segments.contains("type 0"), "{segments}");
-    let call = ToolCall::parse("compressibility", &serde_json::json!({ "start": gzip_at, "length": 256 })).unwrap();
-    assert!(app.run_assistant_tool(&call).contains('%'));
-    let call = ToolCall::parse("text_encoding", &serde_json::json!({ "start": 0, "length": 256 })).unwrap();
-    assert!(!app.run_assistant_tool(&call).is_empty());
+    let segments = ask_tool(app, "analysis_segments", serde_json::json!({}));
+    assert_eq!(segments["types"][0]["id"], 0, "{segments}");
+    let compressibility = ask_tool(app, "analysis_compressibility", serde_json::json!({ "start": gzip_at, "len": 256 }));
+    assert!(!compressibility["ratios"].as_array().unwrap().is_empty());
+    let encoding = ask_tool(app, "analysis_text_encoding", serde_json::json!({ "start": 0, "len": 256 }));
+    assert!(encoding["encodings"].is_array());
     std::fs::remove_file(path).ok();
 }
 

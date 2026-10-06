@@ -17,6 +17,8 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 
+use crate::api;
+
 pub const MODEL: &str = "claude-opus-5-5";
 const API_URL: &str = "https://api.anthropic.com/v1/messages";
 const API_VERSION: &str = "2023-06-01";
@@ -35,11 +37,11 @@ pub const MAX_TOOL_RESULT_CHARS: usize = 24_000;
 
 /// The request behind *Characterise*: a short question that names the tools
 /// to work through, so the answer is grounded in measurements.
-pub const CHARACTERISE_REQUEST: &str = "Characterise this file: what is it, how is it laid out, and what does each part contain? Start with file_overview and segment_file, check the main regions with byte_statistics, compressibility, identify_processor and text_encoding, look closer where something is unclear, and cite offsets.";
+pub const CHARACTERISE_REQUEST: &str = "Characterise this file: what is it, how is it laid out, and what does each part contain? Start with analysis_overview and analysis_segments, check the main regions with analysis_statistics, analysis_compressibility, analysis_processor and analysis_text_encoding, look closer where something is unclear, and cite offsets.";
 
 const SYSTEM_PROMPT: &str = "You are the analysis assistant inside theviewer, a binary file viewer and editor used for reverse engineering, firmware analysis and data recovery. The user is looking at a file and asks you about it.
 
-Each question comes with a snapshot of what the user sees: the file's name and size, the cursor and selection, nearby findings from the app's detectors, the parsed structure at the cursor, reference notes on the formats enclosing the cursor, and a hex dump around the cursor. Use the tools to look further: read bytes anywhere, search, list findings in a range, parse the structure at an offset, map the whole file, split it into typed segments, measure a range's statistics, compressibility or text encoding, test a range for machine code, or read the reference notes on a format. When you explain a field or layout, cite the specification and section the notes give (for example RFC 791 §3.1). Look before you conclude; base claims on bytes you have seen, and say how sure you are when something is a guess.
+Each question comes with a snapshot of what the user sees: the file's name and size, the cursor and selection, nearby findings from the app's detectors, the parsed structure at the cursor, reference notes on the formats enclosing the cursor, and a hex dump around the cursor. Use the tools to look further: read bytes or bits anywhere, search, decode numbers, list findings in a range, parse the structure at an offset or apply a template, detect and decode compressed data, dissect packets, map the whole file, split it into typed segments, measure a range's statistics, compressibility or text encoding, test a range for machine code, or read the reference notes on a format. Tool results are JSON; bytes in them are hex unless you ask for another encoding, and offsets are decimal numbers. When you explain a field or layout, cite the specification and section the notes give (for example RFC 791 §3.1). Look before you conclude; base claims on bytes you have seen, and say how sure you are when something is a guess.
 
 Write offsets as 0x-prefixed hexadecimal (for example 0x1A40); the app turns them into links that jump to that place in the file, so cite the offset for every specific claim.
 
@@ -124,229 +126,78 @@ impl FileContext {
     }
 }
 
-/// The tools offered to the model. Strict schemas keep arguments valid;
-/// eager input streaming sends arguments as they are generated.
-pub fn tool_definitions() -> Value {
-    let integer = |description: &str| json!({ "type": "integer", "description": description });
-    json!([
-        {
-            "name": "read_bytes",
-            "description": "Read bytes from the open file and return a hex and ASCII dump. Use it to look at headers, records or anything the snapshot does not show.",
-            "strict": true,
-            "eager_input_streaming": true,
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "offset": integer("File offset to start reading at."),
-                    "length": integer("Number of bytes to read, at most 4096.")
-                },
-                "required": ["offset", "length"],
-                "additionalProperties": false
-            }
-        },
-        {
-            "name": "search",
-            "description": "Find occurrences of hex bytes or text in the whole file and return their offsets (up to 64).",
-            "strict": true,
-            "eager_input_streaming": true,
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "query": { "type": "string", "description": "Hex bytes such as \"89 50 4E 47\", or text." },
-                    "mode": { "type": "string", "enum": ["hex", "text"], "description": "How to read the query." }
-                },
-                "required": ["query", "mode"],
-                "additionalProperties": false
-            }
-        },
-        {
-            "name": "list_findings",
-            "description": "Run the app's detectors (signatures, compressed streams, counters, timestamps, text, structures) over a range of the file and list what they recognise.",
-            "strict": true,
-            "eager_input_streaming": true,
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "start": integer("First offset of the range."),
-                    "length": integer("Length of the range in bytes, at most 4194304.")
-                },
-                "required": ["start", "length"],
-                "additionalProperties": false
-            }
-        },
-        {
-            "name": "parse_structure",
-            "description": "Parse the structure starting exactly at an offset with the app's parsers (executables, images, archives, captures, ASN.1, filesystems) and return its field tree.",
-            "strict": true,
-            "eager_input_streaming": true,
-            "input_schema": {
-                "type": "object",
-                "properties": { "offset": integer("Offset where the structure starts.") },
-                "required": ["offset"],
-                "additionalProperties": false
-            }
-        },
-        {
-            "name": "file_overview",
-            "description": "Map the whole file: a one-line summary of what it is, its regions (headers, tables, text, code, compressed, embedded files) with offsets, and likely record widths. Start here when characterising an unknown file.",
-            "strict": true,
-            "eager_input_streaming": true,
-            "input_schema": { "type": "object", "properties": {}, "required": [], "additionalProperties": false }
-        },
-        {
-            "name": "byte_statistics",
-            "description": "Measure a range: entropy, chi-square randomness test, serial correlation, printable, zero and high-byte fractions, distinct values, and a verdict such as text, machine code, compressed or encrypted.",
-            "strict": true,
-            "eager_input_streaming": true,
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "start": integer("First offset of the range."),
-                    "length": integer("Length of the range in bytes; long ranges are sampled.")
-                },
-                "required": ["start", "length"],
-                "additionalProperties": false
-            }
-        },
-        {
-            "name": "segment_file",
-            "description": "Split the whole file into regions of one kind (text, tables, code, compressed, random, padding…) with boundaries on the real edges, and group similar regions into types. Returns each region's offsets and type.",
-            "strict": true,
-            "eager_input_streaming": true,
-            "input_schema": { "type": "object", "properties": {}, "required": [], "additionalProperties": false }
-        },
-        {
-            "name": "compressibility",
-            "description": "Compress a range with several codecs (deflate, bzip2, LZ4, zstd, an order-1 model) and report the ratios with a verdict: encrypted or random, already compressed, lossy media, or structured data.",
-            "strict": true,
-            "eager_input_streaming": true,
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "start": integer("First offset of the range."),
-                    "length": integer("Length of the range in bytes; long ranges are sampled.")
-                },
-                "required": ["start", "length"],
-                "additionalProperties": false
-            }
-        },
-        {
-            "name": "text_encoding",
-            "description": "Identify the character encoding of a text range (ASCII, UTF-8, UTF-16, Windows-1252, Shift-JIS, EUC-JP, GBK, Big5, EUC-KR, KOI8-R, EBCDIC) with previews, and the likely language.",
-            "strict": true,
-            "eager_input_streaming": true,
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "start": integer("First offset of the range."),
-                    "length": integer("Length of the range in bytes; long ranges are sampled.")
-                },
-                "required": ["start", "length"],
-                "additionalProperties": false
-            }
-        },
-        {
-            "name": "format_reference",
-            "description": "Look up the app's reference notes on a file format or protocol: how its bytes are organised, what each field means, and which RFC or specification defines it (with section numbers). Pass an id such as \"ipv4\", \"png\" or \"zip\", a finding id, a packet layer name, or a port such as \"udp/67\" or a bare number (a port, IP protocol number or EtherType) to learn what usually travels there; when nothing matches, the known ids are listed.",
-            "strict": true,
-            "eager_input_streaming": true,
-            "input_schema": {
-                "type": "object",
-                "properties": { "name": { "type": "string", "description": "Format id, finding id, layer name or port, such as \"udp\", \"User Datagram Protocol\", \"tcp/502\" or \"502\"." } },
-                "required": ["name"],
-                "additionalProperties": false
-            }
-        },
-        {
-            "name": "identify_processor",
-            "description": "Test whether a range is machine code, and for which processor (x86, ARM, Thumb, AArch64, RISC-V, MIPS, PowerPC), by disassembling samples for each architecture. Returns ranked candidates with confidence and reasons, or says the range looks like data.",
-            "strict": true,
-            "eager_input_streaming": true,
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "start": integer("First offset of the range."),
-                    "length": integer("Length of the range in bytes; long ranges are sampled.")
-                },
-                "required": ["start", "length"],
-                "additionalProperties": false
-            }
-        }
-    ])
+/// Whether Ask offers a method as a tool: every method that only reads,
+/// except the API's description of itself, which the tool list already is.
+fn offered_to_ask(method: &api::Method) -> bool {
+    method.effect == api::Effect::Read && method.namespace() != "api"
 }
 
-/// A tool call checked against its schema. Eager input streaming means the
-/// API no longer validates arguments, so the client must.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum ToolCall {
-    ReadBytes { offset: usize, length: usize },
-    Search { query: String, hex: bool },
-    ListFindings { start: usize, length: usize },
-    ParseStructure { offset: usize },
-    /// The whole-file report: summary, regions and likely record widths.
-    FileOverview,
-    ByteStatistics { start: usize, length: usize },
-    IdentifyProcessor { start: usize, length: usize },
-    /// Split the file into regions of one kind and group them into types.
-    SegmentFile,
-    Compressibility { start: usize, length: usize },
-    TextEncoding { start: usize, length: usize },
-    /// The reference notes on a format, by id or name.
-    FormatReference { name: String },
+/// The tool name for an API method. Tool names may hold only letters,
+/// digits, `_` and `-`, so `bytes.read` becomes `bytes_read`.
+pub fn tool_name(method_name: &str) -> String {
+    method_name.replace('.', "_")
+}
+
+/// The tools offered to the model, generated from the API's method table.
+/// Eager input streaming sends arguments as they are generated; the API then
+/// leaves them unchecked, so every call is checked against the method's
+/// types when it runs. The schemas are not strict: strict tools are limited
+/// in number and in the schema features they accept.
+pub fn tool_definitions() -> Value {
+    let tools: Vec<Value> = api::METHODS
+        .iter()
+        .filter(|method| offered_to_ask(method))
+        .map(|method| {
+            let mut schema = (method.params)().to_value();
+            if let Some(object) = schema.as_object_mut() {
+                object.remove("$schema");
+                object.remove("title");
+            }
+            json!({
+                "name": tool_name(method.name),
+                "description": method.summary,
+                "eager_input_streaming": true,
+                "input_schema": schema,
+            })
+        })
+        .collect();
+    Value::Array(tools)
+}
+
+/// A tool call from the model: the API method it names and its arguments.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ToolCall {
+    /// The API method, such as `bytes.hexdump`.
+    pub method: &'static str,
+    pub params: Value,
 }
 
 impl ToolCall {
+    /// The call the model made with tool `name`. Only the tools offered are
+    /// accepted, and only with an object of arguments; the arguments
+    /// themselves are checked when the method runs.
     pub fn parse(name: &str, input: &Value) -> Result<ToolCall, String> {
-        let object = input.as_object().ok_or("arguments must be an object")?;
-        let number = |key: &str| -> Result<usize, String> {
-            object
-                .get(key)
-                .and_then(Value::as_u64)
-                .map(|value| value as usize)
-                .ok_or_else(|| format!("'{key}' must be a non-negative integer"))
-        };
-        match name {
-            "read_bytes" => Ok(ToolCall::ReadBytes { offset: number("offset")?, length: number("length")?.min(4096) }),
-            "search" => {
-                let query = object.get("query").and_then(Value::as_str).ok_or("'query' must be a string")?.to_string();
-                let hex = match object.get("mode").and_then(Value::as_str) {
-                    Some("hex") => true,
-                    Some("text") => false,
-                    _ => return Err("'mode' must be \"hex\" or \"text\"".to_string()),
-                };
-                Ok(ToolCall::Search { query, hex })
-            }
-            "list_findings" => Ok(ToolCall::ListFindings { start: number("start")?, length: number("length")?.min(4 * 1024 * 1024) }),
-            "parse_structure" => Ok(ToolCall::ParseStructure { offset: number("offset")? }),
-            "file_overview" => Ok(ToolCall::FileOverview),
-            "byte_statistics" => Ok(ToolCall::ByteStatistics { start: number("start")?, length: number("length")? }),
-            "identify_processor" => Ok(ToolCall::IdentifyProcessor { start: number("start")?, length: number("length")? }),
-            "segment_file" => Ok(ToolCall::SegmentFile),
-            "compressibility" => Ok(ToolCall::Compressibility { start: number("start")?, length: number("length")? }),
-            "text_encoding" => Ok(ToolCall::TextEncoding { start: number("start")?, length: number("length")? }),
-            "format_reference" => {
-                let name = object.get("name").and_then(Value::as_str).ok_or("'name' must be a string")?.to_string();
-                Ok(ToolCall::FormatReference { name })
-            }
-            other => Err(format!("unknown tool '{other}'")),
+        let method = api::METHODS
+            .iter()
+            .find(|method| offered_to_ask(method) && tool_name(method.name) == name)
+            .ok_or_else(|| format!("unknown tool '{name}'"))?;
+        if !input.is_object() {
+            return Err("arguments must be an object".to_string());
         }
+        Ok(ToolCall { method: method.name, params: input.clone() })
     }
 
-    /// Short description for the transcript.
+    /// Short description for the transcript, such as
+    /// `bytes.hexdump {"len":64,"start":256}`.
     pub fn describe(&self) -> String {
-        match self {
-            ToolCall::ReadBytes { offset, length } => format!("read {length} bytes at {offset:#x}"),
-            ToolCall::Search { query, hex } => format!("search for {} \"{query}\"", if *hex { "bytes" } else { "text" }),
-            ToolCall::ListFindings { start, length } => format!("list findings in {start:#x}..{:#x}", start + length),
-            ToolCall::ParseStructure { offset } => format!("parse the structure at {offset:#x}"),
-            ToolCall::FileOverview => "map the whole file".to_string(),
-            ToolCall::ByteStatistics { start, length } => format!("measure the bytes in {start:#x}..{:#x}", start + length),
-            ToolCall::IdentifyProcessor { start, length } => format!("look for machine code in {start:#x}..{:#x}", start + length),
-            ToolCall::SegmentFile => "segment the file".to_string(),
-            ToolCall::Compressibility { start, length } => format!("try compressing {start:#x}..{:#x}", start + length),
-            ToolCall::TextEncoding { start, length } => format!("identify the text encoding of {start:#x}..{:#x}", start + length),
-            ToolCall::FormatReference { name } => format!("read the reference notes on {name}"),
-        }
+        let arguments = self.params.as_object().filter(|object| !object.is_empty()).map(|_| format!(" {}", self.params)).unwrap_or_default();
+        format!("{}{arguments}", self.method)
+    }
+
+    /// Run the call against `workspace`: the method's JSON result, or its
+    /// error as JSON.
+    pub fn run(&self, workspace: &mut dyn api::Workspace) -> Result<String, String> {
+        api::call(workspace, self.method, self.params.clone()).map(|result| result.to_string()).map_err(|error| error.to_json().to_string())
     }
 }
 
@@ -378,8 +229,9 @@ pub enum Event {
     Text(String),
     /// A summary of the model's reasoning, shown collapsed.
     Thinking(String),
-    /// The model wants a tool run; reply on the given channel.
-    Tool { call: ToolCall, reply: Sender<String> },
+    /// The model wants a tool run; reply on the given channel with the
+    /// result, or the error to report to the model.
+    Tool { call: ToolCall, reply: Sender<Result<String, String>> },
     /// The model's arguments did not validate; shown in the transcript.
     ToolRejected(String),
     /// The reply is complete; `messages` is the updated history.
@@ -448,7 +300,7 @@ impl Assistant {
 
     /// Drain events. Tool calls are handed to `run_tool`, whose answer goes
     /// back to the model. Returns true when anything changed.
-    pub fn poll(&mut self, mut run_tool: impl FnMut(&ToolCall) -> String) -> bool {
+    pub fn poll(&mut self, mut run_tool: impl FnMut(&ToolCall) -> Result<String, String>) -> bool {
         // Take the receiver out while handling events, which update `self`.
         let Some(events) = self.events.take() else { return false };
         let mut changed = false;
@@ -467,8 +319,8 @@ impl Assistant {
                 Event::Thinking(text) => self.transcript.push(Turn::Reasoning(text)),
                 Event::Tool { call, reply } => {
                     self.transcript.push(Turn::Tool(call.describe()));
-                    let result = run_tool(&call);
-                    let _ = reply.send(truncate(&result, MAX_TOOL_RESULT_CHARS));
+                    let result = run_tool(&call).map(|output| truncate(&output, MAX_TOOL_RESULT_CHARS)).map_err(|error| truncate(&error, MAX_TOOL_RESULT_CHARS));
+                    let _ = reply.send(result);
                 }
                 Event::ToolRejected(message) => self.transcript.push(Turn::Note(message)),
                 Event::Done { messages, note } => {
@@ -556,8 +408,10 @@ fn run_tools(blocks: &[Value], events: &Sender<Event>) -> Result<Vec<Value>, Str
             Ok(call) => {
                 let (reply_sender, reply_receiver) = mpsc::channel();
                 events.send(Event::Tool { call, reply: reply_sender }).map_err(|_| "the window closed".to_string())?;
-                let output = reply_receiver.recv_timeout(Duration::from_secs(120)).map_err(|_| "the tool did not answer".to_string())?;
-                json!({ "type": "tool_result", "tool_use_id": id, "content": output })
+                match reply_receiver.recv_timeout(Duration::from_secs(120)).map_err(|_| "the tool did not answer".to_string())? {
+                    Ok(output) => json!({ "type": "tool_result", "tool_use_id": id, "content": output }),
+                    Err(error) => json!({ "type": "tool_result", "tool_use_id": id, "is_error": true, "content": error }),
+                }
             }
             Err(message) => {
                 let _ = events.send(Event::ToolRejected(format!("Invalid {name} call: {message}")));
@@ -877,7 +731,7 @@ mod tests {
         ] {
             sender.send(event).unwrap();
         }
-        assistant.poll(|_| String::new());
+        assistant.poll(|_| Ok(String::new()));
         assert_eq!(
             assistant.transcript,
             vec![Turn::User("What is this?".into()), Turn::Assistant("It is a PNG image.".into())]
@@ -885,24 +739,47 @@ mod tests {
     }
 
     #[test]
-    fn tool_calls_are_validated_before_running() {
-        assert_eq!(
-            ToolCall::parse("read_bytes", &json!({"offset": 16, "length": 100000})).unwrap(),
-            ToolCall::ReadBytes { offset: 16, length: 4096 }
-        );
-        assert_eq!(
-            ToolCall::parse("search", &json!({"query": "PK", "mode": "text"})).unwrap(),
-            ToolCall::Search { query: "PK".into(), hex: false }
-        );
-        assert!(ToolCall::parse("read_bytes", &json!({"offset": -1, "length": 4})).is_err());
-        assert!(ToolCall::parse("read_bytes", &json!({})).is_err(), "truncated eager input is rejected");
-        assert!(ToolCall::parse("search", &json!({"query": "x", "mode": "regex"})).is_err());
+    fn tools_are_generated_from_every_read_method_with_valid_names_and_schemas() {
+        let tools = tool_definitions();
+        let tools = tools.as_array().unwrap();
+        let readers = api::METHODS.iter().filter(|method| method.effect == api::Effect::Read && method.namespace() != "api").count();
+        assert_eq!(tools.len(), readers);
+        for tool in tools {
+            let name = tool["name"].as_str().unwrap();
+            assert!(!name.is_empty() && name.len() <= 64, "{name}");
+            assert!(name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'), "{name} breaks the tool name rules");
+            assert!(!tool["description"].as_str().unwrap().is_empty());
+            assert_eq!(tool["input_schema"]["type"], "object", "{name}");
+            assert!(tool["input_schema"].get("$schema").is_none());
+        }
+        let names: Vec<&str> = tools.iter().map(|tool| tool["name"].as_str().unwrap()).collect();
+        for earlier in ["bytes_hexdump", "search_find_all", "findings_query", "structure_parse", "analysis_overview", "analysis_statistics", "analysis_segments", "analysis_compressibility", "analysis_text_encoding", "reference_lookup", "analysis_processor"] {
+            assert!(names.contains(&earlier), "the tool behind one of Ask's original eleven, {earlier}, is offered");
+        }
+        assert!(!names.contains(&"documents_open") && !names.contains(&"api_describe"), "only methods that read are offered");
+    }
+
+    #[test]
+    fn tool_calls_name_an_offered_method_and_carry_an_object() {
+        let call = ToolCall::parse("bytes_hexdump", &json!({"start": 16, "len": 4})).unwrap();
+        assert_eq!(call.method, "bytes.hexdump");
+        assert_eq!(call.describe(), r#"bytes.hexdump {"len":4,"start":16}"#);
+        assert_eq!(ToolCall::parse("analysis_segments", &json!({})).unwrap().describe(), "analysis.segments");
         assert!(ToolCall::parse("format_disk", &json!({})).is_err());
-        assert_eq!(
-            ToolCall::parse("format_reference", &json!({"name": "udp"})).unwrap(),
-            ToolCall::FormatReference { name: "udp".into() }
-        );
-        assert!(ToolCall::parse("format_reference", &json!({"name": 4})).is_err());
+        assert!(ToolCall::parse("documents_open", &json!({"path": "/etc/passwd"})).is_err(), "methods that change the view are not tools");
+        assert!(ToolCall::parse("bytes_read", &json!([1, 2])).is_err());
+    }
+
+    #[test]
+    fn a_tool_call_runs_its_method_and_reports_errors_as_json() {
+        let mut workspace = crate::api::test_support::workspace_with("fw.bin", b"FWIM\x01\x02");
+        let call = ToolCall::parse("bytes_read", &json!({"start": 0, "len": 4})).unwrap();
+        let result: Value = serde_json::from_str(&call.run(&mut workspace).unwrap()).unwrap();
+        assert_eq!(result["data"], "4657494d");
+        let past_the_end = ToolCall::parse("bytes_read", &json!({"start": 4, "len": 9})).unwrap().run(&mut workspace).unwrap_err();
+        assert!(past_the_end.contains("out_of_range"), "{past_the_end}");
+        let truncated_input = ToolCall::parse("bytes_read", &json!({})).unwrap().run(&mut workspace).unwrap_err();
+        assert!(truncated_input.contains("invalid_params"), "truncated eager input is rejected: {truncated_input}");
     }
 
     #[test]
@@ -916,7 +793,7 @@ mod tests {
         assert_eq!(body["tool_choice"]["type"], "auto");
         assert!(body.get("temperature").is_none() && body["thinking"].get("budget_tokens").is_none());
         for tool in body["tools"].as_array().unwrap() {
-            assert_eq!(tool["strict"], true);
+            assert_eq!(tool["eager_input_streaming"], true);
             assert_eq!(tool["input_schema"]["additionalProperties"], false);
         }
     }
