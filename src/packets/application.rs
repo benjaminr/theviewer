@@ -1,5 +1,6 @@
 //! Small, defensive parsers for application protocols carried over TCP and
-//! UDP: DNS, HTTP, NTP, Modbus/TCP and MQTT.
+//! UDP: DNS, HTTP, NTP, Modbus/TCP and MQTT here, and SNMP in its own
+//! module.
 //!
 //! Each parser takes a transport payload and returns an [`AppLayer`] whose
 //! field offsets are relative to the payload's first byte, or `None` when the
@@ -11,6 +12,8 @@ use crate::plugin::Field;
 
 use super::flows::Transport;
 
+mod snmp;
+
 /// Well-known ports.
 const PORT_HTTP: u16 = 80;
 const PORT_HTTP_ALTERNATIVES: [u16; 3] = [8000, 8008, 8080];
@@ -19,6 +22,8 @@ const PORT_MDNS: u16 = 5353;
 const PORT_NTP: u16 = 123;
 const PORT_MODBUS: u16 = 502;
 const PORT_MQTT: u16 = 1883;
+const PORT_SNMP: u16 = 161;
+const PORT_SNMP_TRAP: u16 = 162;
 
 /// A parsed application layer.
 #[derive(Clone, Debug, PartialEq)]
@@ -46,6 +51,7 @@ pub fn dissect_application(transport: Transport, source_port: u16, destination_p
         Transport::Udp if uses(PORT_DNS) || uses(PORT_MDNS) => dissect_dns(payload),
         Transport::Tcp if uses(PORT_DNS) => dissect_dns_over_tcp(payload),
         Transport::Udp if uses(PORT_NTP) => dissect_ntp(payload),
+        Transport::Udp if uses(PORT_SNMP) || uses(PORT_SNMP_TRAP) => snmp::dissect_snmp(payload),
         Transport::Tcp if uses(PORT_MODBUS) => dissect_modbus(payload, destination_port == PORT_MODBUS),
         Transport::Tcp if uses(PORT_MQTT) => dissect_mqtt(payload),
         Transport::Tcp if uses(PORT_HTTP) || PORT_HTTP_ALTERNATIVES.iter().any(|&port| uses(port)) => dissect_http(payload),
@@ -1050,6 +1056,10 @@ mod tests {
         assert_eq!(dissect_application(Transport::Udp, 40000, 53, &query).map(|l| l.key), Some("dns"));
         assert_eq!(dissect_application(Transport::Tcp, 40000, 9999, b"GET / HTTP/1.1\r\n\r\n").map(|l| l.key), Some("http"));
         assert_eq!(dissect_application(Transport::Udp, 1, 2, &query), None);
+        assert_eq!(dissect_application(Transport::Udp, 40000, 161, &[0x30, 0x03, 0x02, 0x01, 0x01]), None, "a message without a PDU is not SNMP");
+        // A v1 get-next-request with no bindings, from the trap port.
+        let snmp = [0x30, 0x12, 0x02, 0x01, 0x00, 0x04, 0x00, 0xA1, 0x0B, 0x02, 0x01, 0x01, 0x02, 0x01, 0x00, 0x02, 0x01, 0x00, 0x30, 0x00];
+        assert_eq!(dissect_application(Transport::Udp, 162, 40000, &snmp).map(|l| l.info), Some("get-next-request".to_string()));
         let mut over_tcp = (query.len() as u16).to_be_bytes().to_vec();
         over_tcp.extend_from_slice(&query);
         let layer = dissect_application(Transport::Tcp, 53, 40000, &over_tcp).expect("DNS over TCP");

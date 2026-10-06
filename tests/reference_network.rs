@@ -4,6 +4,7 @@
 use etherparse::PacketBuilder;
 use theviewer::packets::LinkKind;
 use theviewer::packets::dissect::{Dissection, dissect};
+use theviewer::packets::filter::wireshark_values;
 use theviewer::plugin::Field;
 use theviewer::reference;
 
@@ -21,6 +22,10 @@ const GENERIC_LAYERS: [&str; 6] = ["Data", "Padding", "Payload", "Trailing data"
 /// Fields whose children are named by the traffic itself, such as HTTP
 /// header names, rather than by the dissector.
 const FIELDS_WITH_FREE_NAMED_CHILDREN: [&str; 1] = ["Headers"];
+
+/// Fields of the newer dissectors that the notes do not describe yet, by
+/// layer. A field listed here that gains a note should leave the list.
+const FIELDS_AWAITING_NOTES: [(&str, &[&str]); 1] = [("SNMP", &["Object name", "Value"])];
 
 /// An etherparse builder that has reached its UDP header.
 type UdpBuilder = etherparse::PacketBuilderStep<etherparse::UdpHeader>;
@@ -120,6 +125,20 @@ fn mqtt_publish() -> Vec<u8> {
     ipv4_tcp(1883, &mqtt)
 }
 
+/// A BER element with a short-form length.
+fn ber(tag: u8, content: &[u8]) -> Vec<u8> {
+    let mut element = vec![tag, content.len() as u8];
+    element.extend_from_slice(content);
+    element
+}
+
+fn snmp_get_request() -> Vec<u8> {
+    let binding = ber(0x30, &[ber(0x06, &[0x2B, 6, 1, 2, 1, 1, 5, 0]), ber(0x05, &[])].concat());
+    let pdu = ber(0xA0, &[ber(0x02, &[1]), ber(0x02, &[0]), ber(0x02, &[0]), ber(0x30, &binding)].concat());
+    let message = ber(0x30, &[ber(0x02, &[1]), ber(0x04, b"public"), pdu].concat());
+    build(PacketBuilder::ipv4(CLIENT_IPV4, SERVER_IPV4, 64).udp(40000, 161), &message)
+}
+
 fn dns_over_tcp() -> Vec<u8> {
     let query = dns_query();
     let mut payload = (query.len() as u16).to_be_bytes().to_vec();
@@ -140,6 +159,7 @@ fn sample_dissections() -> Vec<(&'static str, Dissection)> {
         ("IPv4/TCP/Modbus", dissect(&modbus_read_request(), LinkKind::RawIp)),
         ("IPv4/TCP/MQTT", dissect(&mqtt_publish(), LinkKind::RawIp)),
         ("IPv4/TCP/DNS", dissect(&dns_over_tcp(), LinkKind::RawIp)),
+        ("IPv4/UDP/SNMP", dissect(&snmp_get_request(), LinkKind::RawIp)),
     ]
 }
 
@@ -168,6 +188,11 @@ fn every_layer_of_common_traffic_has_reference_notes_explaining_each_field() {
             let entry = reference::lookup(&layer.name).unwrap_or_else(|| panic!("{traffic}: no reference notes for layer '{}'", layer.name));
             let mut missing = Vec::new();
             fields_without_notes(entry, &layer.fields, &mut missing);
+            let awaiting: &[&str] = FIELDS_AWAITING_NOTES.iter().find(|(name, _)| *name == layer.name).map_or(&[], |(_, fields)| fields);
+            for field in awaiting {
+                assert!(missing.contains(&field.to_string()), "{traffic}: '{field}' of layer '{}' has a note now; take it off FIELDS_AWAITING_NOTES", layer.name);
+            }
+            missing.retain(|field| !awaiting.contains(&field.as_str()));
             assert!(missing.is_empty(), "{traffic}: layer '{}' ({}) has fields without notes: {missing:?}", layer.name, entry.id);
         }
     }
@@ -186,9 +211,17 @@ fn every_layer_of_common_traffic_has_reference_notes_explaining_each_field() {
         "NTP",
         "Modbus/TCP",
         "MQTT",
+        "SNMP",
     ] {
         assert!(expected_layers.contains(layer), "the sample traffic should include a '{layer}' layer, found {expected_layers:?}");
     }
+}
+
+#[test]
+fn wireshark_field_names_reach_the_fields_of_the_newer_dissectors_through_the_notes() {
+    let snmp = dissect(&snmp_get_request(), LinkKind::RawIp);
+    assert_eq!(wireshark_values(&snmp, "snmp.community"), ["public"]);
+    assert_eq!(wireshark_values(&snmp, "snmp.version"), ["1 (SNMPv2c)"]);
 }
 
 #[test]
