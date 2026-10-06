@@ -130,10 +130,16 @@ fn long_name(protocol: &TsharkProtocol) -> &str {
 /// A short name for the packet list, such as "DHCP": the reference notes'
 /// short name when there are notes, else tshark's filter name in capitals.
 pub fn short_name(protocol: &TsharkProtocol) -> String {
-    match reference::lookup(&protocol.name).or_else(|| reference::lookup(long_name(protocol))) {
+    match notes_for_filter_name(&protocol.name).or_else(|| reference::lookup(long_name(protocol))) {
         Some(notes) => notes.short_name().to_string(),
         None => protocol.name.to_uppercase(),
     }
+}
+
+/// The reference notes for a Wireshark filter name: those that give it as
+/// their Wireshark name, else those it is a key of.
+fn notes_for_filter_name(name: &str) -> Option<&'static reference::FormatReference> {
+    reference::library().by_wireshark(name).or_else(|| reference::lookup(name))
 }
 
 /// The layer's name, chosen so the Reference tab can look its notes up by
@@ -144,7 +150,7 @@ fn layer_name(protocol: &TsharkProtocol) -> String {
     if reference::lookup(long).is_some() {
         return long.to_string();
     }
-    match reference::lookup(&protocol.name) {
+    match notes_for_filter_name(&protocol.name) {
         Some(notes) if reference::lookup(&notes.name).is_some_and(|found| found.id == notes.id) => notes.name.clone(),
         Some(_) => protocol.name.to_uppercase(),
         None => long.to_string(),

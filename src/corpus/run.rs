@@ -218,10 +218,11 @@ fn names_protocol(notes: &FormatReference, name: &str) -> bool {
     notes.id.eq_ignore_ascii_case(name) || notes.keys.iter().any(|key| key.eq_ignore_ascii_case(name)) || notes_for(name).is_some_and(|found| found.id == notes.id)
 }
 
-/// The reference notes for a tshark protocol: by its filter name, else by
-/// the name of our layer that covers it (tshark's `ip` is our IPv4 layer).
+/// The reference notes for a tshark protocol: by its Wireshark name or as a
+/// key, else by the name of our layer that covers it (tshark's `ip` is our
+/// IPv4 layer).
 fn notes_for(name: &str) -> Option<&'static FormatReference> {
-    reference::lookup(name).or_else(|| compare::LAYER_MAP.iter().find(|mapping| mapping.tshark.contains(&name)).and_then(|mapping| reference::lookup(mapping.ours)))
+    reference::library().by_wireshark(name).or_else(|| reference::lookup(name)).or_else(|| compare::LAYER_MAP.iter().find(|mapping| mapping.tshark.contains(&name)).and_then(|mapping| reference::lookup(mapping.ours)))
 }
 
 fn record_carrier(tally: &mut ProtocolTally, name: &str, carrier: Carrier) {
