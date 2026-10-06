@@ -5,24 +5,21 @@
 //! they came from and are dropped when another one is shown.
 
 use std::sync::mpsc::{self, Receiver};
-use std::thread;
 use std::time::Duration;
 
 use eframe::egui::{self, Color32, RichText, Sense, Ui, vec2};
 
 use crate::app::ViewerApp;
 use crate::blocks::{self, BlockReport};
-use crate::ciphers::{self, AttackOptions, CipherCandidate};
+use crate::ciphers::{self, CipherCandidate};
 use crate::keys::{self, KeyFinding, KeyFormat, KeyKind};
 use crate::plugin::{Category, Finding};
 use crate::theme;
 
 /// Largest selection decoded by the cipher attacks.
-const DECODE_LIMIT: usize = 1024 * 1024;
+const DECODE_LIMIT: usize = crate::api::tools::crypto::ATTACK_LIMIT;
 /// Bytes from the cursor decoded when nothing is selected.
 const CURSOR_WINDOW: usize = 64 * 1024;
-/// Most cipher candidates listed.
-const MAX_CANDIDATES: usize = 12;
 /// How often the panel looks for finished background work.
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
 /// Height of the repeat-map strip.
@@ -46,10 +43,10 @@ struct Done<T> {
 }
 
 /// Cipher candidates for the range `start..start + len`.
-struct DecodeResults {
-    start: usize,
-    len: usize,
-    candidates: Vec<CipherCandidate>,
+pub(crate) struct DecodeResults {
+    pub start: usize,
+    pub len: usize,
+    pub candidates: Vec<CipherCandidate>,
 }
 
 /// State of the crypto panel, kept between frames.
@@ -84,13 +81,31 @@ fn document_key(app: &ViewerApp) -> DocumentKey {
     (app.display_name(), app.document.len())
 }
 
-/// Start `work` on a background thread.
-fn spawn<T: Send + 'static>(document: DocumentKey, work: impl FnOnce() -> T + Send + 'static) -> Job<T> {
+/// A job of the window's document's, and where its result is to be sent.
+fn awaited<T>(app: &ViewerApp) -> (Job<T>, mpsc::Sender<T>) {
     let (sender, receiver) = mpsc::channel();
-    thread::spawn(move || {
-        let _ = sender.send(work());
-    });
-    Job { receiver, document }
+    (Job { receiver, document: document_key(app) }, sender)
+}
+
+/// Wait for a search `crypto.repeated_blocks` started; returns where its report is sent.
+pub(crate) fn await_blocks(app: &mut ViewerApp) -> mpsc::Sender<BlockReport> {
+    let (job, sender) = awaited(app);
+    app.bench.panels.crypto.blocks_job = Some(job);
+    sender
+}
+
+/// Wait for a search `crypto.find_keys` started; returns where its findings are sent.
+pub(crate) fn await_keys(app: &mut ViewerApp) -> mpsc::Sender<Vec<KeyFinding>> {
+    let (job, sender) = awaited(app);
+    app.bench.panels.crypto.keys_job = Some(job);
+    sender
+}
+
+/// Wait for attacks `crypto.attack` started; returns where the decodes are sent.
+pub(crate) fn await_decode(app: &mut ViewerApp) -> mpsc::Sender<DecodeResults> {
+    let (job, sender) = awaited(app);
+    app.bench.panels.crypto.decode_job = Some(job);
+    sender
 }
 
 /// Move a finished job's result into `done`; drop results for other documents.
@@ -136,8 +151,7 @@ fn show_blocks(state: &mut CryptoState, app: &mut ViewerApp, ui: &mut Ui) {
     ui.horizontal(|ui| {
         let busy = state.blocks_job.is_some();
         if ui.add_enabled(!busy && len > 0, egui::Button::new(format!("Look for repeated blocks in {what} ({})", crate::compress::human_bytes(len)))).clicked() {
-            let bytes = app.document.read_range(start, len);
-            state.blocks_job = Some(spawn(document_key(app), move || blocks::analyse(&bytes, start)));
+            app.perform_later("crypto.repeated_blocks", serde_json::json!({ "start": start, "len": len }));
         }
         if busy {
             ui.spinner();
@@ -188,7 +202,7 @@ fn show_blocks(state: &mut CryptoState, app: &mut ViewerApp, ui: &mut Ui) {
         }
     }
     if let Some(offset) = jump {
-        app.jump_to_offset(offset);
+        app.jump_found(offset);
     }
 }
 
@@ -261,8 +275,7 @@ fn show_keys(state: &mut CryptoState, app: &mut ViewerApp, ui: &mut Ui) {
     ui.horizontal(|ui| {
         let busy = state.keys_job.is_some();
         if ui.add_enabled(!busy && len > 0, egui::Button::new(format!("Find keys and certificates ({})", crate::compress::human_bytes(len)))).clicked() {
-            let bytes = app.document.read_range(0, len);
-            state.keys_job = Some(spawn(document_key(app), move || keys::find_keys(&bytes, 0)));
+            app.perform_later("crypto.find_keys", serde_json::json!({ "start": 0, "len": len }));
         }
         if busy {
             ui.spinner();
@@ -383,33 +396,94 @@ fn show_crib_controls(state: &mut CryptoState, ui: &mut Ui) {
     }
 }
 
+/// The person asks for the cipher attacks on `len` bytes at `start`, with
+/// the crib typed: `crypto.attack`, carried out once the panel is drawn. A
+/// crib that cannot be read is said under it instead.
 fn start_decode(state: &mut CryptoState, app: &mut ViewerApp, start: usize, len: usize) {
-    let crib = if state.crib.is_empty() {
-        None
-    } else {
-        match ciphers::parse_crib(&state.crib) {
-            Ok(crib) => Some(crib),
-            Err(error) => {
-                state.crib_error = Some(error);
-                return;
-            }
+    let mut params = serde_json::json!({ "start": start, "len": len });
+    if !state.crib.is_empty() {
+        if let Err(error) = ciphers::parse_crib(&state.crib) {
+            state.crib_error = Some(error);
+            return;
         }
-    };
-    let bytes = app.document.read_range(start, len);
-    let options = AttackOptions { crib, max_results: MAX_CANDIDATES };
-    state.decode_job = Some(spawn(document_key(app), move || DecodeResults { start, len, candidates: ciphers::attack(&bytes, &options) }));
+        params["crib"] = serde_json::Value::String(state.crib.clone());
+    }
+    app.perform_later("crypto.attack", params);
 }
 
+/// The person uses a decode: written over the bytes as an undoable step
+/// (`bytes.replace`), or opened as a document of its own (`documents.derive`).
 fn apply_decode(app: &mut ViewerApp, start: usize, len: usize, transform: &ciphers::Transform, in_place: bool) {
     let bytes = app.document.read_range(start, len);
-    let decoded = transform.apply(&bytes);
+    let decoded = crate::api::values::encode_bytes(&transform.apply(&bytes), Default::default());
     let description = transform.describe();
     if in_place {
-        app.document.replace(start, len, &decoded);
-        app.restore_selection(start, len);
-        app.status = format!("{description}: applied to {len} bytes at {start:#x}");
+        if app.perform("bytes.replace", serde_json::json!({ "start": start, "len": len, "data": decoded })).is_ok() {
+            app.restore_selection(start, len);
+            app.status = format!("{description}: applied to {len} bytes at {start:#x}");
+        }
     } else {
-        app.open_derived(decoded, format!("{} › decoded@{start:#x}", app.display_name()));
-        app.status = format!("Opened the decode ({description})");
+        let name = format!("{} › decoded@{start:#x}", app.display_name());
+        if app.perform("documents.derive", serde_json::json!({ "data": decoded, "name": name })).is_ok() {
+            app.status = format!("Opened the decode ({description})");
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use serde_json::json;
+
+    use super::*;
+    use crate::actions::take_performed;
+    use crate::app::Launch;
+
+    fn app_with(bytes: &[u8]) -> ViewerApp {
+        let mut app = ViewerApp::new(Launch::default());
+        app.open_bytes(bytes.to_vec(), "test.bin".to_string());
+        app.run_bus();
+        take_performed();
+        app
+    }
+
+    #[test]
+    fn the_searches_are_jobs_of_the_person_s_carried_out_once_the_panel_is_drawn() {
+        let mut app = app_with(&[0x42u8; 4096]);
+        let mut state = CryptoState { crib: "PK\\x03\\x04".to_string(), ..Default::default() };
+        start_decode(&mut state, &mut app, 16, 256);
+        app.perform_later("crypto.repeated_blocks", json!({"start": 0, "len": 4096}));
+        assert!(take_performed().is_empty());
+        app.perform_waiting_actions();
+        let performed = take_performed();
+        assert_eq!(performed[0], ("crypto.attack".to_string(), json!({"start": 16, "len": 256, "crib": "PK\\x03\\x04"})));
+        let crypto = &app.bench.panels.crypto;
+        assert!(crypto.decode_job.is_some() && crypto.blocks_job.is_some(), "the panel waits for both");
+        let report = crypto.blocks_job.as_ref().unwrap().receiver.recv_timeout(Duration::from_secs(60)).expect("the search finishes");
+        assert_eq!(report.analysed_len, 4096);
+    }
+
+    #[test]
+    fn a_crib_that_cannot_be_read_is_said_under_it_without_a_step() {
+        let mut app = app_with(&[0u8; 64]);
+        let mut state = CryptoState { crib: "\\xZZ".to_string(), ..Default::default() };
+        start_decode(&mut state, &mut app, 0, 64);
+        app.perform_waiting_actions();
+        assert!(take_performed().is_empty());
+        assert!(state.crib_error.is_some());
+    }
+
+    #[test]
+    fn a_decode_is_applied_as_a_replacement_or_opened_as_a_derived_document() {
+        let mut app = app_with(&[0x10, 0x20, 0x30, 0x40]);
+        let rotate = ciphers::Transform::RotateLeft { bits: 4 };
+        apply_decode(&mut app, 1, 2, &rotate, true);
+        assert_eq!(take_performed(), [("bytes.replace".to_string(), json!({"start": 1, "len": 2, "data": "0203"}))]);
+        assert_eq!(app.document.read_range(0, 4), [0x10, 0x02, 0x03, 0x40]);
+        assert_eq!(app.status, format!("{}: applied to 2 bytes at 0x1", rotate.describe()));
+        apply_decode(&mut app, 0, 1, &rotate, false);
+        assert_eq!(take_performed(), [("documents.derive".to_string(), json!({"data": "01", "name": "test.bin › decoded@0x0"}))]);
+        assert_eq!(app.display_name(), "test.bin › decoded@0x0");
     }
 }

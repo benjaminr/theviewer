@@ -20,16 +20,17 @@ pub mod xor;
 pub mod checksums;
 pub mod diff;
 pub mod disasm;
+pub mod crypto;
 
 /// This module's methods, in the order `api.describe` lists them within
 /// their namespace. A new method is added here, and only here.
-pub(super) const METHODS: &[super::Method] = &join::join::<{ statistics::METHODS.len() + strings::METHODS.len() + xor::METHODS.len() + checksums::METHODS.len() + diff::METHODS.len() + disasm::METHODS.len() }>(&[statistics::METHODS, strings::METHODS, xor::METHODS, checksums::METHODS, diff::METHODS, disasm::METHODS]);
+pub(super) const METHODS: &[super::Method] = &join::join::<{ statistics::METHODS.len() + strings::METHODS.len() + xor::METHODS.len() + checksums::METHODS.len() + diff::METHODS.len() + disasm::METHODS.len() + crypto::METHODS.len() }>(&[statistics::METHODS, strings::METHODS, xor::METHODS, checksums::METHODS, diff::METHODS, disasm::METHODS, crypto::METHODS]);
 
 /// An example call of each of [`METHODS`], run in order on a fresh
 /// document by the API's tests, whose results must fit the result schema.
 #[cfg(test)]
 pub(super) fn examples() -> Vec<(&'static str, serde_json::Value)> {
-    [statistics::examples(), strings::examples(), xor::examples(), checksums::examples(), diff::examples(), disasm::examples()].concat()
+    [statistics::examples(), strings::examples(), xor::examples(), checksums::examples(), diff::examples(), disasm::examples(), crypto::examples()].concat()
 }
 
 /// What a call to one of this module's methods would do, in plain words,
