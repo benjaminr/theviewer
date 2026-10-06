@@ -4,9 +4,11 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use eframe::egui;
 
+use theviewer::api::{self, ApiError, HeadlessWorkspace, Workspace};
 use theviewer::app::{self, Launch};
 use theviewer::headless;
 use theviewer::logo;
@@ -24,9 +26,13 @@ const EXIT_FAILURE: i32 = 1;
 const USAGE: &str = "\
 usage: theviewer [FILE] [--format NAME] [--palette NAME] [--width PIXELS] [--offset BYTES] [--cursor BYTES] [--zoom FACTOR] [--detect] [--open] [--tool NAME] [--layout NAME]
        theviewer FILE --report | --json
+       theviewer api METHOD ['{JSON PARAMS}'] [FILE]
+       theviewer api --describe
 
   --report   print a plain-text report of FILE without opening a window
   --json     print the same report as JSON, for scripts and CI
+  api        run one data API method on FILE without opening a window and print its JSON
+             result; --describe prints every method with its schemas (see docs/api.md)
 
   --format   one of: bit1 bit1lsb nibble4 gray8 class rgb565 gray16le gray16be rgb8 bgr8 rgba8 bgra8
              or a numeric heatmap: u16le u16be i16le i16be u32le u32be i32le i32be f32le f32be
@@ -102,6 +108,54 @@ fn parse_launch() -> Result<(Launch, Option<HeadlessOutput>), String> {
     Ok((launch, headless))
 }
 
+/// Run `theviewer api …` (the arguments after `api`) and return the
+/// process exit code. The result is printed as JSON; an error is printed as
+/// JSON on stderr, with a non-zero exit code.
+fn run_api(args: &[String]) -> i32 {
+    let (method, rest) = match args {
+        [flag] if flag == "--describe" => {
+            println!("{}", serde_json::to_string_pretty(&api::describe()).unwrap_or_default());
+            return 0;
+        }
+        [method, rest @ ..] if !method.starts_with('-') => (method.as_str(), rest),
+        _ => {
+            eprintln!("theviewer api needs a method, or --describe\n\n{USAGE}");
+            return EXIT_USAGE;
+        }
+    };
+    let (params, file) = match rest {
+        [] => ("{}", None),
+        [params] if params.trim_start().starts_with('{') => (params.as_str(), None),
+        [file] => ("{}", Some(file)),
+        [params, file] => (params.as_str(), Some(file)),
+        _ => {
+            eprintln!("theviewer api takes a method, its JSON parameters and one file\n\n{USAGE}");
+            return EXIT_USAGE;
+        }
+    };
+    match call_headless(method, params, file.map(Path::new)) {
+        Ok(result) => {
+            println!("{}", serde_json::to_string_pretty(&result).unwrap_or_default());
+            0
+        }
+        Err(error) => {
+            eprintln!("{}", serde_json::to_string_pretty(&error.to_json()).unwrap_or_default());
+            EXIT_FAILURE
+        }
+    }
+}
+
+/// Run one API method in a workspace holding just `file`, if given.
+fn call_headless(method: &str, params: &str, file: Option<&Path>) -> Result<serde_json::Value, ApiError> {
+    let params: serde_json::Value = serde_json::from_str(params).map_err(|error| ApiError::invalid_params(format!("the parameters are not JSON: {error}")))?;
+    let (host, _) = app::load_plugin_host();
+    let mut workspace = HeadlessWorkspace::new(Arc::new(app::build_registry_with(Some(&host))));
+    if let Some(file) = file {
+        workspace.open_path(file)?;
+    }
+    api::call(&mut workspace, method, params)
+}
+
 /// Print the report for `path` and return the process exit code.
 fn run_headless(path: Option<&Path>, output: HeadlessOutput) -> i32 {
     let Some(path) = path else {
@@ -126,6 +180,10 @@ fn run_headless(path: Option<&Path>, output: HeadlessOutput) -> i32 {
 }
 
 fn main() -> eframe::Result {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().is_some_and(|first| first == "api") {
+        std::process::exit(run_api(&args[1..]));
+    }
     let launch = match parse_launch() {
         Ok((launch, Some(output))) => std::process::exit(run_headless(launch.path.as_deref(), output)),
         Ok((launch, None)) => Launch { restore_layout: true, ..launch },
