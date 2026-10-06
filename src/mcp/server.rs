@@ -16,7 +16,7 @@ use serde_json::{Map, Value, json};
 use super::jsonrpc::{self, INTERNAL_ERROR, INVALID_PARAMS, Incoming, LEGACY_RESOURCE_NOT_FOUND, RequestId, RpcError};
 use super::protocol::{self, RequestContext};
 use super::resources::{self, DocumentChanges, ReadError};
-use super::tools;
+use super::{prompts, tools};
 use crate::api::{Caller, HeadlessWorkspace, Workspace};
 use crate::app::SharedLuaHost;
 use crate::bus::Message;
@@ -243,6 +243,8 @@ impl Server {
                 }
                 Ok(json!({}))
             }
+            "prompts/list" => Ok(json!({ "prompts": prompts::list() })),
+            "prompts/get" => prompts::get(params),
             _ => Err(RpcError::method_not_found(method)),
         }
     }
@@ -325,7 +327,7 @@ fn decorate(mut result: Value, method: &str, context: Option<&RequestContext>) -
     result["_meta"] = json!({ (protocol::META_SERVER_INFO): protocol::server_info() });
     let ttl = match method {
         // Change with the plugins and documents, which subscribers hear of.
-        "server/discover" | "resources/templates/list" => Some(STABLE_TTL_MS),
+        "server/discover" | "prompts/list" | "resources/templates/list" => Some(STABLE_TTL_MS),
         "tools/list" | "resources/list" | "resources/read" => Some(0),
         _ => None,
     };
@@ -438,13 +440,14 @@ mod tests {
     }
 
     #[test]
-    fn initialize_agrees_on_a_revision_and_offers_tools_and_resources() {
+    fn initialize_agrees_on_a_revision_and_offers_tools_resources_and_prompts() {
         let messages = exchange(&mut server(), &[initialize("2025-06-18"), initialized(), request(1, "ping", json!({}))]);
         let result = &response(&messages, 0)["result"];
         assert_eq!(result["protocolVersion"], "2025-06-18");
         assert_eq!(result["serverInfo"]["name"], "theviewer");
         assert!(result["capabilities"]["tools"].is_object());
         assert_eq!(result["capabilities"]["resources"]["subscribe"], true);
+        assert!(result["capabilities"]["prompts"].is_object());
         assert!(result.get("resultType").is_none(), "older revisions have no resultType");
         assert_eq!(response(&messages, 1)["result"], json!({}));
         assert_eq!(messages.len(), 2, "a notification is not answered");
@@ -582,19 +585,23 @@ mod tests {
     }
 
     #[test]
-    fn resources_and_templates_are_listed_and_read() {
+    fn resources_templates_and_prompts_are_listed_and_read() {
         let messages = exchange(
             &mut server(),
             &[
                 request(1, "resources/list", modern(json!({}))),
                 request(2, "resources/templates/list", modern(json!({}))),
                 request(3, "resources/read", modern(json!({ "uri": "theviewer://doc/doc-1/bytes/0-5" }))),
+                request(4, "prompts/list", modern(json!({}))),
+                request(5, "prompts/get", modern(json!({ "name": "triage_file" }))),
             ],
         );
         assert_eq!(response(&messages, 1)["result"]["resources"][0]["uri"], "theviewer://doc/doc-1");
         assert!(response(&messages, 1)["result"]["nextCursor"].is_string(), "the reference notes take more than a page");
         assert_eq!(response(&messages, 2)["result"]["resourceTemplates"].as_array().unwrap().len(), 5);
         assert_eq!(response(&messages, 3)["result"]["contents"][0]["blob"], "aGVsbG8=");
+        assert_eq!(response(&messages, 4)["result"]["prompts"].as_array().unwrap().len(), 3);
+        assert!(response(&messages, 5)["result"]["messages"][0]["content"]["text"].as_str().unwrap().contains("analysis_overview"));
     }
 
     #[test]

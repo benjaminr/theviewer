@@ -150,6 +150,7 @@ pub fn capabilities() -> Value {
     json!({
         "tools": { "listChanged": false },
         "resources": { "subscribe": true, "listChanged": true },
+        "prompts": { "listChanged": false },
     })
 }
 

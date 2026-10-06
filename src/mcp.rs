@@ -4,9 +4,9 @@
 //!
 //! Every API method, the plugins' included, is a tool; documents, their
 //! bytes, findings and facts, and the reference notes are resources, whose
-//! subscribers hear of changes from the workspace bus. It is hand-written,
-//! synchronous JSON-RPC: one thread handles messages in turn, another
-//! reads them.
+//! subscribers hear of changes from the workspace bus; and a few prompts
+//! walk a model through the tools. It is hand-written, synchronous
+//! JSON-RPC: one thread handles messages in turn, another reads them.
 //!
 //! It works on a [`HeadlessWorkspace`] of the files given (and any opened
 //! with `documents.open`), which allows every call: they are the client's
@@ -17,6 +17,7 @@
 //! See `docs/design/shared-knowledge-and-api.md` ("MCP server").
 
 pub mod jsonrpc;
+pub mod prompts;
 pub mod protocol;
 pub mod resources;
 pub mod server;

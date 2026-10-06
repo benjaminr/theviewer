@@ -164,6 +164,9 @@ fn a_client_lists_calls_edits_reads_subscribes_and_disconnects() {
     let info: Value = serde_json::from_str(info["result"]["contents"][0]["text"].as_str().unwrap()).unwrap();
     assert_eq!((info["modified"].clone(), info["name"].clone()), (json!(true), json!(file.file_name().unwrap().to_str().unwrap())));
 
+    let prompts = client.request("prompts/list", json!({}));
+    assert_eq!(prompts["result"]["prompts"].as_array().unwrap().len(), 3);
+
     assert_eq!(client.call_tool("probe_echo", json!({ "text": "hi" }))["echoed"], "hi", "the plugin's method runs");
 
     let modern = client.request(
