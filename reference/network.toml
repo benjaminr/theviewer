@@ -1070,6 +1070,13 @@ url = "https://www.rfc-editor.org/rfc/rfc6762"
 rfc = 6762
 
 [[format.specs]]
+document = "RFC 6891"
+title = "Extension Mechanisms for DNS (EDNS(0))"
+url = "https://www.rfc-editor.org/rfc/rfc6891"
+rfc = 6891
+section = "6.1.2"
+
+[[format.specs]]
 document = "IANA DNS Parameters"
 title = "Domain Name System (DNS) Parameters"
 url = "https://www.iana.org/assignments/dns-parameters/dns-parameters.xhtml"
@@ -1173,6 +1180,70 @@ section = "4.1.3"
 name = "Data"
 meaning = "The record's data, whose layout depends on the type: 4 bytes for A, 16 for AAAA, a (possibly compressed) name for CNAME, NS and PTR."
 section = "4.1.3"
+
+[[format.fields]]
+name = "Authority section"
+meaning = "Resource records pointing towards the servers responsible for the name: NS records in a referral, or the zone's SOA record when the name or type does not exist."
+section = "4.1"
+
+[[format.fields]]
+name = "Additional section"
+meaning = "Records the server adds because they will probably be wanted next, such as the addresses of the name servers in the authority section, and the EDNS OPT pseudo-record."
+section = "4.1"
+
+[[format.fields]]
+name = "Authority *"
+meaning = "One record of the authority section, laid out like an answer: name, type, class, time to live, data length and data."
+section = "4.1.3"
+
+[[format.fields]]
+name = "Additional *"
+meaning = "One record of the additional section, laid out like an answer, or the OPT pseudo-record of EDNS, whose class and time to live fields are reused for other purposes."
+section = "4.1.3"
+
+[[format.fields]]
+name = "UDP payload size"
+wireshark = "dns.rr.udp_payload_size"
+meaning = "In the OPT record, held in place of the class: the largest UDP response the sender can take in, often 1232 or 4096 bytes rather than the original 512."
+
+[[format.fields]]
+name = "Extended RCODE"
+wireshark = "dns.resp.ext_rcode"
+meaning = "In the OPT record, the first byte of the time to live: eight more high bits for the header's 4-bit response code, so codes above 15 such as 16 BADVERS can be given."
+
+[[format.fields]]
+name = "EDNS version"
+wireshark = "dns.resp.edns0_version"
+meaning = "In the OPT record, the second byte of the time to live: the EDNS version the sender speaks, 0 in practice."
+
+[[format.fields]]
+name = "EDNS flags"
+wireshark = "dns.resp.z"
+meaning = "In the OPT record, the last two bytes of the time to live; only the top bit is defined, DO (DNSSEC OK), asking for DNSSEC records in the answer."
+
+[[format.fields]]
+name = "Options"
+wireshark = "dns.opt"
+meaning = "The OPT record's data: a list of EDNS options, each a code, a length and a value."
+
+[[format.fields]]
+name = "Option code"
+wireshark = "dns.opt.code"
+meaning = "Which EDNS option this is, from the IANA registry: 3 NSID, 8 client subnet, 10 cookie, 11 TCP keepalive, 12 padding, 15 extended DNS error."
+
+[[format.fields]]
+name = "Option length"
+wireshark = "dns.opt.len"
+meaning = "Bytes in the option's value."
+
+[[format.fields]]
+name = "Option data"
+wireshark = "dns.opt.data"
+meaning = "The option's value, whose layout depends on its code."
+
+[[format.fields]]
+name = "Option *"
+meaning = "One EDNS option, such as 3 NSID (which server answered), 8 client subnet, 10 cookie, 11 TCP keepalive, 12 padding or 15 extended DNS error."
 
 [[format]]
 id = "http"
@@ -1547,6 +1618,12 @@ url = "https://www.rfc-editor.org/rfc/rfc5905"
 rfc = 5905
 section = "7.3"
 
+[[format.specs]]
+document = "RFC 7822"
+title = "Network Time Protocol Version 4 (NTPv4) Extension Fields"
+url = "https://www.rfc-editor.org/rfc/rfc7822"
+rfc = 7822
+
 [[format.fields]]
 name = "Flags"
 wireshark = "ntp.flags"
@@ -1601,6 +1678,55 @@ meaning = "When the request arrived at the server."
 name = "Transmit timestamp"
 wireshark = "ntp.xmt"
 meaning = "When this packet left the sender."
+
+[[format.fields]]
+name = "Extension fields"
+meaning = "Optional fields after the 48-byte header, used by Autokey and by Network Time Security (NTS) to carry cookies, identifiers and authentication; each is padded to a multiple of four bytes."
+section = "7.5"
+
+[[format.fields]]
+name = "Extension field *"
+wireshark = "ntp.ext"
+meaning = "One extension field: a 2-byte type, a 2-byte length covering the whole field and a value; RFC 7822 sets 16 bytes as the shortest."
+section = "7.5"
+
+[[format.fields]]
+name = "Field type"
+wireshark = "ntp.ext.type"
+meaning = "What the extension field holds, from the IANA registry; NTS uses 0x0104 unique identifier, 0x0204 cookie, 0x0304 cookie placeholder and 0x0404 authenticator and encrypted fields."
+section = "7.5"
+
+[[format.fields]]
+name = "Length"
+wireshark = "ntp.ext.length"
+meaning = "The extension field's length in bytes, including its 4-byte type and length."
+section = "7.5"
+
+[[format.fields]]
+name = "Value"
+wireshark = "ntp.ext.value"
+meaning = "The extension field's contents, whose meaning depends on its type."
+section = "7.5"
+
+[[format.fields]]
+name = "Message authentication code"
+aliases = ["MAC"]
+meaning = "Symmetric-key authentication at the end of the packet: a key identifier and a digest of the packet made with that shared key. Four bytes of zero alone are a crypto-NAK, saying authentication failed."
+section = "7.3"
+
+[[format.fields]]
+name = "Key ID"
+wireshark = "ntp.keyid"
+aliases = ["Key identifier"]
+meaning = "Which of the keys shared by the two ends made the digest; both must be configured with the same number and secret."
+section = "7.3"
+
+[[format.fields]]
+name = "Message digest"
+wireshark = "ntp.mac"
+aliases = ["Digest"]
+meaning = "The keyed hash of the NTP packet: 16 bytes for MD5, 20 for SHA-1."
+section = "7.3"
 
 [[format]]
 id = "mqtt"
