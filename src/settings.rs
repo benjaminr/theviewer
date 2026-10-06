@@ -283,6 +283,8 @@ impl ViewerApp {
                 egui::ScrollArea::vertical().max_height(ctx.content_rect().height() * 0.8).show(ui, |ui| {
                     self.startup_defaults_contents(ui);
                     ui.separator();
+                    self.tshark_contents(ui);
+                    ui.separator();
                     self.settings_contents(ui);
                 });
             });
@@ -373,6 +375,31 @@ impl ViewerApp {
                 edited = Preferences::default();
             }
         });
+        if edited != self.preferences {
+            self.set_preferences(edited);
+        }
+    }
+
+    /// Whether, and from where, the packet viewer runs Wireshark's tshark.
+    fn tshark_contents(&mut self, ui: &mut egui::Ui) {
+        ui.label(RichText::new("Wireshark (tshark)").heading());
+        ui.label(
+            RichText::new("tshark decodes the protocols the packet viewer does not. It runs on this computer only, with -n so it looks up no names, and only when turned on here or asked for with Decode with tshark.")
+                .color(theme::TEXT_DIM),
+        );
+        let mut edited = self.preferences.clone();
+        ui.checkbox(&mut edited.use_tshark, "Use tshark when installed").on_hover_text("Decode the listed packets with tshark as soon as they are read");
+        ui.horizontal(|ui| {
+            ui.label("tshark at");
+            ui.add(egui::TextEdit::singleline(&mut edited.tshark_path).hint_text("found automatically").desired_width(300.0));
+        });
+        let found = self.bench.panels.packets.tshark.program(&edited.tshark_path);
+        let status = match found {
+            Some(path) => (theme::ACCENT, format!("Using {}", path.display())),
+            None if edited.tshark_path.trim().is_empty() => (theme::TEXT_DIM, "tshark was not found; install Wireshark to decode more protocols.".to_string()),
+            None => (theme::DANGER, "There is no program at that path.".to_string()),
+        };
+        ui.label(RichText::new(status.1).small().color(status.0));
         if edited != self.preferences {
             self.set_preferences(edited);
         }
