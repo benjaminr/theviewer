@@ -365,10 +365,16 @@ impl Parser for BmpParser {
         let file_size = u32le(bytes, 2)? as usize;
         let pixel_offset = u32le(bytes, 10)?;
         let dib_size = u32le(bytes, 14)?;
-        let (width, height, planes, bpp) = if dib_size == 12 {
-            (u16le(bytes, 18)? as i32, u16le(bytes, 20)? as i32, u16le(bytes, 22)?, u16le(bytes, 24)?)
+        // OS/2 1.x headers (12 bytes) hold the dimensions in 16 bits; later
+        // Windows headers in 32. Offsets and sizes follow from that.
+        let os2 = dib_size == 12;
+        let dimension_len = if os2 { 2 } else { 4 };
+        let height_at = 18 + dimension_len;
+        let bpp_at = height_at + dimension_len + 2;
+        let (width, height, planes, bpp) = if os2 {
+            (u16le(bytes, 18)? as i32, u16le(bytes, height_at)? as i32, u16le(bytes, 22)?, u16le(bytes, bpp_at)?)
         } else {
-            (u32le(bytes, 18)? as i32, u32le(bytes, 22)? as i32, u16le(bytes, 26)?, u16le(bytes, 28)?)
+            (u32le(bytes, 18)? as i32, u32le(bytes, height_at)? as i32, u16le(bytes, 26)?, u16le(bytes, bpp_at)?)
         };
         if planes != 1 || !matches!(bpp, 1 | 4 | 8 | 16 | 24 | 32) {
             return None;
@@ -380,9 +386,9 @@ impl Parser for BmpParser {
                 Field::new("pixel data offset", base + 10, 4, pixel_offset.to_string()),
             ]),
             Field::new("DIB header", base + 14, dib_size as usize, format!("{dib_size} bytes")).with_children(vec![
-                Field::new("width", base + 18, 4, width.to_string()),
-                Field::new("height", base + 22, 4, height.to_string()),
-                Field::new("bits per pixel", base + 28, 2, bpp.to_string()),
+                Field::new("width", base + 18, dimension_len, width.to_string()),
+                Field::new("height", base + height_at, dimension_len, height.to_string()),
+                Field::new("bits per pixel", base + bpp_at, 2, bpp.to_string()),
             ]),
         ];
         Some(
@@ -437,6 +443,24 @@ mod tests {
         let finding = BmpParser.parse(&bmp, 0).expect("bmp");
         assert!(finding.detail.starts_with("BMP 3×2"), "{}", finding.detail);
         assert_eq!(finding.len, bmp.len());
+    }
+
+    #[test]
+    fn an_os2_bitmap_labels_its_16_bit_dimensions_and_bit_depth_where_they_are() {
+        let mut bmp = b"BM".to_vec();
+        bmp.extend_from_slice(&38u32.to_le_bytes()); // file size
+        bmp.extend_from_slice(&[0; 4]);
+        bmp.extend_from_slice(&26u32.to_le_bytes()); // pixel data offset
+        bmp.extend_from_slice(&12u32.to_le_bytes()); // OS/2 1.x header
+        bmp.extend_from_slice(&3u16.to_le_bytes()); // width
+        bmp.extend_from_slice(&2u16.to_le_bytes()); // height
+        bmp.extend_from_slice(&1u16.to_le_bytes()); // planes
+        bmp.extend_from_slice(&24u16.to_le_bytes()); // bits per pixel
+        bmp.extend_from_slice(&[0; 12]);
+        let finding = BmpParser.parse(&bmp, 0).expect("OS/2 bmp");
+        let header = &finding.fields[1].children;
+        let placed: Vec<(&str, usize, usize, &str)> = header.iter().map(|f| (f.name.as_str(), f.offset, f.len, f.value.as_str())).collect();
+        assert_eq!(placed, [("width", 18, 2, "3"), ("height", 20, 2, "2"), ("bits per pixel", 24, 2, "24")]);
     }
 
     #[test]
