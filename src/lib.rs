@@ -56,6 +56,7 @@ pub mod learn;
 pub mod legend;
 pub mod linecode;
 pub mod logo;
+pub mod mcp;
 pub mod media;
 pub mod numeric;
 pub mod ops;

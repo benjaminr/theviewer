@@ -12,6 +12,7 @@ use theviewer::api::{self, ApiError, HeadlessWorkspace, Workspace};
 use theviewer::app::{self, Launch};
 use theviewer::headless;
 use theviewer::logo;
+use theviewer::mcp;
 use theviewer::ops;
 use theviewer::raster::{Palette, PixelFormat};
 use theviewer::theme;
@@ -28,11 +29,15 @@ usage: theviewer [FILE] [--format NAME] [--palette NAME] [--width PIXELS] [--off
        theviewer FILE --report | --json
        theviewer api METHOD ['{JSON PARAMS}'] [FILE]
        theviewer api --describe
+       theviewer mcp [--plugins DIR]... [FILE...]
 
   --report   print a plain-text report of FILE without opening a window
   --json     print the same report as JSON, for scripts and CI
   api        run one data API method on FILE without opening a window and print its JSON
              result; --describe prints every method with its schemas (see docs/api.md)
+  mcp        serve the files over the Model Context Protocol on standard input and output,
+             for Claude Code and other MCP clients; --plugins loads plugins from DIR instead
+             of ./plugins and ~/.config/theviewer/plugins
 
   --format   one of: bit1 bit1lsb nibble4 gray8 class rgb565 gray16le gray16be rgb8 bgr8 rgba8 bgra8
              or a numeric heatmap: u16le u16be i16le i16be u32le u32be i32le i32be f32le f32be
@@ -157,6 +162,40 @@ fn call_headless(method: &str, params: &str, file: Option<&Path>) -> Result<serd
     api::call(&mut workspace, &api::Caller::Cli, method, params)
 }
 
+/// Run `theviewer mcp …` (the arguments after `mcp`) until the client
+/// closes standard input, and return the process exit code.
+fn run_mcp(args: &[String]) -> i32 {
+    let mut options = mcp::Options::default();
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "-h" | "--help" => {
+                eprintln!("{USAGE}");
+                return EXIT_USAGE;
+            }
+            "--plugins" => match args.next() {
+                Some(dir) => options.plugin_dirs.get_or_insert_with(Vec::new).push(PathBuf::from(dir)),
+                None => {
+                    eprintln!("--plugins needs a directory\n\n{USAGE}");
+                    return EXIT_USAGE;
+                }
+            },
+            other if other.starts_with('-') => {
+                eprintln!("unknown option '{other}' for theviewer mcp\n\n{USAGE}");
+                return EXIT_USAGE;
+            }
+            file => options.files.push(PathBuf::from(file)),
+        }
+    }
+    match mcp::run_stdio(&options) {
+        Ok(()) => 0,
+        Err(message) => {
+            eprintln!("theviewer mcp: {message}");
+            EXIT_FAILURE
+        }
+    }
+}
+
 /// Print the report for `path` and return the process exit code.
 fn run_headless(path: Option<&Path>, output: HeadlessOutput) -> i32 {
     let Some(path) = path else {
@@ -184,6 +223,9 @@ fn main() -> eframe::Result {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().is_some_and(|first| first == "api") {
         std::process::exit(run_api(&args[1..]));
+    }
+    if args.first().is_some_and(|first| first == "mcp") {
+        std::process::exit(run_mcp(&args[1..]));
     }
     let launch = match parse_launch() {
         Ok((launch, Some(output))) => std::process::exit(run_headless(launch.path.as_deref(), output)),
