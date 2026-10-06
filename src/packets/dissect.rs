@@ -6,9 +6,10 @@
 //! ICMP and ICMPv6 ([`icmp`]) and the other link layers a capture may use,
 //! from Linux cooked captures to 802.11 and radiotap ([`link`]);
 //! application protocols are chosen by port ([`super::application`]).
-//! Frames of unknown format are decoded with a template, or with the field
-//! guesses of the protocol analysis. Every offset is relative to the
-//! packet's first byte.
+//! Frames of unknown format are decoded as a protocol chosen for them
+//! ([`super::frames`]), else with a template, or with the field guesses of
+//! the protocol analysis. Every offset is relative to the packet's first
+//! byte.
 
 use std::net::{IpAddr, Ipv4Addr};
 
@@ -16,6 +17,7 @@ use etherparse::{Ethernet2HeaderSlice, Ipv4HeaderSlice, Ipv6HeaderSlice, SingleV
 
 use super::application::{self, AppLayer, SetHints};
 use super::flows::{Endpoint, Flow, Transport};
+use super::frames::FrameProtocol;
 use super::{LinkKind, hex_preview};
 use crate::plugin::Field;
 use crate::protocol::MessageField;
@@ -151,6 +153,9 @@ impl WiresharkNames {
 /// format, and flows the rest of the set identified.
 #[derive(Clone, Debug, Default)]
 pub struct RawFrames {
+    /// The protocol each frame is decoded as, from its first byte; frames
+    /// it does not read fall back to the template or the field guesses.
+    pub decode_as: Option<FrameProtocol>,
     /// Applied to each frame when set.
     pub template: Option<Template>,
     /// Header fields found by the protocol analysis, used without a template.
@@ -167,7 +172,12 @@ pub fn dissect(bytes: &[u8], link: LinkKind) -> Dissection {
 
 /// Dissect a packet, decoding frames of unknown format as `raw` says.
 pub fn dissect_with(bytes: &[u8], link: LinkKind, raw: &RawFrames) -> Dissection {
-    let resolved = resolve_link(bytes, link);
+    let resolved = match raw.decode_as.filter(|_| link == LinkKind::Unknown) {
+        Some(FrameProtocol::Ethernet) if bytes.len() >= ETHERNET_HEADER_LEN => LinkKind::Ethernet,
+        Some(FrameProtocol::RawIp) if matches!(bytes.first().map(|byte| byte >> 4), Some(4 | 6)) => LinkKind::RawIp,
+        Some(_) => LinkKind::Unknown,
+        None => resolve_link(bytes, link),
+    };
     let mut walk = Walk { bytes, out: Dissection { link: resolved, ..Dissection::default() }, hints: &raw.hints };
     match resolved {
         LinkKind::Ethernet => walk.ethernet(),
@@ -841,7 +851,12 @@ impl Walk<'_> {
             self.data_layer(start, end, "Payload");
             return;
         }
-        // Each layer starts where the one before it ends.
+        self.application_layers(layers, start, end);
+    }
+
+    /// Application layers parsed from the bytes `start..end`, each starting
+    /// where the one before it ends, then whatever they left over.
+    fn application_layers(&mut self, layers: Vec<AppLayer>, start: usize, end: usize) {
         let mut at = start;
         for AppLayer { name, key, len, mut fields, info } in layers {
             shift_fields(&mut fields, start);
@@ -859,10 +874,29 @@ impl Walk<'_> {
     // -- Frames of unknown format ------------------------------------------
 
     fn raw_frame(&mut self, raw: &RawFrames) {
+        if let Some(protocol) = raw.decode_as {
+            if self.decoded_frame(protocol) {
+                return;
+            }
+            let instead = if raw.template.is_some() { "the template" } else { "the field guesses" };
+            self.out.notes.push(format!("This frame does not decode as {}, so it is shown with {instead} instead", protocol.label()));
+        }
         match &raw.template {
             Some(template) => self.template_frame(template),
             None => self.guessed_frame(&raw.guesses),
         }
+    }
+
+    /// The whole frame read as `protocol` from its first byte, layer after
+    /// layer as a transport payload is read. Returns false, adding
+    /// nothing, when the frame is not that protocol.
+    fn decoded_frame(&mut self, protocol: FrameProtocol) -> bool {
+        let layers = application::dissect_frame_as(protocol, self.bytes);
+        if layers.is_empty() {
+            return false;
+        }
+        self.application_layers(layers, 0, self.bytes.len());
+        true
     }
 
     fn template_frame(&mut self, template: &Template) {
@@ -1144,6 +1178,49 @@ mod tests {
     }
 
     #[test]
+    fn frames_decoded_as_a_protocol_read_like_that_protocol_on_its_port() {
+        let message = dns_query_payload();
+        let mut frame = message.clone();
+        frame.extend_from_slice(&[0xEE, 0xEE]);
+        let raw = RawFrames { decode_as: Some(FrameProtocol::Dns), ..RawFrames::default() };
+        let decoded = dissect_with(&frame, LinkKind::Unknown, &raw);
+        let names: Vec<&str> = decoded.layers.iter().map(|l| l.name.as_str()).collect();
+        assert_eq!(names, ["DNS", "Trailing data"]);
+        let on_port = dissect(&ethernet_udp(53_000, 53, &message), LinkKind::Ethernet);
+        assert_eq!(decoded.summary.protocol, on_port.summary.protocol);
+        assert_eq!(decoded.summary.info, on_port.summary.info);
+        assert_eq!(decoded.protocols, ["dns", "data"]);
+        assert_eq!(field(layer(&decoded, "DNS"), "Transaction ID").offset, 0);
+        assert!(decoded.notes.is_empty(), "{:?}", decoded.notes);
+    }
+
+    #[test]
+    fn a_chosen_protocol_overrides_the_template_and_the_raw_ip_guess() {
+        let template = Template::parse("struct Frame { a: u8 }").expect("a template");
+        let raw = RawFrames { decode_as: Some(FrameProtocol::Dns), template: Some(template), ..RawFrames::default() };
+        assert_eq!(dissect_with(&dns_query_payload(), LinkKind::Unknown, &raw).summary.protocol, "DNS");
+        let ip_packet = ethernet_udp(1000, 2000, b"hello")[ETHERNET_HEADER_LEN..].to_vec();
+        let as_ethernet = dissect_with(&ip_packet, LinkKind::Unknown, &RawFrames { decode_as: Some(FrameProtocol::Ethernet), ..RawFrames::default() });
+        assert_eq!(as_ethernet.link, LinkKind::Ethernet, "the user's choice beats the raw IP guess");
+        let frame = ethernet_udp(1000, 2000, b"hello");
+        let ethernet = dissect_with(&frame, LinkKind::Unknown, &RawFrames { decode_as: Some(FrameProtocol::Ethernet), ..RawFrames::default() });
+        assert_eq!(ethernet.summary.protocol, "UDP");
+        assert_eq!(dissect_with(&frame, LinkKind::Ethernet, &raw).summary.protocol, "UDP", "a capture's own link type is kept");
+    }
+
+    #[test]
+    fn a_frame_the_chosen_decoder_rejects_falls_back_with_a_note() {
+        let frame = [0xFF, 0x01, 0x02];
+        let raw = RawFrames { decode_as: Some(FrameProtocol::ModbusTcp), ..RawFrames::default() };
+        let dissection = dissect_with(&frame, LinkKind::Unknown, &raw);
+        assert_eq!(dissection.layers[0].name, "Data");
+        assert_eq!(dissection.notes, ["This frame does not decode as Modbus/TCP, so it is shown with the field guesses instead"]);
+        let short = dissect_with(&frame, LinkKind::Unknown, &RawFrames { decode_as: Some(FrameProtocol::Ethernet), ..RawFrames::default() });
+        assert_eq!(short.link, LinkKind::Unknown);
+        assert!(short.notes[0].contains("Ethernet"), "{:?}", short.notes);
+    }
+
+    #[test]
     fn arbitrary_bytes_never_make_the_dissector_panic() {
         let mut state = 0x1234_5678u32;
         let mut next = || {
@@ -1154,6 +1231,7 @@ mod tests {
         };
         let template = Template::parse("struct T { a: u8  n: u8  body: bytes[n] }").ok();
         let raw = RawFrames { template, ..RawFrames::default() };
+        let decoders: Vec<RawFrames> = FrameProtocol::ALL.iter().map(|&protocol| RawFrames { decode_as: Some(protocol), ..RawFrames::default() }).collect();
         for round in 0..3000 {
             let len = (next() % 200) as usize;
             let mut bytes: Vec<u8> = (0..len).map(|_| next() as u8).collect();
@@ -1167,6 +1245,9 @@ mod tests {
             for link in LinkKind::ALL {
                 let _ = dissect(&bytes, link);
                 let _ = dissect_with(&bytes, link, &raw);
+            }
+            for decoder in &decoders {
+                let _ = dissect_with(&bytes, LinkKind::Unknown, decoder);
             }
         }
     }

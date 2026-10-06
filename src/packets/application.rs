@@ -15,6 +15,7 @@ use crate::patterns::format_unix_seconds;
 use crate::plugin::Field;
 
 use super::flows::{Flow, Transport};
+use super::frames::FrameProtocol;
 
 mod dhcp;
 mod iso_transport;
@@ -24,6 +25,7 @@ mod signalling;
 mod smb;
 mod snmp;
 mod tftp;
+mod tls;
 
 pub use set_hints::SetHints;
 
@@ -101,6 +103,51 @@ pub fn dissect_application(flow: &Flow, payload: &[u8], hints: &SetHints) -> Vec
         _ => None,
     };
     parsed.or_else(sniffed).into_iter().collect()
+}
+
+/// Parse a whole frame as `protocol`, from its first byte, whatever port
+/// it might have travelled on: the layers found, outermost first, as
+/// [`dissect_application`] gives them; none when the frame is not that
+/// protocol, or `protocol` is a link layer rather than an application one.
+pub fn dissect_frame_as(protocol: FrameProtocol, frame: &[u8]) -> Vec<AppLayer> {
+    if frame.is_empty() {
+        return Vec::new();
+    }
+    let parsed = match protocol {
+        FrameProtocol::Ethernet | FrameProtocol::RawIp => None,
+        FrameProtocol::Tpkt => return iso_transport::dissect_tpkt(frame),
+        FrameProtocol::Nbss => return smb::dissect_netbios_session(frame, false),
+        FrameProtocol::Dns => dissect_dns(frame),
+        FrameProtocol::DnsOverTcp => dissect_dns_over_tcp(frame),
+        FrameProtocol::Snmp => snmp::dissect_snmp(frame),
+        FrameProtocol::Ntp => dissect_ntp(frame),
+        FrameProtocol::ModbusTcp => dissect_modbus(frame, modbus_frame_is_request(frame)),
+        FrameProtocol::Mqtt => dissect_mqtt(frame),
+        FrameProtocol::Tls => tls::dissect_tls(frame),
+        FrameProtocol::Dhcp => dhcp::dissect_dhcp(frame),
+        FrameProtocol::Tftp => tftp::dissect_tftp(frame),
+        FrameProtocol::Rtp => rtp::dissect_rtp(frame),
+        FrameProtocol::Rtcp => rtp::dissect_rtcp(frame),
+        FrameProtocol::Http => dissect_http(frame),
+    };
+    parsed.into_iter().collect()
+}
+
+/// Whether a Modbus/TCP frame with no port to say so is a request, from
+/// its shape: an exception is a response; a read of coils, inputs or
+/// registers asks with exactly a reference and a quantity (an MBAP length
+/// of 6) and answers with a byte count and data; a multiple write asks
+/// with data and answers with a reference and a quantity alone. Single
+/// writes are echoed, so either reading fits.
+fn modbus_frame_is_request(frame: &[u8]) -> bool {
+    const READ_REQUEST_LENGTH: u16 = 6;
+    let (Some(length), Some(&function)) = (u16_at(frame, 4), frame.get(MBAP_HEADER_LEN)) else { return true };
+    match function {
+        code if code & MODBUS_EXCEPTION_BIT != 0 => false,
+        1..=4 => length == READ_REQUEST_LENGTH,
+        15 | 16 => length != READ_REQUEST_LENGTH,
+        _ => true,
+    }
 }
 
 fn u16_at(bytes: &[u8], at: usize) -> Option<u16> {
