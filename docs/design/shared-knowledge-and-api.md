@@ -374,6 +374,23 @@ The server targets the current MCP specification revision when it is built.
 It is checked with the MCP Inspector and an end-to-end test that drives
 `theviewer mcp` over stdio.
 
+As built in phase 4 (standalone only): the current revision was 2026-07-28,
+which is stateless (each request carries its protocol version, client
+capabilities and name in `_meta`; `server/discover`; `subscriptions/listen`
+streams in place of `resources/subscribe`; log levels per request). Clients
+of that era and of the `initialize` era (2025-11-25 back to 2024-11-05) are
+both served, each in its own revision's terms. Tools are named with
+underscores for dots; the built-in methods give their result schema as the
+output schema. Resources are a document's info, bytes, findings and facts,
+and the reference notes; `theviewer://doc/{id}/packets/{set}` waits for
+packet sets in the API. The server drains its headless workspace's bus
+after every request and on a quarter-second timer, running plugins'
+handlers as the window does, and maps what was delivered to resource
+updates. `plugins.reload` is not a method yet; instead the server reloads a
+plugin directory whose scripts changed, and announces the new tool list.
+Requests are handled in turn on one thread, so cancellation stops only a
+request not yet started, or a listen stream.
+
 ### Permissions
 
 | Caller | Read | Edit |

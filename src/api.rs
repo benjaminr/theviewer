@@ -544,8 +544,11 @@ pub fn reference_markdown() -> String {
     out.push_str("<!-- Generated from the method table in src/api.rs by `cargo run --bin api_docs`. Do not edit by hand. -->\n\n");
     out.push_str(
         "Every method can be called from the command line (`theviewer api METHOD '{json params}' FILE`), \
-Lua plugins call them as `theviewer.api.<namespace>.<method>{…}`, and Ask uses the methods that read \
-or edit as its tools. Documents are named by id (`doc-1`), by path or as \
+Lua plugins call them as `theviewer.api.<namespace>.<method>{…}`, Ask uses the methods that read \
+or edit as its tools, and `theviewer mcp FILE…` offers every method to MCP clients such as Claude \
+Code as a tool named with underscores for dots (`bytes_read`), with resources for each document \
+(`theviewer://doc/{id}`, its `bytes/{start}-{end}`, `findings` and `facts`) and the reference notes \
+(`theviewer://reference/{id}`). Documents are named by id (`doc-1`), by path or as \
 `\"current\"`, which an omitted `doc` also means. Spans are `start` and `len` in bytes; an omitted \
 `len` runs to the end of the document. Bytes are hex strings unless `encoding` says `base64` or \
 `text`. List methods take `limit` and return `next`, a cursor to pass back for the next page. One \
@@ -559,7 +562,8 @@ caller's. Any edit takes `expect_version`: when the document has changed since, 
 reverses them all when one fails. In the app, an edit or view change from a plugin, Ask or another \
 client is checked against that client's setting under Settings › Permissions (always allow, always \
 ask, never allow; a new client is asked about): when it asks, a window shows the change for the \
-person to allow once, always allow or deny. On the command line every call is allowed. Methods \
+person to allow once, always allow or deny. On the command line and through `theviewer mcp` every \
+call is allowed: the files are the ones the person named. Methods \
 plugins register join the table at run time; `api.describe` lists them as experimental.\n\n",
     );
     out.push_str("Errors are `{code, message, data}`, with these codes:\n\n| Code | Meaning |\n| --- | --- |\n");

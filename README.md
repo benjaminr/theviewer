@@ -24,6 +24,7 @@ contains and where.</sub>
 - [The tools](#the-tools)
 - [Ask Claude about a file](#ask-claude-about-a-file)
 - [Who may change the file](#who-may-change-the-file)
+- [Use theviewer from Claude Code and other MCP clients](#use-theviewer-from-claude-code-and-other-mcp-clients)
 - [Make it yours](#make-it-yours)
 - [Keyboard shortcuts](#keyboard-shortcuts)
 - [Command line](#command-line)
@@ -412,8 +413,68 @@ Every change a client makes is one undo step, labelled with what it did and
 who did it ("Overwrite 4 bytes by plugin:acme_telemetry.lua"), so *Undo*
 always takes it back. A client can also say which version of the file it
 expects, so a change based on bytes that have changed since is refused
-instead of applied. On the command line (`theviewer api`) every call is
-allowed: the files are the ones you named.
+instead of applied. On the command line (`theviewer api`) and through the
+MCP server (`theviewer mcp`, below) every call is allowed: the files are the
+ones you named.
+
+## Use theviewer from Claude Code and other MCP clients
+
+`theviewer mcp FILE…` serves the files you name over the
+[Model Context Protocol](https://modelcontextprotocol.io) on standard input
+and output, without a window, so Claude Code, Claude Desktop and other MCP
+clients can inspect and edit them. Add it to Claude Code with:
+
+```sh
+claude mcp add theviewer -- /path/to/theviewer mcp /path/to/firmware.bin
+```
+
+For Claude Desktop, add it to `claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "theviewer": {
+      "command": "/path/to/theviewer",
+      "args": ["mcp", "/path/to/firmware.bin"]
+    }
+  }
+}
+```
+
+What the client gets:
+
+- **Tools:** every method of the data API ([docs/api.md](docs/api.md)), with
+  dots made underscores: `analysis_overview`, `findings_query`,
+  `structure_parse`, `bytes_read`, `bytes_write`, `transform_apply`,
+  `history_undo` and the rest, plus every method your plugins register.
+  Each says whether it only reads or changes the file, and the built-in
+  ones describe their results.
+- **Resources:** `theviewer://doc/{id}` (a document's info),
+  `theviewer://doc/{id}/bytes/{start}-{end}` (up to 1 MiB of bytes; add
+  `?encoding=hex` for a hex dump), `theviewer://doc/{id}/findings` (what the
+  detectors recognise and what tools and plugins published),
+  `theviewer://doc/{id}/facts` (everything the workspace bus knows about
+  it) and `theviewer://reference/{id}` (the notes on a format or protocol).
+  A client subscribed to one is told when an edit or a plugin changes it.
+- **Prompts:** *Triage this file*, *Find the record structure* and
+  *Explain the packet*, which walk the model through the tools.
+
+**What it may change.** Only the files you named, and any the client opens
+with `documents_open`; every call is allowed, without asking, because they
+are your files given to your client. Each edit is one undo step labelled
+with the client ("Overwrite 2 bytes by mcp:claude-code"), so `history_undo`
+takes it back, and nothing is written to disk until the client calls
+`documents_save`. Plugins load from the usual places (`plugins/` and
+`~/.config/theviewer/plugins/`), or from the directories given with
+`--plugins DIR`; editing a script while the server runs reloads it, and the
+client is told the tools changed. Plugins' log lines go to the client as log
+messages, and every log goes to standard error.
+
+The server speaks the current MCP revision, 2026-07-28 (per-request
+metadata, `server/discover`, `subscriptions/listen`), and the earlier
+revisions that begin with `initialize` (2025-11-25, 2025-06-18, 2025-03-26
+and 2024-11-05), so current and older clients both work. Attaching to the
+running window instead is planned.
 
 ## Make it yours
 
@@ -536,6 +597,7 @@ theviewer firmware.bin --report          # print the report, no window
 theviewer firmware.bin --json > report.json
 theviewer api bytes.read '{"start": 0, "len": 16}' firmware.bin   # one data API call, printed as JSON
 theviewer api --describe                 # every API method with its schemas
+theviewer mcp firmware.bin               # serve it to an MCP client on stdin and stdout
 ```
 
 | Option | Effect |
@@ -553,6 +615,7 @@ theviewer api --describe                 # every API method with its schemas
 | `--report` | Print the file's report as text and exit, without opening a window |
 | `--json` | Print the report as JSON and exit: the summary, regions, likely record widths and confident findings, for scripts and CI |
 | `api METHOD ['{JSON}'] [FILE]` | Run one method of the data API on FILE and print its JSON result; an error is printed as JSON on stderr with a non-zero exit code. `api --describe` lists every method. The methods are described in [docs/api.md](docs/api.md) |
+| `mcp [--plugins DIR]… [FILE…]` | Serve the files over MCP on standard input and output until the client closes it; see [above](#use-theviewer-from-claude-code-and-other-mcp-clients). `--plugins` loads plugins from DIR instead of the usual directories |
 
 ## Extending it
 
@@ -567,8 +630,8 @@ built-in ones use the same interfaces as yours.
 - **Lua plugins:** scripts can add detectors, parsers, codecs and actions
   through a small sandboxed API, call every method of the data API, react
   to what other tools publish on the workspace bus and publish what they
-  learn, and register methods of their own that Ask and the command line
-  can call; see [docs/plugins.md](docs/plugins.md) and the examples in
+  learn, and register methods of their own that Ask, the command line and
+  MCP clients can call; see [docs/plugins.md](docs/plugins.md) and the examples in
   `plugins/`. *View › Reload plugins* picks up changes.
   An error in a plugin, even in a background scan, is shown in the status
   bar, and every line a plugin logs is in the *Workspace* tab.
@@ -648,6 +711,7 @@ text.
 | `analysis_tools.rs` `analysis_stats.rs` `analysis_tabs.rs` `dock.rs` `workbench.rs` | The tool panels and the state behind them. |
 | `assistant.rs` | *Ask*: a streaming Claude API client with tools, on a background thread. |
 | `api.rs` `api/` | The data API: one table of methods with JSON schemas, run against the window or a headless workspace; Ask's tools, `theviewer api` and [docs/api.md](docs/api.md) come from it. |
+| `mcp.rs` `mcp/` | `theviewer mcp`: a hand-written, synchronous MCP server over stdio; tools from the method table, resources and subscriptions from the bus, prompts. |
 | `api/permissions.rs` `confirmations.rs` | Who is calling the API and what each client may change; the window that asks you about a change. |
 | `layout.rs` `layouts.rs` `packing.rs` | Dockable panels; recommended and saved layouts; toolbar packing and reordering. |
 | `legend.rs` | The legend bar: the colouring in effect and each highlight layer, with toggles. |

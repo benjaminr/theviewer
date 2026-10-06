@@ -12,7 +12,7 @@ buttons, the same command palette.
 Scripts can also call the data API (`theviewer.api`), react to what other
 tools learn (`theviewer.subscribe`), say what they learn
 (`theviewer.publish`) and offer methods of their own that panels, Ask, the
-command line and other plugins can call (`theviewer.register_method`); see
+command line, MCP clients and other plugins can call (`theviewer.register_method`); see
 [The data API, the bus and methods of your own](#the-data-api-the-bus-and-methods-of-your-own).
 
 ## Installing a plugin
@@ -288,7 +288,9 @@ theviewer.register_method{
 
 The method joins the API's table as soon as the plugin loads: `api.describe`
 lists it (as experimental), Ask offers it as a tool, `theviewer api
-acme.decode_frame '{"start": 0}' FILE` runs it, and other plugins call it as
+acme.decode_frame '{"start": 0}' FILE` runs it, `theviewer mcp` offers it to
+MCP clients as the tool `acme_decode_frame` (and tells them when a changed
+script is reloaded), and other plugins call it as
 `theviewer.api.acme.decode_frame{ … }`. Its name is `<plugin>.<name>`,
 where `<plugin>` is the plugin's name, which may not be one of the API's own
 namespaces.
