@@ -365,6 +365,9 @@ pub struct ViewerApp {
     pub last_raster_pixels: usize,
 
     pub status: String,
+    /// Actions asked for while a panel's state was lent out to draw it,
+    /// carried out at the start of the next frame (see `perform_later`).
+    pub(crate) actions_after_drawing: Vec<(String, serde_json::Value)>,
     pub hex_top_row: usize,
     /// Rows the hex dump showed last frame, so the raster can outline them
     /// and cursor reveals know how much fits.
@@ -640,6 +643,7 @@ impl ViewerApp {
             last_raster_ms: 0.0,
             last_raster_pixels: 0,
             status: "Open a file (Cmd+O) or drop one onto the window".to_string(),
+            actions_after_drawing: Vec::new(),
             hex_top_row: 0,
             hex_visible_rows: 1,
             goto_text: String::new(),
@@ -3923,6 +3927,7 @@ impl eframe::App for ViewerApp {
         self.poll_file_request(ctx);
         self.poll_analysis(ctx);
         self.handle_shortcuts(ctx);
+        self.perform_waiting_actions();
         self.folds.clamp_to(self.document.len());
         // After the shortcuts' edits and before anything that follows them.
         if self.run_bus() {

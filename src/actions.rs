@@ -36,6 +36,23 @@ impl ViewerApp {
         result
     }
 
+    /// [`ViewerApp::perform`] once the frame's drawing is over: for a panel
+    /// drawn with its state lent out (`panels::show`, `panels::with`), whose
+    /// action calls a method that writes that same state (a packet set
+    /// shown in the Packets panel, say), which would otherwise land on the
+    /// placeholder and be lost. The result is not returned; a failure is
+    /// said on the status bar.
+    pub fn perform_later(&mut self, method: &str, params: Value) {
+        self.actions_after_drawing.push((method.to_string(), params));
+    }
+
+    /// Carry out the actions [`ViewerApp::perform_later`] kept, in order.
+    pub(crate) fn perform_waiting_actions(&mut self) {
+        for (method, params) in std::mem::take(&mut self.actions_after_drawing) {
+            let _ = self.perform(&method, params);
+        }
+    }
+
     /// [`ViewerApp::perform`] with typed parameters and result: the
     /// method's own params struct (or `json!`), and its result struct.
     pub fn perform_typed<R: DeserializeOwned>(&mut self, method: &str, params: impl Serialize) -> Result<R, ApiError> {
@@ -107,6 +124,17 @@ mod tests {
         assert_eq!(error.code, api::ErrorCode::OutOfRange);
         assert!(app.status.contains("run past the end of the document"), "{}", app.status);
         assert_eq!(app.document.read_range(0, 3), b"abc");
+    }
+
+    #[test]
+    fn an_action_asked_for_while_drawing_is_carried_out_before_the_next_frame() {
+        let mut app = app_with(b"0123");
+        app.perform_later("bytes.write", json!({"start": 0, "data": "41"}));
+        assert_eq!(app.document.read_range(0, 1), b"0", "nothing happens while drawing");
+        assert!(take_performed().is_empty());
+        app.perform_waiting_actions();
+        assert_eq!(app.document.read_range(0, 1), b"A");
+        assert_eq!(take_performed().len(), 1);
     }
 
     #[test]
