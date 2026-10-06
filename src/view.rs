@@ -797,7 +797,7 @@ pub fn handle_cursor(handle: Option<crate::selection_drag::SelectionHandle>, mov
 pub fn begin_drag(app: &mut ViewerApp, byte: usize, modifiers: egui::Modifiers) {
     if modifiers.alt {
         app.begin_column_drag(byte);
-    } else if modifiers.command {
+    } else if modifiers.command || app.multi_select_mode {
         app.begin_adding_drag(byte);
     } else {
         app.begin_plain_drag(byte, modifiers.shift);
@@ -808,7 +808,7 @@ pub fn begin_drag(app: &mut ViewerApp, byte: usize, modifiers: egui::Modifiers) 
 /// the byte) to the selection or takes it out, Shift extends the selection,
 /// and a plain click places the cursor.
 pub fn click_byte(app: &mut ViewerApp, byte: usize, modifiers: egui::Modifiers) {
-    if modifiers.command {
+    if modifiers.command || app.multi_select_mode {
         app.add_to_selection_at(byte);
     } else {
         app.set_cursor(byte, modifiers.shift);

@@ -1529,3 +1529,27 @@ fn an_edit_marks_the_report_out_of_date_and_the_segments_refresh_themselves() {
 fn segments_finished(app: &ViewerApp) -> bool {
     app.bench.freshness.described(theviewer::dock::DockTab::StructureMap).is_some() && !app.bench.panels.structure_map.is_busy()
 }
+
+#[test]
+fn multi_select_mode_adds_sections_with_plain_drags_and_escape_leaves_it() {
+    let mut harness = harness(sample_file("multi-select.bin"));
+    harness.get_by_label("Multi-select").click();
+    steps(&mut harness, 2);
+    assert!(harness.state().multi_select_mode, "the toolbar button turns the mode on");
+
+    let start = raster_point(&harness);
+    drag(&mut harness, start, pos2(start.x + 40.0, start.y));
+    drag(&mut harness, pos2(start.x, start.y + 40.0), pos2(start.x + 40.0, start.y + 40.0));
+    let sections = harness.state().current_selection().map(|selection| selection.ranges(harness.state().document.len()).len());
+    assert_eq!(sections, Some(2), "two plain drags give two sections");
+    assert!(harness.query_by_label_contains("Multi-select · 2 sections").is_some(), "the status bar says so");
+
+    harness.key_press(Key::Escape);
+    steps(&mut harness, 2);
+    assert!(!harness.state().multi_select_mode, "Esc leaves the mode");
+    assert!(harness.state().current_selection().is_none(), "and clears the sections");
+
+    harness.key_press(Key::M);
+    steps(&mut harness, 2);
+    assert!(harness.state().multi_select_mode, "M turns it back on");
+}

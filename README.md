@@ -134,8 +134,11 @@ with its shortcut, or right-click a byte for the actions that apply to it.
 **Edit**
 - Select a range, a column of every record (`Alt`+drag), or several
   ranges at once (`Cmd`+click findings, packets or search matches, or
-  *All matches* in the Find box). The raster, the hex dump and the packet
-  viewer show and change the same selection.
+  *All matches* in the Find box). *Multi-select* in the toolbar (or `M`)
+  turns on a mode where plain clicks and drags add sections and clicking a
+  section takes it out again; Esc clears them and leaves the mode. The
+  raster, the hex dump and the packet viewer show and change the same
+  selection.
 - Overwrite or insert hex, delete, fill, invert, reverse, mirror bits, shift
   a selection's bits across byte boundaries, and move blocks.
 - One *Selection* menu, in the right-click menus of the view and the hex
@@ -311,6 +314,7 @@ the full list.
 | `Alt+←` `Alt+→` `Alt+↑` `Alt+↓` | With a selection: nudge its bytes a byte left or right, or a row up or down |
 | `I` | Insert bytes before, after or at the cursor |
 | `S` | Skip the selection: fold it out of the views |
+| `M` | Multi-select mode: plain clicks and drags add sections |
 | `PgUp` `PgDn` `Home` `End` | Move by a page, or to either end |
 | `Delete` `Backspace` | Delete the selection or byte |
 | `Cmd+C` `Cmd+X` `Cmd+V` `Cmd+A` | Copy as hex, cut, paste, select all |

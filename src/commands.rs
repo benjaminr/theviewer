@@ -30,6 +30,7 @@ pub fn commands() -> Vec<Command> {
         Command { id: "edit.copy", title: "Copy as hex", keys: "Cmd+C", run: |app, ctx| app.copy(ctx) },
         Command { id: "edit.cut", title: "Cut", keys: "Cmd+X", run: |app, ctx| app.cut(ctx) },
         Command { id: "edit.paste", title: "Paste", keys: "Cmd+V", run: |app, _| app.paste(None) },
+        Command { id: "edit.multi_select", title: "Multi-select mode: add sections with plain clicks and drags", keys: "M", run: |app, _| app.multi_select_mode = !app.multi_select_mode },
         Command { id: "edit.select_all", title: "Select all", keys: "Cmd+A", run: |app, _| app.select_all() },
         Command { id: "edit.delete", title: "Delete selection or byte", keys: "Del", run: |app, _| app.delete_target() },
         Command { id: "edit.insert", title: "Insert bytes at cursor", keys: "", run: |app, _| app.insert_from_fields() },

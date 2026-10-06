@@ -189,6 +189,9 @@ pub struct ViewerApp {
     pub column_selection: Option<ColumnSelection>,
     /// Ranges selected besides the anchor-to-cursor one (Cmd-click adds).
     pub extra_ranges: Vec<(usize, usize)>,
+    /// Multi-select mode: plain clicks and drags add sections to the
+    /// selection, as Cmd-click and Cmd-drag do. `M` toggles it; Esc leaves it.
+    pub multi_select_mode: bool,
     /// Ranges skipped (folded) out of the raster and the hex dump. View
     /// state, not edits: the bytes are still in the document.
     pub folds: Folds,
@@ -501,6 +504,7 @@ impl ViewerApp {
             drag_column: false,
             column_selection: None,
             extra_ranges: Vec::new(),
+            multi_select_mode: false,
             folds: Folds::default(),
             clipboard: Vec::new(),
             fit_width_requested: false,
@@ -2795,9 +2799,13 @@ impl ViewerApp {
             self.scroll_cursor_into_view();
             self.reveal_cursor_in_hex(true);
         }
+        if consume(Key::M) {
+            self.multi_select_mode = !self.multi_select_mode;
+        }
         if consume(Key::Escape) && !self.cancel_move_drag() {
             self.anchor = None;
             self.clear_secondary_selection();
+            self.multi_select_mode = false;
             self.pending_low_nibble = false;
             self.show_help = false;
         }
@@ -3252,6 +3260,8 @@ impl ViewerApp {
         let has_target = self.target_range().is_some();
         let selection_caption = crate::selection_menu::menu_title(self);
         packer.captioned(ui, "selection", &selection_caption, |ui| {
+            ui.toggle_value(&mut self.multi_select_mode, "Multi-select")
+                .on_hover_text("Clicks and drags add sections to the selection; click a section again to take it out. M toggles it; Esc clears the sections and leaves.");
             ui.add_enabled_ui(has_target, |ui| {
                 if ui.button(RichText::new("Delete").color(theme::DANGER)).on_hover_text("Backspace / Del").clicked() {
                     self.delete_target();
@@ -3459,6 +3469,12 @@ impl ViewerApp {
             ui.separator();
             ui.label(RichText::new("cursor").color(dim));
             ui.monospace(format!("{:#x}", self.cursor));
+            if self.multi_select_mode {
+                ui.separator();
+                let sections = self.current_selection().map_or(0, |selected| selected.ranges(self.document.len()).len());
+                ui.label(RichText::new(format!("Multi-select · {sections} sections · Esc to finish")).color(theme::ACCENT).strong())
+                    .on_hover_text("Clicks and drags add sections; click a section again to take it out. M or the toolbar button turns this off.");
+            }
             if let Some(selected) = self.current_selection() {
                 let (start, len) = selected.span();
                 ui.separator();
@@ -3556,6 +3572,7 @@ impl ViewerApp {
                     ("Alt+arrows", "With a selection: nudge its bytes a byte left or right, or a row up or down"),
                     ("I", "Insert bytes before, after or at the cursor"),
                     ("S", "Skip the selection: fold it out of the views (click the marker to show it)"),
+                    ("M", "Multi-select mode: clicks and drags add sections; Esc clears and leaves"),
                     ("Backspace Del", "Delete the selection or byte"),
                     ("Cmd+Z Shift+Cmd+Z", "Undo, redo"),
                     ("Cmd+C Cmd+X Cmd+V Cmd+A", "Copy (as hex), cut, paste, select all"),
