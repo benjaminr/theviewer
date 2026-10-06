@@ -21,6 +21,7 @@ pub(super) const METHODS: &[super::Method] = &[
     method!("analysis.compressibility", Read, compressibility, SpanParams, CompressibilityResult, "Compress a span with several codecs and report the ratios, with a verdict: encrypted or random, already compressed, lossy media or structured."),
     method!("analysis.text_encoding", Read, text_encoding, SpanParams, TextEncodingResult, "Identify the character encoding of a span of text, with previews and the likely language."),
     method!("analysis.processor", Read, processor, SpanParams, ProcessorResult, "Test whether a span is machine code, and for which processor, by disassembling samples for each architecture."),
+    method!("analysis.period_scan", Job, caller period_scan, PeriodScanParams, super::jobs::JobStartedResult, "Start a scan of a window of bytes for repeating periods (record widths) as a background job; the periods found, best first, are job.finished's result, and in the window they fill the structure chart and are published on record_width.estimated."),
 ];
 
 /// An example call of each of [`METHODS`], run in order on a fresh
@@ -36,6 +37,7 @@ pub(super) fn examples() -> Vec<(&'static str, serde_json::Value)> {
         ("analysis.compressibility", json!({})),
         ("analysis.text_encoding", json!({"start": 100})),
         ("analysis.processor", json!({})),
+        ("analysis.period_scan", json!({"start": 0, "len": 512, "max_period": 64})),
     ]
 }
 
@@ -60,6 +62,69 @@ pub struct OverviewParams {
     /// Most findings to include (all of them, up to 2000, by default).
     #[serde(default)]
     pub max_findings: Option<usize>,
+}
+
+/// Bytes `analysis.period_scan` reads when no length is given.
+pub const PERIOD_SCAN_WINDOW: u64 = 192 * 1024;
+/// Longest period `analysis.period_scan` looks for when none is given.
+pub const DEFAULT_MAX_PERIOD: usize = 4096;
+/// Longest period `analysis.period_scan` may be asked to look for.
+pub const MOST_MAX_PERIOD: usize = 16384;
+
+/// Parameters of `analysis.period_scan`.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PeriodScanParams {
+    /// Document id, path or "current" (the default).
+    #[serde(default)]
+    pub doc: Option<String>,
+    /// First offset of the window scanned (0 by default; the window uses
+    /// the view's origin).
+    #[serde(default)]
+    pub start: u64,
+    /// Bytes scanned (192 KiB by default, at most 16 MiB).
+    #[serde(default)]
+    pub len: Option<u64>,
+    /// Longest period looked for, 2 to 16384 (4096 by default).
+    #[serde(default)]
+    pub max_period: Option<usize>,
+}
+
+/// One period a scan found.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct PeriodCandidate {
+    /// Period in bytes.
+    pub period: usize,
+    /// How alike bytes this far apart are, 0 to 1.
+    pub score: f32,
+    /// How far the score rises above the rest, in robust standard deviations.
+    pub prominence: f32,
+    /// Bits of entropy per byte that knowing the column (offset modulo the period) removes.
+    pub column_gain: f32,
+    /// The smallest better period this one is a multiple of, if any.
+    pub multiple_of: Option<usize>,
+}
+
+/// What `analysis.period_scan`'s job finishes with.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct PeriodScanResult {
+    /// First offset scanned.
+    pub start: u64,
+    /// Bytes scanned.
+    pub len: u64,
+    /// The periods found, best first.
+    pub candidates: Vec<PeriodCandidate>,
+}
+
+impl PeriodScanResult {
+    fn of(scan: &crate::analysis::PeriodScan) -> Self {
+        let candidates = scan
+            .candidates
+            .iter()
+            .map(|candidate| PeriodCandidate { period: candidate.period, score: candidate.score, prominence: candidate.prominence, column_gain: candidate.column_gain, multiple_of: candidate.multiple_of })
+            .collect();
+        PeriodScanResult { start: scan.window_start as u64, len: scan.window_len as u64, candidates }
+    }
 }
 
 /// A span to measure. Spans longer than 16 MiB are measured over their first 16 MiB.
@@ -277,6 +342,47 @@ pub fn overview_job(workspace: &mut dyn Workspace, caller: &Caller, params: Over
     Ok(started)
 }
 
+/// `analysis.period_scan`: read the window now and scan it on a thread as
+/// a job. In the window, the window's own scan runs (see
+/// `ViewerApp::scan_periods_from`), filling the structure chart.
+pub fn period_scan(workspace: &mut dyn Workspace, caller: &Caller, params: PeriodScanParams) -> Result<JobStartedResult, ApiError> {
+    let max_period = params.max_period.unwrap_or(DEFAULT_MAX_PERIOD);
+    if !(2..=MOST_MAX_PERIOD).contains(&max_period) {
+        return Err(ApiError::invalid_params(format!("a longest period of {max_period} is outside 2 to {MOST_MAX_PERIOD}")));
+    }
+    let id = workspace::resolve(workspace, params.doc.as_deref())?;
+    let version = workspace::info(workspace, &id)?.version;
+    let (_, document) = workspace::document(workspace, Some(&id))?;
+    let room = (document.len() as u64).saturating_sub(params.start);
+    let (start, len) = values::span_within(document.len(), params.start, Some(params.len.unwrap_or(PERIOD_SCAN_WINDOW).min(room)))?;
+    values::check_call_size(len)?;
+    if let Some(app) = workspace.window()
+        && app.document_id() == id
+    {
+        return Ok(JobStartedResult { job: app.scan_periods_from(start, len, max_period, &caller.producer()) });
+    }
+    let (_, document) = workspace::document(workspace, Some(&id))?;
+    let bytes = document.read_range(start, len);
+    let job = workspace.bus().start_job("period-scan", "Period scan", caller.producer(), Some((id, version)));
+    let started = JobStartedResult { job: job.id().to_string() };
+    std::thread::spawn(move || run_period_scan(&bytes, start, max_period, &job));
+    Ok(started)
+}
+
+/// Scan `bytes` (from document offset `start`) for periods up to
+/// `max_period` and finish `job` with what was found, unless it was
+/// cancelled meanwhile. Returns the scan when the job finished with it.
+pub fn run_period_scan(bytes: &[u8], start: usize, max_period: usize, job: &crate::bus::JobHandle) -> Option<crate::analysis::PeriodScan> {
+    let scan = crate::analysis::scan_periods(bytes, start, max_period);
+    if job.is_cancelled() {
+        job.finish_cancelled();
+        return None;
+    }
+    let outcome = scan.candidates.first().map_or_else(|| "no repeating period".to_string(), |best| format!("best period {} bytes", best.period));
+    job.finish_with(!scan.candidates.is_empty(), outcome, serde_json::to_value(PeriodScanResult::of(&scan)).ok());
+    Some(scan)
+}
+
 pub fn statistics(workspace: &mut dyn Workspace, params: SpanParams) -> Result<StatisticsResult, ApiError> {
     let (start, bytes) = span_bytes(workspace, &params)?;
     let stats = crate::stats::byte_stats(&bytes);
@@ -358,6 +464,33 @@ pub fn processor(workspace: &mut dyn Workspace, params: SpanParams) -> Result<Pr
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_period_scan_job_finds_the_record_width() {
+        use crate::api::Workspace;
+        use serde_json::json;
+        let records: Vec<u8> = (0..400u32).flat_map(|index| {
+            let mut record = vec![0xA5, 0x5A, index as u8, (index >> 8) as u8];
+            record.extend((0..44u8).map(|byte| byte.wrapping_mul(7)));
+            record
+        }).collect();
+        let mut workspace = crate::api::test_support::workspace_with("records.bin", &records);
+        let started = crate::api::test_support::call(&mut workspace, "analysis.period_scan", json!({"max_period": 256})).unwrap();
+        let begun = std::time::Instant::now();
+        let status = loop {
+            workspace.bus().deliver_all();
+            let status = crate::api::test_support::call(&mut workspace, "jobs.status", json!({"job": started["job"]})).unwrap();
+            if status["state"] != "running" || begun.elapsed() > std::time::Duration::from_secs(20) {
+                break status;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        };
+        assert_eq!(status["state"], "finished", "{status}");
+        assert_eq!(status["producer"], "panel", "the job is its caller's");
+        assert_eq!(status["result"]["candidates"][0]["period"], 48, "{status}");
+        let refused = crate::api::test_support::call(&mut workspace, "analysis.period_scan", json!({"max_period": 1})).unwrap_err();
+        assert_eq!(refused.code, crate::api::ErrorCode::InvalidParams);
+    }
+
     use serde_json::json;
 
     use crate::api::test_support::workspace_with;

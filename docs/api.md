@@ -80,6 +80,7 @@ Errors are `{code, message, data}`, with these codes:
 | [`analysis.compressibility`](#analysiscompressibility) | read | Compress a span with several codecs and report the ratios, with a verdict: encrypted or random, already compressed, lossy media or structured. |
 | [`analysis.text_encoding`](#analysistext_encoding) | read | Identify the character encoding of a span of text, with previews and the likely language. |
 | [`analysis.processor`](#analysisprocessor) | read | Test whether a span is machine code, and for which processor, by disassembling samples for each architecture. |
+| [`analysis.period_scan`](#analysisperiod_scan) | job | Start a scan of a window of bytes for repeating periods (record widths) as a background job; the periods found, best first, are job.finished's result, and in the window they fill the structure chart and are published on record_width.estimated. |
 | [`reference.lookup`](#referencelookup) | read | The reference notes on a format or protocol, by id, finding id, layer name, port (udp/67) or number (port, IP protocol or EtherType): layout, field meanings and specifications. |
 | [`reference.search`](#referencesearch) | read | Reference entries whose notes mention every word of a query, or that a port or number names. |
 | [`events.facts`](#eventsfacts) | read | What the tools have learnt about a document and keep: the latest fact per topic, producer and key, by topic, producer or the bytes they cover, each marked stale when the document changed under it. |
@@ -1062,6 +1063,21 @@ Test whether a span is machine code, and for which processor, by disassembling s
 | `looks_like_data` | boolean | yes | Whether no architecture is convincing. |
 | `sampled_bytes` | integer | yes | Bytes disassembled per architecture. |
 | `summary` | string | yes | One sentence on what was found. |
+
+### analysis.period_scan
+
+Start a scan of a window of bytes for repeating periods (record widths) as a background job; the periods found, best first, are job.finished's result, and in the window they fill the structure chart and are published on record_width.estimated.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `doc` | string | no | Document id, path or "current" (the default). |
+| `len` | integer | no | Bytes scanned (192 KiB by default, at most 16 MiB). |
+| `max_period` | integer | no | Longest period looked for, 2 to 16384 (4096 by default). |
+| `start` | integer | no | First offset of the window scanned (0 by default; the window uses the view's origin). |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `job` | string | yes | Follow it with jobs.status, or on job.progress and job.finished. |
 
 ### reference.lookup
 

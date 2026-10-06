@@ -724,7 +724,7 @@ impl ViewerApp {
             app.reveal_cursor_in_hex(true);
         }
         if launch.detect && !app.document.is_empty() {
-            app.start_period_scan();
+            app.scan_periods_by_itself();
         }
         if launch.open_media {
             app.open_media();
@@ -821,7 +821,7 @@ impl ViewerApp {
                 let remembered_shape = self.load_sidecar(path);
                 self.suggest_layout_for_file();
                 if self.preferences.detect_width_on_open && !remembered_shape && !self.document.is_empty() {
-                    self.start_period_scan();
+                    self.scan_periods_by_itself();
                 }
             }
             Err(error) => self.status = format!("Failed to open {}: {error:#}", path.display()),
@@ -2586,27 +2586,38 @@ impl ViewerApp {
     // Structure analysis (runs on background threads)
     // ------------------------------------------------------------------
 
-    /// Scan the bytes after the view origin for repeating periods.
+    /// The person asks for a scan of the bytes after the view origin for
+    /// repeating periods: `analysis.period_scan`, with the window and the
+    /// longest period chosen.
     pub fn start_period_scan(&mut self) {
         let start = self.shape.byte_offset.min(self.document.len());
-        let window = self.document.read_range(start, SCAN_WINDOW);
-        let max_period = self.scan_max_period;
+        let params = serde_json::json!({ "start": start, "len": SCAN_WINDOW, "max_period": self.scan_max_period });
+        let _ = self.perform("analysis.period_scan", params);
+    }
+
+    /// Scan `len` bytes from `start` for periods up to `max_period` on a
+    /// thread, as a job of `producer`'s, and show the result in the
+    /// structure chart. What `analysis.period_scan` does in the window, and
+    /// what the app does by itself when a document opens. Returns the job.
+    pub fn scan_periods_from(&mut self, start: usize, len: usize, max_period: usize, producer: &str) -> String {
+        let window = self.document.read_range(start, len);
         let sender = self.analysis_tx.clone();
-        let job = self.start_job("period-scan", "Period scan");
-        thread::spawn(move || {
-            let scan = analysis::scan_periods(&window, start, max_period);
-            if job.is_cancelled() {
-                job.finish_cancelled();
-                let _ = sender.send(AnalysisMessage::PeriodsCancelled);
-                return;
-            }
-            let outcome = scan.candidates.first().map_or_else(|| "no repeating period".to_string(), |best| format!("best period {} bytes", best.period));
-            job.finish(!scan.candidates.is_empty(), outcome);
-            let _ = sender.send(AnalysisMessage::Periods(scan));
+        let job = self.bus.start_job("period-scan", "Period scan", producer, Some((self.document_id(), self.document.version())));
+        let id = job.id().to_string();
+        thread::spawn(move || match crate::api::analysis::run_period_scan(&window, start, max_period, &job) {
+            Some(scan) => drop(sender.send(AnalysisMessage::Periods(scan))),
+            None => drop(sender.send(AnalysisMessage::PeriodsCancelled)),
         });
         self.scan_pending = true;
         self.show_panel(Pane::PeriodChart);
         self.status = "Scanning for periods…".to_string();
+        id
+    }
+
+    /// The scan the app starts by itself, from the view origin.
+    fn scan_periods_by_itself(&mut self) {
+        let start = self.shape.byte_offset.min(self.document.len());
+        self.scan_periods_from(start, SCAN_WINDOW, self.scan_max_period, "tool:period-scan");
     }
 
     fn start_entropy_map(&mut self) {
@@ -4093,6 +4104,36 @@ mod tests {
         assert_eq!(app.cursor, 16);
         assert!(app.status.starts_with("Go to:"), "{}", app.status);
         assert_eq!(take_performed().len(), 1, "only the offset that parsed was performed");
+    }
+
+    #[test]
+    fn detecting_the_width_from_the_palette_is_a_period_scan_job_that_fills_the_chart() {
+        let records: Vec<u8> = (0..400u32)
+            .flat_map(|index| {
+                let mut record = vec![0xA5, 0x5A, index as u8, (index >> 8) as u8];
+                record.extend((0..44u8).map(|byte| byte.wrapping_mul(7)));
+                record
+            })
+            .collect();
+        let mut app = app_with(&records);
+        app.set_width(64);
+        app.shape.byte_offset = 0;
+        let detect = crate::commands::commands().into_iter().find(|command| command.id == "analysis.detect").unwrap();
+        let ctx = Context::default();
+        (detect.run)(&mut app, &ctx);
+        let performed = take_performed();
+        assert_eq!(performed.len(), 1);
+        assert_eq!(performed[0].0, "analysis.period_scan");
+        assert_eq!(performed[0].1, json!({"start": 0, "len": SCAN_WINDOW, "max_period": app.scan_max_period}), "the window and the longest period are in the step");
+        let begun = std::time::Instant::now();
+        while app.period_scan.is_none() && begun.elapsed() < std::time::Duration::from_secs(20) {
+            app.poll_analysis(&ctx);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert_eq!(app.period_scan.as_ref().and_then(|scan| scan.candidates.first()).map(|best| best.period), Some(48));
+        app.run_bus();
+        let job = app.bus.jobs().list().into_iter().find(|job| job.title == "Period scan").expect("the scan is a job");
+        assert_eq!(job.producer, "panel", "the person started it");
     }
 
     #[test]
