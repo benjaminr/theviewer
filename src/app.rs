@@ -507,6 +507,9 @@ pub enum FileAction {
     Compare,
     /// Write these bytes, described as `name` in the status bar.
     SaveBytes { name: String, bytes: Arc<Vec<u8>> },
+    /// Call `method` with `params`, the chosen path set as `params[path_field]`
+    /// (see [`ViewerApp::save_dialog_then_call`]).
+    Call { method: String, params: serde_json::Value, path_field: String },
 }
 
 /// Whether a dialog picks an existing file or a place to save one.
@@ -933,6 +936,9 @@ impl ViewerApp {
                     Ok(()) => format!("Saved {name} to {}", path.display()),
                     Err(error) => format!("Could not save {name} to {}: {error}", path.display()),
                 };
+            }
+            FileAction::Call { method, params, path_field } => {
+                let _ = self.call_with_chosen_path(&method, params, &path_field, path);
             }
         }
     }
