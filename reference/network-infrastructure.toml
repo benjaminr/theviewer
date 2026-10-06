@@ -1987,12 +1987,14 @@ document = "RFC 2328"
 title = "OSPF Version 2"
 url = "https://www.rfc-editor.org/rfc/rfc2328"
 rfc = 2328
+section = "A.3.1"
 
 [[format.specs]]
 document = "RFC 5340"
 title = "OSPF for IPv6"
 url = "https://www.rfc-editor.org/rfc/rfc5340"
 rfc = 5340
+section = "A.3.1"
 
 [[format.fields]]
 name = "Version"
@@ -2693,6 +2695,7 @@ document = "RFC 951"
 title = "Bootstrap Protocol"
 url = "https://www.rfc-editor.org/rfc/rfc951"
 rfc = 951
+section = "3"
 
 [[format.fields]]
 name = "op"

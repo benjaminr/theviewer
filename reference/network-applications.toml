@@ -246,12 +246,12 @@ section = "4.2"
 name = "PORT"
 aliases = ["PASV"]
 meaning = "Six comma-separated decimals: four for the IPv4 address and two for the port (high byte, low byte) of the data connection."
-section = "4.1"
+section = "4.1.2"
 
 [[format.fields]]
 name = "TYPE"
 meaning = "The representation of transferred files: A for ASCII text with CR LF line ends, I for image (binary, byte for byte)."
-section = "3.1"
+section = "3.1.1"
 
 [[format]]
 id = "ftp-data"
