@@ -1,2 +1,3456 @@
-# Reference notes: see src/reference.rs for the schema. Notes are written for
-# this project in its own words; specifications are cited, not copied.
+# Reference notes on network infrastructure: link-layer framing, tunnels,
+# routing, addressing and network services. See src/reference.rs for the
+# schema. Notes are written for this project in its own words; the
+# specifications are cited by number, section and link, not copied.
+#
+# Keys include the names the dissector gives layers it does not decode
+# (src/packets/dissect.rs: "IGMP", "GRE", "ESP", "AH", "OSPF", "SCTP",
+# "IPv6 in IPv4", "IP protocol N", and EtherType names such as "LLDP",
+# "PTP" and "PPPoE"), so those layers find their notes. Ports, EtherTypes
+# and IP protocol numbers follow the IANA and IEEE registries.
+
+# ---------------------------------------------------------------------------
+# Capture link types
+# ---------------------------------------------------------------------------
+
+[[format]]
+id = "linux-sll"
+name = "Linux cooked capture (SLL)"
+keys = ["Linux cooked capture", "Linux cooked capture v1", "SLL", "LINKTYPE_LINUX_SLL", "DLT_LINUX_SLL", "Linux cooked-mode capture"]
+summary = "The pseudo link-layer header Linux writes when capturing on the \"any\" device or on interfaces without a usable link header: a fixed 16-byte record of direction, device type, sender address and protocol."
+group = "Link layer"
+organisation = """
+pcap link type 113. Every packet begins with a 16-byte header whose multi-byte fields are big-endian: a 2-byte packet type (who the packet was addressed to, or that this host sent it), the 2-byte Linux ARPHRD_ device type, a 2-byte length of the sender's link-layer address, an 8-byte address field and a 2-byte protocol type. The payload starts at byte 16.
+
+The address field is always eight bytes: shorter addresses (a 6-byte MAC) are followed by padding, longer ones are cut to eight. Only the first \"address length\" bytes mean anything. Note that the destination address is not recorded at all.
+
+The protocol type is usually an EtherType (0x0800 IPv4, 0x86DD IPv6, 0x0806 ARP), so the payload is what an Ethernet frame would have carried after its type field. A few small values are special: 0x0004 means an 802.2 LLC header follows, 0x0001 a Novell 802.3 frame, and 0x000C/0x000D CAN frames. For GRE tunnel devices it is a GRE protocol type, and for netlink and radiotap devices it is ignored.
+"""
+carries = ["ipv4", "ipv6", "arp", "llc-snap"]
+
+[[format.specs]]
+document = "tcpdump.org LINKTYPE_LINUX_SLL"
+title = "LINKTYPE_LINUX_SLL: Linux \"cooked\" capture encapsulation"
+url = "https://www.tcpdump.org/linktypes/LINKTYPE_LINUX_SLL.html"
+
+[[format.specs]]
+document = "tcpdump.org link types"
+title = "Link-layer header types"
+url = "https://www.tcpdump.org/linktypes.html"
+
+[[format.fields]]
+name = "Packet type"
+meaning = "Direction and addressing of the packet as seen by the capturing host: 0 unicast to us, 1 broadcast, 2 multicast, 3 unicast to another host (seen in promiscuous mode), 4 sent by us."
+
+[[format.fields]]
+name = "ARPHRD type"
+aliases = ["ARPHRD_ type", "Device type"]
+meaning = "The Linux device type of the interface (1 Ethernet, 772 loopback, 776 IPv6-in-IPv4 tunnel, 778 GRE, 803 802.11 with radiotap, 824 netlink, 65534 no header, among others). It decides how the protocol type is read."
+
+[[format.fields]]
+name = "Link-layer address length"
+aliases = ["Address length"]
+meaning = "How many bytes of the 8-byte address field hold the sender's address; 6 for Ethernet, 0 for devices without addresses such as tunnels."
+
+[[format.fields]]
+name = "Link-layer address"
+aliases = ["Source address", "Address"]
+meaning = "The sender's link-layer address, padded or truncated to eight bytes."
+
+[[format.fields]]
+name = "Protocol"
+aliases = ["Protocol type"]
+meaning = "Normally the EtherType of the payload; small values below 0x0600 name special payloads such as an 802.2 LLC header (0x0004) or CAN frames."
+
+[[format]]
+id = "linux-sll2"
+name = "Linux cooked capture v2 (SLL2)"
+keys = ["Linux cooked capture v2", "SLL2", "LINKTYPE_LINUX_SLL2", "DLT_LINUX_SLL2"]
+summary = "The second Linux pseudo link-layer header, written by newer libpcap for the \"any\" device: 20 bytes that add the interface index to what SLL recorded, with the protocol type moved to the front."
+group = "Link layer"
+organisation = """
+pcap link type 276. The 20-byte header is, in order: a 2-byte protocol type, 2 reserved bytes that must be zero, a 4-byte interface index, a 2-byte ARPHRD_ device type, a 1-byte packet type, a 1-byte link-layer address length and an 8-byte link-layer address. All multi-byte fields are big-endian and the payload starts at byte 20.
+
+The interface index identifies which interface on the capturing machine saw the packet, which version 1 could not say. Packet type, device type and the padded sender address mean the same as in SLL, and the protocol type is read the same way: an EtherType for most devices, with the same handful of special small values.
+"""
+carries = ["ipv4", "ipv6", "arp", "llc-snap"]
+
+[[format.specs]]
+document = "tcpdump.org LINKTYPE_LINUX_SLL2"
+title = "LINKTYPE_LINUX_SLL2: Linux \"cooked\" capture encapsulation v2"
+url = "https://www.tcpdump.org/linktypes/LINKTYPE_LINUX_SLL2.html"
+
+[[format.specs]]
+document = "tcpdump.org link types"
+title = "Link-layer header types"
+url = "https://www.tcpdump.org/linktypes.html"
+
+[[format.fields]]
+name = "Protocol"
+aliases = ["Protocol type"]
+meaning = "Normally the EtherType of the payload; for some device types a special value or a GRE protocol type."
+
+[[format.fields]]
+name = "Reserved"
+meaning = "Two bytes written as zero."
+
+[[format.fields]]
+name = "Interface index"
+meaning = "The capturing machine's index for the interface the packet was sent or received on; meaningful only on that machine."
+
+[[format.fields]]
+name = "ARPHRD type"
+aliases = ["ARPHRD_ type", "Device type"]
+meaning = "The Linux device type of that interface, such as 1 for Ethernet or 772 for loopback."
+
+[[format.fields]]
+name = "Packet type"
+meaning = "0 unicast to us, 1 broadcast, 2 multicast, 3 unicast to another host, 4 sent by us."
+
+[[format.fields]]
+name = "Link-layer address length"
+aliases = ["Address length"]
+meaning = "How many bytes of the following 8-byte field are the sender's address."
+
+[[format.fields]]
+name = "Link-layer address"
+aliases = ["Source address", "Address"]
+meaning = "The sender's link-layer address, padded or cut to eight bytes."
+
+[[format]]
+id = "bsd-loopback"
+name = "BSD loopback encapsulation"
+keys = ["BSD loopback", "Null/Loopback", "Loopback", "LINKTYPE_NULL", "LINKTYPE_LOOP", "DLT_NULL", "DLT_LOOP", "BSD null"]
+summary = "The four-byte header captures from BSD and macOS loopback (lo0) and some tunnel interfaces use instead of an Ethernet header: just the address family of the packet."
+group = "Link layer"
+organisation = """
+Each packet starts with a single 4-byte protocol family value and the network packet follows at byte 4. There is no address of any kind.
+
+With pcap link type 0 (NULL) the value is in the byte order of the machine that made the capture, so a file from a little-endian Mac holds 02 00 00 00 for IPv4; with link type 108 (LOOP, used by OpenBSD) it is always big-endian. A reader therefore has to accept either order for type 0.
+
+The value is the BSD AF_ constant: 2 for IPv4, and 24, 28 or 30 for IPv6 depending on which BSD wrote it (all three mean IPv6). 7 (OSI) and 23 (IPX) also appear in old captures.
+"""
+carries = ["ipv4", "ipv6"]
+
+[[format.specs]]
+document = "tcpdump.org LINKTYPE_NULL"
+title = "LINKTYPE_NULL: BSD loopback encapsulation"
+url = "https://www.tcpdump.org/linktypes/LINKTYPE_NULL.html"
+
+[[format.specs]]
+document = "tcpdump.org LINKTYPE_LOOP"
+title = "LINKTYPE_LOOP: OpenBSD loopback encapsulation"
+url = "https://www.tcpdump.org/linktypes/LINKTYPE_LOOP.html"
+
+[[format.fields]]
+name = "Family"
+aliases = ["Protocol family", "Address family", "Protocol type"]
+meaning = "4 bytes: 2 IPv4; 24, 28 or 30 IPv6. Host byte order for link type 0, big-endian for link type 108."
+
+[[format]]
+id = "ieee80211"
+name = "IEEE 802.11 wireless LAN frame"
+keys = ["IEEE 802.11", "802.11", "802.11 frame", "Wi-Fi", "WLAN", "IEEE 802.11 wireless LAN", "LINKTYPE_IEEE802_11", "DLT_IEEE802_11"]
+summary = "The MAC frame of Wi-Fi networks, seen in monitor-mode captures (pcap link type 105, or after a radiotap header with link type 127): management frames that build the network, control frames that pace the air, and data frames that carry traffic."
+group = "Link layer"
+organisation = """
+Unlike Ethernet, the multi-byte header fields are little-endian. Every frame starts with a 2-byte Frame Control (protocol version, a 2-bit type, a 4-bit subtype and eight flag bits) and a 2-byte Duration/ID. What follows depends on the type: control frames are short (an ACK is 10 bytes in all) while management and data frames carry three addresses, a 2-byte Sequence Control and, when both To DS and From DS are set (bridges and mesh), a fourth address. QoS data subtypes add a 2-byte QoS Control field, and the +HTC flag adds a 4-byte HT Control field. A capture may keep the 4-byte frame check sequence at the end.
+
+Management frames (type 0: beacon, probe, authentication, association, deauthentication and others) have a few fixed fields and then a list of information elements, each a 1-byte element ID, a 1-byte length and the value: SSID (0), supported rates (1), DS parameter set or channel (3), RSN security parameters (48), vendor-specific (221).
+
+Data frames (type 2) normally carry an 802.2 LLC/SNAP header, AA AA 03 00 00 00, followed by an EtherType and the packet, so an IPv4 packet appears eight bytes into the body. When the Protected flag is set the body is encrypted: for CCMP (WPA2) an 8-byte CCMP header comes first and an 8-byte MIC sits at the end, and nothing between can be read without the keys. The address meanings (receiver, transmitter, BSSID, source, destination) depend on the To DS and From DS flags.
+"""
+carries = ["llc-snap", "eapol"]
+
+[[format.specs]]
+document = "IEEE 802.11-2020"
+title = "IEEE Standard for Information Technology: Wireless LAN Medium Access Control (MAC) and Physical Layer (PHY) Specifications"
+url = "https://standards.ieee.org/ieee/802.11/7028/"
+section = "9.2"
+
+[[format.specs]]
+document = "tcpdump.org link types"
+title = "Link-layer header types"
+url = "https://www.tcpdump.org/linktypes.html"
+
+[[format.fields]]
+name = "Frame Control"
+aliases = ["Frame control field"]
+meaning = "2 bytes: protocol version (always 0), type (0 management, 1 control, 2 data, 3 extension), subtype, and the flags To DS, From DS, More Fragments, Retry, Power Management, More Data, Protected and +HTC/Order."
+
+[[format.fields]]
+name = "Duration/ID"
+aliases = ["Duration"]
+meaning = "Normally how long, in microseconds, the medium will stay busy for this exchange, which other stations use to defer; in PS-Poll frames an association ID instead."
+
+[[format.fields]]
+name = "Address 1"
+aliases = ["Receiver address", "RA"]
+meaning = "The station that should receive the frame over the air."
+
+[[format.fields]]
+name = "Address 2"
+aliases = ["Transmitter address", "TA"]
+meaning = "The station that transmitted the frame over the air; absent in ACK and CTS frames."
+
+[[format.fields]]
+name = "Address 3"
+meaning = "Depends on To DS/From DS: the BSSID for management frames and frames within a network, otherwise the original source or final destination behind the access point."
+
+[[format.fields]]
+name = "Sequence Control"
+aliases = ["Sequence number", "Fragment number"]
+meaning = "A 4-bit fragment number and a 12-bit sequence number; a retransmission repeats the same values with the Retry flag set."
+
+[[format.fields]]
+name = "Address 4"
+meaning = "Present only when To DS and From DS are both set, as on wireless bridges and mesh links, so both original source and final destination can be named."
+
+[[format.fields]]
+name = "QoS Control"
+meaning = "In QoS data frames: the traffic identifier (priority), the acknowledgement policy and related bits."
+
+[[format.fields]]
+name = "Information element *"
+aliases = ["Tagged parameter *", "Element *"]
+meaning = "In management frame bodies: a 1-byte element ID, a 1-byte length and the value, such as the SSID (0), supported rates (1), channel (3), RSN (48) or vendor-specific data (221)."
+
+[[format.fields]]
+name = "FCS"
+aliases = ["Frame check sequence"]
+meaning = "A CRC-32 over the whole frame, present at the end only when the capture kept it (radiotap's Flags field says so)."
+
+[[format]]
+id = "radiotap"
+name = "Radiotap header"
+keys = ["Radiotap", "radiotap header", "LINKTYPE_IEEE802_11_RADIOTAP", "DLT_IEEE802_11_RADIO", "802.11 plus radiotap"]
+summary = "A self-describing header that wireless drivers put in front of each captured 802.11 frame to record how it was received: signal strength, channel, data rate, timestamps and more."
+group = "Link layer"
+organisation = """
+pcap link type 127. The header starts with a 1-byte version (0), a pad byte, a 2-byte length of the whole radiotap header and a 4-byte \"present\" bitmask, all little-endian. The 802.11 frame starts at the header length, so a reader that does not understand any field can still skip straight to the frame.
+
+Each set bit in the present word announces a field, and the fields follow in bit order: bit 0 TSFT (8-byte timer), 1 Flags, 2 Rate, 3 Channel (frequency and flags), 5 antenna signal in dBm, 6 antenna noise, 11 antenna index, 19 MCS, 20 A-MPDU status, 21 VHT, and so on. If bit 31 is set another present word follows, which is how extended and vendor namespaces are reached.
+
+Every field is aligned to its natural size counted from the start of the radiotap header, so padding bytes may sit between fields; a parser has to know each field's size and alignment to find the next. Flags bit 0x10 says the 802.11 frame ends with a frame check sequence, and 0x40 that the check failed.
+"""
+carries = ["ieee80211"]
+
+[[format.specs]]
+document = "radiotap.org"
+title = "Radiotap: the de facto standard for 802.11 frame injection and reception"
+url = "https://www.radiotap.org/"
+
+[[format.specs]]
+document = "tcpdump.org link types"
+title = "Link-layer header types"
+url = "https://www.tcpdump.org/linktypes.html"
+
+[[format.fields]]
+name = "Header revision"
+aliases = ["Version"]
+meaning = "Always 0."
+
+[[format.fields]]
+name = "Header length"
+aliases = ["Length"]
+meaning = "Little-endian length of the whole radiotap header including fields and padding; the 802.11 frame begins here."
+
+[[format.fields]]
+name = "Present flags"
+aliases = ["Present", "it_present"]
+meaning = "32-bit little-endian bitmask of the fields that follow, in bit order. Bit 31 means another present word follows; bits 29 and 30 switch to the radiotap or a vendor namespace."
+
+[[format.fields]]
+name = "Flags"
+meaning = "1 byte: short preamble, WEP, fragmentation, frame includes FCS (0x10), data padding, bad FCS (0x40), short guard interval."
+
+[[format.fields]]
+name = "Rate"
+aliases = ["Data rate"]
+meaning = "Legacy transmit rate in units of 500 kbit/s; higher-throughput frames use the MCS, VHT or HE fields instead."
+
+[[format.fields]]
+name = "Channel"
+meaning = "2-byte centre frequency in MHz and 2 bytes of channel flags (band, modulation)."
+
+[[format.fields]]
+name = "Antenna signal"
+aliases = ["dBm antenna signal", "Signal"]
+meaning = "Received signal power in dBm as a signed byte, such as -45 (strong) or -85 (weak)."
+
+[[format.fields]]
+name = "TSFT"
+meaning = "8-byte value of the receiver's 802.11 timing synchronisation function timer, in microseconds, when the first bit of the frame arrived."
+
+# ---------------------------------------------------------------------------
+# LAN control protocols
+# ---------------------------------------------------------------------------
+
+[[format]]
+id = "llc-snap"
+name = "IEEE 802.2 LLC and SNAP"
+keys = ["LLC", "IEEE 802.2 LLC", "802.2 LLC", "Logical Link Control", "SNAP", "Subnetwork Access Protocol", "LLC/SNAP", "802.3 LLC"]
+summary = "The small header that names the payload when a frame carries a length rather than an EtherType (IEEE 802.3 frames) and on 802.11 data frames; SNAP extends it with an organisation code and a protocol number."
+group = "Link layer"
+organisation = """
+In an Ethernet frame a type/length value of 1500 or less is a length, and the payload then starts with an 802.2 LLC header: a 1-byte destination service access point (DSAP), a 1-byte source SAP (SSAP) and a control field that is 1 byte for unnumbered frames (0x03 means UI, unnumbered information, which is what nearly everything uses) or 2 bytes for numbered information and supervisory frames.
+
+The SAPs say what follows: 0x42 is spanning tree, 0xFE is ISO network layer protocols such as IS-IS, 0xE0 is NetWare IPX, 0xF0 NetBIOS, and 0xAA announces SNAP. The lowest bit of the DSAP marks a group address and that of the SSAP a response.
+
+With DSAP and SSAP 0xAA and control 0x03, a 5-byte SNAP header follows: a 3-byte organisationally unique identifier (OUI) and a 2-byte protocol ID. OUI 00-00-00 means the protocol ID is an ordinary EtherType, which is how IP travels over 802.11, token ring and FDDI (AA AA 03 00 00 00 08 00 for IPv4). Other OUIs define their own numbers, such as Cisco's 00-00-0C with 0x2000 for CDP, 0x2003 for VTP and 0x010B for PVST+.
+"""
+carries = ["stp", "cdp", "isis", "ipv4", "ipv6", "arp"]
+
+[[format.specs]]
+document = "ISO/IEC/IEEE 8802-2:1998"
+title = "Local and metropolitan area networks, Part 2: Logical Link Control"
+url = "https://standards.ieee.org/standard/8802-2-1998.html"
+
+[[format.specs]]
+document = "RFC 1042"
+title = "Standard for the transmission of IP datagrams over IEEE 802 networks"
+url = "https://www.rfc-editor.org/rfc/rfc1042"
+rfc = 1042
+
+[[format.specs]]
+document = "IEEE 802-2014"
+title = "IEEE Standard for Local and Metropolitan Area Networks: Overview and Architecture"
+url = "https://standards.ieee.org/standard/802-2014.html"
+
+[[format.fields]]
+name = "DSAP"
+aliases = ["Destination service access point"]
+meaning = "Which protocol at the receiver the frame is for: 0x42 spanning tree, 0xAA SNAP, 0xFE OSI (IS-IS), 0xE0 IPX, 0xF0 NetBIOS. The low bit marks a group SAP."
+
+[[format.fields]]
+name = "SSAP"
+aliases = ["Source service access point"]
+meaning = "The sending protocol's SAP, usually equal to the DSAP; the low bit marks a response."
+
+[[format.fields]]
+name = "Control"
+aliases = ["Control field"]
+meaning = "Frame kind: 0x03 is an unnumbered information (UI) frame, the connectionless service almost all protocols use; I and S frames have a 2-byte control field with sequence numbers."
+
+[[format.fields]]
+name = "OUI"
+aliases = ["Organization code", "Organisation code"]
+meaning = "SNAP only: 3-byte organisation identifier. 00-00-00 means the protocol ID is an EtherType; 00-00-0C is Cisco."
+
+[[format.fields]]
+name = "PID"
+aliases = ["Protocol ID", "Type"]
+meaning = "SNAP only: 2-byte protocol number under that OUI, an EtherType when the OUI is zero."
+
+[[format]]
+id = "lldp"
+name = "Link Layer Discovery Protocol"
+keys = ["LLDP", "Link Layer Discovery Protocol", "802.1AB", "IEEE 802.1AB"]
+summary = "A one-way advertisement each port sends to its immediate neighbour, naming the device, the port and its capabilities, so that management systems can map physical topology."
+group = "Link layer"
+ethertypes = [0x88cc]
+organisation = """
+LLDP frames use EtherType 0x88CC and are usually sent to the multicast address 01:80:C2:00:00:0E, which bridges do not forward, so a frame only ever describes the link it arrived on. They are sent periodically (every 30 seconds by default) and when something changes; there are no requests or replies.
+
+The payload is a sequence of TLVs. Each starts with a 2-byte big-endian word whose top 7 bits are the type and bottom 9 bits the length of the value that follows, so a TLV value is at most 511 bytes. The first three TLVs must be Chassis ID (1), Port ID (2) and Time To Live (3), and an End of LLDPDU TLV (type 0, length 0) closes the list.
+
+Optional TLVs in between include port description (4), system name (5), system description (6), system capabilities (7) and management address (8). Type 127 is organisationally specific: the value starts with a 3-byte OUI and a 1-byte subtype, used for IEEE 802.1 VLAN names, IEEE 802.3 link speed and power over Ethernet, and the LLDP-MED extensions for IP phones.
+"""
+carries = []
+
+[[format.specs]]
+document = "IEEE 802.1AB-2016"
+title = "IEEE Standard for Local and metropolitan area networks: Station and Media Access Control Connectivity Discovery"
+url = "https://standards.ieee.org/ieee/802.1AB/6047/"
+
+[[format.specs]]
+document = "IANA IEEE 802 Numbers"
+title = "EtherType registry"
+url = "https://www.iana.org/assignments/ieee-802-numbers/ieee-802-numbers.xhtml"
+
+[[format.fields]]
+name = "Chassis ID"
+meaning = "TLV type 1: a subtype byte (4 MAC address, 5 network address, 7 locally assigned, and others) and the identifier of the sending device."
+
+[[format.fields]]
+name = "Port ID"
+meaning = "TLV type 2: a subtype byte (3 MAC address, 5 interface name, 7 locally assigned, and others) and the identifier of the sending port."
+
+[[format.fields]]
+name = "Time To Live"
+aliases = ["TTL"]
+meaning = "TLV type 3: seconds the receiver should keep this information; 0 means forget it now (sent when a port shuts down)."
+
+[[format.fields]]
+name = "System name"
+meaning = "TLV type 5: the device's administratively assigned name, usually its host name."
+
+[[format.fields]]
+name = "System capabilities"
+meaning = "TLV type 7: two bitmaps, what the device can be (bridge, router, telephone, access point, station) and what is enabled."
+
+[[format.fields]]
+name = "Management address"
+meaning = "TLV type 8: an address (IPv4, IPv6 or MAC) at which the device can be managed, with the interface it belongs to."
+
+[[format.fields]]
+name = "Organizationally specific"
+aliases = ["Organisationally specific", "TLV type 127"]
+meaning = "TLV type 127: an OUI and subtype followed by data defined by that organisation, such as 802.3 MAC/PHY settings or LLDP-MED network policy."
+
+[[format.fields]]
+name = "End of LLDPDU"
+meaning = "TLV type 0 with length 0; nothing after it is part of the advertisement."
+
+[[format]]
+id = "cdp"
+name = "Cisco Discovery Protocol"
+keys = ["CDP", "Cisco Discovery Protocol"]
+summary = "Cisco's own neighbour advertisement, older than LLDP and still on by default on most Cisco equipment: each device tells its directly connected neighbours its name, software, platform, addresses and port."
+group = "Link layer"
+organisation = """
+CDP is carried in an LLC/SNAP frame (DSAP/SSAP 0xAA, control 0x03, Cisco OUI 00-00-0C, protocol ID 0x2000) sent to the multicast address 01:00:0C:CC:CC:CC, so it appears in an 802.3 frame whose type field is a length. Devices send it every 60 seconds by default.
+
+The CDP header is 4 bytes: a 1-byte version (1 or 2), a 1-byte time to live in seconds (180 by default) and a 2-byte checksum computed like the IP checksum. A list of TLVs follows to the end of the frame, each with a 2-byte type, a 2-byte length that counts the 4-byte TLV header as well as the value, and the value.
+
+Common TLVs are Device ID (1), Addresses (2), Port ID (3), Capabilities (4), Software Version (5), Platform (6), native VLAN (0x0A) and duplex (0x0B). Because the device name, software version and addresses are sent in clear to anyone on the segment, CDP frames are a quick way to identify the switch port a capture was taken on.
+"""
+carries = []
+
+[[format.specs]]
+document = "Cisco CDP Configuration Guide"
+title = "Cisco Discovery Protocol Configuration Guide, Cisco IOS Release 15M&T"
+url = "https://www.cisco.com/c/en/us/td/docs/ios-xml/ios/cdp/configuration/15-mt/cdp-15-mt-book.pdf"
+
+[[format.fields]]
+name = "Version"
+meaning = "CDP version, 1 or 2; version 2 adds TLVs such as native VLAN and duplex."
+
+[[format.fields]]
+name = "TTL"
+aliases = ["Time to live", "Holdtime"]
+meaning = "Seconds a neighbour should keep this information, 180 by default."
+
+[[format.fields]]
+name = "Checksum"
+meaning = "Ones' complement checksum over the CDP message, as for IP."
+
+[[format.fields]]
+name = "Device ID"
+meaning = "TLV 1: the sender's host name (or serial number)."
+
+[[format.fields]]
+name = "Addresses"
+meaning = "TLV 2: a count and a list of the sender's network-layer addresses, usually its management IPv4 address."
+
+[[format.fields]]
+name = "Port ID"
+meaning = "TLV 3: the name of the sending interface, such as GigabitEthernet1/0/24."
+
+[[format.fields]]
+name = "Software Version"
+aliases = ["Software version"]
+meaning = "TLV 5: the device's software version banner, free text."
+
+[[format.fields]]
+name = "Platform"
+meaning = "TLV 6: the hardware model, such as cisco WS-C3850-48P."
+
+[[format]]
+id = "stp"
+name = "Spanning Tree Protocol"
+keys = ["STP", "Spanning Tree Protocol", "RSTP", "Rapid Spanning Tree Protocol", "MSTP", "Multiple Spanning Tree Protocol", "BPDU", "Bridge Protocol Data Unit", "Spanning Tree"]
+summary = "The protocol switches use to agree on a loop-free tree of active links in a bridged network by exchanging Bridge Protocol Data Units; RSTP and MSTP are its faster and per-VLAN-group successors."
+group = "Link layer"
+organisation = """
+BPDUs travel in 802.3 frames with an LLC header (DSAP and SSAP 0x42, control 0x03) addressed to 01:80:C2:00:00:00, a group address that bridges consume rather than forward. Cisco's per-VLAN variant (PVST+) instead uses SNAP with the Cisco OUI and protocol ID 0x010B, sent to 01:00:0C:CC:CC:CD.
+
+The BPDU starts with a 2-byte protocol identifier (0), a 1-byte version (0 STP, 2 RSTP, 3 MSTP) and a 1-byte BPDU type (0x00 configuration, 0x80 topology change notification, 0x02 RST/MST). A topology change notification ends there, at 4 bytes.
+
+Configuration and RST BPDUs continue with flags, the 8-byte root bridge ID, the 4-byte root path cost, the 8-byte ID of the sending bridge, the 2-byte port ID and four 2-byte timers (message age, max age, hello time, forward delay) counted in 1/256 of a second, 35 bytes in all. RSTP adds a version 1 length byte (36 bytes) and MSTP appends its configuration identifier and per-instance records. Bridge IDs are a 2-byte priority (whose low 12 bits carry a VLAN or instance number in modern switches) followed by the bridge's MAC address; the lowest ID wins the root election.
+"""
+carries = []
+
+[[format.specs]]
+document = "IEEE 802.1Q-2022"
+title = "IEEE Standard for Local and Metropolitan Area Networks: Bridges and Bridged Networks"
+url = "https://standards.ieee.org/ieee/802.1Q/10323/"
+
+[[format.specs]]
+document = "IEEE 802.1D-2004"
+title = "IEEE Standard for Local and metropolitan area networks: Media Access Control (MAC) Bridges"
+url = "https://standards.ieee.org/ieee/802.1D/3387/"
+
+[[format.fields]]
+name = "Protocol Identifier"
+aliases = ["Protocol ID"]
+meaning = "Always 0x0000 for spanning tree BPDUs."
+
+[[format.fields]]
+name = "Protocol Version Identifier"
+aliases = ["Version"]
+meaning = "0 for classic STP, 2 for RSTP, 3 for MSTP."
+
+[[format.fields]]
+name = "BPDU Type"
+aliases = ["Type"]
+meaning = "0x00 configuration BPDU, 0x80 topology change notification, 0x02 RST or MST BPDU."
+
+[[format.fields]]
+name = "BPDU flags"
+aliases = ["Flags"]
+meaning = "Topology change and topology change acknowledgement bits; RSTP adds proposal, port role (2 bits), learning, forwarding and agreement."
+
+[[format.fields]]
+name = "Root Identifier"
+aliases = ["Root bridge ID", "Root ID"]
+meaning = "8 bytes: priority (with the VLAN or instance in its low 12 bits) and MAC address of the bridge the sender believes is the root."
+
+[[format.fields]]
+name = "Root Path Cost"
+meaning = "4 bytes: the sender's total path cost to the root; 0 when the sender is the root."
+
+[[format.fields]]
+name = "Bridge Identifier"
+aliases = ["Bridge ID"]
+meaning = "8 bytes: priority and MAC address of the bridge sending the BPDU."
+
+[[format.fields]]
+name = "Port Identifier"
+aliases = ["Port ID"]
+meaning = "2 bytes: the sending port's priority (top 4 bits) and number."
+
+[[format.fields]]
+name = "Message Age"
+meaning = "How long ago, in 1/256 s units, the root generated the information; each bridge adds to it."
+
+[[format.fields]]
+name = "Max Age"
+meaning = "Age at which stored BPDU information is discarded, 20 seconds by default (in 1/256 s units)."
+
+[[format.fields]]
+name = "Hello Time"
+meaning = "Interval between configuration BPDUs from the root, 2 seconds by default (in 1/256 s units)."
+
+[[format.fields]]
+name = "Forward Delay"
+meaning = "Time spent in each of the listening and learning states before forwarding, 15 seconds by default (in 1/256 s units)."
+
+[[format]]
+id = "lacp"
+name = "Link Aggregation Control Protocol"
+keys = ["LACP", "Link Aggregation Control Protocol", "Slow Protocols", "802.3ad", "IEEE 802.1AX", "Link aggregation"]
+summary = "The negotiation two devices run over each member of a bundled set of Ethernet links (a port channel or bond) to agree which links form one logical link."
+group = "Link layer"
+ethertypes = [0x8809]
+organisation = """
+LACP is one of the IEEE \"slow protocols\", which share EtherType 0x8809 and the multicast address 01:80:C2:00:00:02. The first payload byte is a subtype: 1 LACP, 2 the Marker protocol, 3 Ethernet OAM (802.3ah) and 10 ESMC (synchronous Ethernet). Slow protocol frames are padded to the Ethernet minimum and LACPDUs are exactly 110 bytes of payload.
+
+An LACPDU has the subtype and a version byte, then a series of TLVs with 1-byte type and 1-byte length: Actor Information (type 1, length 20), Partner Information (type 2, length 20), Collector Information (type 3, length 16) and a Terminator (type 0, length 0) followed by reserved zeros.
+
+The actor and partner blocks share one layout: system priority, system MAC address, key, port priority, port number and a state byte. Two ports can join the same aggregate only when their system and key values agree; the state bits show each side's progress from negotiating to collecting and distributing traffic, and are the first thing to check when a bond does not come up.
+"""
+carries = []
+
+[[format.specs]]
+document = "IEEE 802.1AX-2020"
+title = "IEEE Standard for Local and Metropolitan Area Networks: Link Aggregation"
+url = "https://standards.ieee.org/ieee/802.1AX/6768/"
+
+[[format.specs]]
+document = "IEEE 802.3-2022"
+title = "IEEE Standard for Ethernet (Annex 57A, slow protocols)"
+url = "https://standards.ieee.org/ieee/802.3/10422/"
+
+[[format.fields]]
+name = "Subtype"
+aliases = ["Slow protocols subtype"]
+meaning = "Which slow protocol this is: 1 LACP, 2 Marker, 3 OAM, 10 ESMC."
+
+[[format.fields]]
+name = "Version"
+meaning = "LACP version, 1 (2 for the 2014 and later extensions)."
+
+[[format.fields]]
+name = "Actor System Priority"
+aliases = ["System priority"]
+meaning = "Priority of the sending system; with the system MAC address it forms the system ID, and the lower ID controls which links are aggregated."
+
+[[format.fields]]
+name = "Actor System"
+aliases = ["System", "System ID"]
+meaning = "MAC address identifying the sending system."
+
+[[format.fields]]
+name = "Actor Key"
+aliases = ["Key"]
+meaning = "Operational key; ports with the same key on the same system can be aggregated together."
+
+[[format.fields]]
+name = "Actor Port"
+aliases = ["Port", "Port priority"]
+meaning = "Port priority and port number of the sending port."
+
+[[format.fields]]
+name = "Actor State"
+aliases = ["State", "Partner State"]
+meaning = "Eight bits: LACP activity (active), timeout (short), aggregation, synchronisation, collecting, distributing, defaulted and expired."
+
+[[format.fields]]
+name = "Partner Information"
+meaning = "What the sender has learned about the other end: the same system, key, port and state values as received from it."
+
+[[format.fields]]
+name = "Collector Max Delay"
+meaning = "Tens of microseconds the receiving side may delay frames when collecting them."
+
+[[format]]
+id = "eapol"
+name = "EAP over LAN (IEEE 802.1X)"
+keys = ["EAPOL", "EAP over LAN", "802.1X", "IEEE 802.1X", "EAP", "Extensible Authentication Protocol", "WPA handshake", "EAPOL-Key"]
+summary = "The framing for port-based network access control: a switch or Wi-Fi access point lets a device on only after it authenticates with EAP, and on Wi-Fi the same frames carry the four-way key handshake."
+group = "Link layer"
+ethertypes = [0x888e]
+organisation = """
+EAPOL frames use EtherType 0x888E and are normally sent to the PAE group address 01:80:C2:00:00:03 on wired ports, or directly between station and access point on Wi-Fi. The 4-byte header is a protocol version (1, 2 or 3), a packet type and a 2-byte big-endian body length.
+
+Packet type 0 is an EAP packet, 1 EAPOL-Start, 2 EAPOL-Logoff, 3 EAPOL-Key and 5 MKA (MACsec key agreement). An EAP packet has its own 4-byte header (code 1 Request, 2 Response, 3 Success, 4 Failure; an identifier pairing requests with responses; a 2-byte length) and, for requests and responses, a 1-byte method type: 1 Identity, 4 MD5-Challenge, 13 EAP-TLS, 21 TTLS, 25 PEAP and so on. The authenticator relays these to a RADIUS server, so the TLS inside PEAP or EAP-TLS is visible here fragment by fragment.
+
+EAPOL-Key frames carry the WPA/WPA2 four-way handshake: a descriptor type (2 for RSN), key information flags, key length, an 8-byte replay counter, a 32-byte nonce, IV, receive sequence counter, a MIC and a length-prefixed key data field that holds the encrypted group key in message 3. Capturing all four messages (with the passphrase) is what lets a capture be decrypted.
+"""
+carries = []
+
+[[format.specs]]
+document = "IEEE 802.1X-2020"
+title = "IEEE Standard for Local and Metropolitan Area Networks: Port-Based Network Access Control"
+url = "https://standards.ieee.org/ieee/802.1X/7345/"
+
+[[format.specs]]
+document = "RFC 3748"
+title = "Extensible Authentication Protocol (EAP)"
+url = "https://www.rfc-editor.org/rfc/rfc3748"
+rfc = 3748
+section = "4"
+
+[[format.fields]]
+name = "Protocol version"
+aliases = ["Version"]
+meaning = "EAPOL version: 1 (802.1X-2001), 2 (2004) or 3 (2010 and later)."
+
+[[format.fields]]
+name = "Packet type"
+aliases = ["Type"]
+meaning = "0 EAP packet, 1 EAPOL-Start, 2 EAPOL-Logoff, 3 EAPOL-Key, 4 encapsulated ASF alert, 5 MKA."
+
+[[format.fields]]
+name = "Packet body length"
+aliases = ["Length", "Body length"]
+meaning = "Bytes in the body after this 4-byte header."
+
+[[format.fields]]
+name = "Code"
+aliases = ["EAP code"]
+meaning = "EAP packet kind: 1 Request, 2 Response, 3 Success, 4 Failure."
+
+[[format.fields]]
+name = "Identifier"
+meaning = "Matches each EAP response to its request."
+
+[[format.fields]]
+name = "EAP type"
+aliases = ["Method"]
+meaning = "Authentication method in requests and responses: 1 Identity, 3 Nak, 4 MD5-Challenge, 13 EAP-TLS, 21 EAP-TTLS, 25 PEAP, 43 EAP-FAST."
+
+[[format.fields]]
+name = "Key Information"
+aliases = ["Key info"]
+meaning = "EAPOL-Key flags: descriptor version, pairwise or group key, install, ACK, MIC present, secure, error, request, encrypted key data. Which bits are set tells the four handshake messages apart."
+
+[[format.fields]]
+name = "Replay Counter"
+meaning = "8-byte counter that increases with each EAPOL-Key message from the authenticator, so old messages cannot be replayed."
+
+[[format.fields]]
+name = "Key Nonce"
+aliases = ["Nonce", "ANonce", "SNonce"]
+meaning = "32 random bytes; messages 1 and 2 carry the access point's and station's nonces, from which the session keys are derived."
+
+[[format.fields]]
+name = "Key MIC"
+aliases = ["MIC"]
+meaning = "Message integrity code over the EAPOL frame, keyed with the key-confirmation key; zero in message 1."
+
+[[format.fields]]
+name = "Key Data"
+meaning = "Length-prefixed data such as the RSN information element (message 2) or the encrypted group key (message 3)."
+
+[[format]]
+id = "mpls"
+name = "MPLS label stack"
+keys = ["MPLS", "Multiprotocol Label Switching", "MPLS label stack", "MPLS label", "MPLS-in-IP", "IP protocol 137", "MPLS-in-UDP"]
+summary = "Short fixed-size labels pushed in front of a packet so that routers in a provider network forward it by label rather than by IP address; the basis of MPLS VPNs and traffic engineering."
+group = "Link layer"
+ethertypes = [0x8847, 0x8848]
+ip_protocols = [137]
+ports = ["udp/6635"]
+organisation = """
+In Ethernet, EtherType 0x8847 announces MPLS (0x8848 is for upstream-assigned labels). The label stack follows: one or more 4-byte big-endian entries, each holding a 20-bit label, a 3-bit traffic class (formerly called EXP), a 1-bit bottom-of-stack flag and an 8-bit time to live. Entries are read until one has the bottom-of-stack bit set.
+
+Nothing in the stack says what follows the last entry; the routers know from how the label was assigned. Analysers therefore guess from the first nibble: 4 means IPv4, 6 means IPv6, and 0 is usually a pseudowire control word in front of an Ethernet frame (as in VPLS and Ethernet-over-MPLS).
+
+Labels 0 to 15 are reserved: 0 IPv4 explicit null, 1 router alert, 2 IPv6 explicit null, 3 implicit null (signalled but never put on the wire), 7 entropy label indicator and 13 GAL for OAM. MPLS can also be tunnelled over IP with protocol 137, inside GRE with protocol type 0x8847, or over UDP to port 6635.
+"""
+carries = ["ipv4", "ipv6", "ethernet"]
+
+[[format.specs]]
+document = "RFC 3032"
+title = "MPLS Label Stack Encoding"
+url = "https://www.rfc-editor.org/rfc/rfc3032"
+rfc = 3032
+section = "2.1"
+
+[[format.specs]]
+document = "RFC 5462"
+title = "Multiprotocol Label Switching (MPLS) Label Stack Entry: \"EXP\" Field Renamed to \"Traffic Class\" Field"
+url = "https://www.rfc-editor.org/rfc/rfc5462"
+rfc = 5462
+
+[[format.specs]]
+document = "RFC 4023"
+title = "Encapsulating MPLS in IP or Generic Routing Encapsulation (GRE)"
+url = "https://www.rfc-editor.org/rfc/rfc4023"
+rfc = 4023
+section = "3"
+
+[[format.specs]]
+document = "RFC 7510"
+title = "Encapsulating MPLS in UDP"
+url = "https://www.rfc-editor.org/rfc/rfc7510"
+rfc = 7510
+
+[[format.fields]]
+name = "Label"
+meaning = "20 bits: the forwarding label, meaningful only to the router that receives it. 0 to 15 are reserved (0 IPv4 explicit null, 2 IPv6 explicit null, 1 router alert, 13 GAL)."
+section = "2.1"
+
+[[format.fields]]
+name = "Traffic Class"
+aliases = ["TC", "EXP", "Experimental"]
+meaning = "3 bits used for quality of service and congestion marking."
+section = "2.1"
+
+[[format.fields]]
+name = "Bottom of Stack"
+aliases = ["S", "Bottom of stack"]
+meaning = "1 on the last label entry; the payload starts right after it."
+section = "2.1"
+
+[[format.fields]]
+name = "TTL"
+aliases = ["Time to live"]
+meaning = "Decremented at each label-switching hop like the IP time to live, and usually copied from or to it at the edges of the MPLS network."
+section = "2.1"
+
+[[format]]
+id = "ppp"
+name = "Point-to-Point Protocol"
+keys = ["PPP", "Point-to-Point Protocol", "LINKTYPE_PPP", "LINKTYPE_PPP_HDLC", "PPP in HDLC-like framing", "LCP", "Link Control Protocol", "IPCP"]
+summary = "A link protocol for carrying IP and other network protocols over a point-to-point link: serial lines, DSL (inside PPPoE), L2TP and PPTP tunnels and mobile data, with its own negotiation of link options, authentication and addresses."
+group = "Link layer"
+organisation = """
+A PPP frame is a protocol field followed by the information. The protocol field is normally 2 bytes, big-endian, though it can be compressed to 1 byte by agreement: 0x0021 IPv4, 0x0057 IPv6, 0xC021 LCP (link control), 0x8021 IPCP and 0x8057 IPV6CP (address configuration), 0xC023 PAP and 0xC223 CHAP (authentication), 0x80FD CCP (compression).
+
+On serial links and in some captures (pcap link type 50) frames use HDLC-like framing: a 0x7E flag, the address byte 0xFF, the control byte 0x03, the protocol, the information, a 2- or 4-byte frame check sequence and a closing flag. Bytes equal to 0x7E or 0x7D inside the frame are escaped as 0x7D followed by the byte XORed with 0x20. pcap link type 9 frames may or may not include the 0xFF 0x03 prefix.
+
+LCP and the network control protocols share one packet layout: a 1-byte code (1 Configure-Request, 2 Configure-Ack, 3 Configure-Nak, 4 Configure-Reject, 5 Terminate-Request, 6 Terminate-Ack, 9 Echo-Request, 10 Echo-Reply, and others), a 1-byte identifier, a 2-byte length and options or data. A session starts with LCP negotiation (MRU, authentication protocol, magic number), then authentication, then IPCP or IPV6CP, and only then IP traffic.
+"""
+carries = ["ipv4", "ipv6"]
+
+[[format.specs]]
+document = "RFC 1661"
+title = "The Point-to-Point Protocol (PPP)"
+url = "https://www.rfc-editor.org/rfc/rfc1661"
+rfc = 1661
+section = "2"
+
+[[format.specs]]
+document = "RFC 1662"
+title = "PPP in HDLC-like Framing"
+url = "https://www.rfc-editor.org/rfc/rfc1662"
+rfc = 1662
+section = "3.1"
+
+[[format.fields]]
+name = "Protocol"
+meaning = "What the information is: 0x0021 IPv4, 0x0057 IPv6, 0xC021 LCP, 0x8021 IPCP, 0x8057 IPV6CP, 0xC023 PAP, 0xC223 CHAP."
+section = "2"
+
+[[format.fields]]
+name = "Address"
+meaning = "HDLC-like framing only: always 0xFF (all stations); may be left out when address and control field compression is agreed."
+
+[[format.fields]]
+name = "Control"
+meaning = "HDLC-like framing only: always 0x03, an unnumbered information frame."
+
+[[format.fields]]
+name = "Code"
+meaning = "In LCP and NCP packets: 1 Configure-Request, 2 Configure-Ack, 3 Configure-Nak, 4 Configure-Reject, 5 Terminate-Request, 6 Terminate-Ack, 7 Code-Reject, 8 Protocol-Reject, 9 Echo-Request, 10 Echo-Reply, 11 Discard-Request."
+section = "5"
+
+[[format.fields]]
+name = "Identifier"
+meaning = "Matches replies to requests in LCP and NCP packets."
+section = "5"
+
+[[format.fields]]
+name = "Length"
+meaning = "Bytes in the LCP or NCP packet including code, identifier and length."
+section = "5"
+
+[[format]]
+id = "pppoe"
+name = "PPP over Ethernet"
+keys = ["PPPoE", "PPP over Ethernet", "PPPoE Discovery", "PPPoE Session"]
+summary = "How DSL and many fibre broadband services run PPP sessions over Ethernet: a discovery exchange to find an access concentrator and get a session ID, then PPP frames tagged with that ID."
+group = "Link layer"
+ethertypes = [0x8863, 0x8864]
+organisation = """
+Two EtherTypes are used: 0x8863 for the discovery stage and 0x8864 for session data. Both start with the same 6-byte header: version and type packed in one byte (always 0x11), a code byte, a 2-byte session ID and a 2-byte length of the payload that follows.
+
+Discovery is four packets, each named by its code: the client broadcasts PADI (0x09), concentrators answer with PADO (0x07), the client picks one and sends PADR (0x19), and the concentrator confirms with PADS (0x65), which carries the new non-zero session ID. Either side ends the session with PADT (0xA7). The discovery payload is a list of tags, each a 2-byte type, a 2-byte length and a value: Service-Name (0x0101), AC-Name (0x0102), Host-Uniq (0x0103), AC-Cookie (0x0104) and error tags.
+
+In the session stage the code is 0 and the payload is a PPP frame without HDLC framing: a 2-byte PPP protocol field and the packet. The 8 bytes of PPPoE and PPP headers are why such links usually have an MTU of 1492.
+"""
+carries = ["ppp"]
+
+[[format.specs]]
+document = "RFC 2516"
+title = "A Method for Transmitting PPP Over Ethernet (PPPoE)"
+url = "https://www.rfc-editor.org/rfc/rfc2516"
+rfc = 2516
+section = "4"
+
+[[format.fields]]
+name = "Version"
+aliases = ["Version and type", "Type"]
+meaning = "Version and type, 4 bits each, both 1, so the first byte is 0x11."
+section = "4"
+
+[[format.fields]]
+name = "Code"
+meaning = "0x09 PADI, 0x07 PADO, 0x19 PADR, 0x65 PADS, 0xA7 PADT in discovery; 0x00 for session data."
+section = "4"
+
+[[format.fields]]
+name = "Session ID"
+meaning = "Identifies the PPP session together with the two MAC addresses; zero until PADS assigns it."
+section = "4"
+
+[[format.fields]]
+name = "Length"
+aliases = ["Payload length"]
+meaning = "Bytes of payload after the 6-byte header; bytes beyond it in the frame are Ethernet padding."
+section = "4"
+
+[[format.fields]]
+name = "Tag *"
+aliases = ["Service-Name", "AC-Name", "Host-Uniq", "AC-Cookie"]
+meaning = "Discovery tags: 2-byte type, 2-byte length and value. Service-Name (0x0101) and AC-Name (0x0102) are text; Host-Uniq (0x0103) and AC-Cookie (0x0104) are opaque values echoed back."
+section = "5"
+
+[[format]]
+id = "wake-on-lan"
+name = "Wake-on-LAN magic packet"
+keys = ["Wake-on-LAN", "WoL", "Wake on LAN", "Magic Packet"]
+summary = "A frame that tells a sleeping computer's network card to power the machine on: the target's MAC address repeated sixteen times after a run of 0xFF bytes."
+group = "Link layer"
+ethertypes = [0x0842]
+ports = ["udp/9", "udp/7"]
+organisation = """
+The network card looks only for the pattern, not for any header: six bytes of 0xFF followed by the target MAC address written sixteen times, 102 bytes in all. The pattern can be anywhere in the frame, so the same magic packet works inside a raw Ethernet frame with EtherType 0x0842 or as the payload of a UDP broadcast.
+
+UDP magic packets are usually sent to the subnet broadcast address on port 9 (discard) or 7 (echo), though any port works since the receiving machine is not running a network stack. A 4- or 6-byte \"SecureOn\" password may follow the sixteenth copy of the address on cards that support it.
+"""
+carries = []
+
+[[format.specs]]
+document = "AMD Magic Packet white paper"
+title = "Magic Packet Technology (AMD publication 20213)"
+url = "https://www.amd.com/content/dam/amd/en/documents/archived-tech-docs/white-papers/20213.pdf"
+
+[[format.specs]]
+document = "IEEE EtherType registry"
+title = "IEEE Registration Authority public EtherType listing"
+url = "https://standards-oui.ieee.org/ethertype/eth.txt"
+
+[[format.fields]]
+name = "Synchronisation stream"
+aliases = ["Sync stream", "Synchronization stream"]
+meaning = "Six bytes of 0xFF that mark the start of the pattern."
+
+[[format.fields]]
+name = "Target MAC"
+aliases = ["MAC address", "Target"]
+meaning = "The MAC address of the machine to wake, repeated sixteen times."
+
+[[format.fields]]
+name = "Password"
+aliases = ["SecureOn password"]
+meaning = "Optional 4 or 6 bytes after the repetitions, checked by cards that support SecureOn."
+
+[[format]]
+id = "ptp"
+name = "Precision Time Protocol"
+keys = ["PTP", "Precision Time Protocol", "IEEE 1588", "PTPv2", "gPTP"]
+summary = "Synchronises clocks across a network to well under a microsecond by exchanging timestamped messages, using hardware timestamps where possible; used in telecoms, finance, broadcast and industrial networks."
+group = "Time"
+ethertypes = [0x88f7]
+ports = ["udp/319", "udp/320"]
+organisation = """
+PTP runs either directly over Ethernet (EtherType 0x88F7, typically to 01:1B:19:00:00:00, or 01:80:C2:00:00:0E for peer delay and 802.1AS) or over UDP, where event messages that must be timestamped (Sync, Delay_Req, Pdelay_Req, Pdelay_Resp) go to port 319 and general messages to port 320, multicast to 224.0.1.129 or FF0X::181.
+
+Every message starts with a 34-byte common header, big-endian: message type in the low 4 bits of the first byte (0 Sync, 1 Delay_Req, 2 Pdelay_Req, 3 Pdelay_Resp, 8 Follow_Up, 9 Delay_Resp, 0xA Pdelay_Resp_Follow_Up, 0xB Announce, 0xC Signaling, 0xD Management), the version (2), the message length, the domain number, flags, an 8-byte correction field, the 10-byte source port identity, a sequence ID and a log message interval.
+
+The body follows. Timestamps are 10 bytes: a 48-bit count of seconds and a 32-bit count of nanoseconds, on the PTP timescale (TAI) unless the flags say otherwise. A two-step clock sends Sync with an approximate time and the precise transmit time in the following Follow_Up; the slave combines these with Delay_Req and Delay_Resp to compute offset and path delay. Announce messages carry the clock quality used to elect the grandmaster.
+"""
+carries = []
+
+[[format.specs]]
+document = "IEEE 1588-2019"
+title = "IEEE Standard for a Precision Clock Synchronization Protocol for Networked Measurement and Control Systems"
+url = "https://standards.ieee.org/standard/1588-2019.html"
+section = "13.3"
+
+[[format.specs]]
+document = "IANA IEEE 802 Numbers"
+title = "EtherType registry"
+url = "https://www.iana.org/assignments/ieee-802-numbers/ieee-802-numbers.xhtml"
+
+[[format.fields]]
+name = "messageType"
+aliases = ["Message type"]
+meaning = "Low 4 bits of byte 0: 0 Sync, 1 Delay_Req, 2 Pdelay_Req, 3 Pdelay_Resp, 8 Follow_Up, 9 Delay_Resp, 0xA Pdelay_Resp_Follow_Up, 0xB Announce, 0xC Signaling, 0xD Management. The high 4 bits are the majorSdoId (transportSpecific)."
+
+[[format.fields]]
+name = "versionPTP"
+aliases = ["Version"]
+meaning = "PTP version in the low 4 bits, 2 for IEEE 1588-2008 and 2019; the high bits hold the minor version."
+
+[[format.fields]]
+name = "messageLength"
+aliases = ["Message length"]
+meaning = "Bytes in the whole PTP message including the 34-byte header."
+
+[[format.fields]]
+name = "domainNumber"
+aliases = ["Domain"]
+meaning = "Which PTP domain, an independent set of synchronised clocks, the message belongs to; 0 by default."
+
+[[format.fields]]
+name = "flagField"
+aliases = ["Flags"]
+meaning = "Two bytes of flags such as two-step, unicast, alternate master, leap second pending, UTC offset valid and PTP timescale."
+
+[[format.fields]]
+name = "correctionField"
+aliases = ["Correction"]
+meaning = "8 bytes: a time correction in nanoseconds multiplied by 2^16, added to by transparent clocks for the time the message spent inside them."
+
+[[format.fields]]
+name = "sourcePortIdentity"
+aliases = ["Source port identity", "clockIdentity"]
+meaning = "10 bytes: the sender's 8-byte clock identity (often derived from its MAC address) and a 2-byte port number."
+
+[[format.fields]]
+name = "sequenceId"
+aliases = ["Sequence ID"]
+meaning = "Counts messages of each type, pairing Sync with Follow_Up and Delay_Req with Delay_Resp."
+
+[[format.fields]]
+name = "logMessageInterval"
+aliases = ["Log message interval"]
+meaning = "Base-2 logarithm of the interval between messages of this type, in seconds; -3 means eight per second."
+
+[[format.fields]]
+name = "originTimestamp"
+aliases = ["Timestamp", "preciseOriginTimestamp", "receiveTimestamp"]
+meaning = "10-byte timestamp: 48-bit seconds and 32-bit nanoseconds."
+
+# ---------------------------------------------------------------------------
+# Tunnels and VPNs
+# ---------------------------------------------------------------------------
+
+[[format]]
+id = "gre"
+name = "Generic Routing Encapsulation"
+keys = ["GRE", "Generic Routing Encapsulation", "Enhanced GRE", "NVGRE", "IP protocol 47"]
+summary = "A simple tunnel header that wraps one network packet inside another IP packet, naming the inner protocol with an EtherType; used for site-to-site tunnels, PPTP VPNs, ERSPAN mirroring and NVGRE overlays."
+group = "Tunnels and VPNs"
+ip_protocols = [47]
+organisation = """
+GRE is IP protocol 47. The base header is 4 bytes, big-endian: a 16-bit word of flags and version, then a 16-bit protocol type that is an EtherType for the payload (0x0800 IPv4, 0x86DD IPv6, 0x6558 transparent Ethernet bridging, 0x8847 MPLS, 0x88BE and 0x22EB ERSPAN, 0x880B PPP).
+
+Optional 4-byte fields follow in a fixed order when their flag bits are set: checksum and a reserved half-word (C bit), key (K bit) and sequence number (S bit). The payload therefore starts 4, 8, 12 or 16 bytes in. The key often identifies the tunnel or, in NVGRE, carries a 24-bit virtual subnet ID and an 8-bit flow ID.
+
+Version 1 is the \"enhanced GRE\" of PPTP: the key bit is always set and the key field holds a 2-byte payload length and a 2-byte call ID, an acknowledgement number may follow the sequence number, and the payload is a PPP frame (protocol type 0x880B).
+"""
+carries = ["ipv4", "ipv6", "ethernet", "mpls", "ppp"]
+
+[[format.specs]]
+document = "RFC 2784"
+title = "Generic Routing Encapsulation (GRE)"
+url = "https://www.rfc-editor.org/rfc/rfc2784"
+rfc = 2784
+section = "2"
+
+[[format.specs]]
+document = "RFC 2890"
+title = "Key and Sequence Number Extensions to GRE"
+url = "https://www.rfc-editor.org/rfc/rfc2890"
+rfc = 2890
+section = "2"
+
+[[format.specs]]
+document = "RFC 2637"
+title = "Point-to-Point Tunneling Protocol (PPTP)"
+url = "https://www.rfc-editor.org/rfc/rfc2637"
+rfc = 2637
+section = "4.1"
+
+[[format.specs]]
+document = "RFC 7637"
+title = "NVGRE: Network Virtualization Using Generic Routing Encapsulation"
+url = "https://www.rfc-editor.org/rfc/rfc7637"
+rfc = 7637
+
+[[format.fields]]
+name = "Flags and version"
+aliases = ["Flags", "Version"]
+meaning = "Bit 0 checksum present (C), bit 2 key present (K), bit 3 sequence number present (S); version in the low 3 bits, 0 for GRE and 1 for PPTP's enhanced GRE."
+section = "2.1"
+
+[[format.fields]]
+name = "Protocol Type"
+aliases = ["Protocol type", "Type"]
+meaning = "EtherType of the payload: 0x0800 IPv4, 0x86DD IPv6, 0x6558 Ethernet frame, 0x8847 MPLS, 0x88BE ERSPAN II, 0x22EB ERSPAN III, 0x880B PPP."
+section = "2.4"
+
+[[format.fields]]
+name = "Checksum"
+meaning = "Present when the C bit is set: ones' complement checksum over the GRE header and payload, followed by 2 reserved bytes."
+section = "2.5"
+
+[[format.fields]]
+name = "Key"
+meaning = "Present when the K bit is set: 4 bytes that distinguish flows or tunnels between the same endpoints; NVGRE puts a 24-bit virtual subnet ID here, PPTP a payload length and call ID."
+
+[[format.fields]]
+name = "Sequence Number"
+aliases = ["Sequence number"]
+meaning = "Present when the S bit is set: increases with each packet so the receiver can detect loss and reordering."
+
+[[format]]
+id = "esp"
+name = "IP Encapsulating Security Payload"
+keys = ["ESP", "Encapsulating Security Payload", "IPsec ESP", "IP Encapsulating Security Payload", "UDP-encapsulated ESP", "IP protocol 50"]
+summary = "The IPsec protocol that encrypts and authenticates packets; almost all IPsec VPN traffic is ESP, and everything after its 8-byte header is ciphertext."
+group = "Tunnels and VPNs"
+ip_protocols = [50]
+ports = ["udp/4500"]
+organisation = """
+ESP is IP protocol 50, or the payload of UDP port 4500 when a NAT sits between the peers (NAT traversal). The visible header is 8 bytes: a 4-byte security parameters index (SPI) that, with the destination address, selects the security association, and a 4-byte sequence number that increases with every packet to prevent replay.
+
+Everything after that is protected: the encrypted payload (often starting with a per-packet IV), padding, a 1-byte pad length and a 1-byte next header, then an integrity check value (ICV) of 12 to 16 bytes at the end. The next header field, which says whether the inner packet is IPv4 (4), IPv6 (41) or a transport protocol, is inside the encryption, so without the keys an analyser cannot see what is tunnelled.
+
+On UDP port 4500 the same port carries IKE as well; ESP packets are told apart because their first four bytes (the SPI) are never zero, while IKE messages there start with four zero bytes. A single 0xFF byte is a NAT keep-alive.
+"""
+carries = ["ipv4", "ipv6", "tcp", "udp"]
+
+[[format.specs]]
+document = "RFC 4303"
+title = "IP Encapsulating Security Payload (ESP)"
+url = "https://www.rfc-editor.org/rfc/rfc4303"
+rfc = 4303
+section = "2"
+
+[[format.specs]]
+document = "RFC 3948"
+title = "UDP Encapsulation of IPsec ESP Packets"
+url = "https://www.rfc-editor.org/rfc/rfc3948"
+rfc = 3948
+section = "2.1"
+
+[[format.fields]]
+name = "SPI"
+aliases = ["Security Parameters Index"]
+meaning = "4 bytes chosen by the receiver to identify the security association (keys and algorithms) the packet belongs to. Each direction of a tunnel has its own SPI."
+section = "2.1"
+
+[[format.fields]]
+name = "Sequence Number"
+aliases = ["Sequence number"]
+meaning = "Counts packets on the security association from 1, letting the receiver reject replays; gaps show loss."
+section = "2.2"
+
+[[format.fields]]
+name = "Payload Data"
+aliases = ["Encrypted data", "Data"]
+meaning = "The encrypted inner packet, usually preceded by an initialisation vector."
+section = "2.3"
+
+[[format.fields]]
+name = "Pad Length"
+meaning = "Encrypted: how many padding bytes precede it."
+section = "2.5"
+
+[[format.fields]]
+name = "Next Header"
+meaning = "Encrypted: the protocol of the inner packet, 4 for IPv4 in tunnel mode, 41 for IPv6, 6 or 17 in transport mode."
+section = "2.6"
+
+[[format.fields]]
+name = "ICV"
+aliases = ["Integrity Check Value"]
+meaning = "The authentication tag at the end of the packet, covering the ESP header and encrypted data."
+section = "2.8"
+
+[[format]]
+id = "ah"
+name = "IP Authentication Header"
+keys = ["AH", "Authentication Header", "IP Authentication Header", "IPsec AH", "IP protocol 51"]
+summary = "The IPsec protocol that authenticates packets, including most of the outer IP header, without encrypting them; far rarer than ESP and incompatible with NAT."
+group = "Tunnels and VPNs"
+ip_protocols = [51]
+organisation = """
+AH is IP protocol 51 and sits between the IP header and the protected payload, which stays readable. Its header is a 1-byte next header (the protocol of what follows, such as 6 for TCP or 4 for a tunnelled IPv4 packet), a 1-byte payload length, 2 reserved bytes, a 4-byte SPI, a 4-byte sequence number and the integrity check value.
+
+The payload length is the AH length in 32-bit words minus 2, so the header occupies (payload length + 2) × 4 bytes and the next protocol starts there. With a 96-bit ICV the header is 24 bytes and the field holds 4.
+
+The ICV covers the IP header fields that do not change in transit (addresses, protocol, length) as well as the payload, which is why any NAT that rewrites an address breaks AH.
+"""
+carries = ["ipv4", "ipv6", "tcp", "udp", "icmp"]
+
+[[format.specs]]
+document = "RFC 4302"
+title = "IP Authentication Header"
+url = "https://www.rfc-editor.org/rfc/rfc4302"
+rfc = 4302
+section = "2"
+
+[[format.fields]]
+name = "Next Header"
+meaning = "IP protocol number of the payload after AH: 6 TCP, 17 UDP, 4 IPv4 (tunnel mode), 41 IPv6."
+section = "2.1"
+
+[[format.fields]]
+name = "Payload Len"
+aliases = ["Payload length", "Length"]
+meaning = "Length of AH in 4-byte words minus 2; the next header begins (value + 2) × 4 bytes after the start of AH."
+section = "2.2"
+
+[[format.fields]]
+name = "SPI"
+aliases = ["Security Parameters Index"]
+meaning = "Identifies the security association with the destination address."
+section = "2.4"
+
+[[format.fields]]
+name = "Sequence Number"
+aliases = ["Sequence number"]
+meaning = "Increases with each packet on the association, for replay protection."
+section = "2.5"
+
+[[format.fields]]
+name = "ICV"
+aliases = ["Integrity Check Value", "Authentication data"]
+meaning = "Variable-length authentication tag over the immutable IP header fields, AH itself (with the ICV zeroed) and the payload."
+section = "2.6"
+
+[[format]]
+id = "ikev2"
+name = "Internet Key Exchange version 2"
+keys = ["IKEv2", "IKE", "Internet Key Exchange", "ISAKMP", "IKEv1"]
+summary = "The negotiation that sets up IPsec: the peers agree algorithms, exchange Diffie-Hellman values, authenticate each other and create the ESP security associations."
+group = "Tunnels and VPNs"
+ports = ["udp/500", "udp/4500"]
+organisation = """
+IKE runs over UDP port 500, moving to port 4500 when NAT is detected (where every IKE message is preceded by a 4-byte non-ESP marker of zeros). Every message starts with a 28-byte header: an 8-byte initiator SPI, an 8-byte responder SPI (zero in the very first message), a 1-byte next payload type, a version byte (0x20 for IKEv2, 0x10 for IKEv1), an exchange type, flags, a 4-byte message ID and a 4-byte total length.
+
+Payloads are chained: each starts with a 4-byte generic header holding the type of the next payload, a critical bit and its own length, so a reader walks the chain until next payload is 0. Common types are SA (33), KE (34), IDi/IDr (35/36), CERT (37), AUTH (39), Nonce (40), Notify (41) and Encrypted (46).
+
+IKEv2 starts with IKE_SA_INIT (exchange type 34), whose SA, KE and nonce payloads are in the clear, followed by IKE_AUTH (35), whose payloads are all inside an Encrypted payload. Later CREATE_CHILD_SA (36) and INFORMATIONAL (37) exchanges are encrypted too. IKEv1 (ISAKMP, version 0x10) uses the same ports and a similar header but different exchanges such as Main Mode and Aggressive Mode.
+"""
+carries = []
+
+[[format.specs]]
+document = "RFC 7296"
+title = "Internet Key Exchange Protocol Version 2 (IKEv2)"
+url = "https://www.rfc-editor.org/rfc/rfc7296"
+rfc = 7296
+section = "3.1"
+
+[[format.specs]]
+document = "RFC 3948"
+title = "UDP Encapsulation of IPsec ESP Packets"
+url = "https://www.rfc-editor.org/rfc/rfc3948"
+rfc = 3948
+section = "2.2"
+
+[[format.fields]]
+name = "Initiator SPI"
+aliases = ["Initiator cookie"]
+meaning = "8 bytes chosen by the initiator to identify the IKE SA."
+section = "3.1"
+
+[[format.fields]]
+name = "Responder SPI"
+aliases = ["Responder cookie"]
+meaning = "8 bytes chosen by the responder; zero in the first message of IKE_SA_INIT."
+section = "3.1"
+
+[[format.fields]]
+name = "Next Payload"
+aliases = ["Next payload"]
+meaning = "Type of the first payload: 33 SA, 34 KE, 35 IDi, 36 IDr, 37 CERT, 39 AUTH, 40 Nonce, 41 Notify, 46 Encrypted and Authenticated, 0 none."
+section = "3.1"
+
+[[format.fields]]
+name = "Version"
+aliases = ["Major version", "Minor version"]
+meaning = "Major version in the high 4 bits (2 for IKEv2, 1 for IKEv1) and minor in the low 4 bits."
+section = "3.1"
+
+[[format.fields]]
+name = "Exchange Type"
+aliases = ["Exchange type"]
+meaning = "34 IKE_SA_INIT, 35 IKE_AUTH, 36 CREATE_CHILD_SA, 37 INFORMATIONAL; IKEv1 uses 2 Main Mode, 4 Aggressive Mode, 32 Quick Mode."
+section = "3.1"
+
+[[format.fields]]
+name = "Flags"
+meaning = "I (sent by the original initiator), V (higher version supported) and R (this is a response)."
+section = "3.1"
+
+[[format.fields]]
+name = "Message ID"
+meaning = "Pairs each response with its request and orders exchanges; 0 for IKE_SA_INIT."
+section = "3.1"
+
+[[format.fields]]
+name = "Length"
+meaning = "Bytes in the whole IKE message, header and payloads."
+section = "3.1"
+
+[[format]]
+id = "ipip"
+name = "IPv4 in IP encapsulation"
+keys = ["IP in IP", "IP-in-IP", "IPIP", "IPv4 in IP", "IPv4 encapsulation", "IP protocol 4"]
+summary = "The simplest IP tunnel: a complete IPv4 packet carried as the payload of another IP packet, with no tunnel header of its own."
+group = "Tunnels and VPNs"
+ip_protocols = [4]
+organisation = """
+The outer IP header has protocol 4 (or next header 4 in IPv6) and the inner IPv4 header starts immediately after it; there are no tunnel fields, keys or identifiers. The outer addresses are the tunnel endpoints and the inner ones the original source and final destination.
+
+The encapsulator copies or derives a few values: the outer time to live is set afresh, the inner one is decremented only once for the whole tunnel, and the don't-fragment bit and DSCP are usually copied out. Linux \"ipip\" tunnels, Mobile IP and some load balancers use this format. Protocol 94 (IPIP) is an older, rarely seen alternative number.
+"""
+carries = ["ipv4"]
+
+[[format.specs]]
+document = "RFC 2003"
+title = "IP Encapsulation within IP"
+url = "https://www.rfc-editor.org/rfc/rfc2003"
+rfc = 2003
+section = "3.1"
+
+[[format.specs]]
+document = "IANA Protocol Numbers"
+title = "Assigned Internet Protocol Numbers"
+url = "https://www.iana.org/assignments/protocol-numbers/protocol-numbers.xhtml"
+
+[[format]]
+id = "6in4"
+name = "IPv6 in IPv4 (6in4)"
+keys = ["IPv6 in IPv4", "6in4", "IPv6-in-IPv4", "6to4", "ISATAP", "SIT", "IPv6 encapsulation", "IP protocol 41"]
+summary = "IPv6 packets carried directly inside IPv4 with protocol number 41: configured tunnels (such as tunnel broker services), 6to4 and ISATAP all use it."
+group = "Tunnels and VPNs"
+ip_protocols = [41]
+organisation = """
+The IPv4 header has protocol 41 and the IPv6 header follows straight after it, with no intervening tunnel header. The IPv4 addresses are the tunnel endpoints; the IPv6 addresses are the real ones.
+
+Variants differ only in how endpoints are chosen. Configured tunnels name both ends explicitly; 6to4 derives the IPv4 endpoint from an IPv6 address in 2002::/16 (the 32 bits after the prefix are the IPv4 address); ISATAP embeds the IPv4 address in the last 32 bits of the interface identifier. Protocol 41 is also the IPv6 next header value for IPv6 inside IPv6.
+
+Because there are no ports, many NATs drop protocol 41; Teredo exists to tunnel IPv6 over UDP instead.
+"""
+carries = ["ipv6"]
+
+[[format.specs]]
+document = "RFC 4213"
+title = "Basic Transition Mechanisms for IPv6 Hosts and Routers"
+url = "https://www.rfc-editor.org/rfc/rfc4213"
+rfc = 4213
+section = "3.5"
+
+[[format.specs]]
+document = "IANA Protocol Numbers"
+title = "Assigned Internet Protocol Numbers"
+url = "https://www.iana.org/assignments/protocol-numbers/protocol-numbers.xhtml"
+
+[[format]]
+id = "teredo"
+name = "Teredo"
+keys = ["Teredo", "Teredo tunnelling", "Teredo tunneling"]
+summary = "Tunnels IPv6 inside UDP over IPv4 so that hosts behind NATs can reach the IPv6 internet; once enabled by default on Windows, so it still turns up in captures."
+group = "Tunnels and VPNs"
+ports = ["udp/3544"]
+organisation = """
+A Teredo packet is a UDP datagram whose payload is an IPv6 packet, optionally preceded by indicators. Servers listen on UDP port 3544; data between clients and relays uses whatever ports the NAT mapped. A payload beginning with 0x6 in its first nibble is a bare IPv6 packet.
+
+An origin indication starts with 0x0000 and carries the client's mapped port and IPv4 address, each XORed with all ones, 8 bytes in all; an authentication indicator starts with 0x0001 followed by client ID and authentication lengths, those values, an 8-byte nonce and a confirmation byte. Either or both may come before the IPv6 header.
+
+Teredo addresses are in 2001::/32: the next 32 bits are the Teredo server's IPv4 address, then 16 bits of flags, then the client's mapped port and public IPv4 address, both inverted. Reading these back out tells you the client's public address.
+"""
+carries = ["ipv6"]
+
+[[format.specs]]
+document = "RFC 4380"
+title = "Teredo: Tunneling IPv6 over UDP through Network Address Translations (NATs)"
+url = "https://www.rfc-editor.org/rfc/rfc4380"
+rfc = 4380
+section = "5.1.1"
+
+[[format.fields]]
+name = "Origin indication"
+meaning = "8 bytes starting 0x0000: the client's NAT-mapped port and public IPv4 address, each with all bits inverted."
+
+[[format.fields]]
+name = "Authentication indicator"
+aliases = ["Authentication"]
+meaning = "Starts 0x0001: client identifier length, authentication value length, those values, an 8-byte nonce and a confirmation byte."
+
+[[format]]
+id = "vxlan"
+name = "Virtual eXtensible Local Area Network"
+keys = ["VXLAN", "Virtual eXtensible Local Area Network", "Virtual Extensible LAN", "VXLAN-GPE"]
+summary = "Carries Ethernet frames inside UDP so that virtual machines and containers on different hosts can share a layer-2 segment; the common overlay in data centres and cloud networks."
+group = "Tunnels and VPNs"
+ports = ["udp/4789"]
+organisation = """
+A VXLAN packet is an outer Ethernet, IP and UDP header to destination port 4789, then an 8-byte VXLAN header, then a complete inner Ethernet frame (without its frame check sequence). The UDP source port is usually a hash of the inner frame's addresses so that routers spread different flows across paths.
+
+The VXLAN header is a flags byte (0x08, the I flag, meaning the network identifier is valid), 3 reserved bytes, a 24-bit VXLAN network identifier (VNI) and a final reserved byte. The VNI names the virtual segment, allowing about 16 million of them compared with 4094 VLANs.
+
+Linux's VXLAN driver once used port 8472 by default, so older deployments may carry the same format there. VXLAN-GPE uses port 4790 and a next-protocol byte so that the inner packet need not be Ethernet.
+"""
+carries = ["ethernet"]
+
+[[format.specs]]
+document = "RFC 7348"
+title = "Virtual eXtensible Local Area Network (VXLAN): A Framework for Overlaying Virtualized Layer 2 Networks over Layer 3 Networks"
+url = "https://www.rfc-editor.org/rfc/rfc7348"
+rfc = 7348
+section = "5"
+
+[[format.fields]]
+name = "Flags"
+meaning = "Byte 0: the I flag (0x08) must be set to say the VNI is valid; the other bits are reserved."
+section = "5"
+
+[[format.fields]]
+name = "VNI"
+aliases = ["VXLAN Network Identifier", "VXLAN network identifier"]
+meaning = "24 bits naming the virtual layer-2 segment the inner frame belongs to."
+section = "5"
+
+[[format.fields]]
+name = "Reserved"
+meaning = "The three bytes after the flags and the last byte of the header, sent as zero."
+section = "5"
+
+[[format]]
+id = "geneve"
+name = "Generic Network Virtualization Encapsulation"
+keys = ["Geneve", "GENEVE", "Generic Network Virtualization Encapsulation"]
+summary = "A data-centre overlay like VXLAN but with extensible options and a protocol type for the inner packet; used by Open vSwitch/OVN, VMware NSX and AWS Gateway Load Balancer."
+group = "Tunnels and VPNs"
+ports = ["udp/6081"]
+organisation = """
+Geneve runs over UDP to destination port 6081. The fixed header is 8 bytes: a 2-bit version (0) and 6-bit option length, a flags byte (O for control packets, C when critical options are present), a 2-byte protocol type, a 24-bit virtual network identifier and a reserved byte.
+
+The option length counts 4-byte words of options after the fixed header, so the inner packet starts at 8 + option length × 4 bytes. Each option has a 2-byte option class, a type byte whose top bit marks it critical, and a byte holding 3 reserved bits and a 5-bit length in 4-byte words, then its data.
+
+The protocol type is an EtherType for the inner packet: 0x6558 means an Ethernet frame, the usual case, but IPv4 or IPv6 packets can be carried directly.
+"""
+carries = ["ethernet", "ipv4", "ipv6"]
+
+[[format.specs]]
+document = "RFC 8926"
+title = "Geneve: Generic Network Virtualization Encapsulation"
+url = "https://www.rfc-editor.org/rfc/rfc8926"
+rfc = 8926
+section = "3.4"
+
+[[format.fields]]
+name = "Ver"
+aliases = ["Version"]
+meaning = "2-bit version, currently 0."
+
+[[format.fields]]
+name = "Opt Len"
+aliases = ["Option length"]
+meaning = "6 bits: length of the options in 4-byte words; the payload starts after them."
+
+[[format.fields]]
+name = "O"
+aliases = ["OAM flag", "Control flag"]
+meaning = "Set on control packets meant for the tunnel endpoint rather than a virtual machine."
+
+[[format.fields]]
+name = "C"
+aliases = ["Critical options present"]
+meaning = "Set when at least one option is critical, so endpoints that do not understand it must drop the packet."
+
+[[format.fields]]
+name = "Protocol Type"
+aliases = ["Protocol type"]
+meaning = "EtherType of the inner packet, normally 0x6558 for an Ethernet frame."
+
+[[format.fields]]
+name = "Virtual Network Identifier"
+aliases = ["VNI"]
+meaning = "24 bits naming the virtual network."
+
+[[format.fields]]
+name = "Option *"
+aliases = ["Variable-Length Options"]
+meaning = "Option class (2 bytes), type (1 byte, top bit critical), reserved bits and a 5-bit length in 4-byte words, then data."
+section = "3.5"
+
+[[format]]
+id = "gtp-u"
+name = "GPRS Tunnelling Protocol, user plane"
+keys = ["GTP-U", "GTPv1-U", "GPRS Tunnelling Protocol", "GPRS Tunneling Protocol User Plane", "GTP"]
+summary = "Carries subscribers' IP packets between the radio network and the packet core of 3G, 4G and 5G mobile networks, each tunnel identified by a tunnel endpoint ID."
+group = "Tunnels and VPNs"
+ports = ["udp/2152"]
+organisation = """
+GTP-U runs over UDP port 2152. The mandatory header is 8 bytes: a flags byte (3-bit version, 1, the protocol type bit PT, and the E, S and PN flags), a message type, a 2-byte length and a 4-byte tunnel endpoint identifier (TEID). The length counts everything after these first 8 bytes.
+
+If any of E, S or PN is set, 4 more bytes follow: a 2-byte sequence number, an N-PDU number and a next extension header type. Extension headers then chain: each has a length in 4-byte units and ends with the type of the next, 0 meaning none. 5G uses the PDU session container extension (type 0x85) to carry the QoS flow identifier.
+
+Message type 255 (G-PDU) means the payload is a user's IP packet, which is where the subscriber's actual traffic appears with its own addresses. Other types are path management (echo request 1, echo response 2), error indication (26) and end marker (254).
+"""
+carries = ["ipv4", "ipv6"]
+
+[[format.specs]]
+document = "3GPP TS 29.281"
+title = "General Packet Radio System (GPRS) Tunnelling Protocol User Plane (GTPv1-U)"
+url = "https://www.3gpp.org/DynaReport/29281.htm"
+section = "5.1"
+
+[[format.fields]]
+name = "Flags"
+aliases = ["Version", "Protocol type"]
+meaning = "Version (1) in the top 3 bits, PT (1 for GTP, 0 for GTP'), a spare bit, then E (extension header), S (sequence number) and PN (N-PDU number) flags."
+section = "5.1"
+
+[[format.fields]]
+name = "Message Type"
+aliases = ["Message type"]
+meaning = "255 G-PDU (user data), 1 echo request, 2 echo response, 26 error indication, 254 end marker."
+section = "5.1"
+
+[[format.fields]]
+name = "Length"
+meaning = "Bytes after the first 8, including the optional fields and extension headers."
+section = "5.1"
+
+[[format.fields]]
+name = "TEID"
+aliases = ["Tunnel Endpoint Identifier"]
+meaning = "4 bytes chosen by the receiving node to identify the tunnel, and so the subscriber's bearer or PDU session."
+section = "5.1"
+
+[[format.fields]]
+name = "Sequence Number"
+aliases = ["Sequence number"]
+meaning = "Optional 2-byte sequence number, present when E, S or PN is set."
+section = "5.1"
+
+[[format.fields]]
+name = "Next Extension Header Type"
+aliases = ["Next extension header type"]
+meaning = "Type of the first extension header, such as 0x85 for the PDU session container; 0 for none."
+section = "5.2"
+
+[[format]]
+id = "gtp-c"
+name = "GPRS Tunnelling Protocol, control plane"
+keys = ["GTP-C", "GTPv2-C", "GTPv2", "GTPv1-C", "GPRS Tunnelling Protocol Control Plane"]
+summary = "The signalling mobile core nodes use to create, modify and delete subscribers' sessions and the GTP-U tunnels that carry their data; GTPv2-C in 4G, GTPv1-C in 3G."
+group = "Tunnels and VPNs"
+ports = ["udp/2123"]
+organisation = """
+GTP-C runs over UDP port 2123. A GTPv2-C header starts with a flags byte (version 2 in the top 3 bits, then P for a piggybacked message, T when a TEID is present and MP for message priority), a message type and a 2-byte length counting everything after the first 4 bytes.
+
+With the T flag set, a 4-byte TEID comes next; a 3-byte sequence number and a spare byte follow, so the header is 12 bytes (8 without a TEID, used only for echo and a few other node-level messages). The body is a list of information elements: a 1-byte type, 2-byte length, a byte holding a 4-bit instance, then the value; grouped IEs nest further IEs.
+
+Common message types are Create Session Request and Response (32, 33), Modify Bearer Request and Response (34, 35) and Delete Session Request and Response (36, 37). Subscriber identities (IMSI, MSISDN), the access point name and the TEIDs for GTP-U all appear as IEs, which is how user traffic is tied to a subscriber. GTPv1-C (3G) uses version 1 and the GTP-U header layout.
+"""
+carries = []
+
+[[format.specs]]
+document = "3GPP TS 29.274"
+title = "3GPP Evolved Packet System (EPS); Evolved General Packet Radio Service (GPRS) Tunnelling Protocol for Control plane (GTPv2-C); Stage 3"
+url = "https://www.3gpp.org/DynaReport/29274.htm"
+section = "5.1"
+
+[[format.fields]]
+name = "Flags"
+aliases = ["Version"]
+meaning = "Version (2) in the top 3 bits, P (piggybacking), T (TEID present) and MP (message priority present)."
+section = "5.1"
+
+[[format.fields]]
+name = "Message Type"
+aliases = ["Message type"]
+meaning = "1 echo request, 2 echo response, 32/33 Create Session request/response, 34/35 Modify Bearer, 36/37 Delete Session, among others."
+section = "6.1"
+
+[[format.fields]]
+name = "Message Length"
+aliases = ["Length"]
+meaning = "Bytes after the first 4 bytes of the header."
+section = "5.1"
+
+[[format.fields]]
+name = "TEID"
+aliases = ["Tunnel Endpoint Identifier"]
+meaning = "Present when T is set: identifies the receiving node's control-plane tunnel for this subscriber; zero in the first request."
+section = "5.1"
+
+[[format.fields]]
+name = "Sequence Number"
+aliases = ["Sequence number"]
+meaning = "3 bytes pairing each response with its request."
+section = "5.1"
+
+[[format.fields]]
+name = "Information Element *"
+aliases = ["IE *"]
+meaning = "1-byte type, 2-byte length, a spare nibble and 4-bit instance, then the value; examples are IMSI (1), APN (71), F-TEID (87) and Bearer Context (93)."
+section = "8"
+
+[[format]]
+id = "l2tp"
+name = "Layer Two Tunnelling Protocol"
+keys = ["L2TP", "Layer Two Tunneling Protocol", "Layer Two Tunnelling Protocol", "L2TPv2", "L2TPv3", "IP protocol 115"]
+summary = "Tunnels PPP sessions (L2TPv2) or other layer-2 frames (L2TPv3) between an access concentrator and a network server; best known as the transport of L2TP/IPsec VPNs and in ISP broadband wholesale."
+group = "Tunnels and VPNs"
+ports = ["udp/1701"]
+ip_protocols = [115]
+organisation = """
+L2TPv2 runs over UDP port 1701. Its header starts with a 2-byte flags and version word: T (control message), L (length present), S (sequence numbers present), O (offset present), P (priority) and the version in the low 4 bits (2; 3 for L2TPv3). Then come the optional length, a 2-byte tunnel ID, a 2-byte session ID, optional Ns and Nr sequence numbers, and an optional offset size and padding before the payload.
+
+Data messages (T clear) carry a PPP frame starting with the address and control bytes 0xFF 0x03. Control messages (T set, which also requires L and S) carry a list of attribute-value pairs, each with mandatory and hidden bits, a 10-bit length, a vendor ID and an attribute type; the first AVP is the Message Type, such as SCCRQ (1), SCCRP (2), ICRQ (10) or HELLO (6).
+
+L2TPv3 can also run directly over IP as protocol 115: a 4-byte session ID begins the packet, and session ID 0 marks a control message. Over UDP, L2TPv3 keeps the flags/version word. When used for VPNs, L2TP is itself inside ESP, so only port 4500 or protocol 50 is visible.
+"""
+carries = ["ppp", "ethernet"]
+
+[[format.specs]]
+document = "RFC 2661"
+title = "Layer Two Tunneling Protocol \"L2TP\""
+url = "https://www.rfc-editor.org/rfc/rfc2661"
+rfc = 2661
+section = "3.1"
+
+[[format.specs]]
+document = "RFC 3931"
+title = "Layer Two Tunneling Protocol - Version 3 (L2TPv3)"
+url = "https://www.rfc-editor.org/rfc/rfc3931"
+rfc = 3931
+section = "3.2"
+
+[[format.fields]]
+name = "Flags and version"
+aliases = ["Flags", "Version"]
+meaning = "T (control message), L (length present), S (Ns and Nr present), O (offset present), P (priority), and the version in the low 4 bits: 2 or 3."
+section = "3.1"
+
+[[format.fields]]
+name = "Length"
+meaning = "Present when L is set: total length of the L2TP message in bytes."
+section = "3.1"
+
+[[format.fields]]
+name = "Tunnel ID"
+meaning = "The receiver's identifier for the control connection; 0 until one has been assigned."
+section = "3.1"
+
+[[format.fields]]
+name = "Session ID"
+meaning = "The receiver's identifier for the session within the tunnel; 0 for tunnel-wide control messages."
+section = "3.1"
+
+[[format.fields]]
+name = "Ns"
+meaning = "Sequence number of this message, present when S is set."
+section = "3.1"
+
+[[format.fields]]
+name = "Nr"
+meaning = "Sequence number of the next control message expected, acknowledging those before it."
+section = "3.1"
+
+[[format.fields]]
+name = "AVP *"
+aliases = ["Message Type"]
+meaning = "Control message attribute: mandatory and hidden bits, 10-bit length, vendor ID and attribute type, then the value. The first AVP is the Message Type."
+section = "4.1"
+
+[[format]]
+id = "wireguard"
+name = "WireGuard"
+keys = ["WireGuard", "WireGuard VPN"]
+summary = "A compact VPN protocol built on the Noise framework: a one-round-trip handshake and then encrypted transport packets, all over UDP."
+group = "Tunnels and VPNs"
+ports = ["udp/51820"]
+organisation = """
+WireGuard uses UDP on a configured port; 51820 is the conventional default but not a registered one. Every message starts with a 1-byte type and 3 reserved zero bytes, followed by fields in little-endian order.
+
+Type 1 is the handshake initiation (148 bytes): sender index, the initiator's ephemeral public key, its encrypted static key and an encrypted timestamp, then two 16-byte MACs. Type 2 is the handshake response (92 bytes): sender and receiver indexes, the responder's ephemeral key, an empty encrypted value and the MACs. Type 3 is a cookie reply (64 bytes), sent instead of a response when the responder is under load.
+
+Type 4 is transport data: a 4-byte receiver index, an 8-byte counter used as the nonce, then the encrypted inner IP packet with a 16-byte authentication tag. The 16-byte header plus tag is the whole overhead, and a keep-alive is a transport message with nothing inside the encryption. The indexes are the only per-session identifiers on the wire.
+"""
+carries = []
+
+[[format.specs]]
+document = "WireGuard protocol"
+title = "Protocol & Cryptography"
+url = "https://www.wireguard.com/protocol/"
+
+[[format.specs]]
+document = "WireGuard white paper"
+title = "WireGuard: Next Generation Kernel Network Tunnel"
+url = "https://www.wireguard.com/papers/wireguard.pdf"
+
+[[format.fields]]
+name = "Type"
+aliases = ["Message type"]
+meaning = "1 handshake initiation, 2 handshake response, 3 cookie reply, 4 transport data; followed by 3 zero bytes."
+
+[[format.fields]]
+name = "Sender index"
+aliases = ["Sender"]
+meaning = "A random 32-bit value the sender picked to identify this session; the peer puts it in the receiver field of later messages."
+
+[[format.fields]]
+name = "Receiver index"
+aliases = ["Receiver"]
+meaning = "The other side's sender index, identifying which session a packet belongs to."
+
+[[format.fields]]
+name = "Unencrypted ephemeral"
+aliases = ["Ephemeral"]
+meaning = "32-byte Curve25519 ephemeral public key for this handshake."
+
+[[format.fields]]
+name = "Counter"
+meaning = "8-byte little-endian packet counter in transport messages, used as the nonce and for replay protection."
+
+[[format.fields]]
+name = "mac1"
+aliases = ["MAC1", "mac2", "MAC2"]
+meaning = "16-byte MACs on handshake messages: mac1 proves knowledge of the responder's public key; mac2 is non-zero only after a cookie reply."
+
+[[format.fields]]
+name = "Encrypted packet"
+aliases = ["Encrypted encapsulated packet", "Data"]
+meaning = "The ChaCha20-Poly1305-encrypted inner IP packet with its 16-byte tag; empty inside for keep-alives."
+
+[[format]]
+id = "openvpn"
+name = "OpenVPN"
+keys = ["OpenVPN", "OpenVPN protocol"]
+summary = "A widely used TLS-based VPN: a reliable control channel carries a TLS session that derives keys, and a data channel carries the encrypted tunnel packets, over UDP or TCP."
+group = "Tunnels and VPNs"
+ports = ["udp/1194", "tcp/1194"]
+organisation = """
+OpenVPN's registered port is 1194 on UDP and TCP, though servers are often run on 443 or other ports. Over TCP each packet is preceded by a 2-byte big-endian length, since TCP has no message boundaries; over UDP each datagram is one packet.
+
+The first byte packs a 5-bit opcode and a 3-bit key ID. Control opcodes include P_CONTROL_HARD_RESET_CLIENT_V2 (7) and P_CONTROL_HARD_RESET_SERVER_V2 (8), which start a session, P_CONTROL_V1 (4), which carries TLS records, and P_ACK_V1 (5). Control packets continue with an 8-byte session ID, an optional HMAC and replay fields when tls-auth is used, a list of acknowledged packet IDs and a message packet ID, then the payload.
+
+Data packets are P_DATA_V1 (6) or P_DATA_V2 (9), which adds a 3-byte peer ID; the rest is encrypted with keys negotiated over the TLS control channel. With tls-crypt the control channel is encrypted as well, so even the TLS handshake is hidden.
+"""
+carries = ["tls-record"]
+
+[[format.specs]]
+document = "OpenVPN protocol"
+title = "OpenVPN Protocol (community resources)"
+url = "https://openvpn.net/community-resources/openvpn-protocol/"
+
+[[format.fields]]
+name = "Packet length"
+aliases = ["Length"]
+meaning = "TCP only: 2-byte length of the packet that follows."
+
+[[format.fields]]
+name = "Opcode"
+meaning = "Top 5 bits of the first byte: 7/8 hard reset from client/server (v2), 4 control (TLS data), 5 acknowledgement, 6 data v1, 9 data v2."
+
+[[format.fields]]
+name = "Key ID"
+meaning = "Low 3 bits of the first byte: which of the negotiated key sets is in use, changing at each renegotiation."
+
+[[format.fields]]
+name = "Session ID"
+meaning = "8 random bytes identifying the sender's side of the control channel."
+
+[[format.fields]]
+name = "Packet ID"
+aliases = ["Message packet ID"]
+meaning = "Sequence number of a control packet in the reliability layer; acknowledgements list these."
+
+[[format.fields]]
+name = "Peer ID"
+meaning = "P_DATA_V2 only: 3 bytes identifying the client to the server, so sessions survive address changes."
+
+# ---------------------------------------------------------------------------
+# Transport
+# ---------------------------------------------------------------------------
+
+[[format]]
+id = "sctp"
+name = "Stream Control Transmission Protocol"
+keys = ["SCTP", "Stream Control Transmission Protocol", "IP protocol 132"]
+summary = "A reliable, message-oriented transport with multiple streams per association and multi-homing; the carrier of telecoms signalling (SIGTRAN, Diameter, S1AP, NGAP) and of WebRTC data channels."
+group = "Transport"
+ip_protocols = [132]
+organisation = """
+SCTP is IP protocol 132 (WebRTC instead runs it over DTLS over UDP). Every packet starts with a 12-byte common header: 2-byte source and destination ports, a 4-byte verification tag and a 4-byte CRC32c checksum over the whole packet.
+
+One or more chunks follow. Each chunk has a 1-byte type, 1-byte flags and a 2-byte length that includes the 4-byte chunk header but not the padding that brings it to a multiple of four bytes; the next chunk starts at the padded length. Types include DATA (0), INIT (1), INIT ACK (2), SACK (3), HEARTBEAT (4), HEARTBEAT ACK (5), ABORT (6), SHUTDOWN (7), COOKIE ECHO (10) and COOKIE ACK (11).
+
+An association starts with a four-way INIT, INIT ACK, COOKIE ECHO, COOKIE ACK exchange, after which every packet carries the peer's verification tag. A DATA chunk carries a transmission sequence number (TSN), a stream identifier, a stream sequence number and a payload protocol identifier (PPID) that names the upper protocol, such as 3 for M3UA, 18 for S1AP, 46 for Diameter or 60 for NGAP, before the user message. The ports also name the application (sctp/2905 M3UA, sctp/36412 S1AP, sctp/38412 NGAP).
+"""
+carries = []
+
+[[format.specs]]
+document = "RFC 9260"
+title = "Stream Control Transmission Protocol"
+url = "https://www.rfc-editor.org/rfc/rfc9260"
+rfc = 9260
+section = "3"
+
+[[format.fields]]
+name = "Source Port"
+aliases = ["Source port"]
+meaning = "The sender's SCTP port."
+section = "3.1"
+
+[[format.fields]]
+name = "Destination Port"
+aliases = ["Destination port"]
+meaning = "The receiving endpoint's port, naming the application."
+section = "3.1"
+
+[[format.fields]]
+name = "Verification Tag"
+aliases = ["Verification tag"]
+meaning = "4 bytes the receiver chose during setup and the sender must echo, protecting against stray or blind-injected packets; 0 only in INIT."
+section = "3.1"
+
+[[format.fields]]
+name = "Checksum"
+meaning = "CRC32c over the whole SCTP packet with this field zeroed."
+section = "3.1"
+
+[[format.fields]]
+name = "Chunk Type"
+aliases = ["Chunk type"]
+meaning = "0 DATA, 1 INIT, 2 INIT ACK, 3 SACK, 4 HEARTBEAT, 5 HEARTBEAT ACK, 6 ABORT, 7 SHUTDOWN, 8 SHUTDOWN ACK, 9 ERROR, 10 COOKIE ECHO, 11 COOKIE ACK, 14 SHUTDOWN COMPLETE. The top two bits say what to do with an unknown type."
+section = "3.2"
+
+[[format.fields]]
+name = "Chunk Flags"
+aliases = ["Chunk flags"]
+meaning = "Type-specific bits; for DATA: unordered (U), beginning (B) and end (E) of a fragmented user message, and immediate SACK (I)."
+section = "3.2"
+
+[[format.fields]]
+name = "Chunk Length"
+aliases = ["Chunk length"]
+meaning = "Bytes in the chunk including its 4-byte header but excluding padding to a 4-byte boundary."
+section = "3.2"
+
+[[format.fields]]
+name = "TSN"
+aliases = ["Transmission Sequence Number"]
+meaning = "DATA chunks: sequence number of this chunk across the whole association, acknowledged by SACK."
+
+[[format.fields]]
+name = "Stream Identifier"
+aliases = ["Stream identifier", "Stream ID"]
+meaning = "DATA chunks: which of the association's streams the message belongs to."
+
+[[format.fields]]
+name = "Payload Protocol Identifier"
+aliases = ["PPID"]
+meaning = "DATA chunks: the application protocol of the payload, such as 3 M3UA, 18 S1AP, 46 Diameter, 60 NGAP, 50/51/53 WebRTC string, binary or empty messages."
+
+[[format]]
+id = "quic"
+name = "QUIC"
+keys = ["QUIC", "QUIC transport", "HTTP/3 transport", "IETF QUIC"]
+summary = "An encrypted, multiplexed transport over UDP that combines the jobs of TCP and TLS 1.3; it carries HTTP/3 and most traffic to large web services."
+group = "Transport"
+ports = ["udp/443"]
+organisation = """
+QUIC runs over UDP, almost always to port 443. The first byte says which of two header forms a packet uses. If its top bit is set it is a long header, used while the connection is being set up: the first byte (with a fixed bit and a 2-bit packet type: 0 Initial, 1 0-RTT, 2 Handshake, 3 Retry, in version 1), a 4-byte version, then a destination connection ID and a source connection ID, each preceded by a 1-byte length (at most 20).
+
+Initial packets then carry a variable-length token, and Initial, 0-RTT and Handshake packets a variable-length Length field, so several packets can be coalesced in one UDP datagram. A client's first datagram is padded to at least 1200 bytes. Version 0 marks a version negotiation packet, which lists supported versions; 0x00000001 is QUIC version 1 and 0x6B3343CF version 2.
+
+After the handshake, packets use the short header: a first byte with the top bit clear, then the destination connection ID (its length is not encoded, so the receiver must know it) and an encrypted packet number and payload. Header protection masks the low bits of the first byte and the 1-4 byte packet number, and everything else is encrypted with keys from the TLS handshake. Initial packets are protected only with keys derived from the destination connection ID, so the TLS ClientHello inside them, with the server name, can be recovered by an analyser.
+"""
+carries = ["tls-record"]
+
+[[format.specs]]
+document = "RFC 9000"
+title = "QUIC: A UDP-Based Multiplexed and Secure Transport"
+url = "https://www.rfc-editor.org/rfc/rfc9000"
+rfc = 9000
+section = "17"
+
+[[format.specs]]
+document = "RFC 8999"
+title = "Version-Independent Properties of QUIC"
+url = "https://www.rfc-editor.org/rfc/rfc8999"
+rfc = 8999
+section = "5"
+
+[[format.specs]]
+document = "RFC 9001"
+title = "Using TLS to Secure QUIC"
+url = "https://www.rfc-editor.org/rfc/rfc9001"
+rfc = 9001
+
+[[format.specs]]
+document = "RFC 9369"
+title = "QUIC Version 2"
+url = "https://www.rfc-editor.org/rfc/rfc9369"
+rfc = 9369
+
+[[format.fields]]
+name = "Header Form"
+aliases = ["Header form"]
+meaning = "Top bit of the first byte: 1 for a long header (handshake packets), 0 for a short header (application data)."
+section = "17.2"
+
+[[format.fields]]
+name = "Long Packet Type"
+aliases = ["Packet type"]
+meaning = "Two bits in a long header: 0 Initial, 1 0-RTT, 2 Handshake, 3 Retry (version 1; version 2 permutes them)."
+section = "17.2"
+
+[[format.fields]]
+name = "Version"
+meaning = "4 bytes: 0x00000001 QUIC version 1, 0x6B3343CF version 2, 0 a version negotiation packet; values of the form 0x?a?a?a?a are reserved to exercise negotiation."
+section = "17.2"
+
+[[format.fields]]
+name = "Destination Connection ID"
+aliases = ["DCID", "Destination connection ID"]
+meaning = "Up to 20 bytes chosen by the receiver to route the packet to the right connection; preceded by a length byte in long headers."
+section = "17.2"
+
+[[format.fields]]
+name = "Source Connection ID"
+aliases = ["SCID", "Source connection ID"]
+meaning = "Long headers only: the connection ID the sender wants its peer to use."
+section = "17.2"
+
+[[format.fields]]
+name = "Token"
+meaning = "Initial packets only: an address-validation token from an earlier Retry or NEW_TOKEN frame, usually empty."
+section = "17.2.2"
+
+[[format.fields]]
+name = "Length"
+meaning = "Variable-length integer: bytes in the packet number and payload, so the next coalesced packet can be found."
+section = "17.2"
+
+[[format.fields]]
+name = "Packet Number"
+aliases = ["Packet number"]
+meaning = "1-4 bytes, hidden by header protection; strictly increasing within each packet number space."
+section = "17.1"
+
+# ---------------------------------------------------------------------------
+# Routing and multicast
+# ---------------------------------------------------------------------------
+
+[[format]]
+id = "igmp"
+name = "Internet Group Management Protocol"
+keys = ["IGMP", "Internet Group Management Protocol", "IGMPv2", "IGMPv3", "IP protocol 2"]
+summary = "How IPv4 hosts tell their local routers (and snooping switches) which multicast groups they want to receive; the IPv6 equivalent, MLD, is part of ICMPv6."
+group = "Routing"
+ip_protocols = [2]
+organisation = """
+IGMP is IP protocol 2. Messages are sent with a time to live of 1 and usually an IP Router Alert option, so the IPv4 header is often 24 bytes. All versions share the first 8 bytes: a type, a max response code, a 2-byte checksum over the IGMP message and a 4-byte group address.
+
+Types are 0x11 membership query (all versions), 0x12 IGMPv1 report, 0x16 IGMPv2 report, 0x17 IGMPv2 leave group and 0x22 IGMPv3 report. Queries go to 224.0.0.1 (general) or to the group itself (group-specific); v2 reports go to the group and leaves to 224.0.0.2; v3 reports go to 224.0.0.22.
+
+An IGMPv3 query is longer than 8 bytes: it adds a suppress flag, the querier's robustness variable and query interval, a source count and source addresses. An IGMPv3 report has a reserved field and a count of group records, each giving a record type (such as MODE_IS_INCLUDE or CHANGE_TO_EXCLUDE), a source count, the multicast address and the source list, which is how source-specific multicast is requested.
+"""
+carries = []
+
+[[format.specs]]
+document = "RFC 9776"
+title = "Internet Group Management Protocol, Version 3"
+url = "https://www.rfc-editor.org/rfc/rfc9776"
+rfc = 9776
+section = "4"
+
+[[format.specs]]
+document = "RFC 2236"
+title = "Internet Group Management Protocol, Version 2"
+url = "https://www.rfc-editor.org/rfc/rfc2236"
+rfc = 2236
+section = "2"
+
+[[format.fields]]
+name = "Type"
+meaning = "0x11 membership query, 0x12 v1 report, 0x16 v2 report, 0x17 leave group, 0x22 v3 report."
+section = "4"
+
+[[format.fields]]
+name = "Max Resp Code"
+aliases = ["Max response time", "Max Resp Time"]
+meaning = "In queries: the longest a host may wait before replying, in tenths of a second (values of 128 and above are a floating-point encoding in IGMPv3); zero in v1 queries and in reports."
+section = "4.1"
+
+[[format.fields]]
+name = "Checksum"
+meaning = "Ones' complement checksum over the whole IGMP message."
+section = "4.1"
+
+[[format.fields]]
+name = "Group Address"
+aliases = ["Multicast address", "Group"]
+meaning = "The multicast group concerned; 0.0.0.0 in a general query."
+section = "4.1"
+
+[[format.fields]]
+name = "QRV"
+aliases = ["Querier's Robustness Variable"]
+meaning = "IGMPv3 queries: how many times messages are repeated to cope with loss."
+section = "4.1"
+
+[[format.fields]]
+name = "QQIC"
+aliases = ["Querier's Query Interval Code"]
+meaning = "IGMPv3 queries: the querier's interval between general queries, in seconds (with the same floating-point encoding above 127)."
+section = "4.1"
+
+[[format.fields]]
+name = "Number of Sources"
+aliases = ["Number of sources"]
+meaning = "Count of source addresses that follow in a query or group record."
+section = "4.1"
+
+[[format.fields]]
+name = "Group Record *"
+aliases = ["Group record *"]
+meaning = "IGMPv3 report: record type (1 MODE_IS_INCLUDE, 2 MODE_IS_EXCLUDE, 3 CHANGE_TO_INCLUDE, 4 CHANGE_TO_EXCLUDE, 5 ALLOW_NEW_SOURCES, 6 BLOCK_OLD_SOURCES), auxiliary data length, source count, multicast address and sources."
+section = "4.2"
+
+[[format]]
+id = "ospf"
+name = "Open Shortest Path First"
+keys = ["OSPF", "Open Shortest Path First", "OSPFv2", "OSPFv3", "OSPFIGP"]
+summary = "The most widely deployed interior routing protocol: routers flood descriptions of their links to every router in an area and each computes shortest paths from the resulting map."
+group = "Routing"
+ip_protocols = [89]
+organisation = """
+OSPF runs directly over IP as protocol 89, mostly multicast to 224.0.0.5 (all OSPF routers) and 224.0.0.6 (designated routers), or FF02::5 and FF02::6 for OSPFv3, with a time to live of 1. An OSPFv2 packet starts with a 24-byte header: version (2), type, a 2-byte packet length, the 4-byte router ID, the 4-byte area ID, a checksum, a 2-byte authentication type and 8 bytes of authentication data. OSPFv3's header is 16 bytes: version 3 and the same type, length, router and area IDs, then a checksum, an instance ID and a reserved byte, with authentication left to IPsec or a trailer.
+
+The type says what follows: 1 Hello (network mask, intervals, priority, designated router and the list of neighbours seen), 2 Database Description (summaries of the sender's link-state database during adjacency setup), 3 Link State Request, 4 Link State Update (carrying full LSAs) and 5 Link State Acknowledgement.
+
+LSAs all begin with a 20-byte header (age, options, type, link-state ID, advertising router, sequence number, checksum, length). Common types are router (1), network (2), summary (3 and 4), AS-external (5) and NSSA (7) LSAs; opaque LSAs (9 to 11) carry traffic engineering and segment routing data.
+"""
+carries = []
+
+[[format.specs]]
+document = "RFC 2328"
+title = "OSPF Version 2"
+url = "https://www.rfc-editor.org/rfc/rfc2328"
+rfc = 2328
+
+[[format.specs]]
+document = "RFC 5340"
+title = "OSPF for IPv6"
+url = "https://www.rfc-editor.org/rfc/rfc5340"
+rfc = 5340
+
+[[format.fields]]
+name = "Version"
+meaning = "2 for OSPF over IPv4, 3 for OSPFv3."
+
+[[format.fields]]
+name = "Type"
+aliases = ["Message type", "Packet type"]
+meaning = "1 Hello, 2 Database Description, 3 Link State Request, 4 Link State Update, 5 Link State Acknowledgement."
+
+[[format.fields]]
+name = "Packet length"
+aliases = ["Length"]
+meaning = "Bytes in the OSPF packet including its header."
+
+[[format.fields]]
+name = "Router ID"
+aliases = ["Source OSPF Router"]
+meaning = "32-bit identifier of the sending router, written like an IPv4 address and often one of its addresses."
+
+[[format.fields]]
+name = "Area ID"
+meaning = "32-bit identifier of the area the packet belongs to; 0.0.0.0 is the backbone."
+
+[[format.fields]]
+name = "Checksum"
+meaning = "Ones' complement checksum over the packet, excluding the authentication field in OSPFv2."
+
+[[format.fields]]
+name = "AuType"
+aliases = ["Auth type", "Authentication type"]
+meaning = "OSPFv2: 0 none, 1 simple password (sent in clear), 2 cryptographic (a key ID and sequence number here, with a digest appended to the packet)."
+
+[[format.fields]]
+name = "Authentication"
+aliases = ["Authentication data"]
+meaning = "OSPFv2: 8 bytes, a clear-text password for type 1 or key ID, digest length and sequence number for type 2."
+
+[[format.fields]]
+name = "Instance ID"
+meaning = "OSPFv3: lets several OSPF instances share one link."
+
+[[format]]
+id = "rip"
+name = "Routing Information Protocol"
+keys = ["RIP", "Routing Information Protocol", "RIPv1", "RIPv2", "RIP version 2"]
+summary = "An old and simple distance-vector routing protocol: routers broadcast or multicast their whole routing table every 30 seconds, with hop counts up to 15."
+group = "Routing"
+ports = ["udp/520"]
+organisation = """
+RIP runs over UDP port 520 (registered as \"router\"). A message is a 4-byte header, a 1-byte command (1 request, 2 response), a 1-byte version (1 or 2) and 2 zero bytes, followed by up to 25 route entries of 20 bytes each. RIPv2 sends to the multicast address 224.0.0.9; RIPv1 uses broadcast.
+
+Each RIPv2 entry is a 2-byte address family (2 for IP), a 2-byte route tag, the 4-byte destination address, a 4-byte subnet mask, a 4-byte next hop (0.0.0.0 meaning the sender) and a 4-byte metric from 1 to 16, where 16 means unreachable. RIPv1 entries have the same size but zeros where v2 puts the tag, mask and next hop, so routes are classful.
+
+If the first entry's address family is 0xFFFF the entry is authentication instead: a type (2 for a clear-text password, 3 for a keyed digest) and 16 bytes of data. A request with a single entry of family 0 and metric 16 asks for the whole table.
+"""
+carries = []
+
+[[format.specs]]
+document = "RFC 2453"
+title = "RIP Version 2"
+url = "https://www.rfc-editor.org/rfc/rfc2453"
+rfc = 2453
+section = "3.6"
+
+[[format.fields]]
+name = "Command"
+meaning = "1 request, 2 response (periodic and triggered updates are both responses)."
+section = "3.6"
+
+[[format.fields]]
+name = "Version"
+meaning = "1 or 2."
+section = "3.6"
+
+[[format.fields]]
+name = "Address Family Identifier"
+aliases = ["Address family", "AFI"]
+meaning = "2 for IPv4 routes; 0xFFFF marks an authentication entry."
+section = "3.6"
+
+[[format.fields]]
+name = "Route Tag"
+aliases = ["Route tag"]
+meaning = "RIPv2: an attribute kept with the route, often used to mark routes learned from another protocol."
+section = "4.2"
+
+[[format.fields]]
+name = "IP Address"
+aliases = ["Destination", "Address"]
+meaning = "Destination network or host."
+section = "3.6"
+
+[[format.fields]]
+name = "Subnet Mask"
+aliases = ["Netmask", "Mask"]
+meaning = "RIPv2: the destination's mask; zero in RIPv1."
+section = "4.3"
+
+[[format.fields]]
+name = "Next Hop"
+aliases = ["Next hop"]
+meaning = "RIPv2: where to send traffic for this route; 0.0.0.0 means via the router that sent the message."
+section = "4.4"
+
+[[format.fields]]
+name = "Metric"
+meaning = "Hop count from 1 to 15; 16 means unreachable (infinity)."
+section = "3.6"
+
+[[format]]
+id = "ripng"
+name = "RIPng for IPv6"
+keys = ["RIPng", "RIP next generation", "RIPng for IPv6"]
+summary = "The IPv6 version of RIP: the same distance-vector exchange over UDP port 521, with IPv6 prefixes and multicast to FF02::9."
+group = "Routing"
+ports = ["udp/521"]
+organisation = """
+A RIPng message is a 4-byte header (command 1 request or 2 response, version 1, 2 zero bytes) followed by 20-byte route table entries. It is sent from and to UDP port 521, multicast to FF02::9 from the router's link-local address, with a hop limit of 255.
+
+Each entry is a 16-byte IPv6 prefix, a 2-byte route tag, a 1-byte prefix length and a 1-byte metric (1 to 15, 16 meaning unreachable). Instead of a next hop field in every entry, a special entry with metric 0xFF sets the next hop for the entries after it; its prefix field holds the next-hop address, or zeros for the sender itself.
+
+There is no authentication field: RIPng relies on IPsec for that.
+"""
+carries = []
+
+[[format.specs]]
+document = "RFC 2080"
+title = "RIPng for IPv6"
+url = "https://www.rfc-editor.org/rfc/rfc2080"
+rfc = 2080
+section = "2.1"
+
+[[format.fields]]
+name = "Command"
+meaning = "1 request, 2 response."
+section = "2.1"
+
+[[format.fields]]
+name = "Version"
+meaning = "1."
+section = "2.1"
+
+[[format.fields]]
+name = "IPv6 prefix"
+aliases = ["Prefix"]
+meaning = "The destination prefix, 16 bytes."
+section = "2.1"
+
+[[format.fields]]
+name = "Route tag"
+meaning = "An attribute kept with the route, such as a marker for routes learned elsewhere."
+section = "2.1"
+
+[[format.fields]]
+name = "Prefix len"
+aliases = ["Prefix length"]
+meaning = "Number of significant bits in the prefix, 0 to 128."
+section = "2.1"
+
+[[format.fields]]
+name = "Metric"
+meaning = "Hop count 1 to 15, 16 unreachable; 0xFF marks a next-hop entry rather than a route."
+section = "2.1"
+
+[[format]]
+id = "bgp"
+name = "Border Gateway Protocol"
+keys = ["BGP", "BGP-4", "Border Gateway Protocol"]
+summary = "The routing protocol of the internet: autonomous systems exchange reachability for address prefixes, with path attributes that drive routing policy, over long-lived TCP sessions."
+group = "Routing"
+ports = ["tcp/179"]
+organisation = """
+BGP runs over TCP port 179, so messages arrive as a byte stream and one segment may hold several messages or part of one. Each message starts with a 19-byte header: a 16-byte marker of all ones, a 2-byte length of the whole message (19 to 4096, or up to 65535 when extended messages are agreed) and a 1-byte type.
+
+Types are OPEN (1), UPDATE (2), NOTIFICATION (3), KEEPALIVE (4) and ROUTE-REFRESH (5). OPEN carries the version (4), the sender's AS number (23456, AS_TRANS, when the real one needs 4 bytes), the hold time, the BGP identifier and optional parameters, chiefly capabilities such as multiprotocol support and 4-byte AS numbers. A KEEPALIVE is just the 19-byte header.
+
+An UPDATE has a 2-byte length and list of withdrawn IPv4 prefixes, a 2-byte length and list of path attributes, and then the IPv4 prefixes (NLRI) being announced. Attributes are flags, a type code (1 ORIGIN, 2 AS_PATH, 3 NEXT_HOP, 4 MED, 5 LOCAL_PREF, 8 COMMUNITIES, 14 and 15 MP_REACH and MP_UNREACH_NLRI for IPv6 and VPN routes) and a 1- or 2-byte length. A NOTIFICATION gives an error code and subcode and then the session closes.
+"""
+carries = []
+
+[[format.specs]]
+document = "RFC 4271"
+title = "A Border Gateway Protocol 4 (BGP-4)"
+url = "https://www.rfc-editor.org/rfc/rfc4271"
+rfc = 4271
+section = "4.1"
+
+[[format.fields]]
+name = "Marker"
+meaning = "16 bytes of 0xFF, kept for compatibility; a quick way to find message boundaries in the stream."
+section = "4.1"
+
+[[format.fields]]
+name = "Length"
+meaning = "Bytes in the whole message including the 19-byte header."
+section = "4.1"
+
+[[format.fields]]
+name = "Type"
+meaning = "1 OPEN, 2 UPDATE, 3 NOTIFICATION, 4 KEEPALIVE, 5 ROUTE-REFRESH."
+section = "4.1"
+
+[[format.fields]]
+name = "My Autonomous System"
+aliases = ["My AS", "AS number"]
+meaning = "OPEN: the sender's 2-byte AS number, or 23456 when its real 4-byte AS is carried in a capability."
+section = "4.2"
+
+[[format.fields]]
+name = "Hold Time"
+aliases = ["Hold time"]
+meaning = "OPEN: seconds without a message before the session is declared dead; the lower of the two values is used, and keepalives are sent at a third of it."
+section = "4.2"
+
+[[format.fields]]
+name = "BGP Identifier"
+aliases = ["BGP identifier", "Router ID"]
+meaning = "OPEN: the sender's 32-bit router ID."
+section = "4.2"
+
+[[format.fields]]
+name = "Withdrawn Routes"
+aliases = ["Withdrawn routes"]
+meaning = "UPDATE: IPv4 prefixes no longer reachable, each a 1-byte prefix length and the significant bytes of the prefix."
+section = "4.3"
+
+[[format.fields]]
+name = "Path Attributes"
+aliases = ["Path attributes"]
+meaning = "UPDATE: attributes of the announced routes, such as ORIGIN, AS_PATH, NEXT_HOP, LOCAL_PREF and COMMUNITIES."
+section = "4.3"
+
+[[format.fields]]
+name = "Network Layer Reachability Information"
+aliases = ["NLRI"]
+meaning = "UPDATE: the IPv4 prefixes being announced with these attributes."
+section = "4.3"
+
+[[format.fields]]
+name = "Error code"
+aliases = ["Error subcode"]
+meaning = "NOTIFICATION: 1 message header error, 2 OPEN error, 3 UPDATE error, 4 hold timer expired, 5 finite state machine error, 6 cease; the subcode narrows it down."
+section = "4.5"
+
+[[format]]
+id = "vrrp"
+name = "Virtual Router Redundancy Protocol"
+keys = ["VRRP", "Virtual Router Redundancy Protocol", "VRRPv3", "VRRPv2", "IP protocol 112"]
+summary = "Lets several routers share a virtual gateway address: the active router multicasts advertisements and a backup takes over the address when they stop."
+group = "Routing"
+ip_protocols = [112]
+organisation = """
+VRRP is IP protocol 112, multicast to 224.0.0.18 (or FF02::12 for IPv6) with a time to live or hop limit of 255, which receivers check so that advertisements from off the link are rejected. The active router sends from a virtual MAC address 00-00-5E-00-01-XX (00-00-5E-00-02-XX for IPv6), where XX is the virtual router ID.
+
+A VRRPv3 advertisement is 8 bytes plus addresses: version (3) and type (1, advertisement) in one byte, the virtual router ID, the priority, a count of addresses, 4 reserved bits with a 12-bit maximum advertisement interval in centiseconds, a checksum, then the virtual IPv4 or IPv6 addresses.
+
+Priority 255 means the router owns the virtual address and 0 means the active router is stepping down, so a backup should take over at once. VRRPv2 (IPv4 only) has version 2 in the same position, an authentication type byte in place of the reserved bits and an advertisement interval in whole seconds.
+"""
+carries = []
+
+[[format.specs]]
+document = "RFC 9568"
+title = "Virtual Router Redundancy Protocol (VRRP) Version 3 for IPv4 and IPv6"
+url = "https://www.rfc-editor.org/rfc/rfc9568"
+rfc = 9568
+section = "5.1"
+
+[[format.fields]]
+name = "Version"
+meaning = "High 4 bits of the first byte: 3 for VRRPv3, 2 for VRRPv2."
+section = "5.2.1"
+
+[[format.fields]]
+name = "Type"
+meaning = "Low 4 bits of the first byte: 1, advertisement, is the only type."
+section = "5.2.2"
+
+[[format.fields]]
+name = "Virtual Rtr ID"
+aliases = ["VRID", "Virtual router ID"]
+meaning = "Which virtual router (1 to 255) the advertisement is for; also the last byte of the virtual MAC address."
+section = "5.2.3"
+
+[[format.fields]]
+name = "Priority"
+meaning = "Higher wins: 255 for the router that owns the address, 100 by default for backups, 0 when the active router is giving up the role."
+section = "5.2.4"
+
+[[format.fields]]
+name = "IPvX Addr Count"
+aliases = ["Count IP addresses", "Address count"]
+meaning = "Number of virtual addresses listed after the header."
+section = "5.2.5"
+
+[[format.fields]]
+name = "Max Advertise Interval"
+aliases = ["Advertisement interval"]
+meaning = "12 bits: interval between advertisements in centiseconds (100 is one second)."
+section = "5.2.7"
+
+[[format.fields]]
+name = "Checksum"
+meaning = "Ones' complement checksum over the VRRP message and an IP pseudo-header."
+section = "5.2.8"
+
+[[format.fields]]
+name = "IPvX Address(es)"
+aliases = ["IP addresses", "Virtual addresses"]
+meaning = "The virtual IPv4 or IPv6 addresses the virtual router answers for."
+section = "5.2.9"
+
+[[format]]
+id = "hsrp"
+name = "Hot Standby Router Protocol"
+keys = ["HSRP", "Hot Standby Router Protocol", "HSRPv2"]
+summary = "Cisco's first-hop redundancy protocol, the forerunner of VRRP: routers in a standby group elect an active router that answers for a shared virtual IP and MAC address."
+group = "Routing"
+ports = ["udp/1985", "udp/2029"]
+organisation = """
+HSRP version 0 (often called version 1) runs over UDP port 1985 to 224.0.0.2 with a time to live of 1. The message is 20 bytes: version, op code, state, hello time, hold time, priority, group and a reserved byte, then 8 bytes of authentication data and the 4-byte virtual IP address. The active router answers ARP for the virtual IP with the MAC address 00-00-0C-07-AC-XX, where XX is the group number.
+
+The op code is 0 hello, 1 coup (taking over the active role) or 2 resign. The state is one of initial (0), learn (1), listen (2), speak (4), standby (8) and active (16); hello and hold times are in seconds, 3 and 10 by default.
+
+HSRP version 2 uses the multicast address 224.0.0.102 and a TLV format that allows group numbers up to 4095 and millisecond timers, with the virtual MAC 00-00-0C-9F-FX-XX; for IPv6 it uses UDP port 2029 and FF02::66. The default authentication data is the string \"cisco\" in clear text.
+"""
+carries = []
+
+[[format.specs]]
+document = "RFC 2281"
+title = "Cisco Hot Standby Router Protocol (HSRP)"
+url = "https://www.rfc-editor.org/rfc/rfc2281"
+rfc = 2281
+section = "5.1"
+
+[[format.fields]]
+name = "Version"
+meaning = "0 for the format in RFC 2281; version 2 uses a different, TLV-based layout."
+section = "5.1"
+
+[[format.fields]]
+name = "Op Code"
+aliases = ["Opcode"]
+meaning = "0 hello, 1 coup, 2 resign."
+section = "5.1"
+
+[[format.fields]]
+name = "State"
+meaning = "0 initial, 1 learn, 2 listen, 4 speak, 8 standby, 16 active."
+section = "5.1"
+
+[[format.fields]]
+name = "Hellotime"
+aliases = ["Hello time"]
+meaning = "Seconds between hellos, 3 by default."
+section = "5.1"
+
+[[format.fields]]
+name = "Holdtime"
+aliases = ["Hold time"]
+meaning = "Seconds a hello stays valid, 10 by default."
+section = "5.1"
+
+[[format.fields]]
+name = "Priority"
+meaning = "Higher wins the active role, with the higher IP address breaking ties; 100 by default."
+section = "5.1"
+
+[[format.fields]]
+name = "Group"
+meaning = "Standby group number, also the last byte of the virtual MAC address."
+section = "5.1"
+
+[[format.fields]]
+name = "Authentication Data"
+aliases = ["Authentication"]
+meaning = "8 bytes of clear-text password, \"cisco\" padded with zeros unless configured."
+section = "5.1"
+
+[[format.fields]]
+name = "Virtual IP Address"
+aliases = ["Virtual IP"]
+meaning = "The shared gateway address the group answers for."
+section = "5.1"
+
+[[format]]
+id = "bfd"
+name = "Bidirectional Forwarding Detection"
+keys = ["BFD", "Bidirectional Forwarding Detection", "BFD Control", "BFD Echo"]
+summary = "A lightweight hello protocol that detects a failed forwarding path between two routers within milliseconds, so that routing protocols such as BGP and OSPF can react quickly."
+group = "Routing"
+ports = ["udp/3784", "udp/3785", "udp/4784"]
+organisation = """
+BFD control packets travel over UDP to port 3784 for single-hop sessions and 4784 for multihop ones; echo packets use port 3785 and are looped back by the neighbour's forwarding plane. Single-hop packets are sent with a time to live of 255, which the receiver checks, and from a source port between 49152 and 65535.
+
+The control packet is 24 bytes without authentication: a byte holding a 3-bit version (1) and a 5-bit diagnostic code, a byte holding a 2-bit state and the flags P, F, C, A, D and M, a detect multiplier, a length, then 4-byte My Discriminator and Your Discriminator values and three 4-byte intervals in microseconds (desired minimum transmit, required minimum receive and required minimum echo receive).
+
+The discriminators identify the session at each end; Your Discriminator is zero until the peer's has been learnt. The session is declared down when no packet arrives for the detect multiplier times the agreed interval, typically three times 50 to 300 milliseconds. If the A flag is set an authentication section follows.
+"""
+carries = []
+
+[[format.specs]]
+document = "RFC 5880"
+title = "Bidirectional Forwarding Detection (BFD)"
+url = "https://www.rfc-editor.org/rfc/rfc5880"
+rfc = 5880
+section = "4.1"
+
+[[format.specs]]
+document = "RFC 5881"
+title = "Bidirectional Forwarding Detection (BFD) for IPv4 and IPv6 (Single Hop)"
+url = "https://www.rfc-editor.org/rfc/rfc5881"
+rfc = 5881
+section = "4"
+
+[[format.specs]]
+document = "RFC 5883"
+title = "Bidirectional Forwarding Detection (BFD) for Multihop Paths"
+url = "https://www.rfc-editor.org/rfc/rfc5883"
+rfc = 5883
+
+[[format.fields]]
+name = "Version"
+aliases = ["Vers"]
+meaning = "3 bits, currently 1."
+section = "4.1"
+
+[[format.fields]]
+name = "Diagnostic"
+aliases = ["Diag"]
+meaning = "Why the session last changed state: 0 none, 1 detection time expired, 2 echo failed, 3 neighbour signalled down, 5 path down, 7 administratively down."
+section = "4.1"
+
+[[format.fields]]
+name = "State"
+aliases = ["Sta"]
+meaning = "The sender's view of the session: 0 AdminDown, 1 Down, 2 Init, 3 Up."
+section = "4.1"
+
+[[format.fields]]
+name = "Flags"
+meaning = "P poll, F final, C control plane independent, A authentication present, D demand mode, M multipoint (reserved)."
+section = "4.1"
+
+[[format.fields]]
+name = "Detect Mult"
+aliases = ["Detect multiplier"]
+meaning = "How many intervals without a packet before the session is declared down."
+section = "4.1"
+
+[[format.fields]]
+name = "My Discriminator"
+meaning = "Non-zero value the sender uses to identify this session."
+section = "4.1"
+
+[[format.fields]]
+name = "Your Discriminator"
+meaning = "The peer's discriminator as last received; zero if not yet known."
+section = "4.1"
+
+[[format.fields]]
+name = "Desired Min TX Interval"
+meaning = "Fastest interval, in microseconds, at which the sender would like to transmit."
+section = "4.1"
+
+[[format.fields]]
+name = "Required Min RX Interval"
+meaning = "Fastest interval, in microseconds, at which the sender can accept packets."
+section = "4.1"
+
+[[format.fields]]
+name = "Required Min Echo RX Interval"
+meaning = "Fastest echo interval the sender can loop back, in microseconds; zero means no echo function."
+section = "4.1"
+
+[[format]]
+id = "pim"
+name = "Protocol Independent Multicast"
+keys = ["PIM", "Protocol Independent Multicast", "PIM-SM", "PIMv2", "IP protocol 103"]
+summary = "The protocol routers use to build multicast distribution trees between them, joining towards a rendezvous point or directly towards a source as receivers appear."
+group = "Routing"
+ip_protocols = [103]
+organisation = """
+PIM is IP protocol 103. Most messages are multicast to 224.0.0.13 or FF02::D (all PIM routers) with a time to live of 1; Register and Register-Stop messages are unicast between a source's designated router and the rendezvous point.
+
+Every message starts with a 4-byte header: a 4-bit version (2), a 4-bit type, a reserved byte and a checksum over the message. Types are Hello (0), Register (1), Register-Stop (2), Join/Prune (3), Bootstrap (4), Assert (5) and Candidate-RP-Advertisement (8), among others.
+
+Hellos carry options as 2-byte type and 2-byte length pairs (hold time, DR priority, generation ID). Join/Prune messages list groups, each with lists of sources to join and prune, using encoded addresses that carry an address family, an encoding type, flags and a mask length. A Register message wraps the first multicast data packets from a source, whole, after an 8-byte header, so they reach the rendezvous point before the tree exists.
+"""
+carries = ["ipv4", "ipv6"]
+
+[[format.specs]]
+document = "RFC 7761"
+title = "Protocol Independent Multicast - Sparse Mode (PIM-SM): Protocol Specification (Revised)"
+url = "https://www.rfc-editor.org/rfc/rfc7761"
+rfc = 7761
+section = "4.9"
+
+[[format.fields]]
+name = "PIM Ver"
+aliases = ["Version"]
+meaning = "4 bits, 2."
+section = "4.9"
+
+[[format.fields]]
+name = "Type"
+meaning = "0 Hello, 1 Register, 2 Register-Stop, 3 Join/Prune, 4 Bootstrap, 5 Assert, 6 Graft, 7 Graft-Ack, 8 Candidate-RP-Advertisement."
+section = "4.9"
+
+[[format.fields]]
+name = "Checksum"
+meaning = "Ones' complement checksum over the PIM message (for Register, only the header); for IPv6 it also covers a pseudo-header."
+section = "4.9"
+
+[[format.fields]]
+name = "Option *"
+aliases = ["Hello option *"]
+meaning = "Hello options: 2-byte type and length, then value; 1 hold time, 19 DR priority, 20 generation ID, 2 LAN prune delay."
+section = "4.9.2"
+
+[[format.fields]]
+name = "Encoded-Group Address"
+aliases = ["Group address", "Encoded-Source Address", "Encoded-Unicast Address"]
+meaning = "An address preceded by its family (1 IPv4, 2 IPv6), an encoding type, flags and, for groups and sources, a mask length."
+section = "4.9.1"
+
+[[format]]
+id = "eigrp"
+name = "Enhanced Interior Gateway Routing Protocol"
+keys = ["EIGRP", "Enhanced Interior Gateway Routing Protocol", "IP protocol 88"]
+summary = "Cisco's advanced distance-vector routing protocol, published as an informational RFC: neighbours exchange routes with composite metrics and use the DUAL algorithm to stay loop-free."
+group = "Routing"
+ip_protocols = [88]
+organisation = """
+EIGRP is IP protocol 88, multicast to 224.0.0.10 (FF02::A for IPv6) for hellos and most updates, unicast for retransmissions and replies. Every packet has a 20-byte header: version (2), opcode, checksum, 4 bytes of flags, a 4-byte sequence number, a 4-byte acknowledgement number, a 2-byte virtual router ID and the 2-byte autonomous system number.
+
+A hello with a non-zero acknowledgement number and no TLVs is an acknowledgement. Sequence and acknowledgement numbers implement EIGRP's own reliable delivery for updates, queries and replies.
+
+After the header comes a list of TLVs, each with a 2-byte type and 2-byte length: parameter TLVs (K values and hold time), software version, sequence, and route TLVs for internal and external IPv4 and IPv6 routes carrying the metric components (delay, bandwidth, MTU, hop count, reliability, load) and the prefix.
+"""
+carries = []
+
+[[format.specs]]
+document = "RFC 7868"
+title = "Cisco's Enhanced Interior Gateway Routing Protocol (EIGRP)"
+url = "https://www.rfc-editor.org/rfc/rfc7868"
+rfc = 7868
+section = "6.5"
+
+[[format.fields]]
+name = "Header Version"
+aliases = ["Version"]
+meaning = "2."
+section = "6.5"
+
+[[format.fields]]
+name = "Opcode"
+meaning = "1 update, 3 query, 4 reply, 5 hello (or acknowledgement), 10 SIA-query, 11 SIA-reply."
+section = "6.5"
+
+[[format.fields]]
+name = "Checksum"
+meaning = "Ones' complement checksum over the whole EIGRP packet."
+section = "6.5"
+
+[[format.fields]]
+name = "Flags"
+meaning = "0x01 init (first update to a new neighbour), 0x02 conditional receive, 0x04 restart, 0x08 end of table."
+section = "6.5"
+
+[[format.fields]]
+name = "Sequence Number"
+aliases = ["Sequence"]
+meaning = "Sequence number of reliably delivered packets; 0 for hellos."
+section = "6.5"
+
+[[format.fields]]
+name = "Acknowledgment Number"
+aliases = ["Acknowledgement number", "Ack"]
+meaning = "The last sequence number received from this neighbour; a hello carrying one is an acknowledgement."
+section = "6.5"
+
+[[format.fields]]
+name = "Virtual Router ID"
+meaning = "0 for unicast routing, 1 for multicast topologies."
+section = "6.5"
+
+[[format.fields]]
+name = "Autonomous System Number"
+aliases = ["AS", "Autonomous system"]
+meaning = "The EIGRP process number; neighbours must agree on it."
+section = "6.5"
+
+[[format]]
+id = "isis"
+name = "Intermediate System to Intermediate System"
+keys = ["IS-IS", "ISIS", "Intermediate System to Intermediate System", "Integrated IS-IS"]
+summary = "A link-state interior routing protocol from the OSI world, favoured by large service providers; it runs directly over the link layer rather than over IP."
+group = "Routing"
+organisation = """
+IS-IS packets are not IP. On Ethernet they are 802.3 frames with an LLC header of DSAP and SSAP 0xFE and control 0x03, sent to 01:80:C2:00:00:14 (all level 1 routers), 01:80:C2:00:00:15 (all level 2 routers) or 09:00:2B:00:00:05; on point-to-point links they ride in PPP or HDLC. The first byte is the network layer protocol identifier 0x83.
+
+An 8-byte common header follows: the 0x83 discriminator, the header length, a version/protocol ID extension (1), the system ID length (0 means 6 bytes), the PDU type, a version (1), a reserved byte and the maximum number of area addresses. PDU types are LAN hellos for levels 1 and 2 (15, 16), the point-to-point hello (17), link state PDUs for levels 1 and 2 (18, 20), and complete (24, 25) and partial (26, 27) sequence number PDUs.
+
+Each PDU type has some fixed fields (such as the LSP ID, sequence number and remaining lifetime) and then TLVs with a 1-byte type and 1-byte length: area addresses (1), extended IS reachability (22), protocols supported (129), IP interface addresses (132), extended IP reachability (135), dynamic host name (137) and IPv6 reachability (236) are common. Router identities are system IDs, often written as three groups of four hex digits.
+"""
+carries = []
+
+[[format.specs]]
+document = "ISO/IEC 10589:2002"
+title = "Intermediate System to Intermediate System intra-domain routeing information exchange protocol for use in conjunction with the protocol for providing the connectionless-mode network service (ISO 8473)"
+url = "https://www.iso.org/standard/30932.html"
+section = "9"
+
+[[format.specs]]
+document = "RFC 1195"
+title = "Use of OSI IS-IS for routing in TCP/IP and dual environments"
+url = "https://www.rfc-editor.org/rfc/rfc1195"
+rfc = 1195
+section = "5"
+
+[[format.fields]]
+name = "Intradomain Routing Protocol Discriminator"
+aliases = ["NLPID", "Discriminator"]
+meaning = "Always 0x83 for IS-IS."
+
+[[format.fields]]
+name = "Length Indicator"
+aliases = ["Header length"]
+meaning = "Bytes in the common and PDU-specific fixed header, before the TLVs."
+
+[[format.fields]]
+name = "ID Length"
+aliases = ["System ID length"]
+meaning = "Length of system IDs; 0 means the usual 6 bytes."
+
+[[format.fields]]
+name = "PDU Type"
+aliases = ["PDU type"]
+meaning = "15/16 level 1/2 LAN hello, 17 point-to-point hello, 18/20 level 1/2 LSP, 24/25 level 1/2 CSNP, 26/27 level 1/2 PSNP."
+
+[[format.fields]]
+name = "Maximum Area Addresses"
+meaning = "How many area addresses the router supports; 0 means 3."
+
+[[format.fields]]
+name = "LSP ID"
+meaning = "System ID, pseudonode number and fragment number identifying a link state PDU."
+
+[[format.fields]]
+name = "Sequence Number"
+meaning = "LSPs: increases with each new version of the LSP, so the newest wins."
+
+[[format.fields]]
+name = "Remaining Lifetime"
+meaning = "LSPs: seconds before the LSP expires; a purge sets it to zero."
+
+[[format.fields]]
+name = "TLV *"
+meaning = "1-byte type, 1-byte length, value: 1 area addresses, 22 extended IS reachability, 129 protocols supported, 132 IP interface address, 135 extended IP reachability, 137 host name, 236 IPv6 reachability."
+
+# ---------------------------------------------------------------------------
+# Addressing and naming
+# ---------------------------------------------------------------------------
+
+[[format]]
+id = "dhcp"
+name = "Dynamic Host Configuration Protocol"
+keys = ["DHCP", "Dynamic Host Configuration Protocol", "DHCPv4", "BOOTP", "Bootstrap Protocol"]
+summary = "How IPv4 hosts get an address, gateway, DNS servers and other settings when they join a network; an extension of the older BOOTP format."
+group = "Addressing and naming"
+ports = ["udp/67", "udp/68"]
+organisation = """
+Clients send from UDP port 68 to server port 67, usually as broadcasts to 255.255.255.255 from 0.0.0.0 since they have no address yet; relay agents forward them to servers on other subnets, filling in their own address. Every message has the fixed BOOTP layout: op (1 request, 2 reply), hardware type, hardware address length, hops, a 4-byte transaction ID, seconds, flags, then four 4-byte addresses (ciaddr, yiaddr, siaddr, giaddr), the 16-byte client hardware address, a 64-byte server name and a 128-byte boot file name.
+
+That fixed part is 236 bytes. At byte 236 comes the magic cookie 99.130.83.99 (0x63825363), and the options start at byte 240. Each option is a 1-byte code, a 1-byte length and the value, except Pad (0) and End (255), which are single bytes. If option 52 says so, the server name and file fields hold more options.
+
+Option 53 makes it DHCP rather than BOOTP and gives the message type: 1 DISCOVER, 2 OFFER, 3 REQUEST, 4 DECLINE, 5 ACK, 6 NAK, 7 RELEASE, 8 INFORM. A normal lease is DISCOVER, OFFER, REQUEST, ACK. Other common options are 1 subnet mask, 3 router, 6 DNS servers, 12 host name, 15 domain name, 50 requested address, 51 lease time, 54 server identifier, 55 parameter request list (whose order fingerprints the client's operating system), 60 vendor class, 61 client identifier and 82 relay agent information.
+"""
+carries = []
+
+[[format.specs]]
+document = "RFC 2131"
+title = "Dynamic Host Configuration Protocol"
+url = "https://www.rfc-editor.org/rfc/rfc2131"
+rfc = 2131
+section = "2"
+
+[[format.specs]]
+document = "RFC 2132"
+title = "DHCP Options and BOOTP Vendor Extensions"
+url = "https://www.rfc-editor.org/rfc/rfc2132"
+rfc = 2132
+section = "2"
+
+[[format.specs]]
+document = "RFC 951"
+title = "Bootstrap Protocol"
+url = "https://www.rfc-editor.org/rfc/rfc951"
+rfc = 951
+
+[[format.fields]]
+name = "op"
+aliases = ["Message type", "Op"]
+meaning = "1 BOOTREQUEST (client to server), 2 BOOTREPLY (server to client)."
+section = "2"
+
+[[format.fields]]
+name = "htype"
+aliases = ["Hardware type"]
+meaning = "Hardware address type from the ARP registry: 1 for Ethernet."
+section = "2"
+
+[[format.fields]]
+name = "hlen"
+aliases = ["Hardware address length"]
+meaning = "Length of the hardware address, 6 for Ethernet."
+section = "2"
+
+[[format.fields]]
+name = "hops"
+aliases = ["Hops"]
+meaning = "Set to zero by the client and increased by each relay agent."
+section = "2"
+
+[[format.fields]]
+name = "xid"
+aliases = ["Transaction ID"]
+meaning = "Random number chosen by the client to match replies to its requests."
+section = "2"
+
+[[format.fields]]
+name = "secs"
+aliases = ["Seconds elapsed"]
+meaning = "Seconds since the client began acquiring or renewing an address."
+section = "2"
+
+[[format.fields]]
+name = "flags"
+aliases = ["Flags", "Bootp flags"]
+meaning = "The top bit is the broadcast flag: the client cannot receive unicast before it is configured, so the reply must be broadcast."
+section = "2"
+
+[[format.fields]]
+name = "ciaddr"
+aliases = ["Client IP address"]
+meaning = "The client's current address, filled in only when it already has one (renewing, rebinding, INFORM)."
+section = "2"
+
+[[format.fields]]
+name = "yiaddr"
+aliases = ["Your (client) IP address", "Your IP address"]
+meaning = "The address the server is offering or assigning to the client."
+section = "2"
+
+[[format.fields]]
+name = "siaddr"
+aliases = ["Next server IP address", "Server IP address"]
+meaning = "The server to use in the next step of booting, such as a TFTP server for network boot."
+section = "2"
+
+[[format.fields]]
+name = "giaddr"
+aliases = ["Relay agent IP address", "Gateway IP address"]
+meaning = "The relay agent's address when the message was relayed; servers use it to choose the subnet to assign from."
+section = "2"
+
+[[format.fields]]
+name = "chaddr"
+aliases = ["Client hardware address", "Client MAC address"]
+meaning = "16 bytes holding the client's hardware address (the first hlen bytes count)."
+section = "2"
+
+[[format.fields]]
+name = "sname"
+aliases = ["Server host name"]
+meaning = "64 bytes: optional server host name, or overflow options."
+section = "2"
+
+[[format.fields]]
+name = "file"
+aliases = ["Boot file name"]
+meaning = "128 bytes: boot file name for network booting, or overflow options."
+section = "2"
+
+[[format.fields]]
+name = "Magic cookie"
+meaning = "0x63825363 at byte 236; marks the start of the options."
+section = "3"
+
+[[format.fields]]
+name = "Option *"
+aliases = ["options"]
+meaning = "1-byte code, 1-byte length, value: 53 message type, 1 subnet mask, 3 router, 6 DNS servers, 12 host name, 50 requested address, 51 lease time, 54 server identifier, 55 parameter request list, 61 client identifier, 82 relay agent information; 0 pad and 255 end are single bytes."
+
+[[format]]
+id = "dhcpv6"
+name = "Dynamic Host Configuration Protocol for IPv6"
+keys = ["DHCPv6", "DHCP for IPv6", "Dynamic Host Configuration Protocol for IPv6"]
+summary = "Assigns IPv6 addresses, delegated prefixes and configuration such as DNS servers to hosts and routers; it works alongside router advertisements rather than replacing them."
+group = "Addressing and naming"
+ports = ["udp/546", "udp/547"]
+organisation = """
+Clients send from UDP port 546 to port 547 on the link-local multicast address FF02::1:2 (all relay agents and servers); servers and relays listen on 547 and answer clients on 546. Unlike DHCPv4 the header is tiny: a 1-byte message type and a 3-byte transaction ID, followed directly by options.
+
+Each option is a 2-byte code, a 2-byte length and the value, and options can nest (an identity association contains address or prefix options, each with lifetimes). Common options are Client Identifier (1) and Server Identifier (2), both holding a DUID that identifies the device, IA_NA (3) for addresses, IA Address (5), Option Request (6), Elapsed Time (8), Status Code (13), IA_PD (25) and IA Prefix (26) for prefix delegation, and DNS Recursive Name Server (23).
+
+Message types are SOLICIT (1), ADVERTISE (2), REQUEST (3), CONFIRM (4), RENEW (5), REBIND (6), REPLY (7), RELEASE (8), DECLINE (9), RECONFIGURE (10) and INFORMATION-REQUEST (11); a normal exchange is SOLICIT, ADVERTISE, REQUEST, REPLY, or SOLICIT and REPLY with rapid commit. Relays wrap messages in RELAY-FORW (12) and RELAY-REPL (13), which have a hop count and 16-byte link and peer addresses before their options; the original message travels inside a Relay Message option (9).
+"""
+carries = []
+
+[[format.specs]]
+document = "RFC 9915"
+title = "Dynamic Host Configuration Protocol for IPv6 (DHCPv6)"
+url = "https://www.rfc-editor.org/rfc/rfc9915"
+rfc = 9915
+section = "8"
+
+[[format.fields]]
+name = "msg-type"
+aliases = ["Message type"]
+meaning = "1 SOLICIT, 2 ADVERTISE, 3 REQUEST, 4 CONFIRM, 5 RENEW, 6 REBIND, 7 REPLY, 8 RELEASE, 9 DECLINE, 10 RECONFIGURE, 11 INFORMATION-REQUEST, 12 RELAY-FORW, 13 RELAY-REPL."
+section = "7.3"
+
+[[format.fields]]
+name = "transaction-id"
+aliases = ["Transaction ID"]
+meaning = "3 bytes chosen by the client to match replies to its requests."
+section = "8"
+
+[[format.fields]]
+name = "hop-count"
+aliases = ["Hop count"]
+meaning = "Relay messages: how many relays have handled the message."
+section = "9"
+
+[[format.fields]]
+name = "link-address"
+aliases = ["Link address"]
+meaning = "Relay messages: an address on the link the client is on, telling the server which prefix to assign from."
+section = "9"
+
+[[format.fields]]
+name = "peer-address"
+aliases = ["Peer address"]
+meaning = "Relay messages: the address of the client or relay the message came from."
+section = "9"
+
+[[format.fields]]
+name = "Option *"
+aliases = ["options"]
+meaning = "2-byte code, 2-byte length, value: 1 client ID, 2 server ID, 3 IA_NA, 5 IA address, 6 option request, 8 elapsed time, 9 relay message, 13 status code, 14 rapid commit, 23 DNS servers, 25 IA_PD, 26 IA prefix."
+section = "21.1"
+
+[[format]]
+id = "llmnr"
+name = "Link-Local Multicast Name Resolution"
+keys = ["LLMNR", "Link-Local Multicast Name Resolution", "Link-local Multicast Name Resolution"]
+summary = "A DNS-like protocol Windows uses to resolve single-label names on the local link when DNS cannot; a frequent target of name-poisoning attacks, and so worth noticing in a capture."
+group = "Addressing and naming"
+ports = ["udp/5355", "tcp/5355"]
+organisation = """
+Queries are sent to UDP port 5355 on the multicast address 224.0.0.252 (FF02::1:3 for IPv6), with a time to live of 1; responders answer by unicast. TCP port 5355 is used when a response is too big.
+
+The message format is the DNS format: a 12-byte header (ID, flags, and counts of questions, answers, authority and additional records) followed by the sections. Three flag bits differ from DNS: C (conflict), TC (truncated) and T (tentative) take the places DNS gives to the authoritative answer, truncation and recursion bits, and the rest are zero.
+
+A multicast query normally has one question for an A or AAAA record of a bare host name. Any host that believes it owns the name may reply, which is why unexpected replies (often from tools such as Responder) are a sign of interception.
+"""
+carries = []
+
+[[format.specs]]
+document = "RFC 4795"
+title = "Link-local Multicast Name Resolution (LLMNR)"
+url = "https://www.rfc-editor.org/rfc/rfc4795"
+rfc = 4795
+section = "2.1.1"
+
+[[format.fields]]
+name = "ID"
+aliases = ["Transaction ID"]
+meaning = "Chosen by the sender and copied into the response."
+section = "2.1.1"
+
+[[format.fields]]
+name = "QR"
+meaning = "0 query, 1 response."
+section = "2.1.1"
+
+[[format.fields]]
+name = "C"
+aliases = ["Conflict"]
+meaning = "Conflict bit: in a query, the sender has had more than one response to an earlier query for the name; in a response, the name is not considered unique."
+section = "2.1.1"
+
+[[format.fields]]
+name = "TC"
+aliases = ["Truncated"]
+meaning = "The response did not fit in UDP; repeat the query over TCP."
+section = "2.1.1"
+
+[[format.fields]]
+name = "T"
+aliases = ["Tentative"]
+meaning = "The responder has not yet confirmed that the name is unique."
+section = "2.1.1"
+
+[[format.fields]]
+name = "QDCOUNT"
+aliases = ["Questions"]
+meaning = "Number of questions, 1 in queries."
+section = "2.1.1"
+
+[[format.fields]]
+name = "ANCOUNT"
+aliases = ["Answers"]
+meaning = "Number of answer records."
+section = "2.1.1"
+
+[[format]]
+id = "nbns"
+name = "NetBIOS Name Service"
+keys = ["NBNS", "NetBIOS Name Service", "NetBIOS-NS", "WINS", "NetBIOS name service"]
+summary = "The name registration and lookup service of NetBIOS over TCP/IP: Windows hosts broadcast or ask a WINS server to map 16-byte NetBIOS names to IPv4 addresses."
+group = "Addressing and naming"
+ports = ["udp/137", "tcp/137"]
+organisation = """
+NBNS uses UDP port 137, broadcast on the local subnet or unicast to a WINS server. Its packets borrow the DNS layout: a 12-byte header (transaction ID; a 16-bit word holding the response bit, a 4-bit opcode, flags and a result code; and four record counts) followed by questions and resource records.
+
+The opcode says what is happening: 0 query, 5 registration, 6 release, 7 wait for acknowledgement (WACK), 8 refresh. Flags include authoritative answer, truncation, recursion desired and available, and B, set on broadcasts. Question and record types are NB (0x20) for a name-to-address mapping and NBSTAT (0x21) for a node status request, which returns every name the host has registered and its MAC address.
+
+Names are 16 bytes: up to 15 characters padded with spaces and a final suffix byte giving the service (0x00 workstation, 0x20 file server, 0x1B domain master browser, 0x1C domain controllers, 0x1D master browser). Each byte is split into two nibbles and each nibble written as a letter from A to P, so the name travels as a 32-letter DNS-style label; \"CKAAAA...\" is the wildcard \"*\" used by node status queries.
+"""
+carries = []
+
+[[format.specs]]
+document = "RFC 1002"
+title = "Protocol standard for a NetBIOS service on a TCP/UDP transport: Detailed specifications"
+url = "https://www.rfc-editor.org/rfc/rfc1002"
+rfc = 1002
+section = "4.2.1"
+
+[[format.specs]]
+document = "RFC 1001"
+title = "Protocol standard for a NetBIOS service on a TCP/UDP transport: Concepts and methods"
+url = "https://www.rfc-editor.org/rfc/rfc1001"
+rfc = 1001
+
+[[format.fields]]
+name = "NAME_TRN_ID"
+aliases = ["Transaction ID"]
+meaning = "Chosen by the requester and copied into the response."
+section = "4.2.1.1"
+
+[[format.fields]]
+name = "OPCODE"
+aliases = ["Opcode"]
+meaning = "Response bit, then 0 query, 5 registration, 6 release, 7 WACK, 8 refresh."
+section = "4.2.1.1"
+
+[[format.fields]]
+name = "NM_FLAGS"
+aliases = ["Flags"]
+meaning = "AA authoritative answer, TC truncated, RD recursion desired, RA recursion available, B broadcast."
+section = "4.2.1.1"
+
+[[format.fields]]
+name = "RCODE"
+aliases = ["Result code"]
+meaning = "0 success; errors such as 3 name not found, 6 name active (already registered by someone else) and 7 name in conflict."
+section = "4.2.1.1"
+
+[[format.fields]]
+name = "QUESTION_NAME"
+aliases = ["Name"]
+meaning = "The 16-byte NetBIOS name encoded as 32 letters A to P, with its suffix byte last."
+section = "4.2.1.2"
+
+[[format.fields]]
+name = "QUESTION_TYPE"
+aliases = ["Type"]
+meaning = "0x20 NB (name to address), 0x21 NBSTAT (node status)."
+section = "4.2.1.2"
+
+[[format.fields]]
+name = "NB_FLAGS"
+meaning = "In NB records: group or unique name and the node type (B, P, M or H node), followed by the IPv4 address."
+section = "4.2.2"
+
+[[format]]
+id = "nbds"
+name = "NetBIOS Datagram Service"
+keys = ["NBDS", "NetBIOS Datagram Service", "NetBIOS-DGM", "NetBIOS datagram"]
+summary = "Connectionless NetBIOS messages over UDP port 138; in practice the carrier of Windows browser announcements and other mailslot messages broadcast on a subnet."
+group = "Addressing and naming"
+ports = ["udp/138"]
+organisation = """
+Datagrams are sent from and to UDP port 138, usually as subnet broadcasts. The header is a 1-byte message type, a 1-byte flags field, a 2-byte datagram ID, the 4-byte source IPv4 address and 2-byte source port of the original sender, a 2-byte datagram length and a 2-byte packet offset, 14 bytes in all.
+
+Message types 0x10 (direct unique), 0x11 (direct group) and 0x12 (broadcast) carry data: after the header come the source and destination NetBIOS names, each in the 32-letter encoded form used by the name service, and then the user data. The flags hold the sending node type and the first and more-fragments bits used to split large datagrams. Types 0x13 to 0x16 are errors and datagram queries.
+
+The user data is almost always an SMB transaction addressed to a mailslot, such as the browser service's \\MAILSLOT\\BROWSE, whose host announcements reveal machine names, operating system versions and workgroups.
+"""
+carries = []
+
+[[format.specs]]
+document = "RFC 1002"
+title = "Protocol standard for a NetBIOS service on a TCP/UDP transport: Detailed specifications"
+url = "https://www.rfc-editor.org/rfc/rfc1002"
+rfc = 1002
+section = "4.4.1"
+
+[[format.fields]]
+name = "MSG_TYPE"
+aliases = ["Message type"]
+meaning = "0x10 direct unique, 0x11 direct group, 0x12 broadcast, 0x13 error, 0x14 query request, 0x15 positive and 0x16 negative query response."
+section = "4.4.1"
+
+[[format.fields]]
+name = "FLAGS"
+aliases = ["Flags"]
+meaning = "Source node type (B, P or M) and the F (first) and M (more) fragment bits."
+section = "4.4.1"
+
+[[format.fields]]
+name = "DGM_ID"
+aliases = ["Datagram ID"]
+meaning = "Identifies the datagram so that its fragments can be matched."
+section = "4.4.1"
+
+[[format.fields]]
+name = "SOURCE_IP"
+aliases = ["Source IP"]
+meaning = "IPv4 address of the original sender, which may differ from the IP source when a server forwarded it."
+section = "4.4.1"
+
+[[format.fields]]
+name = "SOURCE_PORT"
+aliases = ["Source port"]
+meaning = "UDP port of the original sender, normally 138."
+section = "4.4.1"
+
+[[format.fields]]
+name = "DGM_LENGTH"
+aliases = ["Datagram length"]
+meaning = "Bytes after the header: the names and user data."
+section = "4.4.2"
+
+[[format.fields]]
+name = "PACKET_OFFSET"
+aliases = ["Packet offset"]
+meaning = "Where this fragment's user data belongs in the whole datagram."
+section = "4.4.2"
+
+[[format]]
+id = "ssdp"
+name = "Simple Service Discovery Protocol"
+keys = ["SSDP", "Simple Service Discovery Protocol", "UPnP discovery"]
+summary = "UPnP's discovery protocol: devices announce themselves and answer searches with HTTP-style text messages multicast over UDP, pointing to an XML description of the device."
+group = "Addressing and naming"
+ports = ["udp/1900"]
+organisation = """
+SSDP messages are HTTP/1.1 requests and responses sent over UDP, one per datagram, usually multicast to 239.255.255.250 port 1900 (FF02::C and other scopes for IPv6). The request line and headers are plain text ending in CR LF, with an empty line at the end and no body.
+
+A control point searches with an M-SEARCH request (headers MAN: \"ssdp:discover\", ST naming the search target such as ssdp:all or a device type, and MX giving the longest delay before replies); devices answer by unicast with an HTTP/1.1 200 OK response. Devices also announce themselves with NOTIFY requests whose NTS header is ssdp:alive, ssdp:byebye or ssdp:update.
+
+The interesting headers are LOCATION, a URL to the device description XML; USN, a unique service name built from the device UUID; NT or ST, the device or service type; SERVER, which names the operating system and UPnP stack; and CACHE-CONTROL max-age. Because devices answer unsolicited searches with larger responses, SSDP is also abused for reflection attacks.
+"""
+carries = ["http"]
+
+[[format.specs]]
+document = "UPnP Device Architecture 2.0"
+title = "UPnP Device Architecture 2.0"
+url = "https://openconnectivity.org/upnp-specs/UPnP-arch-DeviceArchitecture-v2.0-20200417.pdf"
+section = "1"
+
+[[format.fields]]
+name = "Request line"
+aliases = ["Method"]
+meaning = "M-SEARCH * HTTP/1.1, NOTIFY * HTTP/1.1, or a HTTP/1.1 200 OK status line for a search response."
+
+[[format.fields]]
+name = "HOST"
+meaning = "239.255.255.250:1900 (or the IPv6 multicast address) for multicast messages."
+
+[[format.fields]]
+name = "MAN"
+meaning = "In M-SEARCH: must be \"ssdp:discover\", quotes included."
+
+[[format.fields]]
+name = "ST"
+aliases = ["Search target"]
+meaning = "What is being searched for, or found: ssdp:all, upnp:rootdevice, a uuid, or a device or service type URN."
+
+[[format.fields]]
+name = "MX"
+meaning = "In multicast M-SEARCH: the most seconds a device should wait, at random, before replying."
+
+[[format.fields]]
+name = "NT"
+aliases = ["Notification type"]
+meaning = "In NOTIFY: the device or service type being announced."
+
+[[format.fields]]
+name = "NTS"
+aliases = ["Notification sub type"]
+meaning = "In NOTIFY: ssdp:alive (available), ssdp:byebye (leaving) or ssdp:update."
+
+[[format.fields]]
+name = "USN"
+aliases = ["Unique Service Name"]
+meaning = "Identifies the device or service, normally uuid:<device UUID> followed by the type."
+
+[[format.fields]]
+name = "LOCATION"
+aliases = ["Location"]
+meaning = "URL of the device description XML, which names the manufacturer, model and services."
+
+[[format.fields]]
+name = "SERVER"
+aliases = ["Server"]
+meaning = "Operating system, UPnP version and product, such as \"Linux/5.10 UPnP/2.0 product/1.0\"."
+
+[[format.fields]]
+name = "CACHE-CONTROL"
+aliases = ["Cache-Control"]
+meaning = "max-age: seconds the announcement stays valid."
+
+# ---------------------------------------------------------------------------
+# Network management and services
+# ---------------------------------------------------------------------------
+
+[[format]]
+id = "snmp"
+name = "Simple Network Management Protocol"
+keys = ["SNMP", "Simple Network Management Protocol", "SNMPv1", "SNMPv2c", "SNMPv3", "SNMP trap"]
+summary = "How management stations read and set counters and settings on routers, switches, printers and servers, and how devices send traps and notifications about events."
+group = "Network management"
+ports = ["udp/161", "udp/162"]
+organisation = """
+Agents listen on UDP port 161; traps and informs go to the manager on UDP port 162. Every message is ASN.1 encoded with BER: a SEQUENCE (0x30) containing an INTEGER version (0 for SNMPv1, 1 for SNMPv2c, 3 for SNMPv3) and then, in v1 and v2c, an OCTET STRING community string, which acts as a clear-text password (\"public\" is the infamous default), followed by the PDU.
+
+The PDU is a context-specific constructed tag that names the operation: 0xA0 GetRequest, 0xA1 GetNextRequest, 0xA2 Response, 0xA3 SetRequest, 0xA4 the SNMPv1 Trap, 0xA5 GetBulkRequest, 0xA6 InformRequest, 0xA7 SNMPv2-Trap and 0xA8 Report. Most PDUs hold a request ID, an error status, an error index and a list of variable bindings, each a SEQUENCE of an object identifier and a value (or NULL in requests). GetBulk replaces the error fields with non-repeaters and max-repetitions.
+
+SNMPv3 messages wrap the PDU differently: a header with message ID, maximum size, flags (authentication, privacy, reportable) and security model, then the security parameters as an OCTET STRING (user name, engine ID, boots and time, authentication and privacy parameters) and finally the scoped PDU, which is encrypted when the privacy flag is set.
+"""
+carries = ["der"]
+
+[[format.specs]]
+document = "RFC 3416"
+title = "Version 2 of the Protocol Operations for the Simple Network Management Protocol (SNMP)"
+url = "https://www.rfc-editor.org/rfc/rfc3416"
+rfc = 3416
+section = "3"
+
+[[format.specs]]
+document = "RFC 3412"
+title = "Message Processing and Dispatching for the Simple Network Management Protocol (SNMP)"
+url = "https://www.rfc-editor.org/rfc/rfc3412"
+rfc = 3412
+section = "6"
+
+[[format.specs]]
+document = "RFC 3417"
+title = "Transport Mappings for the Simple Network Management Protocol (SNMP)"
+url = "https://www.rfc-editor.org/rfc/rfc3417"
+rfc = 3417
+section = "3"
+
+[[format.specs]]
+document = "RFC 1157"
+title = "Simple Network Management Protocol (SNMP)"
+url = "https://www.rfc-editor.org/rfc/rfc1157"
+rfc = 1157
+
+[[format.fields]]
+name = "version"
+aliases = ["Version"]
+meaning = "0 SNMPv1, 1 SNMPv2c, 3 SNMPv3."
+
+[[format.fields]]
+name = "community"
+aliases = ["Community"]
+meaning = "v1 and v2c: an OCTET STRING that serves as a clear-text password; often \"public\" for read access."
+
+[[format.fields]]
+name = "PDU type"
+aliases = ["data", "PDU"]
+meaning = "0xA0 GetRequest, 0xA1 GetNextRequest, 0xA2 Response, 0xA3 SetRequest, 0xA4 v1 Trap, 0xA5 GetBulkRequest, 0xA6 InformRequest, 0xA7 SNMPv2-Trap, 0xA8 Report."
+section = "3"
+
+[[format.fields]]
+name = "request-id"
+aliases = ["Request ID"]
+meaning = "Pairs a response with its request."
+section = "3"
+
+[[format.fields]]
+name = "error-status"
+aliases = ["Error status"]
+meaning = "0 noError; otherwise why the request failed, such as 2 noSuchName (v1), 6 noAccess or 17 notWritable."
+section = "3"
+
+[[format.fields]]
+name = "error-index"
+aliases = ["Error index"]
+meaning = "Which variable binding, counted from 1, caused the error."
+section = "3"
+
+[[format.fields]]
+name = "variable-bindings"
+aliases = ["Variable bindings", "varbind *"]
+meaning = "A list of (object identifier, value) pairs; in requests the values are NULL, and the special values noSuchObject, noSuchInstance and endOfMibView mark missing data."
+section = "3"
+
+[[format.fields]]
+name = "msgGlobalData"
+aliases = ["msgID", "msgFlags", "msgSecurityModel"]
+meaning = "SNMPv3 header: message ID, maximum message size, flags (auth, priv, reportable) and security model (3 for USM)."
+
+[[format.fields]]
+name = "msgSecurityParameters"
+aliases = ["Security parameters"]
+meaning = "SNMPv3: for USM, the authoritative engine ID, boots and time, user name and the authentication and privacy parameters."
+
+[[format]]
+id = "syslog"
+name = "Syslog"
+keys = ["Syslog", "syslog protocol", "BSD syslog"]
+summary = "The plain-text log transport of Unix systems and network devices: each message carries a facility and severity, a timestamp, the host, the application and free text."
+group = "Network management"
+ports = ["udp/514", "tcp/6514", "udp/6514"]
+organisation = """
+Classic syslog sends one message per UDP datagram to port 514, with no acknowledgement. TLS-protected syslog uses TCP port 6514, where each message is preceded by its length in decimal digits and a space so that messages can be separated in the stream; DTLS over UDP 6514 also exists. Many systems also send plain syslog over TCP 514 with newline framing, a widespread but unregistered practice.
+
+Every message starts with a priority in angle brackets: the facility multiplied by eight plus the severity, so <34> is facility 4 (security/authorisation) at severity 2 (critical). Severities run from 0 emergency to 7 debug; facilities include 0 kernel, 1 user, 3 daemon, 4 auth, 10 authpriv and 16 to 23 local0 to local7.
+
+In the RFC 5424 format the priority is followed by a version number (1), then space-separated fields: an ISO 8601 timestamp, host name, application name, process ID, message ID and structured data, each written as \"-\" when absent, then the message, which may begin with a UTF-8 byte order mark. The older BSD format still sent by many devices puts a \"Mmm dd hh:mm:ss\" timestamp and a host name after the priority and then a tag such as \"sshd[1234]:\" and the text.
+"""
+carries = []
+
+[[format.specs]]
+document = "RFC 5424"
+title = "The Syslog Protocol"
+url = "https://www.rfc-editor.org/rfc/rfc5424"
+rfc = 5424
+section = "6"
+
+[[format.specs]]
+document = "RFC 5426"
+title = "Transmission of Syslog Messages over UDP"
+url = "https://www.rfc-editor.org/rfc/rfc5426"
+rfc = 5426
+section = "3"
+
+[[format.specs]]
+document = "RFC 5425"
+title = "Transport Layer Security (TLS) Transport Mapping for Syslog"
+url = "https://www.rfc-editor.org/rfc/rfc5425"
+rfc = 5425
+section = "4.3"
+
+[[format.specs]]
+document = "RFC 3164"
+title = "The BSD Syslog Protocol"
+url = "https://www.rfc-editor.org/rfc/rfc3164"
+rfc = 3164
+
+[[format.fields]]
+name = "PRI"
+aliases = ["Priority"]
+meaning = "<facility × 8 + severity>: severity 0 emergency, 1 alert, 2 critical, 3 error, 4 warning, 5 notice, 6 informational, 7 debug."
+section = "6.2.1"
+
+[[format.fields]]
+name = "VERSION"
+aliases = ["Version"]
+meaning = "1 for the RFC 5424 format; absent in BSD-style messages."
+section = "6.2.2"
+
+[[format.fields]]
+name = "TIMESTAMP"
+aliases = ["Timestamp"]
+meaning = "ISO 8601 date and time with optional fraction and time zone; BSD messages use \"Mmm dd hh:mm:ss\" with no year or zone."
+section = "6.2.3"
+
+[[format.fields]]
+name = "HOSTNAME"
+aliases = ["Host name", "Hostname"]
+meaning = "The machine that produced the message: a fully qualified name, a host name or an IP address."
+section = "6.2.4"
+
+[[format.fields]]
+name = "APP-NAME"
+aliases = ["App name", "Tag"]
+meaning = "The program that logged the message, such as sshd."
+section = "6.2.5"
+
+[[format.fields]]
+name = "PROCID"
+aliases = ["Process ID"]
+meaning = "Usually the process ID of the logging program."
+section = "6.2.6"
+
+[[format.fields]]
+name = "MSGID"
+aliases = ["Message ID"]
+meaning = "A type for the message, chosen by the application."
+section = "6.2.7"
+
+[[format.fields]]
+name = "STRUCTURED-DATA"
+aliases = ["Structured data"]
+meaning = "Zero or more [id name=\"value\" ...] elements, or \"-\"."
+section = "6.3"
+
+[[format.fields]]
+name = "MSG"
+aliases = ["Message"]
+meaning = "The free-text message, UTF-8 when it starts with a byte order mark."
+section = "6.4"
+
+[[format]]
+id = "tftp"
+name = "Trivial File Transfer Protocol"
+keys = ["TFTP", "Trivial File Transfer Protocol"]
+summary = "A minimal file transfer protocol over UDP with no authentication, used for network booting (PXE), loading firmware and backing up device configurations."
+group = "Network management"
+ports = ["udp/69"]
+organisation = """
+Only the first request goes to UDP port 69. The server answers from a new port of its own choosing, and the rest of the transfer runs between that port and the client's, so following a TFTP transfer means following the reply's ports rather than port 69.
+
+Every packet starts with a 2-byte opcode: 1 read request (RRQ), 2 write request (WRQ), 3 DATA, 4 ACK, 5 ERROR and 6 option acknowledgement (OACK). Requests carry a file name and a transfer mode (\"netascii\" or \"octet\"), each ending in a zero byte, optionally followed by name/value option pairs such as blksize, tsize and timeout.
+
+DATA packets hold a 2-byte block number, starting at 1, and up to 512 bytes of data (or the negotiated block size); a block shorter than that ends the transfer. Each block is acknowledged by an ACK with the same number before the next is sent. ERROR packets give a 2-byte error code (1 file not found, 2 access violation, and so on) and a zero-terminated message. The data is not encrypted, so a captured transfer can be reassembled in full.
+"""
+carries = []
+
+[[format.specs]]
+document = "RFC 1350"
+title = "The TFTP Protocol (Revision 2)"
+url = "https://www.rfc-editor.org/rfc/rfc1350"
+rfc = 1350
+section = "5"
+
+[[format.specs]]
+document = "RFC 2347"
+title = "TFTP Option Extension"
+url = "https://www.rfc-editor.org/rfc/rfc2347"
+rfc = 2347
+
+[[format.fields]]
+name = "Opcode"
+meaning = "1 RRQ, 2 WRQ, 3 DATA, 4 ACK, 5 ERROR, 6 OACK."
+section = "5"
+
+[[format.fields]]
+name = "Filename"
+aliases = ["File name"]
+meaning = "Requests: the file to read or write, zero-terminated."
+section = "5"
+
+[[format.fields]]
+name = "Mode"
+meaning = "Requests: \"netascii\" (text with CR LF line endings), \"octet\" (binary) or the obsolete \"mail\", zero-terminated."
+section = "5"
+
+[[format.fields]]
+name = "Block #"
+aliases = ["Block number", "Block"]
+meaning = "DATA and ACK: the block number, starting at 1 and wrapping at 65535 on large transfers."
+section = "5"
+
+[[format.fields]]
+name = "Data"
+meaning = "Up to 512 bytes (or the negotiated blksize); a shorter block is the last."
+section = "5"
+
+[[format.fields]]
+name = "ErrorCode"
+aliases = ["Error code"]
+meaning = "0 not defined, 1 file not found, 2 access violation, 3 disk full, 4 illegal operation, 5 unknown transfer ID, 6 file already exists, 7 no such user, 8 option negotiation refused."
+section = "5"
+
+[[format.fields]]
+name = "ErrMsg"
+aliases = ["Error message"]
+meaning = "Human-readable error text, zero-terminated."
+section = "5"
+
+[[format]]
+id = "stun"
+name = "Session Traversal Utilities for NAT"
+keys = ["STUN", "Session Traversal Utilities for NAT", "TURN", "Traversal Using Relays around NAT", "STUN/TURN"]
+summary = "Lets a host behind NAT learn its public address and keep NAT bindings open, and (with TURN) relay media through a server; the connectivity machinery of WebRTC, VoIP and video calling."
+group = "Addressing and naming"
+ports = ["udp/3478", "tcp/3478", "udp/5349", "tcp/5349"]
+organisation = """
+STUN and TURN servers listen on port 3478 over UDP and TCP and 5349 for TLS or DTLS, but in WebRTC the same messages are multiplexed onto the media ports, distinguished by their first byte (0 to 3 for STUN, 20 to 63 DTLS, 128 to 191 RTP). Every STUN message has a 20-byte header: a 2-byte message type whose top two bits are zero, a 2-byte length of the attributes, the 4-byte magic cookie 0x2112A442 and a 12-byte transaction ID.
+
+The message type packs a method and a class: 0x0001 is a Binding request, 0x0101 a Binding success response and 0x0111 an error response; TURN adds Allocate (method 3), Refresh (4), Send and Data indications (6, 7), CreatePermission (8) and ChannelBind (9). Attributes follow as 2-byte type, 2-byte length and value padded to a multiple of four bytes.
+
+Common attributes are XOR-MAPPED-ADDRESS (0x0020), the client's public address XORed with the magic cookie so NATs do not rewrite it; USERNAME (0x0006), MESSAGE-INTEGRITY (0x0008, an HMAC), ERROR-CODE (0x0009), SOFTWARE (0x8022) and FINGERPRINT (0x8028, a CRC-32). TURN ChannelData messages are not STUN messages: they begin with a 2-byte channel number from 0x4000 to 0x4FFF and a 2-byte length, followed by the relayed data.
+"""
+carries = []
+
+[[format.specs]]
+document = "RFC 8489"
+title = "Session Traversal Utilities for NAT (STUN)"
+url = "https://www.rfc-editor.org/rfc/rfc8489"
+rfc = 8489
+section = "5"
+
+[[format.specs]]
+document = "RFC 8656"
+title = "Traversal Using Relays around NAT (TURN): Relay Extensions to Session Traversal Utilities for NAT (STUN)"
+url = "https://www.rfc-editor.org/rfc/rfc8656"
+rfc = 8656
+section = "12.4"
+
+[[format.fields]]
+name = "Message Type"
+aliases = ["Message type"]
+meaning = "Method and class: 0x0001 Binding request, 0x0101 Binding success, 0x0111 Binding error; TURN 0x0003 Allocate request, 0x0103 Allocate success, 0x0016 Send indication, 0x0017 Data indication."
+section = "5"
+
+[[format.fields]]
+name = "Message Length"
+aliases = ["Message length", "Length"]
+meaning = "Bytes of attributes after the 20-byte header; always a multiple of four."
+section = "5"
+
+[[format.fields]]
+name = "Magic Cookie"
+aliases = ["Magic cookie"]
+meaning = "Always 0x2112A442; distinguishes STUN from other traffic on the same port."
+section = "5"
+
+[[format.fields]]
+name = "Transaction ID"
+meaning = "12 random bytes chosen by the client, matching responses to requests."
+section = "5"
+
+[[format.fields]]
+name = "XOR-MAPPED-ADDRESS"
+meaning = "The client's public address and port as the server saw them, XORed with the magic cookie (and transaction ID for IPv6)."
+section = "14.2"
+
+[[format.fields]]
+name = "MESSAGE-INTEGRITY"
+meaning = "HMAC-SHA1 over the message up to this attribute, keyed with the short- or long-term credential."
+section = "14.5"
+
+[[format.fields]]
+name = "FINGERPRINT"
+meaning = "CRC-32 of the message XORed with 0x5354554E, helping receivers tell STUN apart from other protocols on the port."
+section = "14.7"
+
+[[format.fields]]
+name = "Channel Number"
+aliases = ["ChannelData"]
+meaning = "TURN ChannelData: a channel number 0x4000 to 0x4FFF bound with ChannelBind, then a 2-byte length and the relayed data."
