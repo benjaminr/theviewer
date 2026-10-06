@@ -159,6 +159,7 @@ fn summary(payload: &Payload, document_len: usize) -> String {
         Payload::RegionsMapped(mapped) => format!("{} regions", mapped.regions.len()),
         Payload::RecordWidthEstimated(estimate) => format!("{} bytes (score {:.2})", estimate.width, estimate.score),
         Payload::FramesDefined(defined) => format!("{} frames: {}", defined.total, defined.origin),
+        Payload::FieldsGuessed(guessed) => format!("{} fields{}", guessed.fields.len(), if guessed.template.is_some() { ", with a template" } else { "" }),
         Payload::ProtocolIdentified(identified) => format!("{}: {}", identified.protocol, identified.how),
         Payload::ReferenceFocus(focus) => focus.key.clone(),
         Payload::JobStarted(started) => started.title.clone(),

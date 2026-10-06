@@ -411,6 +411,15 @@ impl Bus {
             .max_by_key(|(fact, _)| fact.id)
     }
 
+    /// The newest fact on `T`'s topic about `document` from `producer`.
+    pub fn latest_from<T: TopicPayload>(&self, document: &str, producer: &str) -> Option<(&Arc<Message>, &T)> {
+        self.retained
+            .values()
+            .filter(|fact| fact.draft.document.as_deref() == Some(document) && fact.draft.producer == producer)
+            .filter_map(|fact| fact.payload_as::<T>().map(|payload| (fact, payload)))
+            .max_by_key(|(fact, _)| fact.id)
+    }
+
     /// Facts on `topic` about `document` whose span overlaps
     /// `[start, start + len)`.
     pub fn facts_in(&self, topic: Topic, document: &str, start: usize, len: usize) -> Vec<&Arc<Message>> {

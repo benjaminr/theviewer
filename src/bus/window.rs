@@ -108,6 +108,7 @@ pub struct Reaction {
 pub fn builtin_reactions() -> Vec<Reaction> {
     vec![
         Reaction { topic: Topic::SelectionChanged, name: "Packets follows the selection", react: crate::panel_packets::follow_selection },
+        Reaction { topic: Topic::JobFinished, name: "Packets loads the protocol analysis's messages it waited for", react: crate::panel_packets::follow_protocol_job },
         Reaction { topic: Topic::ReferenceFocus, name: "Reference shows the format asked for", react: crate::panel_reference::follow_focus },
         Reaction { topic: Topic::DocumentEdited, name: "Tools note the edit and refresh once it settles", react: crate::freshness::note_edit },
         Reaction { topic: Topic::PluginLog, name: "The status bar shows plugin errors", react: show_plugin_error },
@@ -126,10 +127,15 @@ pub struct BusWatch {
 }
 
 impl ViewerApp {
+    /// The id the API and the bus know the shown document by.
+    pub fn document_id(&self) -> String {
+        WINDOW_DOCUMENT_ID.to_string()
+    }
+
     /// A message from `producer` about the window's document as it is now.
     /// While a plugin's handler runs, what it causes says so.
     pub fn draft(&self, producer: impl Into<String>, payload: Payload) -> Draft {
-        let draft = Draft::new(producer, payload).about(WINDOW_DOCUMENT_ID, self.document.version());
+        let draft = Draft::new(producer, payload).about(self.document_id(), self.document.version());
         match self.plugin_inbox.handling {
             Some(cause) => draft.caused_by(cause),
             None => draft,

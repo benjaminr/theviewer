@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::document::Edit;
 use crate::plugin::{Field, Finding};
+use crate::protocol::{Framing, MessageField};
 use crate::selection::Selection;
 
 /// Whether a topic's messages are kept.
@@ -103,6 +104,7 @@ topics! {
     RegionsMapped(RegionsMapped) = "regions.mapped", Fact, "The file split into regions of one kind, from the report.";
     RecordWidthEstimated(RecordWidthEstimated) = "record_width.estimated", Fact, "The length of the records the data repeats in, from the period scan.";
     FramesDefined(FramesDefined) = "frames.defined", Fact, "Message or packet boundaries: from the protocol framing, a capture or the packet viewer's splitting rules.";
+    FieldsGuessed(FieldsGuessed) = "fields.guessed", Fact, "The fields the protocol analysis guessed in a stream's messages (constants, types, sequence numbers, lengths, checksums), with a template for them.";
     ProtocolIdentified(ProtocolIdentified) = "protocol.identified", Fact, "The protocol a set of frames or a payload is, and how that was decided.";
     ReferenceFocus(ReferenceFocus) = "reference.focus", Event, "A tool asks the Reference tab to show a format or protocol.";
     JobStarted(JobStarted) = "job.started", Event, "Background work started.";
@@ -196,6 +198,7 @@ impl Payload {
             | Payload::DocumentEdited(_)
             | Payload::SelectionChanged(_)
             | Payload::RecordWidthEstimated(_)
+            | Payload::FieldsGuessed(_)
             | Payload::ReferenceFocus(_)
             | Payload::JobStarted(_)
             | Payload::JobFinished(_)
@@ -320,6 +323,11 @@ pub struct FramesDefined {
     pub total: usize,
     /// How they were found, such as "length prefix u16be" or "pcap capture at 0x40".
     pub origin: String,
+    /// The framing that cut them from the message's span, when one did, so
+    /// a reader can split the span again (after an edit, or past the
+    /// frames listed).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub framing: Option<Framing>,
 }
 
 impl FramesDefined {
@@ -333,8 +341,24 @@ impl FramesDefined {
                 frames.push(FrameSpan { start, len });
             }
         }
-        FramesDefined { frames, total, origin: origin.into() }
+        FramesDefined { frames, total, origin: origin.into(), framing: None }
     }
+
+    /// The same frames, cut by `framing`.
+    pub fn with_framing(mut self, framing: Framing) -> Self {
+        self.framing = Some(framing);
+        self
+    }
+}
+
+/// Fields guessed in a stream's messages.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct FieldsGuessed {
+    /// Each field's position in a message (from its end for a trailer),
+    /// what it seems to be and example values.
+    pub fields: Vec<MessageField>,
+    /// A binary template reading the fields, when they make one.
+    pub template: Option<String>,
 }
 
 /// A protocol, and what it was found for.

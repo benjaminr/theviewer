@@ -267,6 +267,7 @@ impl ViewerApp {
 
     /// Collect background results and service live sources. Called every frame.
     pub fn poll_workbench(&mut self, ctx: &Context) {
+        crate::analysis_tools::poll_protocol(self);
         let pending = std::mem::take(&mut self.bench.pending);
         for item in pending {
             match item {
@@ -298,7 +299,7 @@ impl ViewerApp {
                 },
             }
         }
-        if !self.bench.pending.is_empty() {
+        if !self.bench.pending.is_empty() || self.bench.tools.protocol_pending() {
             ctx.request_repaint_after(Duration::from_millis(80));
         }
 

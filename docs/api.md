@@ -952,6 +952,7 @@ What tools, panels and plugins publish on the workspace bus. Facts are kept, the
 | [`regions.mapped`](#regionsmapped) | fact | The file split into regions of one kind, from the report. |
 | [`record_width.estimated`](#record_widthestimated) | fact | The length of the records the data repeats in, from the period scan. |
 | [`frames.defined`](#framesdefined) | fact | Message or packet boundaries: from the protocol framing, a capture or the packet viewer's splitting rules. |
+| [`fields.guessed`](#fieldsguessed) | fact | The fields the protocol analysis guessed in a stream's messages (constants, types, sequence numbers, lengths, checksums), with a template for them. |
 | [`protocol.identified`](#protocolidentified) | fact | The protocol a set of frames or a payload is, and how that was decided. |
 | [`reference.focus`](#referencefocus) | event | A tool asks the Reference tab to show a format or protocol. |
 | [`job.started`](#jobstarted) | event | Background work started. |
@@ -1048,8 +1049,18 @@ Message or packet boundaries: from the protocol framing, a capture or the packet
 | Payload field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `frames` | array of FrameSpan | yes | The first [`MOST_FRAMES`] frames, in document order. |
+| `framing` | Framing | no | The framing that cut them from the message's span, when one did, so a reader can split the span again (after an edit, or past the frames listed). |
 | `origin` | string | yes | How they were found, such as "length prefix u16be" or "pcap capture at 0x40". |
 | `total` | integer | yes | How many frames there are in all. |
+
+### fields.guessed
+
+The fields the protocol analysis guessed in a stream's messages (constants, types, sequence numbers, lengths, checksums), with a template for them.
+
+| Payload field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `fields` | array of MessageField | yes | Each field's position in a message (from its end for a trailer), what it seems to be and example values. |
+| `template` | string | no | A binary template reading the fields, when they make one. |
 
 ### protocol.identified
 

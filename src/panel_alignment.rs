@@ -10,7 +10,9 @@ use std::time::Duration;
 use eframe::egui::{self, Align2, Color32, FontId, Rect, RichText, Sense, Stroke, Ui, vec2};
 
 use crate::alignment::{self, AlignmentOptions, AlignmentReport, ClusterReport, ColumnClass};
+use crate::analysis_tools::PROTOCOL_PRODUCER;
 use crate::app::ViewerApp;
+use crate::bus::topics::{FrameSpan, FramesDefined};
 use crate::plugin::Category;
 use crate::theme;
 
@@ -130,11 +132,16 @@ fn poll(state: &mut AlignmentState) {
     }
 }
 
+/// The messages the protocol analysis published on `frames.defined`, if it
+/// found any.
+fn protocol_frames(app: &ViewerApp) -> Option<FramesDefined> {
+    let (_, frames) = app.bus.latest_from::<FramesDefined>(&app.document_id(), PROTOCOL_PRODUCER)?;
+    (!frames.frames.is_empty()).then(|| frames.clone())
+}
+
 fn source_hint(app: &ViewerApp) -> String {
-    if let Some(view) = &app.bench.tools.protocol
-        && !view.report.messages.is_empty()
-    {
-        return format!("Uses the {} messages from the protocol analysis.", view.report.messages.len());
+    if let Some(frames) = protocol_frames(app) {
+        return format!("Uses the {} messages from the protocol analysis.", frames.total);
     }
     match app.selection() {
         Some(_) => format!("Uses the selection, one message per raster row of {} bytes.", app.shape.row_stride()),
@@ -163,16 +170,11 @@ fn start_alignment(state: &mut AlignmentState, app: &mut ViewerApp) {
 /// The protocol analysis's messages if there are any, else the selection cut
 /// into raster rows.
 fn gather_messages(app: &mut ViewerApp) -> Result<GatheredMessages, String> {
-    let framed: Option<(usize, Vec<(usize, usize)>)> = app.bench.tools.protocol.as_ref().map(|view| {
-        let messages = view.report.messages.iter().take(alignment::MAX_CLUSTERED_MESSAGES).map(|m| (m.offset, m.len)).collect();
-        (view.base, messages)
-    });
-    if let Some((base, messages)) = framed
-        && !messages.is_empty()
-    {
-        let offsets: Vec<usize> = messages.iter().map(|&(offset, _)| base + offset).collect();
-        let lengths: Vec<usize> = messages.iter().map(|&(_, len)| len).collect();
-        let bytes = messages.iter().map(|&(offset, len)| app.document.read_range(base + offset, len.min(READ_LIMIT))).collect();
+    if let Some(frames) = protocol_frames(app) {
+        let messages: Vec<FrameSpan> = frames.frames.into_iter().take(alignment::MAX_CLUSTERED_MESSAGES).collect();
+        let offsets: Vec<usize> = messages.iter().map(|frame| frame.start).collect();
+        let lengths: Vec<usize> = messages.iter().map(|frame| frame.len).collect();
+        let bytes = messages.iter().map(|frame| app.document.read_range(frame.start, frame.len.min(READ_LIMIT))).collect();
         return Ok(GatheredMessages { source: "protocol analysis".to_string(), offsets, lengths, bytes });
     }
     let (start, len) = app.selection().ok_or("Run the protocol analysis first, or select the messages (one per raster row).")?;
@@ -314,4 +316,24 @@ fn show_grid(cluster: &ClusterReport, offsets: &[usize], jump: &mut Option<usize
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::Launch;
+    use crate::bus::Payload;
+
+    #[test]
+    fn alignment_takes_the_messages_the_protocol_analysis_published() {
+        let mut app = ViewerApp::new(Launch::default());
+        app.open_bytes((0..64u8).collect(), "messages.bin".to_string());
+        let frames = FramesDefined::new([(0, 8), (8, 8), (16, 8)].into_iter(), "fixed-size messages of 8 bytes");
+        app.publish(PROTOCOL_PRODUCER, Payload::FramesDefined(frames));
+        app.run_bus();
+        assert_eq!(source_hint(&app), "Uses the 3 messages from the protocol analysis.");
+        let gathered = gather_messages(&mut app).expect("the published messages");
+        assert_eq!(gathered.offsets, [0, 8, 16]);
+        assert_eq!(gathered.bytes[1], (8..16u8).collect::<Vec<u8>>());
+    }
 }

@@ -33,7 +33,8 @@ use eframe::egui::{self, RichText, Ui};
 use crate::analysis_tools;
 use crate::api::workspace::WINDOW_DOCUMENT_ID;
 use crate::app::ViewerApp;
-use crate::bus::topics::{FramesDefined, ProtocolIdentified};
+use crate::analysis_tools::PROTOCOL_PRODUCER;
+use crate::bus::topics::{FieldsGuessed, FramesDefined, ProtocolIdentified};
 use crate::bus::window::job_finished;
 use crate::bus::{Draft, Message, Payload, Publisher};
 use crate::dock::DockTab;
@@ -542,34 +543,71 @@ pub fn load_capture_if_empty(app: &mut ViewerApp) {
 // Sources
 // ---------------------------------------------------------------------------
 
+/// Load the messages the protocol analysis published on `frames.defined`,
+/// with the fields it guessed, or start the analysis and wait for it.
 fn load_from_protocol(state: &mut PacketsState, app: &mut ViewerApp) {
-    analysis_tools::poll_protocol(app);
-    let Some(protocol) = &app.bench.tools.protocol else {
-        if !app.bench.tools.protocol_pending() {
+    let document = app.document_id();
+    let framed = app.bus.latest_from::<FramesDefined>(&document, PROTOCOL_PRODUCER).map(|(fact, frames)| (fact.draft.span, frames.clone()));
+    let Some((span, frames)) = framed else {
+        if !analysis_tools::protocol_running(app) {
             analysis_tools::start_protocol(app);
         }
         state.awaiting_protocol = true;
         state.show_note("Finding the message framing…", false);
         return;
     };
-    let base = protocol.base;
-    let mut set = match sources::from_messages(&protocol.report.messages, base, &format!("protocol messages at {base:#x}")) {
+    state.awaiting_protocol = false;
+    let set = match protocol_messages(app, span, &frames) {
         Ok(set) => set,
         Err(_) => {
-            state.awaiting_protocol = false;
             state.show_note("The protocol analysis found no messages to take packets from.", true);
             return;
         }
     };
-    if let Some(candidate) = &protocol.report.framing {
-        set.description = format!("{} messages, {}", set.len(), candidate.framing.describe());
-        set.recipe = Recipe::Framing { start: base, len: protocol.bytes().len(), framing: candidate.framing.clone() };
-    }
-    let guesses = protocol.report.fields.clone();
-    let suggestion = crate::protocol::to_template(&protocol.report);
+    let guessed = app.bus.latest_from::<FieldsGuessed>(&document, PROTOCOL_PRODUCER).map(|(_, guessed)| guessed.clone());
     state.load(set);
-    state.raw.guesses = guesses;
-    state.suggested_template = suggestion;
+    if let Some(guessed) = guessed {
+        state.raw.guesses = guessed.fields;
+        state.suggested_template = guessed.template;
+    }
+}
+
+/// One packet per message the protocol analysis framed: split again from
+/// the document with its framing, so the set follows edits, or else the
+/// frames as listed.
+fn protocol_messages(app: &mut ViewerApp, span: Option<crate::bus::Span>, frames: &FramesDefined) -> Result<PacketSet, sources::SourceError> {
+    let base = span.map_or(0, |span| span.start);
+    let name = format!("protocol messages at {base:#x}");
+    if let (Some(framing), Some(span)) = (&frames.framing, span) {
+        let bytes = app.document.read_range(span.start, span.len);
+        let mut set = sources::from_framing(&bytes, span.start, framing)?;
+        set.name = name;
+        return Ok(set);
+    }
+    let offsets: Vec<usize> = frames.frames.iter().map(|frame| frame.start).collect();
+    let lengths: Vec<usize> = frames.frames.iter().map(|frame| frame.len).collect();
+    let mut set = sources::from_cluster(&offsets, &lengths, &(0..offsets.len()).collect::<Vec<_>>(), &name)?;
+    set.description = format!("{} messages, {}", set.len(), frames.origin);
+    Ok(set)
+}
+
+/// When a protocol analysis the viewer waits for finishes, load its
+/// messages, which it published before saying it was done. Runs whether or
+/// not the panel is showing.
+pub fn follow_protocol_job(app: &mut ViewerApp, message: &Arc<Message>) {
+    if message.producer() != PROTOCOL_PRODUCER || !app.bench.panels.packets.awaiting_protocol {
+        return;
+    }
+    panels::with(app, |panels| &mut panels.packets, |state, app| {
+        state.awaiting_protocol = false;
+        state.note = None;
+        let framed = app.bus.latest_from::<FramesDefined>(&app.document_id(), PROTOCOL_PRODUCER).is_some();
+        if framed {
+            load_from_protocol(state, app);
+        } else {
+            state.show_note("The protocol analysis stopped without a result.", true);
+        }
+    });
 }
 
 /// Whether a finding is a capture the packet viewer can load.
@@ -1027,23 +1065,6 @@ pub(crate) fn select_in_document(app: &mut ViewerApp, start: usize, len: usize, 
     claim_main_selection(app);
 }
 
-fn poll_protocol_wait(state: &mut PacketsState, app: &mut ViewerApp, ctx: &egui::Context) {
-    if !state.awaiting_protocol {
-        return;
-    }
-    analysis_tools::poll_protocol(app);
-    if app.bench.tools.protocol.is_some() {
-        state.awaiting_protocol = false;
-        state.note = None;
-        load_from_protocol(state, app);
-    } else if !app.bench.tools.protocol_pending() {
-        state.awaiting_protocol = false;
-        state.show_note("The protocol analysis stopped without a result.", true);
-    } else {
-        ctx.request_repaint_after(POLL_INTERVAL);
-    }
-}
-
 fn poll_captures(state: &mut PacketsState, ctx: &egui::Context) {
     let Some(receiver) = &state.captures_pending else { return };
     match receiver.try_recv() {
@@ -1114,7 +1135,6 @@ pub fn show_packets(state: &mut PacketsState, app: &mut ViewerApp, ui: &mut Ui) 
     let ctx = ui.ctx().clone();
     poll_dissection(state, &ctx);
     poll_captures(state, &ctx);
-    poll_protocol_wait(state, app, &ctx);
     tshark_view::poll(state, app, &ctx);
     if let Some(set) = state.incoming.take() {
         start_dissection(state, app, set);
@@ -1955,5 +1975,38 @@ mod tests {
         let rows = harness.state().0.rows();
         assert!(rows[1].summary.info.contains("→ 123") && rows[2].summary.info.contains("→ 123"), "{:?}", rows.iter().map(|r| &r.summary.info).collect::<Vec<_>>());
         assert!(rows[0].summary.protocol == "DNS", "unselected packets are untouched");
+    }
+
+    /// Messages that each start with a sync word, a sequence number and a
+    /// type, which the protocol analysis frames.
+    fn sync_word_stream(messages: u8) -> Vec<u8> {
+        let mut stream = Vec::new();
+        for index in 0..messages {
+            stream.extend_from_slice(&[0x7E, 0x7E, index, index % 3, 0x10, 0x20, 0x30, index ^ 0x5A]);
+        }
+        stream
+    }
+
+    #[test]
+    fn the_protocol_analysis_s_messages_reach_the_hidden_packet_viewer_through_the_bus() {
+        let mut app = ViewerApp::new(Launch::default());
+        app.open_bytes(sync_word_stream(40), "stream.bin".to_string());
+        app.run_bus();
+        open_protocol_messages(&mut app);
+        assert!(app.bench.panels.packets.awaiting_protocol, "the analysis is started and waited for");
+        let started = Instant::now();
+        while app.bench.panels.packets.awaiting_protocol && started.elapsed() < JOB_TIMEOUT {
+            thread::sleep(POLL_INTERVAL / 5);
+            app.run_bus();
+        }
+        let (_, frames) = app.bus.latest_from::<FramesDefined>(&app.document_id(), PROTOCOL_PRODUCER).expect("the analysis published its messages");
+        assert!(frames.framing.is_some(), "with the framing that cut them");
+        let total = frames.total;
+        let state = &app.bench.panels.packets;
+        assert!(state.note.as_ref().is_none_or(|note| !note.is_error));
+        let set = state.incoming.as_ref().expect("the messages wait to be dissected");
+        assert_eq!(set.len(), total);
+        assert!(matches!(set.recipe, Recipe::Framing { .. }), "split again from the document after edits");
+        assert!(!state.raw.guesses.is_empty(), "with the fields the analysis guessed");
     }
 }

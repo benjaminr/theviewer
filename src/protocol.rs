@@ -18,13 +18,23 @@ use std::collections::HashMap;
 use crate::analysis::{scan_periods, shannon_entropy};
 use crate::checksums;
 
-/// How a stream is cut into messages.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// How a stream is cut into messages. In JSON the kind is named by `kind`
+/// and bytes are hex strings.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Framing {
     /// Messages are separated by these bytes (which are not part of them).
-    Delimiter { bytes: Vec<u8> },
+    Delimiter {
+        #[serde(with = "crate::ops::hex_bytes")]
+        #[schemars(with = "String")]
+        bytes: Vec<u8>,
+    },
     /// A marker that starts every message.
-    SyncWord { bytes: Vec<u8> },
+    SyncWord {
+        #[serde(with = "crate::ops::hex_bytes")]
+        #[schemars(with = "String")]
+        bytes: Vec<u8>,
+    },
     /// A length field at `offset` gives each message's length:
     /// `message length = field value + adjustment`.
     LengthPrefixed { offset: usize, width: usize, big_endian: bool, adjustment: i64 },
@@ -442,7 +452,7 @@ pub fn split(bytes: &[u8], framing: &Framing, max_messages: usize) -> Vec<Messag
 // ---------------------------------------------------------------------------
 
 /// A field found by aligning the messages.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct MessageField {
     /// Offset within the message; counted from the end when `from_end`.
     pub start: usize,
