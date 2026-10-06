@@ -39,7 +39,7 @@ pub const CHARACTERISE_REQUEST: &str = "Characterise this file: what is it, how 
 
 const SYSTEM_PROMPT: &str = "You are the analysis assistant inside theviewer, a binary file viewer and editor used for reverse engineering, firmware analysis and data recovery. The user is looking at a file and asks you about it.
 
-Each question comes with a snapshot of what the user sees: the file's name and size, the cursor and selection, nearby findings from the app's detectors, the parsed structure at the cursor, and a hex dump around the cursor. Use the tools to look further: read bytes anywhere, search, list findings in a range, parse the structure at an offset, map the whole file, split it into typed segments, measure a range's statistics, compressibility or text encoding, or test a range for machine code. Look before you conclude; base claims on bytes you have seen, and say how sure you are when something is a guess.
+Each question comes with a snapshot of what the user sees: the file's name and size, the cursor and selection, nearby findings from the app's detectors, the parsed structure at the cursor, reference notes on the formats enclosing the cursor, and a hex dump around the cursor. Use the tools to look further: read bytes anywhere, search, list findings in a range, parse the structure at an offset, map the whole file, split it into typed segments, measure a range's statistics, compressibility or text encoding, test a range for machine code, or read the reference notes on a format. When you explain a field or layout, cite the specification and section the notes give (for example RFC 791 §3.1). Look before you conclude; base claims on bytes you have seen, and say how sure you are when something is a guess.
 
 Write offsets as 0x-prefixed hexadecimal (for example 0x1A40); the app turns them into links that jump to that place in the file, so cite the offset for every specific claim.
 
@@ -86,6 +86,8 @@ pub struct FileContext {
     pub structure: Option<String>,
     pub hex_dump: String,
     pub report: Option<String>,
+    /// Reference notes on the formats enclosing the cursor, innermost first.
+    pub references: Vec<String>,
 }
 
 impl FileContext {
@@ -102,6 +104,12 @@ impl FileContext {
         }
         if let Some(structure) = &self.structure {
             text.push_str(&format!("\nStructure at the cursor:\n{structure}\n"));
+        }
+        if !self.references.is_empty() {
+            text.push_str("\nReference notes on the formats at the cursor:\n");
+            for notes in &self.references {
+                text.push_str(&format!("\n{}\n", notes.trim_end()));
+            }
         }
         if !self.findings.is_empty() {
             text.push_str("\nFindings near the cursor:\n");
@@ -238,6 +246,18 @@ pub fn tool_definitions() -> Value {
             }
         },
         {
+            "name": "format_reference",
+            "description": "Look up the app's reference notes on a file format or protocol: how its bytes are organised, what each field means, and which RFC or specification defines it (with section numbers). Pass an id such as \"ipv4\", \"png\" or \"zip\", a finding id, or a packet layer name; when nothing matches, the known ids are listed.",
+            "strict": true,
+            "eager_input_streaming": true,
+            "input_schema": {
+                "type": "object",
+                "properties": { "name": { "type": "string", "description": "Format id, finding id or layer name, such as \"udp\" or \"User Datagram Protocol\"." } },
+                "required": ["name"],
+                "additionalProperties": false
+            }
+        },
+        {
             "name": "identify_processor",
             "description": "Test whether a range is machine code, and for which processor (x86, ARM, Thumb, AArch64, RISC-V, MIPS, PowerPC), by disassembling samples for each architecture. Returns ranked candidates with confidence and reasons, or says the range looks like data.",
             "strict": true,
@@ -271,6 +291,8 @@ pub enum ToolCall {
     SegmentFile,
     Compressibility { start: usize, length: usize },
     TextEncoding { start: usize, length: usize },
+    /// The reference notes on a format, by id or name.
+    FormatReference { name: String },
 }
 
 impl ToolCall {
@@ -302,6 +324,10 @@ impl ToolCall {
             "segment_file" => Ok(ToolCall::SegmentFile),
             "compressibility" => Ok(ToolCall::Compressibility { start: number("start")?, length: number("length")? }),
             "text_encoding" => Ok(ToolCall::TextEncoding { start: number("start")?, length: number("length")? }),
+            "format_reference" => {
+                let name = object.get("name").and_then(Value::as_str).ok_or("'name' must be a string")?.to_string();
+                Ok(ToolCall::FormatReference { name })
+            }
             other => Err(format!("unknown tool '{other}'")),
         }
     }
@@ -319,6 +345,7 @@ impl ToolCall {
             ToolCall::SegmentFile => "segment the file".to_string(),
             ToolCall::Compressibility { start, length } => format!("try compressing {start:#x}..{:#x}", start + length),
             ToolCall::TextEncoding { start, length } => format!("identify the text encoding of {start:#x}..{:#x}", start + length),
+            ToolCall::FormatReference { name } => format!("read the reference notes on {name}"),
         }
     }
 }
@@ -871,6 +898,11 @@ mod tests {
         assert!(ToolCall::parse("read_bytes", &json!({})).is_err(), "truncated eager input is rejected");
         assert!(ToolCall::parse("search", &json!({"query": "x", "mode": "regex"})).is_err());
         assert!(ToolCall::parse("format_disk", &json!({})).is_err());
+        assert_eq!(
+            ToolCall::parse("format_reference", &json!({"name": "udp"})).unwrap(),
+            ToolCall::FormatReference { name: "udp".into() }
+        );
+        assert!(ToolCall::parse("format_reference", &json!({"name": 4})).is_err());
     }
 
     #[test]
@@ -911,9 +943,11 @@ mod tests {
             selection: Some((0x10, 4)),
             findings: vec!["0x0: PNG image".into()],
             hex_dump: hex_dump(b"\x89PNG\r\n\x1a\nhello", 0x100),
+            references: vec!["User Datagram Protocol\nDatagrams between ports.\n".into()],
             ..Default::default()
         };
         let text = context.render();
+        assert!(text.contains("Reference notes on the formats at the cursor:\n\nUser Datagram Protocol\nDatagrams between ports.\n"));
         assert!(text.contains("fw.bin (4096 bytes)") && text.contains("Selection: 0x10..0x14") && text.contains("- 0x0: PNG image"));
         assert!(text.contains("00000100  89 50 4e 47") && text.contains(".PNG....hello"));
         assert_eq!(truncate("abcdef", 3), "abc\n[truncated: the result was longer than 3 characters]");

@@ -866,6 +866,7 @@ impl ViewerApp {
             structure,
             hex_dump: hex,
             report,
+            references: crate::panel_reference::notes_for_assistant(&crate::panel_reference::stack_at_cursor(self)),
         }
     }
 
@@ -984,6 +985,7 @@ impl ViewerApp {
                 lines.extend(report.languages.iter().take(2).map(|guess| format!("language {}: {:.2}", guess.language.label(), guess.confidence)));
                 if lines.is_empty() { "This does not look like text.".to_string() } else { lines.join("\n") }
             }
+            ToolCall::FormatReference { name } => crate::reference::library().describe_for_assistant(name),
             ToolCall::IdentifyProcessor { start, length } => {
                 let bytes = self.document.read_range(*start, (*length).min(ASK_RANGE_LIMIT));
                 let report = crate::cpu_detect::identify_architecture(&bytes, *start);

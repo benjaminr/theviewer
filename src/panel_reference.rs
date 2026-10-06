@@ -246,6 +246,41 @@ pub fn stack_at_cursor(app: &mut ViewerApp) -> Vec<StackEntry> {
     build_stack(reference::library(), &findings, packet.as_ref(), position)
 }
 
+/// Most reference entries sent to the assistant with a question, and most
+/// characters of them in all.
+const ASSISTANT_NOTES: usize = 3;
+const ASSISTANT_NOTES_CHARS: usize = 6 * 1024;
+
+/// The notes on the formats in `stack` as plain text for the assistant:
+/// innermost first, each format once, at most [`ASSISTANT_NOTES`] of them
+/// and [`ASSISTANT_NOTES_CHARS`] characters in all (the last is cut short).
+pub fn notes_for_assistant(stack: &[StackEntry]) -> Vec<String> {
+    let mut seen = Vec::new();
+    let mut notes = Vec::new();
+    let mut room = ASSISTANT_NOTES_CHARS;
+    for entry in stack.iter().rev() {
+        let Some(reference) = entry.reference() else { continue };
+        if seen.contains(&reference.id) || notes.len() == ASSISTANT_NOTES || room == 0 {
+            continue;
+        }
+        seen.push(reference.id.clone());
+        let mut text = reference.to_plain_text();
+        if text.len() > room {
+            let mut cut = room;
+            while !text.is_char_boundary(cut) {
+                cut -= 1;
+            }
+            text.truncate(cut);
+            text.push_str("\n[notes cut short]");
+            room = 0;
+        } else {
+            room -= text.len();
+        }
+        notes.push(text);
+    }
+    notes
+}
+
 /// Open the Reference tab on the format known by `key` (a finding id or
 /// layer name), once the cursor is inside it.
 pub fn open_reference_for(app: &mut ViewerApp, key: &str) {
@@ -917,6 +952,23 @@ organisation = "A file header, then records."
         assert_eq!(stack.len(), 1, "{stack:?}");
         assert_eq!(stack[0].fields.len(), 1, "the entry with fields is kept");
         assert!(build_stack(&library, &[capture_finding()], None, 99).is_empty());
+    }
+
+    #[test]
+    fn the_assistant_is_sent_each_format_with_notes_once_innermost_first() {
+        let entry = |key: &str, reference_id: Option<&str>| StackEntry {
+            label: key.to_string(),
+            key: key.to_string(),
+            reference_id: reference_id.map(str::to_string),
+            start: 0,
+            len: 8,
+            fields: Vec::new(),
+        };
+        let stack = vec![entry("Ethernet II", None), entry("udp", Some("udp")), entry("User Datagram Protocol", Some("udp"))];
+        let notes = notes_for_assistant(&stack);
+        assert_eq!(notes.len(), 1);
+        assert!(notes[0].starts_with("User Datagram Protocol\n"), "{}", notes[0]);
+        assert!(notes[0].len() <= ASSISTANT_NOTES_CHARS);
     }
 
     #[test]
