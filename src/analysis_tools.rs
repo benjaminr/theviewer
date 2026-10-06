@@ -7,6 +7,9 @@ use std::thread;
 use eframe::egui::{self, Color32, ColorImage, Rect, RichText, Sense, Stroke, TextureHandle, TextureOptions, Ui, pos2, vec2};
 
 use crate::app::ViewerApp;
+use crate::bus::Payload;
+use crate::bus::topics::{FrameSpan, FramesDefined, ProtocolIdentified};
+use crate::bus::window::job_finished;
 use crate::columns::{self, ColumnKind, ColumnProfile, FieldGuess};
 use crate::packets;
 use crate::plugin::{Category, Finding};
@@ -239,9 +242,12 @@ pub fn start_protocol(app: &mut ViewerApp) {
     let (start, len) = app.selection().unwrap_or((0, app.document.len()));
     let bytes = app.document.read_range(start, len.min(PROTOCOL_LIMIT));
     let (sender, receiver) = mpsc::channel();
+    let job = app.publish_job_started("protocol", "Protocol analysis");
+    let publisher = app.bus.publisher();
     thread::spawn(move || {
         let candidates = protocol::detect_framing(&bytes, 8);
         let report = protocol::analyse(&bytes);
+        publisher.publish(job_finished(&job, "Protocol analysis", report.framing.is_some(), format!("{} messages", report.messages.len())));
         let _ = sender.send((start, bytes, report, candidates));
     });
     app.bench.tools.protocol_pending = Some(receiver);
@@ -254,7 +260,33 @@ pub fn poll_protocol(app: &mut ViewerApp) {
         app.bench.tools.protocol_pending = None;
         app.bench.tools.protocol = Some(ProtocolView::new(base, bytes, report, candidates));
         pin_messages(app);
+        publish_framing(app);
     }
+}
+
+/// What publishes the protocol tool's framing and the protocol its messages read as.
+const PROTOCOL_PRODUCER: &str = "tool:protocol";
+
+/// Publish the messages the framing found, and the protocol they read as.
+fn publish_framing(app: &mut ViewerApp) {
+    let Some(view) = &app.bench.tools.protocol else { return };
+    let base = view.base;
+    let origin = view.report.framing.as_ref().map_or_else(|| "protocol analysis".to_string(), |candidate| candidate.framing.describe());
+    let defined = FramesDefined::new(view.report.messages.iter().map(|message| (base + message.offset, message.len)), origin);
+    let span = (base, view.bytes.len());
+    let detection = view.messages_decode_as;
+    let frames: Vec<FrameSpan> = defined.frames.clone();
+    app.bus.publish(app.draft(PROTOCOL_PRODUCER, Payload::FramesDefined(defined)).span(span.0, span.1));
+    let identified = detection.map(|detection| ProtocolIdentified {
+        protocol: detection.protocol.label().to_string(),
+        how: format!("frame detection read {} of {} sampled messages in full", detection.matched, detection.sampled),
+        frames,
+    });
+    let draft = match identified {
+        Some(identified) => app.draft(PROTOCOL_PRODUCER, Payload::ProtocolIdentified(identified)).span(span.0, span.1),
+        None => app.draft(PROTOCOL_PRODUCER, Payload::ProtocolIdentified(ProtocolIdentified { protocol: String::new(), how: String::new(), frames: Vec::new() })).retraction(),
+    };
+    app.bus.publish(draft);
 }
 
 /// Outline each message on the raster as a protocol finding.
@@ -294,6 +326,7 @@ fn choose_framing(app: &mut ViewerApp, index: usize) {
     view.chosen = index;
     view.detect_message_protocol();
     pin_messages(app);
+    publish_framing(app);
 }
 
 pub fn show_protocol(app: &mut ViewerApp, ui: &mut Ui) {

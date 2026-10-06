@@ -1553,3 +1553,31 @@ fn multi_select_mode_adds_sections_with_plain_drags_and_escape_leaves_it() {
     steps(&mut harness, 2);
     assert!(harness.state().multi_select_mode, "M turns it back on");
 }
+
+#[test]
+fn a_plugin_detector_failing_in_a_background_scan_is_shown_in_the_status_bar() {
+    let mut harness = harness(sample_file("plugin-error.bin"));
+    // Let the first scan, made without the plugin, finish.
+    let started = std::time::Instant::now();
+    while harness.state().pattern_scan_region().is_none() && started.elapsed().as_secs() < 10 {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        harness.step();
+    }
+    let mut host = theviewer::plugins::LuaHost::new();
+    host.load_source("faulty.lua", "theviewer.register_detector{ id='faulty', scan=function(w, ctx) error('cannot read this') end }").unwrap();
+    let host = std::sync::Arc::new(std::sync::Mutex::new(host));
+    harness.state_mut().registry = std::sync::Arc::new(theviewer::app::build_registry_with(Some(&host)));
+    harness.state_mut().plugin_host = Some(host);
+    harness.state_mut().force_rescan();
+
+    // The scan runs on a background thread; its error reaches the bus and the status bar.
+    let started = std::time::Instant::now();
+    while !harness.state().status.contains("faulty.lua") && started.elapsed().as_secs() < 10 {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        harness.step();
+    }
+    let status = harness.state().status.clone();
+    assert!(status.contains("Plugin faulty.lua failed") && status.contains("cannot read this"), "{status}");
+    let logged = harness.state().bus.recent().any(|message| message.topic() == theviewer::bus::Topic::PluginLog && message.producer() == "plugin:faulty.lua");
+    assert!(logged, "the error is on the bus for the Workspace tab");
+}

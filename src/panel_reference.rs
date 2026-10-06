@@ -18,6 +18,8 @@ use std::time::Duration;
 use eframe::egui::{self, Align2, Color32, FontId, Rect, RichText, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
 
 use crate::app::ViewerApp;
+use crate::bus::Payload;
+use crate::bus::topics::ProtocolIdentified;
 use crate::dock::DockTab;
 use crate::packets::{self, Flow, Layer, PacketSet};
 use crate::panel_packets::{self, PacketLayers};
@@ -27,6 +29,8 @@ use crate::theme;
 
 /// How often to look for fetched RFC text.
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
+/// How sure a format guessed from a port or number is.
+const GUESS_CONFIDENCE: f32 = 0.5;
 /// Largest RFC text downloaded.
 const RFC_DOWNLOAD_LIMIT: usize = 4 * 1024 * 1024;
 const RFC_TEXT_HEIGHT: f32 = 320.0;
@@ -602,11 +606,24 @@ fn refresh_stack(state: &mut ReferenceState, app: &mut ViewerApp) {
     let packet = packet_at(app, position, &findings, &mut state.capture);
     state.stack = build_stack(reference::library(), &findings, packet.as_ref(), position);
     state.stack_key = Some(key);
+    publish_guesses(&state.stack, app);
     let wanted = state.wanted.as_deref().and_then(|key| position_of(&state.stack, key));
     if wanted.is_some() {
         state.wanted = None;
     }
     state.chosen = wanted.or_else(|| default_choice(&state.stack));
+}
+
+/// Publish the payloads the stack guessed the format of by their port,
+/// EtherType or IP protocol number, one fact per payload.
+fn publish_guesses(stack: &[StackEntry], app: &ViewerApp) {
+    for entry in stack {
+        let Some(guess) = &entry.guess else { continue };
+        let protocol = entry.reference().map_or_else(|| entry.label.clone(), |notes| notes.name.clone());
+        let identified = ProtocolIdentified { protocol, how: guess.reason.clone(), frames: Vec::new() };
+        let draft = app.draft("tool:reference-guess", Payload::ProtocolIdentified(identified)).span(entry.start, entry.len).confidence(GUESS_CONFIDENCE).key(entry.start.to_string());
+        app.bus.publish(draft);
+    }
 }
 
 fn request_rfc(state: &mut ReferenceState, reference_id: &str, number: u32, section: Option<String>) {

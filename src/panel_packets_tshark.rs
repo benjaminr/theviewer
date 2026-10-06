@@ -23,6 +23,8 @@ use std::time::Duration;
 use eframe::egui::{self, RichText, Ui};
 
 use crate::app::ViewerApp;
+use crate::bus::Payload;
+use crate::bus::topics::{FramesDefined, ProtocolIdentified};
 use crate::packets::tshark::{self, RunLimits};
 use crate::packets::tshark_layers::{self, TsharkLayers, TsharkMode};
 use crate::packets::{self, Dissection, ExportPacket, LinkKind, RawFrames};
@@ -203,7 +205,7 @@ fn decode(program: &std::path::Path, requests: Vec<Request>, raw: &RawFrames, mo
 }
 
 /// Take a finished run's results, if they still describe the packets shown.
-pub fn poll(state: &mut PacketsState, ctx: &egui::Context) {
+pub fn poll(state: &mut PacketsState, app: &ViewerApp, ctx: &egui::Context) {
     let Some(job) = &state.tshark.job else { return };
     let finished = match job.receiver.try_recv() {
         Ok(finished) => finished,
@@ -232,8 +234,32 @@ pub fn poll(state: &mut PacketsState, ctx: &egui::Context) {
             decodes.packets.extend(finished.packets);
             state.tshark.generation += 1;
             state.rows_changed();
+            publish_protocols(state, app);
         }
     }
+}
+
+/// Publish the protocol tshark named most often as the innermost layer of
+/// the packets it decoded.
+fn publish_protocols(state: &PacketsState, app: &ViewerApp) {
+    let (Some(decodes), Some(set)) = (&state.tshark.decodes, &state.set) else { return };
+    let mut counts: BTreeMap<&str, Vec<usize>> = BTreeMap::new();
+    for (&index, layers) in &decodes.packets {
+        if let Some(innermost) = layers.protocols.last() {
+            counts.entry(innermost.as_str()).or_default().push(index);
+        }
+    }
+    let Some((protocol, mut indices)) = counts.into_iter().max_by_key(|(_, indices)| indices.len()) else { return };
+    indices.sort_unstable();
+    let frames = FramesDefined::new(indices.iter().filter_map(|&index| set.packets.get(index)).map(|packet| (packet.offset, packet.len)), String::new()).frames;
+    let start = frames.iter().map(|frame| frame.start).min().unwrap_or(0);
+    let end = frames.iter().map(|frame| frame.start + frame.len).max().unwrap_or(start);
+    let identified = ProtocolIdentified {
+        protocol: protocol.to_string(),
+        how: format!("tshark named it the innermost protocol of {} of the {} packets it decoded", indices.len(), decodes.packets.len()),
+        frames,
+    };
+    app.bus.publish(app.draft("tool:tshark", Payload::ProtocolIdentified(identified)).span(start, end - start));
 }
 
 /// Merge again after the user chose between filling gaps and everything.

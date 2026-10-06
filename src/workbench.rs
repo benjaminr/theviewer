@@ -15,6 +15,9 @@ use eframe::egui::{self, Color32, ColorImage, Context, Rect, RichText, Sense, St
 use crate::app::{DialogKind, FileAction, ViewerApp};
 use crate::panels::{self, PanelStates};
 use crate::assistant::{self, FileContext, ToolCall};
+use crate::bus::Payload;
+use crate::bus::topics::{MappedRegion, RegionsMapped};
+use crate::bus::window::job_finished;
 use crate::document::Document;
 use crate::dock::{self, DockTab};
 use crate::explain::{self, Region, Report};
@@ -36,6 +39,8 @@ const RECORDING_FILE_LIMIT: usize = 256 * 1024 * 1024;
 const LIVE_POLL_INTERVAL: Duration = Duration::from_millis(400);
 /// Bytes a template is applied to.
 const TEMPLATE_READ: usize = 16 * 1024 * 1024;
+/// What applied templates are published as.
+const TEMPLATES: &str = "tool:templates";
 /// Rows shown in the template records table.
 const MAX_TABLE_ROWS: usize = 5000;
 
@@ -269,6 +274,7 @@ impl ViewerApp {
                     Ok((regions, report)) => {
                         self.bench.regions = regions;
                         self.bench.report = Some(report);
+                        self.publish_regions();
                     }
                     Err(mpsc::TryRecvError::Empty) => self.bench.pending.push(Pending::Report(receiver)),
                     Err(mpsc::TryRecvError::Disconnected) => {}
@@ -385,13 +391,28 @@ impl ViewerApp {
         let name = self.display_name();
         let registry = Arc::clone(&self.registry);
         let (sender, receiver) = mpsc::channel();
+        let job = self.publish_job_started("report", "Report");
+        let publisher = self.bus.publisher();
         thread::spawn(move || {
             let regions = explain::map_file(&bytes, &registry);
             let report = explain::explain(&bytes, &name, &regions);
+            publisher.publish(job_finished(&job, "Report", true, format!("{} regions: {}", regions.len(), report.headline)));
             let _ = sender.send((regions, report));
         });
         self.bench.pending.push(Pending::Report(receiver));
         self.note_tool_result(DockTab::Report);
+    }
+
+    /// Publish the report's map of the file.
+    fn publish_regions(&mut self) {
+        let regions: Vec<MappedRegion> = self
+            .bench
+            .regions
+            .iter()
+            .map(|region| MappedRegion { start: region.start, len: region.len, kind: region.kind.label().to_string(), label: region.label.clone(), confident: region.confident })
+            .collect();
+        let end = regions.last().map_or(0, |region| region.start + region.len);
+        self.bus.publish(self.draft("tool:report", Payload::RegionsMapped(RegionsMapped { regions })).span(0, end));
     }
 
     pub fn report_running(&self) -> bool {
@@ -622,6 +643,8 @@ impl ViewerApp {
         self.bench.pinned.retain(|f| !f.id.starts_with("template:"));
         self.bench.pinned.push(applied.finding.clone());
         self.note_tool_result(DockTab::Template);
+        let finding = &applied.finding;
+        self.bus.publish(self.draft(TEMPLATES, Payload::StructureIdentified(crate::app::structure_of(finding))).span(finding.start, finding.len));
         applied
     }
 
@@ -679,7 +702,9 @@ impl ViewerApp {
             }
             if ui.button("Clear").clicked() {
                 self.bench.pinned.retain(|f| !f.id.starts_with("template:"));
-                self.bench.template_result = None;
+                if let Some(applied) = self.bench.template_result.take() {
+                    self.bus.publish(self.draft(TEMPLATES, Payload::StructureIdentified(crate::app::structure_of(&applied.finding))).retraction());
+                }
             }
         });
         let width = ui.available_width();
@@ -755,8 +780,12 @@ impl ViewerApp {
         let bytes = Arc::new(self.document.read_range(0, ANALYSIS_READ_LIMIT));
         let name = self.display_name();
         let (sender, receiver) = mpsc::channel();
+        let job = self.publish_job_started("unpack", "Unpack");
+        let publisher = self.bus.publisher();
         thread::spawn(move || {
-            let _ = sender.send(unpack::unpack(bytes, &name, &unpack::Limits::default()));
+            let tree = unpack::unpack(bytes, &name, &unpack::Limits::default());
+            publisher.publish(job_finished(&job, "Unpack", true, format!("{} items", tree.count().saturating_sub(1))));
+            let _ = sender.send(tree);
         });
         self.bench.pending.push(Pending::Unpack(receiver));
         self.note_tool_result(DockTab::Unpacked);

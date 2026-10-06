@@ -31,7 +31,11 @@ use std::time::{Duration, Instant};
 use eframe::egui::{self, RichText, Ui};
 
 use crate::analysis_tools;
+use crate::api::workspace::WINDOW_DOCUMENT_ID;
 use crate::app::ViewerApp;
+use crate::bus::topics::{FramesDefined, ProtocolIdentified};
+use crate::bus::window::job_finished;
+use crate::bus::{Draft, Payload, Publisher};
 use crate::dock::DockTab;
 use crate::packets::sources::{self, CaptureLocation, MarkerMode, Recipe};
 use crate::packets::{self, Detection, Dissection, Flow, FrameProtocol, Layer, LinkKind, PacketSet, RawFrames, SetHints, Summary};
@@ -732,6 +736,8 @@ fn start_dissection(state: &mut PacketsState, app: &mut ViewerApp, set: PacketSe
     let detection_allowed = app.preferences.detect_frame_protocols;
     let choice = state.frame_choice;
     let (sender, receiver) = mpsc::channel();
+    let job = app.publish_job_started("dissection", "Dissecting packets");
+    let publisher = app.bus.publisher();
     thread::spawn(move || {
         raw.hints = SetHints::learn(links.iter().enumerate().map(|(index, &link)| (bytes.packet(index), link)));
         let detection = detect_frames(&bytes, &links, choice, detection_allowed);
@@ -749,9 +755,34 @@ fn start_dissection(state: &mut PacketsState, app: &mut ViewerApp, set: PacketSe
                 PacketRow::from(dissection)
             })
             .collect();
+        publish_packet_facts(&publisher, &set, &links, detection, snapshot.version);
+        publisher.publish(job_finished(&job, "Dissecting packets", true, format!("{} packets from {}", set.packets.len(), set.name)));
         let _ = sender.send(DissectionJob { set, bytes: Arc::new(bytes), rows, snapshot, hints: raw.hints, decode_as: raw.decode_as, detection });
     });
     state.pending = Some(receiver);
+}
+
+/// What publishes the packet viewer's frames and the protocol detected for them.
+pub(crate) const PACKETS_PRODUCER: &str = "panel:packets";
+
+/// Publish where the packets are and, when detection found one, the
+/// protocol of the frames of unknown format.
+fn publish_packet_facts(publisher: &Publisher, set: &PacketSet, links: &[LinkKind], detection: FrameDetection, version: u64) {
+    let start = set.packets.iter().map(|packet| packet.offset).min().unwrap_or(0);
+    let end = set.packets.iter().map(|packet| packet.end()).max().unwrap_or(start);
+    let draft = |payload| Draft::new(PACKETS_PRODUCER, payload).about(WINDOW_DOCUMENT_ID, version).span(start, end - start);
+    publisher.publish(draft(Payload::FramesDefined(FramesDefined::new(set.packets.iter().map(|packet| (packet.offset, packet.len)), set.name.clone()))));
+    let unknown = set.packets.iter().zip(links).filter(|(_, link)| **link == LinkKind::Unknown).map(|(packet, _)| (packet.offset, packet.len));
+    let frames = FramesDefined::new(unknown, String::new()).frames;
+    let blank = ProtocolIdentified { protocol: String::new(), how: String::new(), frames: Vec::new() };
+    publisher.publish(match detection {
+        FrameDetection::Found(found) => draft(Payload::ProtocolIdentified(ProtocolIdentified {
+            protocol: found.protocol.label().to_string(),
+            how: format!("frame detection read {} of {} sampled frames in full", found.matched, found.sampled),
+            frames,
+        })),
+        FrameDetection::NotRun | FrameDetection::Unrecognised => draft(Payload::ProtocolIdentified(blank)).retraction(),
+    });
 }
 
 /// Detect the protocol of the frames of unknown format, when there are any
@@ -1080,7 +1111,7 @@ pub fn show_packets(state: &mut PacketsState, app: &mut ViewerApp, ui: &mut Ui) 
     poll_dissection(state, &ctx);
     poll_captures(state, &ctx);
     poll_protocol_wait(state, app, &ctx);
-    tshark_view::poll(state, &ctx);
+    tshark_view::poll(state, app, &ctx);
     if let Some(set) = state.incoming.take() {
         start_dissection(state, app, set);
     }

@@ -294,10 +294,11 @@ impl Bus {
             self.note_problem(format!("dropped {} from {}: {depth} reactions deep, which looks like a loop", draft.payload.topic().name(), draft.producer));
             return None;
         }
-        let is_fact = draft.payload.topic().kind() == Kind::Fact;
-        if is_fact && !draft.retracts {
+        if draft.payload.topic().kind() == Kind::Fact {
             let key = (draft.payload.topic(), draft.producer.clone(), draft.document.clone(), draft.key.clone());
-            if self.retained.get(&key).is_some_and(|kept| same_fact(&kept.draft, &draft)) {
+            let kept = self.retained.get(&key);
+            // Nothing new, or nothing to withdraw.
+            if draft.retracts && kept.is_none() || !draft.retracts && kept.is_some_and(|kept| same_fact(&kept.draft, &draft)) {
                 return None;
             }
         }
@@ -582,6 +583,8 @@ mod tests {
         assert_eq!(delivered.len(), 2, "the retraction is delivered so readers notice");
         assert_eq!(delivered[1].to_json()["retracted"], true);
         assert!(bus.latest::<RecordWidthEstimated>(DOC).is_none());
+        bus.publish(Draft::new("tool:period-scan", width(48)).about(DOC, 0).retraction());
+        assert!(bus.deliver_all().is_empty(), "withdrawing what is not there says nothing");
     }
 
     #[test]

@@ -195,3 +195,81 @@ fn show_plugin_error(app: &mut ViewerApp, message: &Arc<Message>) {
         app.status = format!("Plugin {} failed: {}", line.plugin, line.text);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::Launch;
+    use crate::bus::Kind;
+
+    fn app_with(bytes: &[u8]) -> ViewerApp {
+        let mut app = ViewerApp::new(Launch::default());
+        app.open_bytes(bytes.to_vec(), "test.bin".to_string());
+        app.run_bus();
+        app
+    }
+
+    /// The topics delivered after `cursor`, in order.
+    fn topics_since(app: &ViewerApp, cursor: u64) -> Vec<Topic> {
+        app.bus.changed_since(cursor).messages.iter().map(|message| message.topic()).collect()
+    }
+
+    #[test]
+    fn opening_a_document_says_the_last_one_closed_and_forgets_what_was_known_about_it() {
+        let mut app = app_with(b"first document");
+        app.bus.publish(app.draft("tool:test", Payload::RecordWidthEstimated(RecordWidthEstimated { width: 4, score: 1.0, alternatives: Vec::new() })));
+        app.run_bus();
+        assert_eq!(app.bus.facts().count(), 1);
+        let cursor = app.bus.cursor();
+        app.open_bytes(b"second".to_vec(), "second.bin".to_string());
+        app.run_bus();
+        assert_eq!(&topics_since(&app, cursor)[..2], [Topic::DocumentClosed, Topic::DocumentOpened]);
+        let opened = app.bus.recent().rev().find_map(|message| message.payload_as::<DocumentOpened>()).unwrap();
+        assert_eq!((opened.name.as_str(), opened.len), ("second.bin", 6));
+        assert_eq!(app.bus.facts().count(), 0, "facts about the first document are gone");
+    }
+
+    #[test]
+    fn edits_are_published_once_a_frame_from_the_edit_log() {
+        let mut app = app_with(&[0u8; 64]);
+        let cursor = app.bus.cursor();
+        app.document.insert(4, b"ab");
+        app.document.delete(0, 1);
+        app.run_bus();
+        app.run_bus();
+        let edited: Vec<_> = app.bus.changed_since(cursor).messages.iter().filter_map(|message| message.payload_as::<DocumentEdited>().cloned()).collect();
+        assert_eq!(edited.len(), 1, "both edits in one message");
+        assert_eq!(edited[0].edits.iter().map(|edit| edit.version).collect::<Vec<_>>(), [1, 2]);
+        assert!(edited[0].complete);
+    }
+
+    #[test]
+    fn moving_the_cursor_and_selecting_are_published_once_each() {
+        let mut app = app_with(&[0u8; 64]);
+        let cursor = app.bus.cursor();
+        app.set_cursor(10, false);
+        app.run_bus();
+        app.run_bus();
+        assert_eq!(topics_since(&app, cursor), [Topic::CursorMoved, Topic::SelectionChanged]);
+        let cursor = app.bus.cursor();
+        app.anchor = Some(4);
+        app.run_bus();
+        assert_eq!(topics_since(&app, cursor), [Topic::SelectionChanged], "the cursor stayed put");
+        let changed = app.bus.recent().last().unwrap();
+        assert_eq!(changed.producer(), MAIN_VIEW);
+        assert_eq!(changed.payload_as::<SelectionChanged>().unwrap().selection, Some(Selection::Range(4, 6)));
+    }
+
+    #[test]
+    fn applying_a_template_publishes_its_structure_and_its_pinned_findings() {
+        let mut app = app_with(&[1u8; 256]);
+        let source = crate::templates::builtin_templates().first().map(|(_, source)| source.to_string()).unwrap();
+        app.apply_template_source(&source);
+        app.run_bus();
+        let structure = app.bus.facts().find(|fact| fact.topic() == Topic::StructureIdentified && fact.producer() == "tool:templates").expect("the applied template");
+        assert!(structure.payload_as::<StructureIdentified>().unwrap().format.starts_with("template:"));
+        let findings = app.bus.facts().find(|fact| fact.topic() == Topic::FindingsPublished && fact.producer() == "tool:templates").expect("the pinned records");
+        assert_eq!(findings.topic().kind(), Kind::Fact);
+        assert!(!findings.payload_as::<FindingsPublished>().unwrap().findings.is_empty());
+    }
+}

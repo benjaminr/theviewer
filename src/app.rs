@@ -16,7 +16,10 @@ use crate::packing::RowPacker;
 use crate::preferences::{self, Preferences};
 use crate::parsers;
 use crate::plugins::{self, ActionHost, LoadReport, LuaHost};
+use crate::api::workspace::WINDOW_DOCUMENT_ID;
 use crate::bookmarks::{self, Bookmark, Sidecar};
+use crate::bus::topics::{FindingsPublished, RecordWidthEstimated, StructureIdentified};
+use crate::bus::{Draft, Payload};
 use crate::commands::{self, PaletteState};
 use crate::compress::{self, Codec, Decompressed};
 use crate::assistant::{Assistant, Credentials};
@@ -1698,6 +1701,17 @@ impl ViewerApp {
             }
             None => None,
         };
+        self.publish_cursor_structure();
+    }
+
+    /// Publish the structure parsed at the cursor, or withdraw the last one.
+    fn publish_cursor_structure(&mut self) {
+        const PRODUCER: &str = "tool:cursor-structure";
+        let draft = match &self.cursor_structure {
+            Some(structure) => self.draft(PRODUCER, Payload::StructureIdentified(structure_of(structure))).span(structure.start, structure.len).confidence(structure.confidence),
+            None => self.draft(PRODUCER, Payload::StructureIdentified(StructureIdentified { format: String::new(), title: String::new(), start: 0, len: 0, fields: Vec::new() })).retraction(),
+        };
+        self.bus.publish(draft);
     }
 
     /// Media that starts at, or contains, the cursor: findings covering the
@@ -1938,7 +1952,7 @@ impl ViewerApp {
         let result = host.run_action(id, self);
         for line in host.take_entries() {
             self.status = format!("{}: {}", line.plugin, line.text);
-            self.bus.publish(crate::bus::Draft::new(format!("plugin:{}", line.plugin), crate::bus::Payload::PluginLog(line)));
+            self.bus.publish(Draft::new(format!("plugin:{}", line.plugin), Payload::PluginLog(line)));
         }
         if let Err(message) = result {
             self.status = format!("Plugin action failed: {message}");
@@ -2232,6 +2246,9 @@ impl ViewerApp {
         if parent.entropy_map.is_some() {
             self.entropy_map = parent.entropy_map;
         }
+        // What was known about the parent was forgotten when it was put away.
+        self.publish_record_width();
+        self.publish_pattern_findings();
         self.clamp_top_row();
         self.reveal_cursor_in_hex(true);
         self.status = format!("Back to {}", parent.name);
@@ -2423,8 +2440,12 @@ impl ViewerApp {
         let window = self.document.read_range(start, SCAN_WINDOW);
         let max_period = self.scan_max_period;
         let sender = self.analysis_tx.clone();
+        let job = self.publish_job_started("period-scan", "Period scan");
+        let publisher = self.bus.publisher();
         thread::spawn(move || {
             let scan = analysis::scan_periods(&window, start, max_period);
+            let outcome = scan.candidates.first().map_or_else(|| "no repeating period".to_string(), |best| format!("best period {} bytes", best.period));
+            publisher.publish(crate::bus::window::job_finished(&job, "Period scan", !scan.candidates.is_empty(), outcome));
             let _ = sender.send(AnalysisMessage::Periods(scan));
         });
         self.scan_pending = true;
@@ -2452,6 +2473,7 @@ impl ViewerApp {
                     };
                     self.period_scan = Some(scan);
                     self.scan_pending = false;
+                    self.publish_record_width();
                 }
                 AnalysisMessage::Entropy { map, .. } => self.entropy_map = Some(map),
                 AnalysisMessage::Patterns { key, patterns } => {
@@ -2460,6 +2482,7 @@ impl ViewerApp {
                     }
                     self.patterns = patterns;
                     self.pattern_key = Some(key);
+                    self.publish_pattern_findings();
                     // New findings can reveal media or structure under the cursor.
                     self.media_hint = None;
                     self.cursor_structure_key = None;
@@ -2509,6 +2532,30 @@ impl ViewerApp {
             let _ = sender.send(AnalysisMessage::Patterns { key, patterns });
         });
         self.pattern_pending = Some(key);
+    }
+
+    /// Publish the period scan's best record width, or withdraw the last
+    /// one when the scan found none.
+    fn publish_record_width(&mut self) {
+        const PRODUCER: &str = "tool:period-scan";
+        let Some(scan) = &self.period_scan else { return };
+        let estimate = scan.candidates.first().map(|best| RecordWidthEstimated {
+            width: best.period,
+            score: best.score,
+            alternatives: scan.candidates.iter().skip(1).take(4).map(|candidate| candidate.period).collect(),
+        });
+        let draft = match estimate {
+            Some(estimate) => self.draft(PRODUCER, Payload::RecordWidthEstimated(estimate)).span(scan.window_start, scan.window_len).confidence(scan.candidates[0].score),
+            None => self.draft(PRODUCER, Payload::RecordWidthEstimated(RecordWidthEstimated { width: 0, score: 0.0, alternatives: Vec::new() })).retraction(),
+        };
+        self.bus.publish(draft);
+    }
+
+    /// Publish what the scan of the region around the view found.
+    fn publish_pattern_findings(&mut self) {
+        let Some(key) = self.pattern_key else { return };
+        let findings = FindingsPublished { findings: self.patterns.clone() };
+        self.bus.publish(Draft::new("tool:pattern-scan", Payload::FindingsPublished(findings)).about(WINDOW_DOCUMENT_ID, key.version).span(key.start, key.len));
     }
 
     /// Start and length of the region the current findings were scanned from.
@@ -3726,6 +3773,11 @@ impl eframe::App for ViewerApp {
             ctx.request_repaint();
         }
     }
+}
+
+/// A finding with a field tree, as `structure.identified` describes it.
+pub fn structure_of(finding: &Finding) -> StructureIdentified {
+    StructureIdentified { format: finding.id.clone(), title: finding.title.clone(), start: finding.start, len: finding.len, fields: finding.fields.clone() }
 }
 
 /// Human readable byte count, e.g. "1.2 MiB (1258291 B)".
