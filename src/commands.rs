@@ -5,6 +5,7 @@ use eframe::egui::{self, Align2, Context, Key, RichText};
 
 use crate::app::ViewerApp;
 use crate::compress::Codec;
+use crate::layouts::Recommended;
 use crate::theme;
 
 /// One thing the user can ask for.
@@ -48,6 +49,15 @@ pub fn commands() -> Vec<Command> {
         Command { id: "view.search", title: "Find bytes or text", keys: "Cmd+F", run: |app, _| app.focus_search = true },
         Command { id: "view.find_next", title: "Find next", keys: "F3", run: |app, _| app.find_next() },
         Command { id: "view.find_previous", title: "Find previous", keys: "Shift+F3", run: |app, _| app.find_previous() },
+        Command { id: "layout.overview", title: "Layout: Overview", keys: "", run: |app, _| app.apply_recommended(Recommended::Overview) },
+        Command { id: "layout.network", title: "Layout: Network capture", keys: "", run: |app, _| app.apply_recommended(Recommended::Network) },
+        Command { id: "layout.structure", title: "Layout: File structure", keys: "", run: |app, _| app.apply_recommended(Recommended::Structure) },
+        Command { id: "layout.firmware", title: "Layout: Firmware and code", keys: "", run: |app, _| app.apply_recommended(Recommended::Firmware) },
+        Command { id: "layout.signals", title: "Layout: Signals and bit streams", keys: "", run: |app, _| app.apply_recommended(Recommended::Signals) },
+        Command { id: "layout.forensics", title: "Layout: Forensics and carving", keys: "", run: |app, _| app.apply_recommended(Recommended::Forensics) },
+        Command { id: "layout.compare", title: "Layout: Compare files", keys: "", run: |app, _| app.apply_recommended(Recommended::Compare) },
+        Command { id: "layout.focus", title: "Layout: Focus on the view", keys: "", run: |app, _| app.apply_recommended(Recommended::Focus) },
+        Command { id: "layout.last_session", title: "Layout: Restore last session", keys: "", run: |app, _| app.restore_last_session() },
         Command { id: "view.guess_image", title: "Guess image shape", keys: "", run: |app, _| app.guess_image_shape() },
         Command { id: "analysis.detect", title: "Detect width (period scan)", keys: "", run: |app, _| app.start_period_scan() },
         Command { id: "analysis.chart", title: "Toggle structure chart", keys: "", run: |app, _| app.toggle_panel(crate::layout::Pane::PeriodChart) },

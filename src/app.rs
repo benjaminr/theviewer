@@ -22,7 +22,8 @@ use crate::compress::{self, Codec, Decompressed};
 use crate::assistant::{Assistant, Credentials};
 use crate::settings::{KeySource, SettingsWindow};
 use crate::dock::{DockState, DockTab};
-use crate::layout::{self, Pane, Preset};
+use crate::layout::{self, Pane};
+use crate::layouts::{self, Recommended};
 use crate::findings::FindingsFilter;
 use crate::folds::Folds;
 use crate::legend::{LayerKind, LayerVisibility};
@@ -247,6 +248,8 @@ pub struct ViewerApp {
     pub dock: DockState,
     /// The arrangement of every pane.
     pub layout: egui_dock::DockState<Pane>,
+    /// Named layouts: the recommended ones, the person's own and the last session.
+    pub layouts: layouts::Choices,
     /// Where the raster image (or the curve layout's picture) and the hex
     /// dump's rows were drawn last frame; panes move, so tests and tools
     /// read these rather than assume.
@@ -548,7 +551,8 @@ impl ViewerApp {
             image_preview: None,
             media: MediaPlayer::default(),
             dock: DockState::default(),
-            layout: layout::default_layout(),
+            layout: Recommended::Overview.build(),
+            layouts: layouts::Choices::default(),
             pane_request: None,
             raster_rect: None,
             hex_body_rect: None,
@@ -603,23 +607,19 @@ impl ViewerApp {
         };
         if launch.restore_layout {
             app.persist_layout = true;
-            if let Some(saved) = layout::layout_path().and_then(|path| layout::load(&path)) {
-                app.layout = saved;
-            }
             app.toolbar_rows = layout::toolbar_path().and_then(|path| layout::load_toolbar(&path));
             if let Some(path) = preferences::preferences_path() {
                 app.preferences = preferences::load(&path);
             }
+            let last_session = layout::layout_path().and_then(|path| layout::load(&path));
+            app.open_startup_layout(last_session);
         }
         app.apply_preferences();
         if let Some(name) = &launch.layout {
-            let preset = match name.to_ascii_lowercase().as_str() {
-                "right" => Preset::EverythingRight,
-                "left" => Preset::ToolsLeft,
-                "focus" => Preset::Focus,
-                _ => Preset::Default,
-            };
-            app.apply_preset(preset);
+            if !app.open_layout_named(name) {
+                app.status = format!("No layout called '{name}'; showing the {}", Recommended::Overview.label());
+                app.apply_recommended(Recommended::Overview);
+            }
             app.layout_for_session_only = true;
         }
         app.refresh_credentials();
@@ -632,6 +632,10 @@ impl ViewerApp {
         }
         if let Some(path) = &launch.path {
             app.load_path(path);
+            // A layout that opens on the packets lists them from the start.
+            if app.layouts.current.as_deref() == Some(Recommended::Network.label()) {
+                crate::panel_packets::load_capture_if_empty(&mut app);
+            }
         }
         if let Some(format) = launch.format {
             app.shape.format = format;
@@ -740,6 +744,7 @@ impl ViewerApp {
                 let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
                 self.status = format!("Loaded {name}");
                 let remembered_shape = self.load_sidecar(path);
+                self.suggest_layout_for_file();
                 if self.preferences.detect_width_on_open && !remembered_shape && !self.document.is_empty() {
                     self.start_period_scan();
                 }
@@ -2969,22 +2974,6 @@ impl ViewerApp {
                 ui.separator();
                 if ui.button("Detect width").clicked() { self.start_period_scan(); ui.close(); }
                 if ui.button("Collapse or expand tools   Cmd+J").clicked() { self.dock.open = layout::toggle_tools(&mut self.layout); ui.close(); }
-                ui.menu_button("Layout", |ui| {
-                    for preset in Preset::ALL {
-                        if ui.button(preset.label()).clicked() { self.apply_preset(preset); ui.close(); }
-                    }
-                    ui.separator();
-                    ui.label(RichText::new("Drag a tab to any edge to split, onto another pane to stack it, or out to float it.").small().color(theme::TEXT_DIM));
-                    ui.separator();
-                    if ui.add_enabled(self.toolbar_rows.is_some(), egui::Button::new("Arrange toolbar automatically"))
-                        .on_hover_text("Forget the order you dragged the toolbar groups into and pack them into the fewest rows")
-                        .clicked()
-                    {
-                        self.set_toolbar_rows(None);
-                        ui.close();
-                    }
-                    ui.label(RichText::new("Drag a toolbar group by its caption or edge to move it.").small().color(theme::TEXT_DIM));
-                });
                 ui.menu_button("Panels", |ui| {
                     for pane in Pane::all() {
                         let open = self.panel_is_open(pane);
@@ -3027,6 +3016,20 @@ impl ViewerApp {
                 if ui.button("Guess image shape").clicked() { self.guess_image_shape(); ui.close(); }
                 ui.separator();
                 if ui.button("Reload plugins").clicked() { self.reload_plugins(); ui.close(); }
+            });
+            ui.menu_button("Layout", |ui| {
+                layouts::show_layout_menu(self, ui);
+                ui.separator();
+                ui.label(RichText::new("Drag a tab to any edge to split, onto another pane to stack it, or out to float it. Closed panels reopen from View › Panels.").small().color(theme::TEXT_DIM));
+                ui.separator();
+                if ui.add_enabled(self.toolbar_rows.is_some(), egui::Button::new("Arrange toolbar automatically"))
+                    .on_hover_text("Forget the order you dragged the toolbar groups into and pack them into the fewest rows")
+                    .clicked()
+                {
+                    self.set_toolbar_rows(None);
+                    ui.close();
+                }
+                ui.label(RichText::new("Drag a toolbar group by its caption or edge to move it.").small().color(theme::TEXT_DIM));
             });
             ui.menu_button("Tools", |ui| {
                 if ui.button("Explain this file").clicked() { self.dock.open = true; self.dock.tab = DockTab::Report; self.start_report(); ui.close(); }
@@ -3494,6 +3497,7 @@ impl ViewerApp {
                 ui.label(RichText::new(format!("Multi-select · {sections} sections · Esc to finish")).color(theme::ACCENT).strong())
                     .on_hover_text("Clicks and drags add sections; click a section again to take it out. M or the toolbar button turns this off.");
             }
+            self.show_layout_suggestion(ui);
             if let Some(selected) = self.current_selection() {
                 let (start, len) = selected.span();
                 ui.separator();

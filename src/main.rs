@@ -37,7 +37,8 @@ usage: theviewer [FILE] [--format NAME] [--palette NAME] [--width PIXELS] [--off
   --zoom     pixel scale, e.g. 2 or 0.5
   --detect   scan for repeating periods on startup and open the structure panel
   --open     open the image, audio or video at the cursor
-  --layout   start with a panel layout for this session (your saved one is kept): default right left focus
+  --layout   start with a layout for this session (the last session's is kept): overview network
+             structure firmware signals forensics compare focus, or the name of one you saved
   --tool     open the tools dock on a tab: report reference structure-map size-map ask dot-plot trigrams images template columns protocol packets bits statistics characterise strings xor crypto checksums learn disassembly firmware unpacked forensics diff compare live
 ";
 

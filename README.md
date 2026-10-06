@@ -282,16 +282,41 @@ Every panel can be moved:
 - **Float:** drag it out of the window.
 - **Collapse or close:** the arrow collapses a panel and the cross closes it.
   *View › Panels* brings a closed panel back.
-- **Presets:** *View › Layout* has Default, Everything on the right, Tools on
-  the left, and Focus on the view.
 - **Tools:** `Cmd+J` folds all the tools away.
 
 Panels with many tabs wrap them onto extra rows.
 
+**Pick a layout for the job.** The **Layout** menu has a recommended layout
+for each kind of analysis. Each one opens only the tools that work needs, so
+the tab bars stay short; any other tool is still in *Tools* and
+*View › Panels*.
+
+| Layout | Opens with |
+| --- | --- |
+| Overview | Report, Reference, structure and size maps, strings, statistics; inspector, findings and hex |
+| Network capture | Packets in front, with Reference, Protocol, strings and Live, and the hex |
+| File structure | Inspector and Reference beside the view; Template, structure map, columns, Unpacked and Learn |
+| Firmware and code | Firmware, Disassembly, strings, Crypto, Unpacked, Images and Checksums |
+| Signals and bit streams | Bits, the period chart, Columns, Trigrams, Dot plot, Statistics and XOR |
+| Forensics and carving | Forensics, Images, Unpacked, strings and the size map, with Findings in front |
+| Compare files | Compare and Diff |
+| Focus on the view | Just the view, the hex and the inspector |
+
+When a file opens as a capture, an executable, a disk image or another
+known format, the status bar offers the layout made for it; **Switch** opens
+it. *Layout › Suggest a layout for each file* turns the offers off.
+
+**Keep your own layouts.** Arrange the panels, type a name under **Yours** in
+the Layout menu and press **Save**. Each saved layout has **Update** (replace
+it with the current arrangement), **Rename** and **Delete** (press twice).
+**Last session** brings back the arrangement as it was when theviewer last
+closed, and *Layout › When theviewer opens* chooses what a new window starts
+with: the last session (the default), a recommended layout or one of yours.
+
 **Arrange the toolbar.** The toolbar's groups pack themselves into as few
 rows as the window allows. Drag a group by its caption to change their
 order (drop it below the last row to move it to the end); the groups still
-fill each row before starting the next. *View › Layout › Arrange toolbar
+fill each row before starting the next. *Layout › Arrange toolbar
 automatically* goes back to the automatic order.
 
 **Choose the defaults.** In **Settings** (`Cmd+,`), choose what a new window
@@ -308,7 +333,8 @@ A file's own saved view and command-line options still take precedence.
 
 | File | Holds |
 | --- | --- |
-| `~/.config/theviewer/layout.json` | Panel arrangement |
+| `~/.config/theviewer/layout.json` | Panel arrangement as the last session left it |
+| `~/.config/theviewer/layouts/` | Layouts you saved by name |
 | `~/.config/theviewer/toolbar.json` | Toolbar order, if you rearranged it |
 | `~/.config/theviewer/preferences.json` | Startup defaults |
 | `~/.config/theviewer/credentials` | API key (not on macOS, which uses the Keychain) |
@@ -360,7 +386,7 @@ the full list.
 ```sh
 theviewer firmware.bin --format rgb8 --width 320 --offset 0x1000 --zoom 2
 theviewer records.dat --detect
-theviewer capture.bin --tool protocol --layout right
+theviewer capture.bin --tool protocol --layout network
 theviewer dump.bin --tool packets          # load the first capture, else the message framing
 theviewer firmware.bin --report          # print the report, no window
 theviewer firmware.bin --json > report.json
@@ -377,7 +403,7 @@ theviewer firmware.bin --json > report.json
 | `--detect` | Look for the record width straight away |
 | `--open` | Open the image, audio or video at the cursor |
 | `--tool NAME` | Open a tool: `report` `ask` `template` `columns` `protocol` `packets` `statistics` `strings` `xor` `checksums` `disassembly` `unpacked` `diff` `live` |
-| `--layout NAME` | Start with a panel layout for this session: `default` `right` `left` `focus`. Your saved arrangement is left as it is. |
+| `--layout NAME` | Start with a layout for this session: `overview` `network` `structure` `firmware` `signals` `forensics` `compare` `focus`, or the name of one you saved. The last session's arrangement is left as it is. |
 | `--report` | Print the file's report as text and exit, without opening a window |
 | `--json` | Print the report as JSON and exit: the summary, regions, likely record widths and confident findings, for scripts and CI |
 
@@ -436,7 +462,7 @@ never your Keychain.
 | `sources.rs` `plot.rs` | Live sources, watching and recording; plots and bytes as audio. |
 | `analysis_tools.rs` `analysis_stats.rs` `analysis_tabs.rs` `dock.rs` `workbench.rs` | The tool panels and the state behind them. |
 | `assistant.rs` | *Ask*: a streaming Claude API client with tools, on a background thread. |
-| `layout.rs` `packing.rs` | Dockable panels and presets; toolbar packing and reordering. |
+| `layout.rs` `layouts.rs` `packing.rs` | Dockable panels; recommended and saved layouts; toolbar packing and reordering. |
 | `legend.rs` | The legend bar: the colouring in effect and each highlight layer, with toggles. |
 | `freshness.rs` | Which document version each tool's result describes; refreshing cheap views after edits and marking the rest out of date. |
 | `selection.rs` `selection_ops.rs` `selection_menu.rs` `selection_drag.rs` `folds.rs` | Range, column and multi-range selections; the byte operations on them; the Selection menu and floating toolbar; moving, resizing and nudging by hand; skipped (folded) ranges. |

@@ -485,19 +485,20 @@ fn statistics_strings_and_xor_tabs_diagnose_data() {
 
 #[test]
 fn panels_can_be_rearranged_closed_and_reopened() {
-    use theviewer::layout::{Pane, Preset};
+    use theviewer::layout::Pane;
+    use theviewer::layouts::Recommended;
     let path = temp_path("layout.bin");
     std::fs::write(&path, xorshift_bytes(64 * 1024, 3)).unwrap();
     let mut harness = harness_for(path.clone());
 
-    for preset in Preset::ALL {
-        harness.state_mut().apply_preset(preset);
+    for recommended in Recommended::ALL {
+        harness.state_mut().apply_recommended(recommended);
         steps(&mut harness, 3);
-        assert!(harness.state().raster_rect.is_some(), "{preset:?} shows the view");
+        assert!(harness.state().raster_rect.is_some(), "{recommended:?} shows the view");
     }
 
-    // Everything on the right: the view takes the left, all panes sit to its right.
-    harness.state_mut().apply_preset(Preset::EverythingRight);
+    // The overview: the view takes the left, the hex sits to its right.
+    harness.state_mut().apply_recommended(Recommended::Overview);
     harness.state_mut().show_panel(Pane::Tool(DockTab::Statistics));
     steps(&mut harness, 3);
     let raster = harness.state().raster_rect.unwrap();
@@ -531,12 +532,17 @@ fn panels_can_be_rearranged_closed_and_reopened() {
 
 #[test]
 fn crowded_tab_bars_wrap_into_rows_instead_of_scrolling() {
-    use theviewer::layout::Preset;
+    use theviewer::layouts::Recommended;
     const ROW_HEIGHT: f32 = 26.0;
     let path = temp_path("wrap.bin");
     std::fs::write(&path, xorshift_bytes(16 * 1024, 5)).unwrap();
     let mut harness = harness_for(path.clone());
-    harness.state_mut().apply_preset(Preset::EverythingRight);
+    // Every tool open: more tabs than one row of the overview's tools pane holds.
+    harness.state_mut().apply_recommended(Recommended::Overview);
+    for tab in DockTab::ALL {
+        harness.state_mut().show_panel(theviewer::layout::Pane::Tool(tab));
+        harness.step();
+    }
     steps(&mut harness, 4);
 
     let tab_bar_heights: Vec<(usize, f32)> = harness
@@ -550,7 +556,7 @@ fn crowded_tab_bars_wrap_into_rows_instead_of_scrolling() {
         .copied()
         .max_by_key(|(tabs, _)| *tabs)
         .unwrap();
-    assert!(most_tabs >= 8, "the right-hand layout stacks the tools: {tab_bar_heights:?}");
+    assert!(most_tabs >= 8, "the overview stacks its tools: {tab_bar_heights:?}");
     assert!(
         crowded_height >= 2.0 * ROW_HEIGHT - 1.0,
         "{most_tabs} tabs should need more than one row: {tab_bar_heights:?}"
@@ -686,8 +692,8 @@ fn the_packet_viewer_finds_an_embedded_capture_filters_it_and_selects_a_packet_i
     document.extend(xorshift_bytes(500, 6));
     let path = temp_path("embedded-capture.bin");
     std::fs::write(&path, &document).unwrap();
-    // Tools on the left give the packet list the window's full height.
-    let launch = Launch { path: Some(path.clone()), layout: Some("left".to_string()), ..Default::default() };
+    // The network layout gives the packet list the view's large pane.
+    let launch = Launch { path: Some(path.clone()), layout: Some("network".to_string()), ..Default::default() };
     let mut harness = Harness::builder().with_size(egui::vec2(1500.0, 1000.0)).build_eframe(move |creation| {
         theviewer::theme::apply(&creation.egui_ctx);
         ViewerApp::new(launch)
@@ -824,4 +830,33 @@ fn picking_a_layer_in_the_packet_viewer_turns_the_reference_tab_to_that_protocol
     let chosen = harness.state().bench.panels.reference.chosen_entry().map(|entry| (entry.key.clone(), entry.start));
     assert_eq!(chosen, Some(("Internet Protocol version 4".to_string(), ipv4_at)));
     std::fs::remove_file(path).ok();
+}
+
+#[test]
+fn opening_a_capture_offers_the_network_layout_and_switching_lists_its_packets_in_front() {
+    use theviewer::layout::Pane;
+    use theviewer::layouts::Recommended;
+    let dns_query = b"\x12\x34\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00\x07example\x03com\x00\x00\x01\x00\x01";
+    let path = temp_path("offer.pcap");
+    std::fs::write(&path, pcap_of(&[ethernet_udp(4000, 53, dns_query)])).unwrap();
+    let mut harness = harness_for(path.clone());
+    assert_eq!(harness.state().layouts.suggestion, Some(Recommended::Network));
+    harness.get_by_label("Suits the Network capture layout").hover();
+    harness.get_by_label("Switch").click();
+    wait_for(&mut harness, |app| app.layouts.suggestion.is_none());
+    let app = harness.state();
+    assert_eq!(app.layouts.current.as_deref(), Some("Network capture"));
+    let front: Vec<Pane> = app.layout.iter_leaves().filter_map(|(_, leaf)| leaf.tabs.get(leaf.active.0).copied()).collect();
+    assert!(front.contains(&Pane::Tool(DockTab::Packets)), "{front:?}");
+    // The packets are listed straight away rather than waiting for "Find captures".
+    wait_for(&mut harness, |app| app.bench.panels.packets.rows().len() == 1 && !app.bench.panels.packets.is_busy());
+    assert_eq!(harness.state().bench.panels.packets.rows()[0].summary.protocol, "DNS");
+
+    // A file with nothing to suggest leaves the status bar alone.
+    let plain = temp_path("offer-plain.bin");
+    std::fs::write(&plain, xorshift_bytes(4096, 9)).unwrap();
+    harness.state_mut().load_path(&plain);
+    assert_eq!(harness.state().layouts.suggestion, None);
+    std::fs::remove_file(path).ok();
+    std::fs::remove_file(plain).ok();
 }

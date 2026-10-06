@@ -408,6 +408,20 @@ pub fn auto_load(app: &mut ViewerApp) {
     });
 }
 
+/// Load the first capture in the document, unless packets are already
+/// listed. For layouts that open on the packets, so they are not empty.
+pub fn load_capture_if_empty(app: &mut ViewerApp) {
+    with_state(app, |state, app| {
+        if state.set.is_some() || state.incoming.is_some() {
+            return;
+        }
+        let bytes = app.document.read_range(0, SCAN_LIMIT);
+        if let Some(capture) = sources::find_captures(&bytes, 0).first() {
+            load_capture(state, app, capture.offset);
+        }
+    });
+}
+
 // ---------------------------------------------------------------------------
 // Sources
 // ---------------------------------------------------------------------------

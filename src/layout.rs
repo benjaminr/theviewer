@@ -5,7 +5,7 @@
 use std::path::{Path, PathBuf};
 
 use eframe::egui::{self, RichText, Ui, WidgetText};
-use egui_dock::{DockArea, DockState, NodeIndex, Style, TabViewer};
+use egui_dock::{DockArea, DockState, Style, TabViewer};
 use serde::{Deserialize, Serialize};
 
 use crate::app::ViewerApp;
@@ -42,97 +42,11 @@ impl Pane {
             Pane::Tool(tab) => tab.label(),
         }
     }
-
-    /// The tools stacked in the tools pane: every tool but Packets, which
-    /// sits beside the bits (see [`view_tabs`]).
-    fn tools() -> Vec<Pane> {
-        DockTab::ALL.iter().filter(|&&tab| tab != DockTab::Packets).map(|&tab| Pane::Tool(tab)).collect()
-    }
 }
 
 /// The tabs of the main view's pane: the bits, with the packets beside them.
-fn view_tabs() -> Vec<Pane> {
+pub fn view_tabs() -> Vec<Pane> {
     vec![Pane::Raster, Pane::Tool(DockTab::Packets)]
-}
-
-/// Built-in arrangements offered in the View menu.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Preset {
-    Default,
-    EverythingRight,
-    ToolsLeft,
-    Focus,
-}
-
-impl Preset {
-    pub const ALL: [Preset; 4] = [Preset::Default, Preset::EverythingRight, Preset::ToolsLeft, Preset::Focus];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Preset::Default => "Default",
-            Preset::EverythingRight => "Everything on the right",
-            Preset::ToolsLeft => "Tools on the left",
-            Preset::Focus => "Focus on the view",
-        }
-    }
-
-    pub fn build(self) -> DockState<Pane> {
-        match self {
-            Preset::Default => default_layout(),
-            Preset::EverythingRight => everything_right(),
-            Preset::ToolsLeft => tools_left(),
-            Preset::Focus => focus(),
-        }
-    }
-}
-
-/// The view on the left with tools beneath it; inspector, findings and hex
-/// stacked down the right.
-pub fn default_layout() -> DockState<Pane> {
-    let mut state = DockState::new(view_tabs());
-    let surface = state.main_surface_mut();
-    let [left, right] = surface.split_right(NodeIndex::root(), 0.55, vec![Pane::Inspector]);
-    let [_view, tools] = surface.split_below(left, 0.66, Pane::tools());
-    let [_inspector, lower] = surface.split_below(right, 0.34, vec![Pane::Findings]);
-    surface.split_below(lower, 0.3, vec![Pane::HexDump]);
-    collapse_leaf_with(&mut state, Pane::Tool(DockTab::Report), tools);
-    state
-}
-
-/// The view alone on the left; everything else stacked down the right.
-pub fn everything_right() -> DockState<Pane> {
-    let mut state = DockState::new(view_tabs());
-    let surface = state.main_surface_mut();
-    let [_view, right] = surface.split_right(NodeIndex::root(), 0.5, vec![Pane::Inspector, Pane::Findings]);
-    let [_inspector, lower] = surface.split_below(right, 0.3, vec![Pane::HexDump]);
-    let mut tools = Pane::tools();
-    tools.push(Pane::PeriodChart);
-    surface.split_below(lower, 0.4, tools);
-    state
-}
-
-/// Tools down the left, the view in the middle, inspector and hex on the right.
-pub fn tools_left() -> DockState<Pane> {
-    let mut state = DockState::new(view_tabs());
-    let surface = state.main_surface_mut();
-    let [_tools, middle] = surface.split_left(NodeIndex::root(), 0.3, Pane::tools());
-    let [_view, right] = surface.split_right(middle, 0.6, vec![Pane::Inspector, Pane::Findings]);
-    surface.split_below(right, 0.4, vec![Pane::HexDump]);
-    state
-}
-
-/// Just the view and the hex dump.
-pub fn focus() -> DockState<Pane> {
-    let mut state = DockState::new(view_tabs());
-    state.main_surface_mut().split_right(NodeIndex::root(), 0.62, vec![Pane::HexDump, Pane::Inspector]);
-    state
-}
-
-/// Start with the tools leaf open (not collapsed) but showing `active`.
-fn collapse_leaf_with(state: &mut DockState<Pane>, active: Pane, _node: NodeIndex) {
-    if let Some(path) = state.find_tab(&active) {
-        let _ = state.set_active_tab(path);
-    }
 }
 
 /// Where the arrangement is saved.
@@ -168,9 +82,29 @@ pub fn load_toolbar(path: &Path) -> Option<Vec<Vec<String>>> {
 const LAYOUT_REVISION: u64 = 1;
 
 pub fn save(path: &Path, state: &DockState<Pane>) -> Result<(), String> {
+    write_layout(path, None, state)
+}
+
+/// Save an arrangement the person named (see [`crate::layouts`]).
+pub fn save_named(path: &Path, name: &str, state: &DockState<Pane>) -> Result<(), String> {
+    write_layout(path, Some(name), state)
+}
+
+fn write_layout(path: &Path, name: Option<&str>, state: &DockState<Pane>) -> Result<(), String> {
     let mut dock = serde_json::to_value(state).map_err(|e| e.to_string())?;
     zero_missing_coordinates(&mut dock);
-    config::write_json(path, &serde_json::json!({ "revision": LAYOUT_REVISION, "dock": dock }))
+    let mut saved = serde_json::json!({ "revision": LAYOUT_REVISION, "dock": dock });
+    if let Some(name) = name {
+        saved["name"] = serde_json::json!(name);
+    }
+    config::write_json(path, &saved)
+}
+
+/// The name stored in a saved layout's file, if it has one.
+pub fn load_name(path: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let saved: serde_json::Value = serde_json::from_str(&text).ok()?;
+    saved.get("name")?.as_str().map(str::to_string)
 }
 
 /// Move the packet viewer into the bits' pane, just after them.
@@ -418,11 +352,6 @@ impl ViewerApp {
         self.layout.find_tab(&pane).is_some()
     }
 
-    pub fn apply_preset(&mut self, preset: Preset) {
-        self.layout = preset.build();
-        self.dock.shown = None;
-    }
-
     /// Use a new toolbar arrangement (`None` packs automatically) and keep it
     /// for next time.
     pub fn set_toolbar_rows(&mut self, rows: Option<Vec<Vec<String>>>) {
@@ -448,34 +377,24 @@ impl ViewerApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use egui_dock::NodeIndex;
+
+    fn default_layout() -> DockState<Pane> {
+        crate::layouts::Recommended::Overview.build()
+    }
 
     fn panes_in(state: &DockState<Pane>) -> Vec<Pane> {
         state.iter_all_tabs().map(|(_, pane)| *pane).collect()
     }
 
     #[test]
-    fn every_preset_holds_the_view_and_the_core_panes() {
-        for preset in Preset::ALL {
-            let state = preset.build();
-            let panes = panes_in(&state);
-            assert!(panes.contains(&Pane::Raster), "{preset:?}");
-            assert!(panes.contains(&Pane::HexDump), "{preset:?}");
-            let mut unique = panes.clone();
-            unique.sort_by_key(|p| format!("{p:?}"));
-            unique.dedup();
-            assert_eq!(unique.len(), panes.len(), "{preset:?} has a pane twice");
-        }
-        assert!(panes_in(&everything_right()).contains(&Pane::Tool(DockTab::Protocol)));
-    }
-
-    #[test]
     fn closed_panes_come_back_beside_their_kind() {
         let mut state = default_layout();
-        let path = state.find_tab(&Pane::Tool(DockTab::Xor)).unwrap();
+        let path = state.find_tab(&Pane::Tool(DockTab::Strings)).unwrap();
         state.remove_tab(path);
-        assert!(state.find_tab(&Pane::Tool(DockTab::Xor)).is_none());
-        show_pane(&mut state, Pane::Tool(DockTab::Xor));
-        let back = state.find_tab(&Pane::Tool(DockTab::Xor)).expect("reopened");
+        assert!(state.find_tab(&Pane::Tool(DockTab::Strings)).is_none());
+        show_pane(&mut state, Pane::Tool(DockTab::Strings));
+        let back = state.find_tab(&Pane::Tool(DockTab::Strings)).expect("reopened");
         let report = state.find_tab(&Pane::Tool(DockTab::Report)).unwrap();
         assert_eq!(back.node_path(), report.node_path(), "stacked with the other tools");
     }
@@ -493,7 +412,7 @@ mod tests {
     #[test]
     fn layouts_round_trip_through_a_file() {
         let path = std::env::temp_dir().join(format!("theviewer-layout-{}.json", std::process::id()));
-        let state = everything_right();
+        let state = crate::layouts::Recommended::Network.build();
         save(&path, &state).unwrap();
         let loaded = load(&path).expect("loads");
         assert_eq!(panes_in(&loaded), panes_in(&state));
@@ -511,17 +430,6 @@ mod tests {
         save_toolbar(&path, None).unwrap();
         assert_eq!(load_toolbar(&path), None);
         save_toolbar(&path, None).expect("forgetting twice is fine");
-    }
-
-    #[test]
-    fn every_preset_opens_the_packets_beside_the_bits() {
-        for preset in Preset::ALL {
-            let state = preset.build();
-            let leaf = state.iter_leaves().map(|(_, leaf)| leaf).find(|leaf| leaf.tabs.contains(&Pane::Raster)).unwrap();
-            assert_eq!(leaf.tabs, vec![Pane::Raster, Pane::Tool(DockTab::Packets)], "{preset:?}");
-            assert_eq!(leaf.active.0, 0, "{preset:?} shows the bits first");
-        }
-        assert_eq!(Pane::Raster.title(), "Bits");
     }
 
     #[test]

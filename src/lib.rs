@@ -47,6 +47,7 @@ pub mod hilbert;
 pub mod image_finder;
 pub mod keys;
 pub mod layout;
+pub mod layouts;
 pub mod learn;
 pub mod legend;
 pub mod linecode;

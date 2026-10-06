@@ -38,6 +38,11 @@ pub struct Preferences {
     /// Look for the record width as soon as a file opens, unless the file's
     /// sidecar already remembers one.
     pub detect_width_on_open: bool,
+    /// The layout the app opens with: empty for the last session's, else a
+    /// recommended layout's command-line name or a saved layout's name.
+    pub open_with_layout: String,
+    /// Offer the recommended layout that suits each file opened.
+    pub suggest_layouts: bool,
 }
 
 impl Default for Preferences {
@@ -52,6 +57,8 @@ impl Default for Preferences {
             width: DEFAULT_WIDTH,
             zoom: DEFAULT_ZOOM,
             detect_width_on_open: false,
+            open_with_layout: String::new(),
+            suggest_layouts: true,
         }
     }
 }
