@@ -163,6 +163,7 @@ right-click menu. Each one is a panel you can dock anywhere.
 | Tool | What it does |
 | --- | --- |
 | **Report** | A plain-language overview of the whole file, with every sentence linked to its bytes, and a coloured map of the file above the view. |
+| **Reference** | Explains the format at the cursor (see below). |
 | **Structure map** | *Segments* splits the file into regions of one kind (text, tables, code, compressed, padding…) with boundaries on the real edges, groups similar regions into types and colours them on a strip and the file map. *Find more like this* scores every part of the file against the selection and highlights the matches. *Feature tracks* draws entropy, compressibility, printable and zero bytes, the mix of byte kinds and the best record width at each point along the file; *Use width here* applies that width. |
 | **Dot plot** | The file compared with itself on a grid: repeated sections show as diagonal lines and uniform regions as blocks, so structure shows without choosing a width. Click a point to jump to either copy. |
 | **Trigrams** | A rotatable 3D cloud of byte triples. Text, machine code, tables and compressed data each make a recognisable shape, a sharper fingerprint than byte pairs. Points are coloured by the region type they come from (from segmentation or the report); hovering a type in the legend highlights its points and its regions on a strip of the file under the cube, and its tick box shows or hides it. Plot the whole file with a selection to see where the selection's bytes sit against the rest. Click a point to jump into a region of its type. |
@@ -229,6 +230,25 @@ then invert, fill, XOR, add to, set, number, byte-swap, copy (hex or CSV)
 or delete those bytes in every packet of the selection at once, as one
 undoable edit.
 
+**Reference: what the bytes at the cursor mean.** The *Reference* tab lists
+every known format enclosing the cursor, outermost first, as a path you can
+click: inside a DNS packet of a capture it reads *pcap capture › Ethernet II
+› IPv4 › UDP › DNS*. For the chosen format it shows how the data is
+organised, which formats it carries, and the specifications that define it,
+linked to the RFC or document section. Below that are an RFC-style diagram
+of the header (32 bits a row, each field a box over its bytes) and a table
+of this instance's fields with offset, length, current value and what the
+field means; pointing at a row or box outlines its bytes in the view, and
+clicking selects them. The same explanations appear when hovering fields in
+the Inspector's structure tree and in *Packets*, whose *Reference* buttons
+open the tab on that format, and picking a layer in *Packets* turns the tab
+to it. The notes are written for this project and built into the app (in
+`reference/network.toml` and `reference/files.toml`). *Show §3.1* fetches
+that section of the RFC from the RFC Editor, only when you click it, and
+keeps the text in `~/.cache/theviewer/rfc` so it is read from there next
+time. *Ask* is sent the notes on the formats at the cursor too, and can look
+up any other format's notes.
+
 Also in the menus: *Plot selection* draws bytes as a time series, histogram,
 scatter or frequency spectrum, and *Play selection as audio* plays any bytes
 as sound.
@@ -239,8 +259,8 @@ as sound.
 "which field is the length?". Claude (`claude-opus-5-5`) sees the cursor,
 the selection, nearby findings and the bytes around them, and can read,
 search and parse more of the file itself, and run the analysis tools: the
-file overview, segmentation, statistics, compressibility, text encoding and
-processor detection. *Characterise* asks it to work through them and
+file overview, segmentation, statistics, compressibility, text encoding,
+processor detection and the reference notes on formats. *Characterise* asks it to work through them and
 describe the whole file. Offsets in its answers are links, and templates it
 writes can be applied with one click.
 
