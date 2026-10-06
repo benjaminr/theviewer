@@ -17,7 +17,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use super::compare::{self, Carrier, TopAgreement};
-use crate::packets::sources::{self, CaptureFormat};
+use crate::packets::sources;
 use crate::packets::tshark::{self, RunLimits, TsharkPacket};
 use crate::packets::tshark_layers::{self, TsharkMode};
 use crate::packets::{self, Dissection, ExportPacket, LinkKind, PacketSet};
@@ -356,8 +356,7 @@ fn run_ours(file: &str, bytes: &[u8], registry: &Registry, result: &mut FileResu
     let mut side = OurSide { set: None, dissections: Vec::new() };
     working_on(file, "open", None);
     result.format = match sources::capture_format(bytes) {
-        Some(CaptureFormat::Pcap) => "pcap".to_string(),
-        Some(CaptureFormat::PcapNg) => "pcapng".to_string(),
+        Some(format) => format.label().to_string(),
         None => describe_other_format(bytes),
     };
     let opened = guarded(|| sources::from_capture(bytes, 0));

@@ -1,7 +1,8 @@
-//! Where packets come from: the protocol analysis's messages, pcap and pcapng
-//! captures inside the document, a range cut into records, a single range, or
-//! a cluster of aligned messages. Each source is a pure function returning a
-//! [`PacketSet`] whose offsets are document offsets.
+//! Where packets come from: the protocol analysis's messages, captures inside
+//! the document (pcap and pcapng, and the older formats in [`snoop`]), a range
+//! cut into records, a single range, or a cluster of aligned messages. Each
+//! source is a pure function returning a [`PacketSet`] whose offsets are
+//! document offsets.
 
 use std::fmt;
 
@@ -11,6 +12,8 @@ use super::split::{self, BytePattern, LengthField, PatternMode};
 use super::{LinkKind, Packet, PacketSet};
 use crate::parsers::guarded;
 use crate::protocol::{self, Framing, Message};
+
+pub mod snoop;
 
 /// Size of a classic pcap file header and of each record header.
 const PCAP_FILE_HEADER_LEN: usize = 24;
@@ -49,6 +52,9 @@ pub enum SourceError {
     NotACapture { offset: usize },
     /// The capture's header was read, but no packet record could be.
     NoPacketsInCapture { offset: usize },
+    /// The capture's header names a format we know but cannot read, for the
+    /// reason given.
+    UnreadableCapture { offset: usize, format: &'static str, reason: String },
     /// There were no messages to take packets from.
     NoMessages,
     /// A splitting rule found no frame, for the reason given.
@@ -64,6 +70,7 @@ impl fmt::Display for SourceError {
             SourceError::DelimiterNotFound { delimiter } => write!(f, "The delimiter {delimiter} does not occur in the range."),
             SourceError::NotACapture { offset } => write!(f, "There is no pcap or pcapng header at {offset:#x}."),
             SourceError::NoPacketsInCapture { offset } => write!(f, "The capture at {offset:#x} has a header but no readable packet records."),
+            SourceError::UnreadableCapture { offset, format, reason } => write!(f, "The {format} capture at {offset:#x} cannot be read: {reason}."),
             SourceError::NoMessages => write!(f, "There are no messages to take packets from."),
             SourceError::NoFrames { reason } => write!(f, "No frames: {reason}."),
         }
@@ -316,6 +323,8 @@ pub fn from_framing(bytes: &[u8], start: usize, framing: &Framing) -> Result<Pac
 pub enum CaptureFormat {
     Pcap,
     PcapNg,
+    /// Sun snoop (RFC 1761).
+    Snoop,
 }
 
 impl CaptureFormat {
@@ -323,6 +332,7 @@ impl CaptureFormat {
         match self {
             CaptureFormat::Pcap => "pcap",
             CaptureFormat::PcapNg => "pcapng",
+            CaptureFormat::Snoop => "snoop",
         }
     }
 }
@@ -352,11 +362,14 @@ pub fn capture_format(bytes: &[u8]) -> Option<CaptureFormat> {
     if PCAP_MAGICS.iter().any(|magic| magic == start) {
         return Some(CaptureFormat::Pcap);
     }
+    if snoop::looks_like(bytes) {
+        return Some(CaptureFormat::Snoop);
+    }
     let byte_order = bytes.get(8..12)?;
     (start == PCAPNG_SECTION_MAGIC && (byte_order == PCAPNG_BYTE_ORDER_LE || byte_order == PCAPNG_BYTE_ORDER_BE)).then_some(CaptureFormat::PcapNg)
 }
 
-/// The packets of the pcap or pcapng capture that starts at `bytes[0]`,
+/// The packets of the capture that starts at `bytes[0]`,
 /// which sits at document offset `base`.
 pub fn from_capture(bytes: &[u8], base: usize) -> Result<PacketSet, SourceError> {
     let (mut set, _) = read_capture(bytes, base)?;
@@ -369,6 +382,7 @@ fn read_capture(bytes: &[u8], base: usize) -> Result<(PacketSet, usize), SourceE
     let (set, extent) = match capture_format(bytes) {
         Some(CaptureFormat::Pcap) => read_pcap(bytes, base)?,
         Some(CaptureFormat::PcapNg) => read_pcapng(bytes, base),
+        Some(CaptureFormat::Snoop) => snoop::read(bytes, base)?,
         None => return Err(SourceError::NotACapture { offset: base }),
     };
     if set.is_empty() {
@@ -507,7 +521,7 @@ fn read_pcapng(bytes: &[u8], base: usize) -> (PacketSet, usize) {
     (set, at.min(bytes.len()))
 }
 
-/// Every pcap and pcapng capture whose header lies in `bytes` (which sit at
+/// Every capture whose header lies in `bytes` (which sit at
 /// document offset `base`), at most [`MAX_CAPTURES`]. A capture is reported
 /// only when at least one packet record can be read.
 pub fn find_captures(bytes: &[u8], base: usize) -> Vec<CaptureLocation> {
@@ -515,7 +529,7 @@ pub fn find_captures(bytes: &[u8], base: usize) -> Vec<CaptureLocation> {
     let mut at = 0;
     while at + 4 <= bytes.len() && found.len() < MAX_CAPTURES {
         let format = match bytes[at] {
-            0xD4 | 0xA1 | 0x4D | 0x0A => capture_format(&bytes[at..]),
+            0xD4 | 0xA1 | 0x4D | 0x0A | b's' => capture_format(&bytes[at..]),
             _ => None,
         };
         let Some(format) = format else {
@@ -644,6 +658,20 @@ mod tests {
         assert_eq!(found[1].offset, 1000 + pcapng_at);
         assert_eq!(found[1].format, CaptureFormat::PcapNg);
         assert_eq!(found[1].packets, 1);
+    }
+
+    #[test]
+    fn a_snoop_capture_inside_a_document_is_found_and_read_at_its_offset() {
+        let mut document = b"snoop\0\0\0 is only a header here".to_vec();
+        let at = document.len();
+        document.extend_from_slice(&snoop::tests::snoop_file(4, &[(b"frame one", 7, 0), (b"frame two", 8, 0)]));
+        document.extend_from_slice(b"trailing bytes");
+        let found = find_captures(&document, 0);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!((found[0].offset, found[0].format, found[0].link, found[0].packets), (at, CaptureFormat::Snoop, LinkKind::Ethernet, 2));
+        let set = from_capture(&document[at..], at).expect("a capture");
+        assert_eq!(&document[set.packets[1].offset..set.packets[1].end()], b"frame two");
+        assert_eq!(set.recipe, Recipe::Capture { offset: at });
     }
 
     #[test]

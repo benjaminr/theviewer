@@ -45,7 +45,10 @@ pub const MAX_PACKETS: usize = 200_000;
 /// pcap link-layer header type numbers (from tcpdump.org's LINKTYPE list).
 pub const LINKTYPE_NULL: u32 = 0;
 pub const LINKTYPE_ETHERNET: u32 = 1;
+/// IEEE 802.5 token ring and FDDI, which older capture formats record.
+pub const LINKTYPE_IEEE802_5: u32 = 6;
 pub const LINKTYPE_PPP: u32 = 9;
+pub const LINKTYPE_FDDI: u32 = 10;
 /// The numbers some systems wrote for raw IP before `LINKTYPE_RAW_IP` was
 /// assigned: 12 on most, 14 on OpenBSD.
 pub const LINKTYPE_RAW_IP_OLD: u32 = 12;
