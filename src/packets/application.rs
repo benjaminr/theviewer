@@ -290,9 +290,9 @@ pub fn dissect_dns(message: &[u8]) -> Option<AppLayer> {
         summary_parts.push(format!("{} {name}", dns_type_name(record_type)));
         questions.push(
             Field::new(format!("Question {index}"), at, len, format!("{name} {} class {class}", dns_type_name(record_type))).with_children(vec![
-                Field::new("Name", at, name_len, name.clone()),
-                Field::new("Type", at + name_len, 2, dns_type_name(record_type)),
-                Field::new("Class", at + name_len + 2, 2, class.to_string()),
+                Field::new("Query name", at, name_len, name.clone()),
+                Field::new("Query type", at + name_len, 2, dns_type_name(record_type)),
+                Field::new("Query class", at + name_len + 2, 2, class.to_string()),
             ]),
         );
         at += len;
