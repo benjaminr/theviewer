@@ -56,6 +56,16 @@ impl Caller {
         (*self != Caller::Panel).then(|| self.producer())
     }
 
+    /// What a step `action` taken by this caller is called in the undo
+    /// history: "XOR by mcp:claude-code", or just "XOR" for the person,
+    /// whose steps the Edit menu has always named by what they did.
+    pub fn label(&self, action: &str) -> String {
+        match self {
+            Caller::Panel => action.to_string(),
+            _ => format!("{action} by {}", self.producer()),
+        }
+    }
+
     /// The caller as the confirmation window and messages name it.
     pub fn describe(&self) -> String {
         match self {

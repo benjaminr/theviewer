@@ -336,7 +336,7 @@ fn edit<R>(
     workspace.publish_edits(&id, DOCUMENT_PRODUCER);
     let (_, document) = workspace::document(workspace, Some(&id))?;
     check_version(document, expect_version)?;
-    let label = format!("{action} by {}", caller.producer());
+    let label = caller.label(action);
     let result = document.transaction(label.clone(), change);
     workspace.publish_edits(&id, &caller.producer());
     result.map(|value| (id, value, label))
@@ -581,7 +581,7 @@ pub fn transaction(workspace: &mut dyn Workspace, caller: &Caller, params: Trans
     let (_, document) = workspace::document(workspace, Some(&id))?;
     check_version(document, params.expect_version)?;
     let calls = params.calls.len();
-    let label = format!("{} by {}", params.label.unwrap_or_else(|| count("", calls, "change").trim_start().to_string()), caller.producer());
+    let label = caller.label(&params.label.unwrap_or_else(|| count("", calls, "change").trim_start().to_string()));
     document.begin_labelled_group(label.clone());
     let mut results = Vec::with_capacity(calls);
     for (index, call) in params.calls.into_iter().enumerate() {

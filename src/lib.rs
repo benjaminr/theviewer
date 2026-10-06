@@ -1,6 +1,7 @@
 //! theviewer: a fast binary viewer that rasters any file as pixels and lets
 //! you reshape and edit the underlying bytes.
 
+pub mod actions;
 pub mod alignment;
 pub mod analysis;
 pub mod analysis_stats;

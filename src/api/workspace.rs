@@ -111,6 +111,13 @@ pub trait Workspace {
     /// Show packet set `id` where packets are shown, after it was made or
     /// its decoding changed; a workspace with nowhere to show it does nothing.
     fn show_packet_set(&mut self, _id: &str) {}
+    /// The window, when this workspace is the window: for a method whose
+    /// effect only the window has (a panel to show, a chart to fill), so it
+    /// need not add a hook of its own here. Headless workspaces have none,
+    /// and such a method does what it can without it.
+    fn window(&mut self) -> Option<&mut ViewerApp> {
+        None
+    }
 }
 
 /// `document.edited` with the changes `document` made since `published`,
@@ -523,6 +530,10 @@ impl Workspace for ViewerApp {
     /// about the document shown.
     fn show_packet_set(&mut self, id: &str) {
         crate::panel_packets::show_api_set(self, id);
+    }
+
+    fn window(&mut self) -> Option<&mut ViewerApp> {
+        Some(self)
     }
 }
 
