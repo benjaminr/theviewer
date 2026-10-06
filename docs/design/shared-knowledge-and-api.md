@@ -520,7 +520,7 @@ Each call is a journal entry:
   "caller": "panel",
   "method": "packets.sets.create",
   "params": { "doc": "doc-1", "from": "length_field", "start": 256, "len": 4096,
-              "field": { "at": 0, "size": 2, "endian": "big", "adds": 2 } },
+              "length_field": { "offset": 0, "encoding": "u16", "big_endian": true, "adjustment": 2 } },
   "doc": "doc-1",
   "version_before": 412,
   "version_after": 412,
