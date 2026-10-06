@@ -117,7 +117,7 @@ pub fn commands() -> Vec<Command> {
         Command { id: "tools.strings", title: "Find strings", keys: "", run: |app, _| { app.dock.open = true; app.dock.tab = crate::dock::DockTab::Strings; } },
         Command { id: "tools.bits", title: "Bits and encodings: bit periods, bit planes, line codes, number types, length fields", keys: "", run: |app, _| app.dock.toggle(crate::dock::DockTab::Bits) },
         Command { id: "tools.columns", title: "Profile record columns", keys: "", run: |app, _| { app.dock.open = true; app.dock.tab = crate::dock::DockTab::Columns; } },
-        Command { id: "tools.protocol", title: "Analyse a message stream (protocol)", keys: "", run: |app, _| { app.dock.open = true; app.dock.tab = crate::dock::DockTab::Protocol; crate::analysis_tools::start_protocol(app); } },
+        Command { id: "tools.protocol", title: "Analyse a message stream (protocol)", keys: "", run: |app, _| { app.dock.open = true; app.dock.tab = crate::dock::DockTab::Protocol; crate::analysis_tools::analyse_protocol(app); } },
         Command { id: "tools.packets", title: "Packet viewer: dissect, filter and export packets", keys: "", run: |app, _| app.dock.toggle(crate::dock::DockTab::Packets) },
         Command { id: "tools.reference", title: "Reference for the format at the cursor", keys: "", run: |app, _| app.dock.toggle(crate::dock::DockTab::Reference) },
         Command { id: "tools.workspace", title: "Workspace: what the tools have learnt, and what just happened", keys: "", run: |app, _| app.dock.toggle(crate::dock::DockTab::Workspace) },

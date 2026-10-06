@@ -9,16 +9,14 @@ use eframe::egui::{self, Color32, ColorImage, Rect, RichText, Sense, Stroke, Tex
 use crate::app::ViewerApp;
 use crate::bus::{Draft, Payload};
 use crate::bus::topics::{FieldsGuessed, FrameSpan, FramesDefined, ProtocolIdentified, RecordWidthEstimated};
+use crate::api::tools::columns::{MOST_RECORD_LEN, PROFILE_RECORDS, Profiled, profile_records};
 use crate::columns::{self, ColumnKind, ColumnProfile, FieldGuess};
 use crate::packets;
 use crate::plugin::{Category, Finding};
-use crate::protocol::{self, FramingCandidate, Message, MessageField};
+use crate::api::tools::protocol::{FRAMING_CANDIDATES, PROTOCOL_LIMIT, ProtocolResult};
+use crate::protocol::{self, Framing, FramingCandidate, Message, MessageField};
 use crate::theme;
 
-/// Largest stream handed to protocol analysis.
-const PROTOCOL_LIMIT: usize = 16 * 1024 * 1024;
-/// Records profiled per column.
-const PROFILE_RECORDS: usize = 4096;
 /// Messages listed in the protocol table.
 const LISTED_MESSAGES: usize = 1000;
 /// Messages outlined on the raster.
@@ -94,7 +92,36 @@ pub struct ProtocolView {
     pub messages_decode_as: Option<packets::Detection>,
 }
 
+/// Most messages a chosen framing splits a stream into.
+const MAX_SPLIT_MESSAGES: usize = 100_000;
+/// Header positions whose fields are worked out after a framing is chosen.
+const FIELD_PREFIX: usize = 32;
+
 impl ProtocolView {
+    /// The `bytes` from `start` split with `framing` alone.
+    pub fn with_framing(start: usize, bytes: Vec<u8>, framing: Framing) -> ProtocolView {
+        let candidate = candidate_of(&bytes, framing);
+        let mut view = ProtocolView::new(start, bytes, protocol::ProtocolReport::default(), vec![candidate]);
+        view.choose(0);
+        view
+    }
+
+    /// Re-split and re-analyse with framing candidate `index`.
+    fn choose(&mut self, index: usize) {
+        let Some(candidate) = self.candidates.get(index).cloned() else { return };
+        let messages = protocol::split(&self.bytes, &candidate.framing, MAX_SPLIT_MESSAGES);
+        let fields = protocol::analyse_fields(&self.bytes, &messages, FIELD_PREFIX);
+        let lengths: Vec<usize> = messages.iter().map(|m| m.len).collect();
+        self.report.length_min = lengths.iter().copied().min().unwrap_or(0);
+        self.report.length_max = lengths.iter().copied().max().unwrap_or(0);
+        self.report.length_mean = if lengths.is_empty() { 0.0 } else { lengths.iter().sum::<usize>() as f64 / lengths.len() as f64 };
+        self.report.framing = Some(candidate);
+        self.report.messages = messages;
+        self.report.fields = fields;
+        self.chosen = index;
+        self.detect_message_protocol();
+    }
+
     fn new(base: usize, bytes: Vec<u8>, report: protocol::ProtocolReport, candidates: Vec<FramingCandidate>) -> ProtocolView {
         let mut view = ProtocolView { base, bytes, report, candidates, chosen: 0, messages_decode_as: None };
         view.detect_message_protocol();
@@ -152,16 +179,21 @@ pub fn show_columns(app: &mut ViewerApp, ui: &mut Ui) {
         app.bench.tools.record_len = estimated_record_width(app).unwrap_or_else(|| app.shape.row_stride()).clamp(1, 65_536);
     }
     let origin = records_origin(app, app.bench.tools.record_len);
+    let mut chosen_len = None;
     ui.horizontal(|ui| {
         ui.label("Record length");
-        ui.add(egui::DragValue::new(&mut app.bench.tools.record_len).range(1..=65_536).suffix(" B"));
+        let length = ui.add(egui::DragValue::new(&mut app.bench.tools.record_len).range(1..=MOST_RECORD_LEN).suffix(" B"));
+        // A drag profiles as it goes, and is the person's step once it ends.
+        if length.drag_stopped() || (length.changed() && !length.dragged()) {
+            chosen_len = Some(app.bench.tools.record_len);
+        }
         if ui.button("Use row width").on_hover_text("The raster's bytes per row").clicked() {
-            app.bench.tools.record_len = app.shape.row_stride();
+            chosen_len = Some(app.shape.row_stride());
         }
         if let Some(best) = estimated_record_width(app)
             && ui.button(format!("Use detected {best} B")).clicked()
         {
-            app.bench.tools.record_len = best;
+            chosen_len = Some(best);
         }
         if let Some((_, _, profiles, _)) = &app.bench.tools.columns
             && !profiles.is_empty()
@@ -171,21 +203,20 @@ pub fn show_columns(app: &mut ViewerApp, ui: &mut Ui) {
                 .on_hover_text("From the cursor's record (or the selection) to where the records stop looking alike");
         }
     });
+    if let Some(record_len) = chosen_len {
+        profile_columns(app, record_len);
+    }
     let record_len = app.bench.tools.record_len.max(1);
+    let origin = records_origin(app, record_len);
     let key = (origin, record_len);
+    // The cursor moved to other records (or a drag is under way): profile
+    // them, as the tool does by itself.
     if app.bench.tools.columns.as_ref().map(|c| (c.0, c.1)) != Some(key) {
         let bytes = app.document.read_range(origin, record_len * PROFILE_RECORDS);
         // Within a selection every record counts; otherwise stop where the table does.
-        let records = match app.selection() {
-            Some((_, len)) => (len / record_len).clamp(1, PROFILE_RECORDS),
-            None => columns::table_length(&bytes, record_len, PROFILE_RECORDS),
-        };
-        let bytes = &bytes[..(records * record_len).min(bytes.len())];
-        app.bench.tools.columns_records = records;
-        let profiles = columns::profile(bytes, record_len, PROFILE_RECORDS);
-        let fields = columns::group_fields(bytes, record_len, &profiles, app.document.len());
-        app.bench.tools.columns = Some((origin, record_len, profiles, fields));
-        app.note_tool_result(crate::dock::DockTab::Columns);
+        let selected = app.selection().map(|(_, len)| len);
+        let profiled = profile_records(&bytes, record_len, selected, app.document.len());
+        app.show_column_profile(origin, record_len, profiled);
     }
     let (_, _, profiles, fields) = app.bench.tools.columns.clone().expect("filled above");
     if profiles.is_empty() {
@@ -251,10 +282,32 @@ pub fn show_columns(app: &mut ViewerApp, ui: &mut Ui) {
         });
     });
     if let Some((start, len)) = chosen {
-        app.anchor = Some(start);
-        app.cursor = start + len;
-        app.reveal_cursor_centred();
-        app.reveal_cursor_in_hex(true);
+        app.select_from_tool(start, len);
+    }
+}
+
+/// Profile the records `record_len` bytes long from the cursor's record
+/// (or the selection) because the person chose that length, through
+/// `columns.profile`.
+pub fn profile_columns(app: &mut ViewerApp, record_len: usize) {
+    let record_len = record_len.clamp(1, MOST_RECORD_LEN);
+    let origin = records_origin(app, record_len);
+    let mut params = serde_json::json!({ "start": origin, "record_len": record_len });
+    if let Some((_, len)) = app.selection() {
+        params["len"] = len.into();
+    }
+    let _ = app.perform("columns.profile", params);
+}
+
+impl ViewerApp {
+    /// Show a column profile of the records `record_len` bytes long from
+    /// `start` in the Columns tool: what `columns.profile` does in the window.
+    pub fn show_column_profile(&mut self, start: usize, record_len: usize, profiled: Profiled) {
+        let tools = &mut self.bench.tools;
+        tools.record_len = record_len;
+        tools.columns_records = profiled.records;
+        tools.columns = Some((start, record_len, profiled.profiles, profiled.fields));
+        self.note_tool_result(crate::dock::DockTab::Columns);
     }
 }
 
@@ -262,33 +315,71 @@ pub fn show_columns(app: &mut ViewerApp, ui: &mut Ui) {
 // Protocol
 // ---------------------------------------------------------------------------
 
-pub fn start_protocol(app: &mut ViewerApp) {
-    app.note_tool_result(crate::dock::DockTab::Protocol);
+/// The stream the Protocol tool analyses: the selection, else the whole
+/// file, up to [`PROTOCOL_LIMIT`].
+fn protocol_span(app: &ViewerApp) -> (usize, usize) {
     let (start, len) = app.selection().unwrap_or((0, app.document.len()));
+    (start, len.min(PROTOCOL_LIMIT))
+}
+
+/// Analyse the selection (else the whole file) as a message stream
+/// because the person asked to, through `protocol.analyse`.
+pub fn analyse_protocol(app: &mut ViewerApp) {
+    let (start, len) = protocol_span(app);
+    let _ = app.perform("protocol.analyse", serde_json::json!({ "start": start, "len": len }));
+}
+
+/// The analysis the app starts by itself, as the Protocol tool's: on
+/// launch with the tool asked for, to refresh it after an edit, and for
+/// the packet viewer waiting for messages.
+pub fn start_protocol(app: &mut ViewerApp) {
+    let (start, len) = protocol_span(app);
+    analyse_protocol_from(app, start, len, PROTOCOL_PRODUCER);
+}
+
+/// Analyse `len` bytes from `start` as a message stream on a thread, as a
+/// job of `producer`'s, and show what is found in the Protocol tool. What
+/// `protocol.analyse` does in the window. Returns the job.
+pub fn analyse_protocol_from(app: &mut ViewerApp, start: usize, len: usize, producer: &str) -> String {
+    app.note_tool_result(crate::dock::DockTab::Protocol);
     let bytes = app.document.read_range(start, len.min(PROTOCOL_LIMIT));
     let (sender, receiver) = mpsc::channel();
-    let job = app.start_job("protocol", "Protocol analysis");
-    let publisher = app.bus.publisher();
     let about = (app.document_id(), app.document.version());
+    let job = app.bus.start_job("protocol", "Protocol analysis", producer, Some(about.clone()));
+    let id = job.id().to_string();
+    let publisher = app.bus.publisher();
     thread::spawn(move || {
-        let candidates = protocol::detect_framing(&bytes, 8);
-        if job.is_cancelled() {
-            return job.finish_cancelled();
+        if let Some(view) = run_protocol_analysis(start, bytes, &job, &publisher, about) {
+            let _ = sender.send(view);
         }
-        let report = protocol::analyse(&bytes);
-        let view = ProtocolView::new(start, bytes, report, candidates);
-        if job.is_cancelled() {
-            return job.finish_cancelled();
-        }
-        // What it found is on the bus before the job is said to be done,
-        // so whoever waits for the job finds the frames there.
-        for draft in framing_facts(&view) {
-            publisher.publish(draft.about(about.0.clone(), about.1));
-        }
-        job.finish(view.report.framing.is_some(), format!("{} messages", view.report.messages.len()));
-        let _ = sender.send(view);
     });
     app.bench.tools.protocol_pending = Some(receiver);
+    id
+}
+
+/// Analyse `bytes` (from document offset `start`) as a message stream,
+/// publish what is found about the document `about` names, and finish
+/// `job` with it, unless the job was cancelled.
+pub fn run_protocol_analysis(start: usize, bytes: Vec<u8>, job: &crate::bus::JobHandle, publisher: &crate::bus::Publisher, about: (String, u64)) -> Option<ProtocolView> {
+    let candidates = protocol::detect_framing(&bytes, FRAMING_CANDIDATES);
+    if job.is_cancelled() {
+        job.finish_cancelled();
+        return None;
+    }
+    let report = protocol::analyse(&bytes);
+    let view = ProtocolView::new(start, bytes, report, candidates);
+    if job.is_cancelled() {
+        job.finish_cancelled();
+        return None;
+    }
+    // What it found is on the bus before the job is said to be done,
+    // so whoever waits for the job finds the frames there.
+    for draft in framing_facts(&view) {
+        publisher.publish(draft.about(about.0.clone(), about.1));
+    }
+    let result = serde_json::to_value(ProtocolResult::of(&view)).ok();
+    job.finish_with(view.report.framing.is_some(), format!("{} messages", view.report.messages.len()), result);
+    Some(view)
 }
 
 /// Whether a protocol analysis is running.
@@ -319,7 +410,7 @@ pub const PROTOCOL_PRODUCER: &str = "tool:protocol";
 /// The messages the framing found (with the framing, so they can be split
 /// again), the fields guessed in them and the protocol they read as, ready
 /// to be said about the document.
-fn framing_facts(view: &ProtocolView) -> Vec<Draft> {
+pub(crate) fn framing_facts(view: &ProtocolView) -> Vec<Draft> {
     let base = view.base;
     let (span_start, span_len) = (base, view.bytes.len());
     let origin = view.report.framing.as_ref().map_or_else(|| "protocol analysis".to_string(), |candidate| candidate.framing.describe());
@@ -372,23 +463,45 @@ fn pin_messages(app: &mut ViewerApp) {
     app.bench.pinned.extend(found);
 }
 
-/// Re-split and re-analyse with another framing candidate.
+/// Choose the framing candidate `index` of the analysis shown because the
+/// person picked it, through `protocol.choose_framing`.
 fn choose_framing(app: &mut ViewerApp, index: usize) {
-    let Some(view) = &mut app.bench.tools.protocol else { return };
-    let Some(candidate) = view.candidates.get(index).cloned() else { return };
-    let messages = protocol::split(&view.bytes, &candidate.framing, 100_000);
-    let fields = protocol::analyse_fields(&view.bytes, &messages, 32);
-    let lengths: Vec<usize> = messages.iter().map(|m| m.len).collect();
-    view.report.length_min = lengths.iter().copied().min().unwrap_or(0);
-    view.report.length_max = lengths.iter().copied().max().unwrap_or(0);
-    view.report.length_mean = if lengths.is_empty() { 0.0 } else { lengths.iter().sum::<usize>() as f64 / lengths.len() as f64 };
-    view.report.framing = Some(candidate);
-    view.report.messages = messages;
-    view.report.fields = fields;
-    view.chosen = index;
-    view.detect_message_protocol();
+    let Some(view) = &app.bench.tools.protocol else { return };
+    let Some(candidate) = view.candidates.get(index) else { return };
+    let params = serde_json::json!({ "start": view.base, "len": view.bytes.len(), "framing": candidate.framing });
+    let _ = app.perform("protocol.choose_framing", params);
+}
+
+/// Split the `bytes` from `start` with `framing` and show the messages in
+/// the Protocol tool, re-splitting the analysis shown when it is of the
+/// same bytes: what `protocol.choose_framing` does in the window.
+pub fn show_protocol_framing(app: &mut ViewerApp, start: usize, bytes: Vec<u8>, framing: Framing) -> &ProtocolView {
+    app.note_tool_result(crate::dock::DockTab::Protocol);
+    match &mut app.bench.tools.protocol {
+        Some(view) if view.base == start && view.bytes == bytes => {
+            let index = match view.candidates.iter().position(|candidate| candidate.framing == framing) {
+                Some(index) => index,
+                None => {
+                    view.candidates.push(candidate_of(&view.bytes, framing));
+                    view.candidates.len() - 1
+                }
+            };
+            view.choose(index);
+        }
+        _ => app.bench.tools.protocol = Some(ProtocolView::with_framing(start, bytes, framing)),
+    }
     pin_messages(app);
     publish_framing(app);
+    app.bench.tools.protocol.as_ref().expect("shown above")
+}
+
+/// `framing` as a candidate for `bytes`, with how many messages it makes
+/// and how much of the bytes they cover.
+fn candidate_of(bytes: &[u8], framing: Framing) -> FramingCandidate {
+    let messages = protocol::split(bytes, &framing, MAX_SPLIT_MESSAGES);
+    let covered: usize = messages.iter().map(|message| message.len).sum();
+    let coverage = if bytes.is_empty() { 0.0 } else { covered as f64 / bytes.len() as f64 };
+    FramingCandidate { framing, score: coverage, messages: messages.len(), coverage }
 }
 
 pub fn show_protocol(app: &mut ViewerApp, ui: &mut Ui) {
@@ -396,7 +509,7 @@ pub fn show_protocol(app: &mut ViewerApp, ui: &mut Ui) {
     ui.horizontal(|ui| {
         let scope = if app.selection().is_some() { "the selection" } else { "the whole file" };
         if ui.button(format!("Analyse {scope} as a message stream")).clicked() {
-            start_protocol(app);
+            analyse_protocol(app);
         }
         if app.bench.tools.protocol_pending.is_some() {
             ui.spinner();
@@ -498,10 +611,7 @@ pub fn show_protocol(app: &mut ViewerApp, ui: &mut Ui) {
         });
     });
     if let Some((start, len)) = select {
-        app.anchor = Some(start);
-        app.cursor = start + len.max(1);
-        app.reveal_cursor_centred();
-        app.reveal_cursor_in_hex(true);
+        app.select_from_tool(start, len.max(1));
     }
 }
 
@@ -562,5 +672,97 @@ mod tests {
         assert_eq!(view.messages_decode_as.map(|detection| detection.protocol), Some(packets::FrameProtocol::ModbusTcp));
         let unknown = ProtocolView::new(0, vec![0xA5; 40], protocol::ProtocolReport { messages: vec![Message { offset: 0, len: 20 }, Message { offset: 20, len: 20 }], ..Default::default() }, Vec::new());
         assert_eq!(unknown.messages_decode_as, None);
+    }
+
+    use serde_json::json;
+
+    use crate::actions::take_performed;
+    use crate::app::Launch;
+
+    fn app_with(bytes: &[u8]) -> ViewerApp {
+        let mut app = ViewerApp::new(Launch::default());
+        app.open_bytes(bytes.to_vec(), "test.bin".to_string());
+        app.run_bus();
+        take_performed();
+        app
+    }
+
+    /// Records of 4 bytes: a constant, a counter, a letter and a varying byte.
+    fn records() -> Vec<u8> {
+        (0..64u8).flat_map(|index| [0xA5, index, b'x', index.wrapping_mul(37)]).collect()
+    }
+
+    /// Messages of 12 bytes, each starting with the sync word A5 5A and a counter.
+    fn messages() -> Vec<u8> {
+        (0..40u8).flat_map(|index| [0xA5, 0x5A, index, 8, 1, 2, 3, 4, index.wrapping_mul(13), 6, 7, 8]).collect()
+    }
+
+    /// Collect the protocol analysis once it has finished.
+    fn wait_for_protocol(app: &mut ViewerApp) {
+        let begun = std::time::Instant::now();
+        while protocol_running(app) && begun.elapsed() < std::time::Duration::from_secs(30) {
+            poll_protocol(app);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        app.run_bus();
+    }
+
+    #[test]
+    fn choosing_a_record_length_profiles_the_columns_through_the_api() {
+        let mut app = app_with(&records());
+        profile_columns(&mut app, 4);
+        assert_eq!(take_performed(), [("columns.profile".to_string(), json!({"start": 0, "record_len": 4}))]);
+        let (start, record_len, profiles, fields) = app.bench.tools.columns.clone().expect("the Columns tool shows the profile");
+        assert_eq!((start, record_len, app.bench.tools.record_len, app.bench.tools.columns_records), (0, 4, 4, 64));
+        assert_eq!(profiles[1].kind, ColumnKind::Counter);
+        assert!(!fields.is_empty());
+        app.restore_selection(8, 40);
+        profile_columns(&mut app, 4);
+        assert_eq!(take_performed(), [("columns.profile".to_string(), json!({"start": 8, "record_len": 4, "len": 40}))], "the selection's records, every one counting");
+        assert_eq!(app.bench.tools.columns_records, 10);
+    }
+
+    #[test]
+    fn analysing_a_message_stream_is_a_protocol_job_of_the_person_s_that_fills_the_tool() {
+        let mut app = app_with(&messages());
+        analyse_protocol(&mut app);
+        assert_eq!(take_performed(), [("protocol.analyse".to_string(), json!({"start": 0, "len": 480}))]);
+        wait_for_protocol(&mut app);
+        let view = app.bench.tools.protocol.as_ref().expect("the Protocol tool shows the analysis");
+        assert_eq!(view.report.messages.len(), 40);
+        assert!(app.bench.pinned.iter().any(|pinned| pinned.id == "message"), "the messages are outlined");
+        let job = app.bus.jobs().list().into_iter().find(|job| job.title == "Protocol analysis").expect("a job");
+        assert_eq!(job.producer, "panel");
+        assert_eq!(job.result.as_ref().map(|result| result["messages"].as_array().unwrap().len()), Some(40), "the job's result carries the messages");
+    }
+
+    #[test]
+    fn the_analysis_the_app_starts_by_itself_is_the_tool_s_own() {
+        let mut app = app_with(&messages());
+        start_protocol(&mut app);
+        assert!(take_performed().is_empty());
+        wait_for_protocol(&mut app);
+        let job = app.bus.jobs().list().into_iter().find(|job| job.title == "Protocol analysis").expect("a job");
+        assert_eq!(job.producer, PROTOCOL_PRODUCER);
+    }
+
+    #[test]
+    fn choosing_another_framing_splits_the_messages_again_through_the_api() {
+        let mut app = app_with(&messages());
+        start_protocol(&mut app);
+        wait_for_protocol(&mut app);
+        let fixed = Framing::FixedSize { len: 24 };
+        let chosen = show_protocol_framing(&mut app, 0, messages(), fixed.clone());
+        assert_eq!(chosen.report.messages.len(), 20);
+        let index = chosen.chosen;
+        assert!(app.bench.tools.protocol.as_ref().unwrap().candidates.len() > 1, "the framing joins the analysis's candidates");
+        choose_framing(&mut app, 0);
+        let performed = take_performed();
+        assert_eq!(performed.len(), 1);
+        assert_eq!(performed[0].0, "protocol.choose_framing");
+        assert_eq!((performed[0].1["start"].clone(), performed[0].1["len"].clone()), (json!(0), json!(480)));
+        assert_ne!(performed[0].1["framing"], serde_json::to_value(&fixed).unwrap(), "the first candidate, not the one chosen before (#{index})");
+        assert_eq!(app.bench.tools.protocol.as_ref().unwrap().chosen, 0);
+        assert_eq!(app.bench.tools.protocol.as_ref().unwrap().report.messages.len(), 40);
     }
 }

@@ -70,8 +70,6 @@ Errors are `{code, message, data}`, with these codes:
 | [`structure.parsers`](#structureparsers) | read | The structure parsers available, built in and from plugins. |
 | [`templates.list`](#templateslist) | read | The binary templates available: the built-in ones and the user's own. |
 | [`templates.apply`](#templatesapply) | read | Apply a binary template, by name or as source text, at an offset and return its field tree and records; with pin, also show it as the template tool does. |
-| [`templates.infer`](#templatesinfer) | read | Propose a template struct from several example records, from what varies between them; with pin, also apply it at the first record and show it as the template tool does. |
-| [`templates.clear`](#templatesclear) | view | Withdraw the template pinned over a document: its records are no longer outlined, and it leaves template.applied. |
 | [`codecs.list`](#codecslist) | read | The codecs available for decoding, built in and from plugins. |
 | [`codecs.detect`](#codecsdetect) | read | The codecs whose header starts at an offset. |
 | [`codecs.decode`](#codecsdecode) | read | Decode (decompress) a span with a codec and return the output. |
@@ -944,37 +942,6 @@ Apply a binary template, by name or as source text, at an offset and return its 
 | `structure` | Finding | yes | The whole parse, with its field tree in document offsets. |
 | `total_records` | integer | yes | Records in all. |
 | `warnings` | array of string | yes | Problems met while applying, each with its template line. |
-
-### templates.infer
-
-Propose a template struct from several example records, from what varies between them; with pin, also apply it at the first record and show it as the template tool does.
-
-| Parameter | Type | Required | Description |
-| --- | --- | --- | --- |
-| `doc` | string | no | Document id, path or "current" (the default). |
-| `len` | integer | yes | Bytes of example records, several of them. |
-| `pin` | boolean | no | Also apply the struct at `start` and pin it, as templates.apply with pin does. |
-| `record_len` | integer | no | Bytes per record; guessed from what repeats when omitted. |
-| `start` | integer | yes | First offset of the example records. |
-
-| Result field | Type | Required | Description |
-| --- | --- | --- | --- |
-| `record_len` | integer | yes |  |
-| `records` | integer | yes | Example records it was inferred from. |
-| `source` | string | yes | The struct proposed, as template source for templates.apply. |
-
-### templates.clear
-
-Withdraw the template pinned over a document: its records are no longer outlined, and it leaves template.applied.
-
-| Parameter | Type | Required | Description |
-| --- | --- | --- | --- |
-| `doc` | string | no | Document id, path or "current" (the default). |
-
-| Result field | Type | Required | Description |
-| --- | --- | --- | --- |
-| `cleared` | boolean | yes | Whether a template was pinned there. |
-| `doc` | string | yes | Id of the document. |
 
 ### codecs.list
 

@@ -1986,7 +1986,7 @@ impl ViewerApp {
             if ui.button("Protocol analysis of selection").clicked() {
                 self.dock.open = true;
                 self.dock.tab = DockTab::Protocol;
-                crate::analysis_tools::start_protocol(self);
+                crate::analysis_tools::analyse_protocol(self);
                 ui.close();
             }
             if ui.button("Checksums of selection").clicked() {
@@ -3375,7 +3375,7 @@ impl ViewerApp {
                 if ui.button("Strings").clicked() { self.dock.toggle(DockTab::Strings); ui.close(); }
                 if ui.button("Record columns").clicked() { self.dock.toggle(DockTab::Columns); ui.close(); }
                 if ui.button("Bits and encodings").clicked() { self.dock.toggle(DockTab::Bits); ui.close(); }
-                if ui.button("Protocol analysis").clicked() { self.dock.open = true; self.dock.tab = DockTab::Protocol; crate::analysis_tools::start_protocol(self); ui.close(); }
+                if ui.button("Protocol analysis").clicked() { self.dock.open = true; self.dock.tab = DockTab::Protocol; crate::analysis_tools::analyse_protocol(self); ui.close(); }
                 if ui.button("Packet viewer").clicked() { self.dock.toggle(DockTab::Packets); ui.close(); }
                 if ui.button("XOR keys").clicked() { self.dock.toggle(DockTab::Xor); ui.close(); }
                 if ui.button("Crypto: encrypted blocks, keys, ciphers").clicked() { self.dock.toggle(DockTab::Crypto); ui.close(); }
