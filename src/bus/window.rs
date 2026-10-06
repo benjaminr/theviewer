@@ -111,6 +111,8 @@ pub fn builtin_reactions() -> Vec<Reaction> {
         Reaction { topic: Topic::JobFinished, name: "Packets loads the protocol analysis's messages it waited for", react: crate::panel_packets::follow_protocol_job },
         Reaction { topic: Topic::ReferenceFocus, name: "Reference shows the format asked for", react: crate::panel_reference::follow_focus },
         Reaction { topic: Topic::DocumentEdited, name: "Tools note the edit and refresh once it settles", react: crate::freshness::note_edit },
+        Reaction { topic: Topic::TemplateApplied, name: "The views outline the template applied", react: crate::workbench::follow_applied_template },
+        Reaction { topic: Topic::TemplateApplied, name: "Packets decodes raw frames with the template applied again", react: crate::panel_packets::follow_applied_template },
         Reaction { topic: Topic::RegionsMapped, name: "The views colour and label by the report's regions", react: keep_mapped_regions },
         Reaction { topic: Topic::PluginLog, name: "The status bar shows plugin errors", react: show_plugin_error },
     ]
@@ -448,5 +450,32 @@ mod tests {
         app.open_bytes(vec![1; 16], "other.bin".to_string());
         app.run_bus();
         assert!(app.mapped_regions.is_empty());
+    }
+
+    #[test]
+    fn a_template_published_by_anyone_is_outlined_until_it_is_withdrawn() {
+        let mut app = app_with(&[1u8; 64]);
+        let structure = Finding::new("template:Header", "templates", crate::plugin::Category::Structure, 0, 8).title("Header");
+        let applied = TemplateApplied { name: "Header".into(), source: String::new(), records: 0, structure };
+        app.publish("plugin:acme.lua", Payload::TemplateApplied(applied.clone()));
+        app.run_bus();
+        assert!(app.bench.pinned.iter().any(|finding| finding.id == "template:Header"), "outlined while the Template tool is closed");
+        app.bus.publish(app.draft("plugin:acme.lua", Payload::TemplateApplied(applied)).retraction());
+        app.run_bus();
+        assert!(!app.bench.pinned.iter().any(|finding| finding.id.starts_with("template:")));
+    }
+
+    #[test]
+    fn clearing_the_template_withdraws_it_from_the_bus() {
+        let mut app = app_with(&[1u8; 256]);
+        let source = crate::templates::builtin_templates().first().map(|(_, source)| source.to_string()).unwrap();
+        app.apply_template_source(&source);
+        app.run_bus();
+        let applied = app.bus.facts().find(|fact| fact.topic() == Topic::TemplateApplied).expect("the template applied");
+        assert_eq!(applied.payload_as::<TemplateApplied>().unwrap().source, source);
+        app.clear_template();
+        app.run_bus();
+        assert!(app.bus.facts().all(|fact| fact.topic() != Topic::TemplateApplied && fact.topic() != Topic::StructureIdentified));
+        assert!(!app.bench.pinned.iter().any(|finding| finding.id.starts_with("template:")));
     }
 }

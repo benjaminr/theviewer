@@ -34,7 +34,7 @@ use crate::analysis_tools;
 use crate::api::workspace::WINDOW_DOCUMENT_ID;
 use crate::app::ViewerApp;
 use crate::analysis_tools::PROTOCOL_PRODUCER;
-use crate::bus::topics::{FieldsGuessed, FramesDefined, ProtocolIdentified};
+use crate::bus::topics::{FieldsGuessed, FramesDefined, ProtocolIdentified, TemplateApplied};
 use crate::bus::window::job_finished;
 use crate::bus::{Draft, Message, Payload, Publisher};
 use crate::dock::DockTab;
@@ -295,6 +295,8 @@ pub struct PacketsState {
     pub(crate) link_choice: LinkChoice,
     pub(crate) raw: RawFrames,
     pub(crate) raw_label: String,
+    /// The source of the template raw frames are decoded with.
+    pub(crate) raw_template_source: Option<String>,
     pub(crate) raw_generation: u64,
     pub(crate) suggested_template: Option<String>,
     /// How this set's frames of unknown format are decoded.
@@ -1316,8 +1318,29 @@ fn choose_template(state: &mut PacketsState, label: &str, source: &str) {
             state.choose_frame_decoding(FrameChoice::Raw);
             state.raw.template = Some(template);
             state.raw_label = label.to_string();
+            state.raw_template_source = Some(source.to_string());
         }
         Err(error) => state.show_note(format!("The template could not be read: {error}"), true),
+    }
+}
+
+/// When a template of the name the raw frames are decoded with (the
+/// protocol template, say) is applied again with other source, edited in
+/// the Template tool, decode the frames with the new source. Runs whether
+/// or not the panel is showing.
+pub fn follow_applied_template(app: &mut ViewerApp, message: &Arc<Message>) {
+    let Some(applied) = message.payload_as::<TemplateApplied>() else { return };
+    let state = &mut app.bench.panels.packets;
+    let decoding_with_it = state.raw.template.as_ref().is_some_and(|template| template.name() == applied.name);
+    if message.draft.retracts || !decoding_with_it || applied.source.is_empty() || state.raw_template_source.as_deref() == Some(applied.source.as_str()) {
+        return;
+    }
+    let Ok(template) = Template::parse(&applied.source) else { return };
+    state.raw.template = Some(template);
+    state.raw_template_source = Some(applied.source.clone());
+    state.raw_generation += 1;
+    if let Some(set) = state.set.clone() {
+        state.incoming.get_or_insert(set);
     }
 }
 
@@ -2008,5 +2031,26 @@ mod tests {
         assert_eq!(set.len(), total);
         assert!(matches!(set.recipe, Recipe::Framing { .. }), "split again from the document after edits");
         assert!(!state.raw.guesses.is_empty(), "with the fields the analysis guessed");
+    }
+
+    #[test]
+    fn raw_frames_follow_their_template_applied_again_with_new_source_even_while_hidden() {
+        let mut app = ViewerApp::new(Launch::default());
+        app.open_bytes(vec![1, 0, 2, 0, 3, 0, 4, 0], "records.bin".to_string());
+        app.bench.panels.packets.load(sources::split_fixed(0, 8, 2, LinkKind::Unknown).unwrap());
+        let first = "endian little\nstruct Frame { n: u16 }\nroot Frame";
+        choose_template(&mut app.bench.panels.packets, "Template: Frame", first);
+        let generation = app.bench.panels.packets.raw_generation;
+        // The person edits the template in the Template tool and applies it again.
+        let edited = "endian little\nstruct Frame { low: u8\n high: u8 }\nroot Frame";
+        app.apply_template_source(edited);
+        app.run_bus();
+        let state = &app.bench.panels.packets;
+        assert_eq!(state.raw_template_source.as_deref(), Some(edited));
+        assert!(state.raw_generation > generation, "the frames are decoded again");
+        let other = "endian little\nstruct Other { n: u16 }\nroot Other";
+        app.apply_template_source(other);
+        app.run_bus();
+        assert_eq!(app.bench.panels.packets.raw_template_source.as_deref(), Some(edited), "another template leaves the frames alone");
     }
 }

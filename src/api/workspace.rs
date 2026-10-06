@@ -16,10 +16,10 @@ use serde::{Deserialize, Serialize};
 use super::permissions::{self, Caller, Decision, HeldCall};
 use super::{ApiError, Effect, RegisteredMethod};
 use crate::app::ViewerApp;
-use crate::bus::topics::{CursorMoved, DocumentEdited, DocumentOpened, FindingsPublished, SelectionChanged};
+use crate::bus::topics::{CursorMoved, DocumentEdited, DocumentOpened, FindingsPublished, SelectionChanged, TemplateApplied};
 use crate::bus::{Bus, Draft, MessageId, Payload};
 use crate::document::Document;
-use crate::plugin::{Finding, Registry};
+use crate::plugin::Registry;
 use crate::selection::Selection;
 
 /// Who publishes edits made by hand, outside any API call.
@@ -89,8 +89,9 @@ pub trait Workspace {
     /// returning its id.
     fn new_document(&mut self, name: &str) -> Result<String, ApiError>;
     /// Pin a template's parse over document `id`, as the template tool
-    /// does: its structure and records are published and shown.
-    fn pin_template(&mut self, id: &str, parse: Finding);
+    /// does: it is published on `template.applied`, with its structure and
+    /// records, and shown.
+    fn pin_template(&mut self, id: &str, applied: TemplateApplied);
     /// Whether `caller` may call a method with `effect` here.
     fn permission(&self, caller: &Caller, effect: Effect) -> Decision;
     /// Hold a call until the person allows or denies it, then reply. A
@@ -315,10 +316,12 @@ impl Workspace for HeadlessWorkspace {
         Ok(self.add_document(name, Document::default()))
     }
 
-    fn pin_template(&mut self, id: &str, parse: Finding) {
+    fn pin_template(&mut self, id: &str, applied: TemplateApplied) {
         let Some(version) = self.open_document(id).map(|open| open.document.version()) else { return };
+        let parse = applied.structure.clone();
         let structure = crate::app::structure_of(&parse);
         let (start, len) = (parse.start, parse.len);
+        self.bus.publish(Draft::new(TEMPLATES_PRODUCER, Payload::TemplateApplied(applied)).about(id, version).span(start, len));
         self.bus.publish(Draft::new(TEMPLATES_PRODUCER, Payload::StructureIdentified(structure)).about(id, version).span(start, len));
         self.bus.publish(Draft::new(TEMPLATES_PRODUCER, Payload::FindingsPublished(FindingsPublished { findings: vec![parse] })).about(id, version).span(start, len));
     }
@@ -414,9 +417,9 @@ impl Workspace for ViewerApp {
         Ok(WINDOW_DOCUMENT_ID.to_string())
     }
 
-    fn pin_template(&mut self, id: &str, parse: Finding) {
+    fn pin_template(&mut self, id: &str, applied: TemplateApplied) {
         if id == WINDOW_DOCUMENT_ID {
-            self.pin_template_parse(parse);
+            self.pin_template_parse(applied);
         }
     }
 

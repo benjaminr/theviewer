@@ -949,6 +949,7 @@ What tools, panels and plugins publish on the workspace bus. Facts are kept, the
 | [`selection.changed`](#selectionchanged) | event | What is selected changed, in the main view or by a tool selecting bytes in the document. |
 | [`findings.published`](#findingspublished) | fact | What one producer recognises in the document: the scan, signatures, templates, the structure map, crypto constants, a comparison, checksums or protocol messages. |
 | [`structure.identified`](#structureidentified) | fact | A structure parsed at the cursor, or a template applied, with its field tree. |
+| [`template.applied`](#templateapplied) | fact | A binary template applied to the document (or, retracted, cleared): its name, source and parse, which the views outline and the packet viewer's raw frames follow. |
 | [`regions.mapped`](#regionsmapped) | fact | The file split into regions of one kind, from the report. |
 | [`record_width.estimated`](#record_widthestimated) | fact | The length of the records the data repeats in, from the period scan. |
 | [`frames.defined`](#framesdefined) | fact | Message or packet boundaries: from the protocol framing, a capture or the packet viewer's splitting rules. |
@@ -1023,6 +1024,17 @@ A structure parsed at the cursor, or a template applied, with its field tree.
 | `len` | integer | yes |  |
 | `start` | integer | yes | Document offset of the structure's first byte. |
 | `title` | string | yes | Such as "PNG image". |
+
+### template.applied
+
+A binary template applied to the document (or, retracted, cleared): its name, source and parse, which the views outline and the packet viewer's raw frames follow.
+
+| Payload field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `name` | string | yes | The template's name. |
+| `records` | integer | yes | Records it read from its outermost array. |
+| `source` | string | yes | The template's source text, to apply it again; empty when not known. |
+| `structure` | Finding | yes | The whole parse, with its field tree at document offsets. |
 
 ### regions.mapped
 

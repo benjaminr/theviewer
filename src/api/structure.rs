@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use super::values::{self, NoParams};
 use super::workspace::{self, Workspace};
 use super::{ApiError, MAX_CALL_BYTES};
+use crate::bus::topics::TemplateApplied;
 use crate::plugin::Finding;
 use crate::templates::{self, Template};
 
@@ -155,34 +156,49 @@ pub fn parsers(workspace: &mut dyn Workspace, _params: NoParams) -> Result<Parse
     Ok(ParsersResult { parsers })
 }
 
+/// One template known by name.
+struct KnownTemplate {
+    name: String,
+    origin: TemplateOrigin,
+    /// The source text, when it could be read.
+    source: String,
+    parsed: Result<Template, String>,
+}
+
 /// Every template: the built-in ones, then the user's.
-fn known_templates() -> Vec<(String, TemplateOrigin, Result<Template, String>)> {
-    let builtin = templates::builtin_templates()
-        .into_iter()
-        .map(|(name, source)| (name.to_string(), TemplateOrigin::Builtin, Template::parse(source).map_err(|error| error.to_string())));
-    let user = templates::default_dir()
-        .map(|dir| templates::load_dir(&dir))
-        .unwrap_or_default()
-        .into_iter()
-        .map(|(name, parsed)| (name, TemplateOrigin::User, parsed.map_err(|error| error.to_string())));
+fn known_templates() -> Vec<KnownTemplate> {
+    let builtin = templates::builtin_templates().into_iter().map(|(name, source)| KnownTemplate {
+        name: name.to_string(),
+        origin: TemplateOrigin::Builtin,
+        source: source.to_string(),
+        parsed: Template::parse(source).map_err(|error| error.to_string()),
+    });
+    let dir = templates::default_dir();
+    let user = dir.as_ref().map(|dir| templates::load_dir(dir)).unwrap_or_default().into_iter().map(|(name, parsed)| KnownTemplate {
+        source: dir.as_ref().and_then(|dir| std::fs::read_to_string(dir.join(format!("{name}.tpl"))).ok()).unwrap_or_default(),
+        name,
+        origin: TemplateOrigin::User,
+        parsed: parsed.map_err(|error| error.to_string()),
+    });
     builtin.chain(user).collect()
 }
 
 pub fn list_templates(_workspace: &mut dyn Workspace, _params: NoParams) -> Result<TemplateList, ApiError> {
-    let templates = known_templates().into_iter().map(|(name, origin, parsed)| TemplateInfo { name, origin, error: parsed.err() }).collect();
+    let templates = known_templates().into_iter().map(|known| TemplateInfo { name: known.name, origin: known.origin, error: known.parsed.err() }).collect();
     Ok(TemplateList { templates })
 }
 
 pub fn apply_template(workspace: &mut dyn Workspace, params: ApplyParams) -> Result<ApplyResult, ApiError> {
-    let template = match (&params.name, &params.source) {
+    let (template, source) = match (&params.name, &params.source) {
         (Some(name), None) => {
-            let (_, _, parsed) = known_templates()
+            let known = known_templates()
                 .into_iter()
-                .find(|(known, _, _)| known.eq_ignore_ascii_case(name))
+                .find(|known| known.name.eq_ignore_ascii_case(name))
                 .ok_or_else(|| ApiError::not_found(format!("there is no template '{name}'; templates.list lists them")))?;
-            parsed.map_err(|error| ApiError::invalid_params(format!("the template '{name}' does not parse: {error}")))?
+            let template = known.parsed.map_err(|error| ApiError::invalid_params(format!("the template '{name}' does not parse: {error}")))?;
+            (template, known.source)
         }
-        (None, Some(source)) => Template::parse(source).map_err(|error| ApiError::invalid_params(format!("the template does not parse: {error}")))?,
+        (None, Some(source)) => (Template::parse(source).map_err(|error| ApiError::invalid_params(format!("the template does not parse: {error}")))?, source.clone()),
         _ => return Err(ApiError::invalid_params("give the template by name or as source, not both")),
     };
     let (doc, document) = workspace::document(workspace, params.doc.as_deref())?;
@@ -190,7 +206,8 @@ pub fn apply_template(workspace: &mut dyn Workspace, params: ApplyParams) -> Res
     let bytes = document.read_range(at, available.min(MAX_CALL_BYTES));
     let applied = template.apply(&bytes, at);
     if params.pin {
-        workspace.pin_template(&doc, applied.finding.clone());
+        let pinned = TemplateApplied { name: template.name().to_string(), source, records: applied.records.len(), structure: applied.finding.clone() };
+        workspace.pin_template(&doc, pinned);
     }
     let columns = applied.columns();
     let total_records = applied.records.len() as u64;
@@ -269,5 +286,8 @@ mod tests {
         let pinned = call(&mut workspace, "events.facts", json!({"producer": "tool:templates"})).unwrap();
         let topics: Vec<&str> = pinned["facts"].as_array().unwrap().iter().filter_map(|fact| fact["topic"].as_str()).collect();
         assert!(topics.contains(&"structure.identified") && topics.contains(&"findings.published"), "{topics:?}");
+        let applied = pinned["facts"].as_array().unwrap().iter().find(|fact| fact["topic"] == "template.applied").expect("the template, to apply again");
+        assert_eq!(applied["payload"]["records"], 2);
+        assert!(applied["payload"]["source"].as_str().unwrap().contains("struct R"));
     }
 }

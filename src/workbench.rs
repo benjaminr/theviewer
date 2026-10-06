@@ -15,8 +15,8 @@ use eframe::egui::{self, Color32, ColorImage, Context, Rect, RichText, Sense, St
 use crate::app::{DialogKind, FileAction, ViewerApp};
 use crate::panels::{self, PanelStates};
 use crate::assistant::{self, FileContext, ToolCall, ToolReply};
-use crate::bus::Payload;
-use crate::bus::topics::{MappedRegion, RegionsMapped};
+use crate::bus::{Message, Payload};
+use crate::bus::topics::{MappedRegion, RegionsMapped, TemplateApplied};
 use crate::bus::window::job_finished;
 use crate::document::Document;
 use crate::dock::{self, DockTab};
@@ -251,6 +251,31 @@ struct HilbertView {
     texture: TextureHandle,
     /// Bytes represented by each cell.
     bytes_per_cell: f64,
+}
+
+/// Outline `finding`, a template's parse, in place of the template pinned
+/// before (or none).
+fn pin_template_finding(app: &mut ViewerApp, finding: Option<Finding>) {
+    app.bench.pinned.retain(|pinned| !pinned.id.starts_with("template:"));
+    app.bench.pinned.extend(finding);
+}
+
+/// The views outline a template whoever applied it, a plugin or a client
+/// publishing on `template.applied` included, and stop when it is
+/// withdrawn. Runs whether or not the Template tool is showing.
+pub fn follow_applied_template(app: &mut ViewerApp, message: &Arc<Message>) {
+    let Some(applied) = message.payload_as::<TemplateApplied>() else { return };
+    if message.draft.document.as_deref() != Some(app.document_id().as_str()) {
+        return;
+    }
+    let shown = app.bench.pinned.iter().find(|pinned| pinned.id.starts_with("template:"));
+    if message.draft.retracts {
+        if shown.is_some_and(|shown| shown.id == applied.structure.id && shown.start == applied.structure.start) {
+            pin_template_finding(app, None);
+        }
+    } else if shown != Some(&applied.structure) {
+        pin_template_finding(app, Some(applied.structure.clone()));
+    }
 }
 
 /// One pinned "changed bytes" finding for a range.
@@ -626,7 +651,7 @@ impl ViewerApp {
         match Template::parse(source) {
             Ok(template) => {
                 let origin = self.template_origin();
-                let applied = self.apply_template_at(&template, origin);
+                let applied = self.apply_template_at(&template, source, origin);
                 self.bench.template_applied_source = source.to_string();
                 self.cursor_structure = Some(applied.finding.clone());
                 self.status = format!(
@@ -645,30 +670,46 @@ impl ViewerApp {
         }
     }
 
-    /// Apply `template` at `origin`, pinning the decoded records.
-    fn apply_template_at(&mut self, template: &Template, origin: usize) -> Applied {
+    /// Apply `template` (written as `source`) at `origin`, pinning the
+    /// decoded records.
+    fn apply_template_at(&mut self, template: &Template, source: &str, origin: usize) -> Applied {
         let bytes = self.document.read_range(origin, TEMPLATE_READ);
         let applied = template.apply(&bytes, origin);
-        self.pin_template_parse(applied.finding.clone());
+        let pinned = TemplateApplied { name: template.name().to_string(), source: source.to_string(), records: applied.records.len(), structure: applied.finding.clone() };
+        self.pin_template_parse(pinned);
         applied
     }
 
     /// Pin a template's parse in place of the last: its records are
-    /// outlined and listed, and its structure published.
-    pub fn pin_template_parse(&mut self, finding: Finding) {
-        self.bench.pinned.retain(|f| !f.id.starts_with("template:"));
+    /// outlined and listed, and it is published on `template.applied` with
+    /// its structure.
+    pub fn pin_template_parse(&mut self, applied: TemplateApplied) {
+        let finding = applied.structure.clone();
         self.note_tool_result(DockTab::Template);
+        self.bus.publish(self.draft(TEMPLATES, Payload::TemplateApplied(applied)).span(finding.start, finding.len));
         self.bus.publish(self.draft(TEMPLATES, Payload::StructureIdentified(crate::app::structure_of(&finding))).span(finding.start, finding.len));
-        self.bench.pinned.push(finding);
+        pin_template_finding(self, Some(finding));
     }
 
     /// Decode the applied template again where it was applied, after an
     /// edit changed the bytes under it.
     pub fn reapply_template(&mut self) {
         let Some(origin) = self.bench.template_result.as_ref().map(|applied| applied.finding.start) else { return };
-        let Ok(template) = Template::parse(&self.bench.template_applied_source) else { return };
-        let applied = self.apply_template_at(&template, origin);
+        let source = self.bench.template_applied_source.clone();
+        let Ok(template) = Template::parse(&source) else { return };
+        let applied = self.apply_template_at(&template, &source, origin);
         self.bench.template_result = Some(applied);
+    }
+
+    /// Clear the applied template: its records are no longer outlined, and
+    /// it is withdrawn from `template.applied`.
+    pub fn clear_template(&mut self) {
+        pin_template_finding(self, None);
+        if let Some(applied) = self.bench.template_result.take() {
+            let withdrawn = TemplateApplied { name: String::new(), source: String::new(), records: 0, structure: applied.finding.clone() };
+            self.bus.publish(self.draft(TEMPLATES, Payload::TemplateApplied(withdrawn)).retraction());
+            self.bus.publish(self.draft(TEMPLATES, Payload::StructureIdentified(crate::app::structure_of(&applied.finding))).retraction());
+        }
     }
 
     /// Propose a struct for the selected records.
@@ -715,10 +756,7 @@ impl ViewerApp {
                 self.infer_template();
             }
             if ui.button("Clear").clicked() {
-                self.bench.pinned.retain(|f| !f.id.starts_with("template:"));
-                if let Some(applied) = self.bench.template_result.take() {
-                    self.bus.publish(self.draft(TEMPLATES, Payload::StructureIdentified(crate::app::structure_of(&applied.finding))).retraction());
-                }
+                self.clear_template();
             }
         });
         let width = ui.available_width();

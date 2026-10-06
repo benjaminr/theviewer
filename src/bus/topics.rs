@@ -101,6 +101,7 @@ topics! {
     SelectionChanged(SelectionChanged) = "selection.changed", Event, "What is selected changed, in the main view or by a tool selecting bytes in the document.";
     FindingsPublished(FindingsPublished) = "findings.published", Fact, "What one producer recognises in the document: the scan, signatures, templates, the structure map, crypto constants, a comparison, checksums or protocol messages.";
     StructureIdentified(StructureIdentified) = "structure.identified", Fact, "A structure parsed at the cursor, or a template applied, with its field tree.";
+    TemplateApplied(TemplateApplied) = "template.applied", Fact, "A binary template applied to the document (or, retracted, cleared): its name, source and parse, which the views outline and the packet viewer's raw frames follow.";
     RegionsMapped(RegionsMapped) = "regions.mapped", Fact, "The file split into regions of one kind, from the report.";
     RecordWidthEstimated(RecordWidthEstimated) = "record_width.estimated", Fact, "The length of the records the data repeats in, from the period scan.";
     FramesDefined(FramesDefined) = "frames.defined", Fact, "Message or packet boundaries: from the protocol framing, a capture or the packet viewer's splitting rules.";
@@ -189,6 +190,10 @@ impl Payload {
                 moved(&mut structure.start);
                 move_fields(&mut structure.fields, delta);
             }
+            Payload::TemplateApplied(applied) => {
+                moved(&mut applied.structure.start);
+                move_fields(&mut applied.structure.fields, delta);
+            }
             Payload::RegionsMapped(mapped) => mapped.regions.iter_mut().for_each(|region| moved(&mut region.start)),
             Payload::FramesDefined(defined) => defined.frames.iter_mut().for_each(|frame| moved(&mut frame.start)),
             Payload::ProtocolIdentified(identified) => identified.frames.iter_mut().for_each(|frame| moved(&mut frame.start)),
@@ -271,6 +276,19 @@ pub struct StructureIdentified {
     pub len: usize,
     /// The field tree, at document offsets.
     pub fields: Vec<Field>,
+}
+
+/// A template applied to the document.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct TemplateApplied {
+    /// The template's name.
+    pub name: String,
+    /// The template's source text, to apply it again; empty when not known.
+    pub source: String,
+    /// Records it read from its outermost array.
+    pub records: usize,
+    /// The whole parse, with its field tree at document offsets.
+    pub structure: Finding,
 }
 
 /// One region of the file map.
