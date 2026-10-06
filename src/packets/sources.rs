@@ -1,5 +1,6 @@
 //! Where packets come from: the protocol analysis's messages, captures inside
-//! the document (pcap and pcapng, and the older formats in [`snoop`]), a range
+//! the document (pcap and pcapng, and the older formats in [`snoop`] and
+//! [`netmon`]), a range
 //! cut into records, a single range, or a cluster of aligned messages. Each
 //! source is a pure function returning a [`PacketSet`] whose offsets are
 //! document offsets.
@@ -13,6 +14,7 @@ use super::{LinkKind, Packet, PacketSet};
 use crate::parsers::guarded;
 use crate::protocol::{self, Framing, Message};
 
+pub mod netmon;
 pub mod snoop;
 
 /// Size of a classic pcap file header and of each record header.
@@ -325,6 +327,8 @@ pub enum CaptureFormat {
     PcapNg,
     /// Sun snoop (RFC 1761).
     Snoop,
+    /// Microsoft Network Monitor 2.x.
+    NetMon,
 }
 
 impl CaptureFormat {
@@ -333,6 +337,7 @@ impl CaptureFormat {
             CaptureFormat::Pcap => "pcap",
             CaptureFormat::PcapNg => "pcapng",
             CaptureFormat::Snoop => "snoop",
+            CaptureFormat::NetMon => "Network Monitor",
         }
     }
 }
@@ -365,6 +370,9 @@ pub fn capture_format(bytes: &[u8]) -> Option<CaptureFormat> {
     if snoop::looks_like(bytes) {
         return Some(CaptureFormat::Snoop);
     }
+    if netmon::looks_like(bytes) {
+        return Some(CaptureFormat::NetMon);
+    }
     let byte_order = bytes.get(8..12)?;
     (start == PCAPNG_SECTION_MAGIC && (byte_order == PCAPNG_BYTE_ORDER_LE || byte_order == PCAPNG_BYTE_ORDER_BE)).then_some(CaptureFormat::PcapNg)
 }
@@ -383,6 +391,7 @@ fn read_capture(bytes: &[u8], base: usize) -> Result<(PacketSet, usize), SourceE
         Some(CaptureFormat::Pcap) => read_pcap(bytes, base)?,
         Some(CaptureFormat::PcapNg) => read_pcapng(bytes, base),
         Some(CaptureFormat::Snoop) => snoop::read(bytes, base)?,
+        Some(CaptureFormat::NetMon) => netmon::read(bytes, base)?,
         None => return Err(SourceError::NotACapture { offset: base }),
     };
     if set.is_empty() {
@@ -529,7 +538,7 @@ pub fn find_captures(bytes: &[u8], base: usize) -> Vec<CaptureLocation> {
     let mut at = 0;
     while at + 4 <= bytes.len() && found.len() < MAX_CAPTURES {
         let format = match bytes[at] {
-            0xD4 | 0xA1 | 0x4D | 0x0A | b's' => capture_format(&bytes[at..]),
+            0xD4 | 0xA1 | 0x4D | 0x0A | b's' | b'G' => capture_format(&bytes[at..]),
             _ => None,
         };
         let Some(format) = format else {
@@ -672,6 +681,21 @@ mod tests {
         let set = from_capture(&document[at..], at).expect("a capture");
         assert_eq!(&document[set.packets[1].offset..set.packets[1].end()], b"frame two");
         assert_eq!(set.recipe, Recipe::Capture { offset: at });
+    }
+
+    #[test]
+    fn a_network_monitor_capture_inside_a_document_is_found_and_read_at_its_offset() {
+        let mut document = b"GMBU\x00\x02 but too short to be a capture".to_vec();
+        let at = document.len();
+        let frames = [netmon::tests::TestFrame { data: b"frame one", offset_micros: 0, media_type: 1 }, netmon::tests::TestFrame { data: b"frame two", offset_micros: 10, media_type: 1 }];
+        document.extend_from_slice(&netmon::tests::netmon_file(0x01, &frames));
+        let capture_end = document.len();
+        document.extend_from_slice(b"trailing bytes");
+        let found = find_captures(&document, 0);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!((found[0].offset, found[0].format, found[0].link, found[0].packets, found[0].len), (at, CaptureFormat::NetMon, LinkKind::Ethernet, 2, capture_end - at));
+        let set = from_capture(&document[at..], at).expect("a capture");
+        assert_eq!(&document[set.packets[1].offset..set.packets[1].end()], b"frame two");
     }
 
     #[test]
