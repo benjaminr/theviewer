@@ -133,6 +133,9 @@ impl Parser for PcapParser {
         let fields = vec![
             Field::new("file header", base, 24, link_type_name(link_type)).with_children(vec![
                 Field::new("magic", base, 4, if big_endian { "big endian" } else { "little endian" }),
+                Field::new("version", base + 4, 4, format!("{}.{}", header.version_major, header.version_minor)),
+                Field::new("time zone", base + 8, 4, header.thiszone.to_string()),
+                Field::new("timestamp accuracy", base + 12, 4, header.sigfigs.to_string()),
                 Field::new("snaplen", base + 16, 4, header.snaplen.to_string()),
                 Field::new("link type", base + 20, 4, link_type_name(link_type)),
             ]),

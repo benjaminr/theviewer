@@ -59,6 +59,21 @@ meaning = "0xA1B2C3D4 (microsecond timestamps) or 0xA1B23C4D (nanosecond timesta
 section = "4.1"
 
 [[format.fields]]
+name = "version"
+meaning = "Major then minor version of the file format, two 16-bit numbers in the file's byte order. Every current writer uses 2.4."
+section = "4"
+
+[[format.fields]]
+name = "time zone"
+meaning = "Once the offset of the timestamps from UTC, in seconds; now reserved and written as zero, since timestamps are always UTC."
+section = "4"
+
+[[format.fields]]
+name = "timestamp accuracy"
+meaning = "Once the accuracy of the timestamps; now reserved and written as zero."
+section = "4"
+
+[[format.fields]]
 name = "snaplen"
 meaning = "The snapshot length: the most bytes of any packet that were kept. Longer packets are cut short, so their captured length is less than their original length."
 section = "4"
