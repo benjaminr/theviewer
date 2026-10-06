@@ -10,8 +10,10 @@
 //! Everything here is pure and bounded; the panel reads the bytes and turns
 //! the results into one undoable document edit.
 
+use super::dissect::Layer;
 use super::split::BytePattern;
 use crate::columns::{self, ColumnKind};
+use crate::plugin::Field;
 
 /// Widest grid drawn, in columns; longer packets are cut off at the right.
 pub const MAX_GRID_COLUMNS: usize = 65_536;
@@ -24,6 +26,10 @@ pub const MAX_STATISTIC_ROWS: usize = 1024;
 const MIN_STATISTIC_VALUES: usize = 2;
 /// Widest integer a counter or a set value is written as.
 const MAX_INTEGER_BYTES: usize = 8;
+/// Rows whose dissections name the columns.
+pub const MAX_FIELD_ROWS: usize = 32;
+/// Layers that hold no protocol's fields, whose bytes go unnamed.
+const UNNAMED_LAYERS: [&str; 4] = ["Data", "Payload", "Trailing data", "Padding"];
 
 /// How rows are lined up.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -127,6 +133,51 @@ pub fn column_kinds(rows: &[&[u8]], shifts: &[usize], columns: usize) -> Vec<Opt
                 }
             }
             (values.len() >= MIN_STATISTIC_VALUES).then(|| columns::profile_column(&values, column).kind)
+        })
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
+// Column names from the dissection
+// ---------------------------------------------------------------------------
+
+/// The innermost field of a packet's dissection holding packet offset
+/// `offset`, as "Transaction ID (DNS)"; `None` where no protocol's field
+/// does (data, payload or trailing bytes).
+pub fn field_at(layers: &[Layer], offset: usize) -> Option<String> {
+    let layer = layers.iter().rev().find(|layer| offset >= layer.offset && offset < layer.offset + layer.len)?;
+    if UNNAMED_LAYERS.contains(&layer.name.as_str()) {
+        return None;
+    }
+    let field = innermost_field(&layer.fields, offset)?;
+    Some(format!("{} ({})", field.name, layer.name))
+}
+
+fn innermost_field(fields: &[Field], offset: usize) -> Option<&Field> {
+    let holding = fields.iter().find(|field| offset >= field.offset && offset < field.offset + field.len)?;
+    innermost_field(&holding.children, offset).or(Some(holding))
+}
+
+/// A name for each grid column from the dissected rows, given as `(layers,
+/// lead)` where `lead` is the grid column of the packet's first byte: the
+/// field every row reaching the column agrees on, or `None` where they
+/// differ or no field covers it.
+pub fn column_fields(rows: &[(&[Layer], usize)], columns: usize) -> Vec<Option<String>> {
+    (0..columns.min(MAX_STATISTIC_COLUMNS))
+        .map(|column| {
+            let mut agreed: Option<String> = None;
+            for &(layers, lead) in rows.iter().take(MAX_FIELD_ROWS) {
+                let Some(offset) = column.checked_sub(lead) else { continue };
+                if layers.iter().all(|layer| offset >= layer.offset + layer.len) {
+                    continue;
+                }
+                let name = field_at(layers, offset)?;
+                match &agreed {
+                    Some(known) if *known != name => return None,
+                    _ => agreed = Some(name),
+                }
+            }
+            agreed
         })
         .collect()
 }
@@ -400,5 +451,29 @@ mod tests {
         let rows = [ColumnText { packet: 1, offset: 0x10, bytes: &[0xDE, 0xAD] }, ColumnText { packet: 2, offset: 0x20, bytes: &[0x01] }];
         assert_eq!(columns_as_hex(&rows), "1: de ad\n2: 01\n");
         assert_eq!(columns_as_csv(&rows, 4, 2), "packet,offset,+4,+5\n1,0x10,de,ad\n2,0x20,01\n");
+    }
+
+    fn dns_layers() -> Vec<Layer> {
+        let fields = vec![
+            Field::new("Transaction ID", 0, 2, "0x0001"),
+            Field::new("Flags", 2, 2, "0x0100"),
+            Field::new("Question section", 12, 6, "1 questions").with_children(vec![Field::new("Question 0", 12, 6, "a A").with_children(vec![Field::new("Query name", 12, 2, "a")])]),
+        ];
+        vec![Layer { name: "DNS".to_string(), offset: 0, len: 18, fields }, Layer { name: "Trailing data".to_string(), offset: 18, len: 2, fields: vec![Field::new("Data", 18, 2, "")] }]
+    }
+
+    #[test]
+    fn columns_are_named_by_the_innermost_field_the_rows_agree_on() {
+        let dns = dns_layers();
+        let names = column_fields(&[(&dns, 0), (&dns, 0)], 20);
+        assert_eq!(names[0].as_deref(), Some("Transaction ID (DNS)"));
+        assert_eq!(names[3].as_deref(), Some("Flags (DNS)"));
+        assert_eq!(names[12].as_deref(), Some("Query name (DNS)"));
+        assert_eq!(names[14].as_deref(), Some("Question 0 (DNS)"));
+        assert_eq!(names[5], None, "no field covers the counts here");
+        assert_eq!(names[19], None, "trailing data is not named");
+        let shifted = column_fields(&[(&dns, 0), (&dns, 2)], 20);
+        assert_eq!(shifted[0].as_deref(), Some("Transaction ID (DNS)"), "the shifted row does not reach column 0");
+        assert_eq!(shifted[2], None, "Flags in one row, Transaction ID in the other");
     }
 }

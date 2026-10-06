@@ -25,7 +25,7 @@ use crate::packets::edit;
 use crate::packets::grid::{self, Alignment, ColumnOperation, ColumnSlice, ColumnText, RowPlacement};
 use crate::packets::sources::{self, Recipe};
 use crate::packets::split::{self, BytePattern, LengthCounts, LengthEncoding, LengthField, PatternMode};
-use crate::packets::{self, LinkKind};
+use crate::packets::{self, Layer, LinkKind};
 use crate::panel_packets::{self as panel, Note, PacketsState};
 use crate::panel_packets_view::{self as view, SINGLE_EDIT_LIMIT};
 use crate::plugin::Category;
@@ -225,6 +225,9 @@ struct GridRows {
     spans: Vec<(usize, usize)>,
     columns: usize,
     kinds: Vec<Option<ColumnKind>>,
+    /// The field each column holds in every dissected row, such as
+    /// "Transaction ID (DNS)", where the rows agree.
+    fields: Vec<Option<String>>,
     /// Some rows were cut short by the read limits.
     truncated: bool,
 }
@@ -604,8 +607,55 @@ pub fn refresh_rows(state: &mut PacketsState, app: &mut ViewerApp) {
     for (placement, shift) in rows.placements.iter_mut().zip(shifts) {
         placement.shift = shift;
     }
+    rows.fields = column_fields(state, &rows);
     rows.key = Some(key);
     state.grid.rows = rows;
+}
+
+/// Name the columns from the dissections of the first rows, so a decoded
+/// protocol's fields label the grid.
+fn column_fields(state: &PacketsState, rows: &GridRows) -> Vec<Option<String>> {
+    let dissected: Vec<(Vec<Layer>, usize)> = rows
+        .packets
+        .iter()
+        .zip(&rows.placements)
+        .take(grid::MAX_FIELD_ROWS)
+        .filter_map(|(&index, placement)| {
+            let packet = state.set.as_ref()?.packets.get(index)?;
+            let link = state.rows.get(index)?.link;
+            let dissection = packets::dissect_with(state.bytes.packet(index), link, &state.raw);
+            // With record headers shown, the packet starts after its header.
+            let lead = placement.shift + packet.offset.saturating_sub(placement.offset);
+            Some((dissection.layers, lead))
+        })
+        .collect();
+    let borrowed: Vec<(&[Layer], usize)> = dissected.iter().map(|(layers, lead)| (layers.as_slice(), *lead)).collect();
+    grid::column_fields(&borrowed, rows.columns)
+}
+
+/// The field holding grid cell `(row, column)` in that row's own packet.
+fn cell_field(state: &PacketsState, row: usize, column: usize) -> Option<String> {
+    let rows = &state.grid.rows;
+    let index = *rows.packets.get(row)?;
+    let placement = rows.placements.get(row)?;
+    let packet = state.set.as_ref()?.packets.get(index)?;
+    let offset = placement.packet_offset(column)?.checked_sub(packet.offset.saturating_sub(placement.offset))?;
+    let dissection = packets::dissect_with(state.bytes.packet(index), state.rows.get(index)?.link, &state.raw);
+    grid::field_at(&dissection.layers, offset)
+}
+
+/// The fields the columns `first..first + width` hold, for naming a
+/// selection: up to three, in order.
+fn selected_fields(rows: &GridRows, first: usize, width: usize) -> Vec<&str> {
+    const MOST_NAMED: usize = 3;
+    let mut names: Vec<&str> = Vec::new();
+    for name in rows.fields.iter().skip(first).take(width).flatten() {
+        if names.last() != Some(&name.as_str()) && !names.contains(&name.as_str()) {
+            names.push(name);
+        }
+    }
+    names.truncate(MOST_NAMED);
+    names
 }
 
 // ---------------------------------------------------------------------------
@@ -990,9 +1040,15 @@ fn paint_row_labels(state: &PacketsState, painter: &egui::Painter, geometry: &Ge
 
 fn show_tooltip(state: &PacketsState, response: &egui::Response, hit: Hit) {
     let rows = &state.grid.rows;
-    let kind_text = |column: usize| match rows.kinds.get(column).copied().flatten() {
-        Some(kind) => format!("column +{column}: {} ({})", kind.label(), kind.description()),
-        None => format!("column +{column}"),
+    let kind_text = |column: usize| {
+        let kind = match rows.kinds.get(column).copied().flatten() {
+            Some(kind) => format!("column +{column}: {} ({})", kind.label(), kind.description()),
+            None => format!("column +{column}"),
+        };
+        match rows.fields.get(column).and_then(Option::as_deref) {
+            Some(field) => format!("{field} · {kind}"),
+            None => kind,
+        }
     };
     let text = match hit {
         Hit::Ruler(column) => format!("{} · click to select the column, drag for several", kind_text(column)),
@@ -1002,7 +1058,8 @@ fn show_tooltip(state: &PacketsState, response: &egui::Response, hit: Hit) {
             match (rows.cell(row, column), rows.placements[row].packet_offset(column)) {
                 (Some((offset, byte)), Some(within)) => {
                     let character = if (0x20..0x7F).contains(&byte) { format!(" '{}'", byte as char) } else { String::new() };
-                    format!("Packet {packet} · +{within} · document {offset:#x} · {byte:#04x} = {byte}{character}\n{}", kind_text(column))
+                    let field = cell_field(state, row, column).map(|field| format!("\n{field}")).unwrap_or_default();
+                    format!("Packet {packet} · +{within} · document {offset:#x} · {byte:#04x} = {byte}{character}{field}\n{}", kind_text(column))
                 }
                 _ => format!("Packet {packet} · no byte here"),
             }
@@ -1276,7 +1333,9 @@ fn show_column_operations(state: &mut PacketsState, app: &mut ViewerApp, ui: &mu
             }
             None => "Columns ".to_string(),
         };
-        ui.label(RichText::new(format!("{rows_described}+{first}..+{} ({width} B) in {targets} packets", first + width)).strong());
+        let fields = selected_fields(&grid.rows, first, width);
+        let fields = if fields.is_empty() { String::new() } else { format!(": {}", fields.join(", ")) };
+        ui.label(RichText::new(format!("{rows_described}+{first}..+{} ({width} B) in {targets} packets{fields}", first + width)).strong());
         ui.add_enabled(has_selected_packets, egui::Checkbox::new(&mut grid.only_selected, "only the selected packets"));
         if ui.small_button("Clear").clicked() {
             action = Some(ColumnAction::Clear);

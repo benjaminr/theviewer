@@ -1674,6 +1674,22 @@ mod tests {
         assert_eq!(row_protocols(&harness), vec!["Data"; 5]);
     }
 
+    #[test]
+    fn the_hex_grid_names_selected_columns_by_the_fields_of_the_decoded_protocol() {
+        let mut harness = harness_for(modbus_stream(4));
+        split_modbus(&mut harness);
+        harness.get_by_label("Hex").click();
+        settle(&mut harness);
+        harness.state_mut().0.grid.columns = Some((6, 2));
+        settle(&mut harness);
+        assert!(harness.query_by_label_contains("in 4 packets: Unit ID (Modbus/TCP), Function code (Modbus/TCP)").is_some());
+
+        // Shown with the field guesses instead, the columns are not named.
+        harness.state_mut().0.choose_frame_decoding(FrameChoice::Raw);
+        settle(&mut harness);
+        assert!(harness.query_by_label_contains("(Modbus/TCP)").is_none());
+    }
+
     fn click_at(harness: &mut PanelHarness, position: egui::Pos2) {
         harness.hover_at(position);
         harness.step();
