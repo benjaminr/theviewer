@@ -8,7 +8,10 @@
 //! types from the signature catalogue (`image/png`). The notes are written
 //! for this project; the specifications themselves are cited by number,
 //! section and link, and RFC sections can be fetched on request (see
-//! [`rfc_text_url`] and [`rfc_section`]).
+//! [`rfc_text_url`] and [`rfc_section`]). Protocols and fields also carry
+//! their Wireshark display-filter names (`wireshark = "ip.ttl"`), which
+//! `check_reference` verifies against the installed tshark; only the names
+//! come from Wireshark.
 //!
 //! Your own notes, in the same TOML form, are read once at startup from
 //! `~/.config/theviewer/reference/*.toml` (see [`user_notes_dir`]). An entry
@@ -77,6 +80,10 @@ pub struct FormatReference {
     /// IP protocol numbers that announce this protocol in an IP header.
     #[serde(default)]
     pub ip_protocols: Vec<u8>,
+    /// The protocol's Wireshark display-filter name, such as `ip`, `dhcp`
+    /// or `smb2`, so the notes can be matched with Wireshark and tshark.
+    #[serde(default)]
+    pub wireshark: Option<String>,
     #[serde(default)]
     pub specs: Vec<Specification>,
     #[serde(default)]
@@ -139,6 +146,9 @@ pub struct FieldNote {
     #[serde(default)]
     pub aliases: Vec<String>,
     pub meaning: String,
+    /// The field's Wireshark display-filter name, such as `ip.ttl`.
+    #[serde(default)]
+    pub wireshark: Option<String>,
     /// Section of the first specification that defines the field.
     #[serde(default)]
     pub section: Option<String>,
@@ -180,19 +190,21 @@ pub struct LoadedNotes {
     pub problems: Vec<String>,
 }
 
-/// Every embedded entry, with indexes from lower-case key, port, EtherType
-/// and IP protocol number to entries.
+/// Every embedded entry, with indexes from lower-case key, port, EtherType,
+/// IP protocol number and Wireshark protocol name to entries.
 pub struct Library {
     entries: Vec<FormatReference>,
     by_key: HashMap<String, usize>,
+    by_wireshark: HashMap<String, usize>,
     by_port: HashMap<(Transport, u16), Vec<usize>>,
     by_ethertype: HashMap<u16, Vec<usize>>,
     by_ip_protocol: HashMap<u8, Vec<usize>>,
 }
 
 impl Library {
-    /// Parse reference files. Fails on malformed TOML, a duplicate id or a
-    /// key claimed by two entries, so mistakes show up in the tests.
+    /// Parse reference files. Fails on malformed TOML, a duplicate id, or a
+    /// key or Wireshark protocol name claimed by two entries, so mistakes
+    /// show up in the tests.
     pub fn parse(sources: &[(&str, &str)]) -> Result<Library, String> {
         let mut entries = Vec::new();
         for (name, text) in sources {
@@ -237,10 +249,21 @@ impl Library {
         Ok(LoadedNotes { library, user_files: loaded_files, problems })
     }
 
-    /// Index entries by key, port, EtherType and IP protocol number.
+    /// Index entries by key, port, EtherType, IP protocol number and
+    /// Wireshark protocol name.
     fn index(entries: Vec<FormatReference>, clash: KeyClash) -> Result<Library, String> {
         let mut by_key: HashMap<String, usize> = HashMap::new();
+        let mut by_wireshark: HashMap<String, usize> = HashMap::new();
         for (index, entry) in entries.iter().enumerate() {
+            if let Some(name) = &entry.wireshark {
+                let name = name.trim().to_lowercase();
+                if let Some(&other) = by_wireshark.get(&name)
+                    && clash == KeyClash::Reject
+                {
+                    return Err(format!("Wireshark name '{name}' is claimed by both '{}' and '{}'", entries[other].id, entry.id));
+                }
+                by_wireshark.insert(name, index);
+            }
             for key in entry.keys.iter().chain(std::iter::once(&entry.id)) {
                 let key = key.to_lowercase();
                 if let Some(&other) = by_key.get(&key)
@@ -267,7 +290,7 @@ impl Library {
                 by_ip_protocol.entry(protocol).or_default().push(index);
             }
         }
-        Ok(Library { entries, by_key, by_port, by_ethertype, by_ip_protocol })
+        Ok(Library { entries, by_key, by_wireshark, by_port, by_ethertype, by_ip_protocol })
     }
 
     /// Entries registered on, or commonly found on, a transport port.
@@ -283,6 +306,13 @@ impl Library {
     /// Entries an IP protocol number announces.
     pub fn by_ip_protocol(&self, protocol: u8) -> Vec<&FormatReference> {
         self.by_ip_protocol.get(&protocol).map_or_else(Vec::new, |indexes| indexes.iter().map(|&index| &self.entries[index]).collect())
+    }
+
+    /// The entry for a Wireshark protocol name such as `ip` or `dhcp`,
+    /// whatever its case. Kept apart from [`Library::lookup`], whose keys
+    /// are the app's own names.
+    pub fn by_wireshark(&self, name: &str) -> Option<&FormatReference> {
+        self.by_wireshark.get(&name.trim().to_lowercase()).map(|&index| &self.entries[index])
     }
 
     pub fn entries(&self) -> &[FormatReference] {
@@ -343,8 +373,10 @@ impl Library {
 
     /// Entries matching what the user typed: a port such as `udp/67`; a
     /// number, as a port, IP protocol number or EtherType; or else words found
-    /// in an entry's id, name, keys, summary, group or cited documents. Every
-    /// entry for an empty query.
+    /// in an entry's id, name, keys, summary, group, cited documents or
+    /// Wireshark names, with the entries Wireshark itself calls that name
+    /// (`dhcp`, or a field such as `ip.ttl`) first. Every entry for an empty
+    /// query.
     pub fn search(&self, query: &str) -> Vec<&FormatReference> {
         let query = query.trim();
         if query.is_empty() {
@@ -357,7 +389,9 @@ impl Library {
             return found;
         }
         let words: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
-        self.entries.iter().filter(|entry| words.iter().all(|word| entry.mentions(word))).collect()
+        let mut found: Vec<&FormatReference> = self.entries.iter().filter(|entry| words.iter().all(|word| entry.mentions(word))).collect();
+        found.sort_by_key(|entry| !entry.has_wireshark_name(query));
+        found
     }
 
     /// An entry's notes as plain text for the assistant, looked up by id or
@@ -512,14 +546,13 @@ impl FormatReference {
         })
     }
 
-    /// What a field means, with its citation on a line of its own, for
-    /// tooltips wherever the field is shown.
+    /// What a field means, with its citation and Wireshark name on lines of
+    /// their own, for tooltips wherever the field is shown.
     pub fn explain_field(&self, name: &str) -> Option<String> {
         let note = self.field(name)?;
-        Some(match self.citation(note) {
-            Some(citation) => format!("{}\n\n{citation}", note.meaning),
-            None => note.meaning.clone(),
-        })
+        let wireshark = note.wireshark.as_ref().map(|name| format!("Wireshark: {name}"));
+        let footer: Vec<String> = self.citation(note).into_iter().chain(wireshark).collect();
+        Some(if footer.is_empty() { note.meaning.clone() } else { format!("{}\n\n{}", note.meaning, footer.join("\n")) })
     }
 
     /// A short name for breadcrumbs, such as "UDP" for "User Datagram
@@ -534,7 +567,7 @@ impl FormatReference {
     }
 
     /// Whether a lower-case `word` appears in the entry's id, name, keys,
-    /// summary, group, ports or cited documents.
+    /// summary, group, ports, cited documents or Wireshark names.
     fn mentions(&self, word: &str) -> bool {
         let contains = |text: &str| text.to_lowercase().contains(word);
         contains(&self.id)
@@ -543,11 +576,26 @@ impl FormatReference {
             || self.group.as_deref().is_some_and(contains)
             || self.keys.iter().chain(&self.ports).any(|text| contains(text))
             || self.specs.iter().any(|spec| contains(&spec.document) || contains(&spec.title))
+            || self.wireshark_names().any(contains)
+    }
+
+    /// The entry's Wireshark protocol name, then its fields' names.
+    pub fn wireshark_names(&self) -> impl Iterator<Item = &str> {
+        self.wireshark.iter().chain(self.fields.iter().filter_map(|note| note.wireshark.as_ref())).map(String::as_str)
+    }
+
+    /// Whether Wireshark calls the protocol, or one of its fields, `name`.
+    fn has_wireshark_name(&self, name: &str) -> bool {
+        self.wireshark_names().any(|known| known.eq_ignore_ascii_case(name.trim()))
     }
 
     /// The whole entry as plain text, for the assistant's context.
     pub fn to_plain_text(&self) -> String {
-        let mut text = format!("{}\n{}\n\n{}\n", self.name, self.summary, self.organisation.trim());
+        let mut text = format!("{}\n{}\n", self.name, self.summary);
+        if let Some(name) = &self.wireshark {
+            text.push_str(&format!("Wireshark display filter: {name}\n"));
+        }
+        text.push_str(&format!("\n{}\n", self.organisation.trim()));
         if !self.specs.is_empty() {
             text.push_str("\nSpecifications:\n");
             for spec in &self.specs {
@@ -558,7 +606,8 @@ impl FormatReference {
         if !self.fields.is_empty() {
             text.push_str("\nFields:\n");
             for note in &self.fields {
-                text.push_str(&format!("- {}: {}\n", note.name.trim_end_matches('*').trim(), note.meaning));
+                let wireshark = note.wireshark.as_ref().map(|name| format!(" (Wireshark {name})")).unwrap_or_default();
+                text.push_str(&format!("- {}{wireshark}: {}\n", note.name.trim_end_matches('*').trim(), note.meaning));
             }
         }
         text
@@ -911,6 +960,69 @@ organisation = "As I see it."
                 assert!(library.by_id(carried).is_some(), "{} carries unknown '{carried}'", entry.id);
             }
         }
+    }
+
+    const IPV4: &str = r#"
+[[format]]
+id = "ipv4"
+name = "Internet Protocol version 4"
+keys = ["IPv4"]
+wireshark = "ip"
+summary = "Datagrams between hosts."
+organisation = "A 20-byte header, then the payload."
+[[format.specs]]
+document = "RFC 791"
+title = "Internet Protocol"
+url = "https://www.rfc-editor.org/rfc/rfc791"
+section = "3.1"
+[[format.fields]]
+name = "Time to live"
+wireshark = "ip.ttl"
+meaning = "Hops left."
+[[format.fields]]
+name = "Options"
+meaning = "Rare extras."
+"#;
+
+    #[test]
+    fn a_wireshark_protocol_name_finds_its_entry_but_is_not_a_lookup_key() {
+        let library = Library::parse(&[("sample.toml", SAMPLE), ("ipv4.toml", IPV4)]).unwrap();
+        assert_eq!(library.by_wireshark("ip").unwrap().id, "ipv4");
+        assert_eq!(library.by_wireshark(" IP ").unwrap().id, "ipv4", "case and spacing do not matter");
+        assert!(library.by_wireshark("udp").is_none(), "an entry without a Wireshark name is not found by its id");
+        assert!(library.lookup("ip").is_none(), "Wireshark names are not the app's keys");
+    }
+
+    #[test]
+    fn a_wireshark_protocol_name_claimed_twice_is_rejected_but_your_notes_may_take_it() {
+        let other = IPV4.replace("id = \"ipv4\"", "id = \"ip-again\"").replace("keys = [\"IPv4\"]", "keys = [\"IP again\"]");
+        let error = Library::parse(&[("ipv4.toml", IPV4), ("other.toml", &other)]).err().unwrap();
+        assert!(error.contains("Wireshark name 'ip' is claimed by both 'ipv4' and 'ip-again'"), "{error}");
+        let mine = vec![(PathBuf::from("mine.toml"), Ok(other.clone()))];
+        let loaded = Library::with_user_notes(&[("ipv4.toml", IPV4)], &mine).unwrap();
+        assert_eq!(loaded.library.by_wireshark("ip").unwrap().id, "ip-again");
+    }
+
+    #[test]
+    fn the_library_is_searched_by_wireshark_filter_names() {
+        let udp_mentions_ip = SAMPLE.replace("Datagrams between ports.", "Datagrams between ports, carried in ip.");
+        let library = Library::parse(&[("sample.toml", &udp_mentions_ip), ("ipv4.toml", IPV4)]).unwrap();
+        let ids = |query: &str| library.search(query).iter().map(|entry| entry.id.as_str()).collect::<Vec<_>>();
+        assert_eq!(ids("ip.ttl"), ["ipv4"], "a field's filter name finds its protocol");
+        assert_eq!(ids("IP.TTL"), ["ipv4"]);
+        assert_eq!(ids("ip"), ["ipv4", "udp"], "the entry Wireshark calls 'ip' comes first");
+    }
+
+    #[test]
+    fn a_fields_wireshark_name_is_shown_in_its_tooltip_and_the_assistants_text() {
+        let library = Library::parse(&[("ipv4.toml", IPV4)]).unwrap();
+        let ipv4 = library.lookup("IPv4").unwrap();
+        assert_eq!(ipv4.explain_field("Time to live").unwrap(), "Hops left.\n\nRFC 791 §3.1\nWireshark: ip.ttl");
+        assert_eq!(ipv4.explain_field("Options").unwrap(), "Rare extras.\n\nRFC 791 §3.1");
+        let text = ipv4.to_plain_text();
+        assert!(text.contains("Wireshark display filter: ip\n"), "{text}");
+        assert!(text.contains("- Time to live (Wireshark ip.ttl): Hops left."), "{text}");
+        assert!(text.contains("- Options: Rare extras."), "{text}");
     }
 
     const RFC_TEXT: &str = "\

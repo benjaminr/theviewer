@@ -891,10 +891,27 @@ fn show_user_notes_status(loaded: &reference::LoadedNotes, ui: &mut Ui, actions:
     }
 }
 
-/// Name and summary.
+/// Name, summary and the protocol's Wireshark name.
 fn show_heading(ui: &mut Ui, notes: &FormatReference) {
     ui.label(RichText::new(&notes.name).heading());
     ui.label(RichText::new(&notes.summary).color(theme::TEXT_DIM));
+    if let Some(name) = &notes.wireshark {
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("Wireshark:").color(theme::TEXT_DIM));
+            wireshark_name(ui, name);
+        });
+    }
+}
+
+/// A Wireshark display-filter name in monospace; clicking copies it.
+fn wireshark_name(ui: &mut Ui, name: &str) -> egui::Response {
+    let response = ui
+        .add(egui::Label::new(RichText::new(name).monospace()).selectable(false).sense(Sense::click()))
+        .on_hover_text(format!("Wireshark display-filter name; click to copy {name}"));
+    if response.clicked() {
+        ui.ctx().copy_text(name.to_string());
+    }
+    response
 }
 
 /// How the format is organised, what it carries and where it is specified.
@@ -1020,8 +1037,11 @@ fn show_field_table(app: &mut ViewerApp, ui: &mut Ui, entry: &StackEntry, notes:
     let header = |ui: &mut Ui, text: &str| {
         ui.label(RichText::new(text).small().color(theme::TEXT_DIM));
     };
-    egui::Grid::new("reference-field-table").num_columns(5).striped(true).spacing(vec2(12.0, 3.0)).show(ui, |ui| {
-        for title in ["Field", "Offset", "Length", "Value", "Meaning"] {
+    // The Wireshark column is shown only when the notes name some fields.
+    let any_wireshark = notes.is_some_and(|notes| notes.fields.iter().any(|note| note.wireshark.is_some()));
+    let columns: &[&str] = if any_wireshark { &["Field", "Offset", "Length", "Value", "Meaning", "Wireshark"] } else { &["Field", "Offset", "Length", "Value", "Meaning"] };
+    egui::Grid::new("reference-field-table").num_columns(columns.len()).striped(true).spacing(vec2(12.0, 3.0)).show(ui, |ui| {
+        for title in columns {
             header(ui, title);
         }
         ui.end_row();
@@ -1056,8 +1076,18 @@ fn show_field_table(app: &mut ViewerApp, ui: &mut Ui, entry: &StackEntry, notes:
                 })
                 .inner,
             );
+            // Clicking the Wireshark name copies it rather than selecting the bytes.
+            let mut copy_cell_hovered = false;
+            if any_wireshark {
+                match notes.and_then(|notes| notes.field(&field.name)).and_then(|note| note.wireshark.as_deref()) {
+                    Some(name) => copy_cell_hovered = wireshark_name(ui, name).hovered(),
+                    None => {
+                        ui.label("");
+                    }
+                }
+            }
             ui.end_row();
-            if cells.iter().any(|cell| cell.hovered()) {
+            if copy_cell_hovered || cells.iter().any(|cell| cell.hovered()) {
                 app.point_at_bytes(field.offset, field.len);
             }
             if cells.iter().any(|cell| cell.clicked()) {
