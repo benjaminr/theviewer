@@ -17,9 +17,9 @@ pub fn show_raster(app: &mut ViewerApp, ui: &mut Ui) {
     app.hex_labels_drawn = 0;
     app.field_outlines_drawn = 0;
     app.show_file_map(ui);
-    if app.bench.layout == crate::workbench::Layout::Hilbert {
+    if app.bench.layout != crate::workbench::Layout::Rows {
         let (rect, _) = ui.allocate_exact_size(ui.available_size(), Sense::hover());
-        app.show_hilbert(ui, rect);
+        app.show_curve(ui, rect);
         return;
     }
     let (full_rect, _) = ui.allocate_exact_size(ui.available_size(), Sense::hover());
@@ -259,7 +259,8 @@ fn draw_pixel_labels(
         let row_start = row * stride;
         let Some(row_bytes) = raster_bytes.get(row_start..row_start + shape.row_bytes()) else { break };
         let Some(segment) = row_bytes.get(first_byte..first_byte + segment_bytes) else { break };
-        raster::rasterise(shape.format, shape.palette, segment, columns, 1, segment_bytes, &mut colours);
+        let style = raster::RasterStyle { format: shape.format, palette: shape.palette, range: app.value_range };
+        raster::rasterise_styled(style, segment, columns, 1, segment_bytes, &mut colours);
         for col in first_col..last_col {
             if shape.byte_of_pixel(app.top_row + row, col) >= document_len {
                 break;
@@ -334,7 +335,7 @@ fn collect_visible_fields<'a>(fields: &'a [Field], start: usize, end: usize, out
 
 /// Colour for an entropy value in bits per byte: dark for empty, teal for
 /// structured data, amber through white for compressed or random bytes.
-fn entropy_colour(bits: f32) -> Color32 {
+pub fn entropy_colour(bits: f32) -> Color32 {
     let t = (bits / 8.0).clamp(0.0, 1.0);
     let stops: [(f32, Color32); 4] = [
         (0.0, Color32::from_rgb(22, 26, 40)),

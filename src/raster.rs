@@ -11,7 +11,8 @@ use rayon::prelude::*;
 
 use crate::theme;
 
-/// Colour ramp applied to single-channel formats (1-bit, 4-bit, 8-bit, 16-bit grey).
+/// Colour ramp applied to single-channel formats (1-bit, 4-bit, 8-bit,
+/// 16-bit grey and the unsigned numeric heatmaps).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Palette {
     Grey,
@@ -19,10 +20,14 @@ pub enum Palette {
     Inferno,
     Ocean,
     Amber,
+    /// Blue through white to red, with white in the middle: the map signed
+    /// heatmaps always use, so zero is neutral.
+    Diverging,
 }
 
 impl Palette {
-    pub const ALL: [Palette; 5] = [Palette::Grey, Palette::Viridis, Palette::Inferno, Palette::Ocean, Palette::Amber];
+    pub const ALL: [Palette; 6] =
+        [Palette::Grey, Palette::Viridis, Palette::Inferno, Palette::Ocean, Palette::Amber, Palette::Diverging];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -31,6 +36,7 @@ impl Palette {
             Palette::Inferno => "Inferno",
             Palette::Ocean => "Ocean",
             Palette::Amber => "Amber",
+            Palette::Diverging => "Diverging",
         }
     }
 
@@ -51,6 +57,10 @@ impl Palette {
             ],
             Palette::Ocean => &[[6, 8, 24], [18, 44, 96], [28, 96, 150], [60, 160, 196], [150, 222, 240], [240, 252, 255]],
             Palette::Amber => &[[12, 8, 2], [96, 40, 6], [190, 96, 16], [245, 168, 48], [255, 228, 160], [255, 255, 240]],
+            Palette::Diverging => &[
+                [33, 102, 172], [103, 169, 207], [209, 229, 240], [247, 247, 247],
+                [253, 219, 199], [239, 138, 98], [178, 24, 43],
+            ],
         }
     }
 
@@ -106,10 +116,30 @@ pub enum PixelFormat {
     Rgba8,
     /// Four bytes per pixel, blue first, alpha ignored.
     Bgra8,
+    /// Unsigned 16-bit numbers, little endian, as a heatmap.
+    U16Le,
+    /// Unsigned 16-bit numbers, big endian, as a heatmap.
+    U16Be,
+    /// Signed 16-bit numbers, little endian, as a heatmap centred on zero.
+    I16Le,
+    /// Signed 16-bit numbers, big endian, as a heatmap centred on zero.
+    I16Be,
+    /// Unsigned 32-bit numbers, little endian, as a heatmap.
+    U32Le,
+    /// Unsigned 32-bit numbers, big endian, as a heatmap.
+    U32Be,
+    /// Signed 32-bit numbers, little endian, as a heatmap centred on zero.
+    I32Le,
+    /// Signed 32-bit numbers, big endian, as a heatmap centred on zero.
+    I32Be,
+    /// 32-bit floats, little endian, as a heatmap centred on zero.
+    F32Le,
+    /// 32-bit floats, big endian, as a heatmap centred on zero.
+    F32Be,
 }
 
 impl PixelFormat {
-    pub const ALL: [PixelFormat; 12] = [
+    pub const ALL: [PixelFormat; 22] = [
         PixelFormat::Bit1Msb,
         PixelFormat::Bit1Lsb,
         PixelFormat::Nibble4,
@@ -122,6 +152,16 @@ impl PixelFormat {
         PixelFormat::Bgr8,
         PixelFormat::Rgba8,
         PixelFormat::Bgra8,
+        PixelFormat::U16Le,
+        PixelFormat::U16Be,
+        PixelFormat::I16Le,
+        PixelFormat::I16Be,
+        PixelFormat::U32Le,
+        PixelFormat::U32Be,
+        PixelFormat::I32Le,
+        PixelFormat::I32Be,
+        PixelFormat::F32Le,
+        PixelFormat::F32Be,
     ];
 
     pub fn label(self) -> &'static str {
@@ -138,6 +178,16 @@ impl PixelFormat {
             PixelFormat::Bgr8 => "BGR 24-bit",
             PixelFormat::Rgba8 => "RGBA 32-bit",
             PixelFormat::Bgra8 => "BGRA 32-bit",
+            PixelFormat::U16Le => "u16 LE heatmap",
+            PixelFormat::U16Be => "u16 BE heatmap",
+            PixelFormat::I16Le => "i16 LE heatmap",
+            PixelFormat::I16Be => "i16 BE heatmap",
+            PixelFormat::U32Le => "u32 LE heatmap",
+            PixelFormat::U32Be => "u32 BE heatmap",
+            PixelFormat::I32Le => "i32 LE heatmap",
+            PixelFormat::I32Be => "i32 BE heatmap",
+            PixelFormat::F32Le => "f32 LE heatmap",
+            PixelFormat::F32Be => "f32 BE heatmap",
         }
     }
 
@@ -156,6 +206,16 @@ impl PixelFormat {
             PixelFormat::Bgr8 => "bgr8",
             PixelFormat::Rgba8 => "rgba8",
             PixelFormat::Bgra8 => "bgra8",
+            PixelFormat::U16Le => "u16le",
+            PixelFormat::U16Be => "u16be",
+            PixelFormat::I16Le => "i16le",
+            PixelFormat::I16Be => "i16be",
+            PixelFormat::U32Le => "u32le",
+            PixelFormat::U32Be => "u32be",
+            PixelFormat::I32Le => "i32le",
+            PixelFormat::I32Be => "i32be",
+            PixelFormat::F32Le => "f32le",
+            PixelFormat::F32Be => "f32be",
         }
     }
 
@@ -169,9 +229,22 @@ impl PixelFormat {
             PixelFormat::Bit1Msb | PixelFormat::Bit1Lsb => 1,
             PixelFormat::Nibble4 => 4,
             PixelFormat::Gray8 | PixelFormat::ByteClass => 8,
-            PixelFormat::Rgb565 | PixelFormat::Gray16Le | PixelFormat::Gray16Be => 16,
+            PixelFormat::Rgb565
+            | PixelFormat::Gray16Le
+            | PixelFormat::Gray16Be
+            | PixelFormat::U16Le
+            | PixelFormat::U16Be
+            | PixelFormat::I16Le
+            | PixelFormat::I16Be => 16,
             PixelFormat::Rgb8 | PixelFormat::Bgr8 => 24,
-            PixelFormat::Rgba8 | PixelFormat::Bgra8 => 32,
+            PixelFormat::Rgba8
+            | PixelFormat::Bgra8
+            | PixelFormat::U32Le
+            | PixelFormat::U32Be
+            | PixelFormat::I32Le
+            | PixelFormat::I32Be
+            | PixelFormat::F32Le
+            | PixelFormat::F32Be => 32,
         }
     }
 
@@ -184,6 +257,156 @@ impl PixelFormat {
     pub fn bytes_per_pixel(self) -> usize {
         self.bits_per_pixel() / 8
     }
+
+    /// Whether pixels are numbers drawn as a heatmap over an automatic range.
+    pub fn is_numeric(self) -> bool {
+        self.numeric_type().is_some()
+    }
+
+    /// Whether the numbers can be negative, so the heatmap is centred on zero.
+    pub fn is_signed(self) -> bool {
+        self.numeric_type().is_some_and(|(kind, _)| kind != NumberKind::Unsigned)
+    }
+
+    /// Whether the selected palette colours this format. Signed heatmaps
+    /// always use the diverging map, and colour formats carry their own.
+    pub fn uses_palette(self) -> bool {
+        match self {
+            PixelFormat::Bit1Msb
+            | PixelFormat::Bit1Lsb
+            | PixelFormat::Nibble4
+            | PixelFormat::Gray8
+            | PixelFormat::Gray16Le
+            | PixelFormat::Gray16Be => true,
+            _ => self.is_numeric() && !self.is_signed(),
+        }
+    }
+
+    fn numeric_type(self) -> Option<(NumberKind, Endian)> {
+        match self {
+            PixelFormat::U16Le | PixelFormat::U32Le => Some((NumberKind::Unsigned, Endian::Little)),
+            PixelFormat::U16Be | PixelFormat::U32Be => Some((NumberKind::Unsigned, Endian::Big)),
+            PixelFormat::I16Le | PixelFormat::I32Le => Some((NumberKind::Signed, Endian::Little)),
+            PixelFormat::I16Be | PixelFormat::I32Be => Some((NumberKind::Signed, Endian::Big)),
+            PixelFormat::F32Le => Some((NumberKind::Float, Endian::Little)),
+            PixelFormat::F32Be => Some((NumberKind::Float, Endian::Big)),
+            _ => None,
+        }
+    }
+
+    /// The number one pixel's bytes hold, for the numeric heatmap formats.
+    /// `None` for other formats, for too few bytes, and for NaN or infinite
+    /// floats.
+    pub fn decode_value(self, bytes: &[u8]) -> Option<f64> {
+        let (kind, endian) = self.numeric_type()?;
+        let value = match (self.bits_per_pixel(), kind) {
+            (16, NumberKind::Unsigned) => f64::from(u16::from_ne_bytes(endian.order(bytes.first_chunk::<2>()?))),
+            (16, _) => f64::from(i16::from_ne_bytes(endian.order(bytes.first_chunk::<2>()?))),
+            (_, NumberKind::Unsigned) => f64::from(u32::from_ne_bytes(endian.order(bytes.first_chunk::<4>()?))),
+            (_, NumberKind::Signed) => f64::from(i32::from_ne_bytes(endian.order(bytes.first_chunk::<4>()?))),
+            (_, NumberKind::Float) => f64::from(f32::from_ne_bytes(endian.order(bytes.first_chunk::<4>()?))),
+        };
+        value.is_finite().then_some(value)
+    }
+}
+
+/// How a numeric heatmap format reads its bytes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum NumberKind {
+    Unsigned,
+    Signed,
+    Float,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Endian {
+    Little,
+    Big,
+}
+
+impl Endian {
+    /// The bytes rearranged into this machine's order.
+    fn order<const N: usize>(self, bytes: &[u8; N]) -> [u8; N] {
+        let mut ordered = *bytes;
+        let stored_little = self == Endian::Little;
+        if stored_little != cfg!(target_endian = "little") {
+            ordered.reverse();
+        }
+        ordered
+    }
+}
+
+/// Values a numeric heatmap spreads across its palette: everything at or
+/// below `low` gets the first colour and at or above `high` the last.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ValueRange {
+    pub low: f64,
+    pub high: f64,
+}
+
+impl ValueRange {
+    /// Position of `value` along the range, from 0 to 1.
+    fn fraction(self, value: f64) -> f64 {
+        ((value - self.low) / (self.high - self.low)).clamp(0.0, 1.0)
+    }
+}
+
+/// Values sampled at most when working out a heatmap's range, so very wide
+/// windows stay quick.
+const RANGE_SAMPLE_LIMIT: usize = 1 << 16;
+/// Share of the values at each end left out of the automatic range, so a
+/// few outliers do not wash the rest of the picture out.
+const RANGE_OUTLIER_FRACTION: f64 = 0.01;
+/// Colour of NaN and infinite floats.
+pub const NOT_A_NUMBER_COLOUR: Color32 = Color32::from_rgb(255, 0, 200);
+
+/// The automatic range for the numeric pixels of `rows` rows of `width`
+/// pixels in `src` (rows `row_stride` bytes apart): the 1st to 99th
+/// percentile of the finite values, ignoring NaN and infinities. Signed
+/// formats get a range symmetric about zero, so zero sits in the middle of
+/// the diverging map. `None` for other formats.
+pub fn numeric_range(format: PixelFormat, src: &[u8], width: usize, rows: usize, row_stride: usize) -> Option<ValueRange> {
+    if !format.is_numeric() {
+        return None;
+    }
+    let pixel_bytes = format.bytes_per_pixel();
+    let total = width * rows;
+    let step = total.div_ceil(RANGE_SAMPLE_LIMIT).max(1);
+    let mut values: Vec<f64> = (0..total)
+        .step_by(step)
+        .filter_map(|index| {
+            let at = (index / width.max(1)) * row_stride + (index % width.max(1)) * pixel_bytes;
+            format.decode_value(src.get(at..at + pixel_bytes)?)
+        })
+        .collect();
+    Some(range_of_values(&mut values, format.is_signed()))
+}
+
+/// The 1st to 99th percentile of `values` (reordered in place), widened to
+/// a symmetric range about zero when `signed`, and never empty.
+pub fn range_of_values(values: &mut [f64], signed: bool) -> ValueRange {
+    if values.is_empty() {
+        return if signed { ValueRange { low: -1.0, high: 1.0 } } else { ValueRange { low: 0.0, high: 1.0 } };
+    }
+    let last = values.len() - 1;
+    let skipped = (last as f64 * RANGE_OUTLIER_FRACTION).round() as usize;
+    let low = *values.select_nth_unstable_by(skipped, f64::total_cmp).1;
+    let high = *values.select_nth_unstable_by(last - skipped, f64::total_cmp).1;
+    if signed {
+        let bound = low.abs().max(high.abs());
+        let bound = if bound > 0.0 { bound } else { 1.0 };
+        return ValueRange { low: -bound, high: bound };
+    }
+    if high > low { ValueRange { low, high } } else { ValueRange { low, high: low + 1.0 } }
+}
+
+/// Everything about how bytes become colours, apart from the bytes.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RasterStyle {
+    pub format: PixelFormat,
+    pub palette: Palette,
+    /// Range for the numeric heatmaps; `None` works it out from the bytes.
+    pub range: Option<ValueRange>,
 }
 
 /// A transform applied to the bytes of each row before they become pixels,
@@ -279,17 +502,29 @@ pub fn rasterise(
     row_stride: usize,
     out: &mut [Color32],
 ) {
+    rasterise_styled(RasterStyle { format, palette, range: None }, src, width, rows, row_stride, out);
+}
+
+/// [`rasterise`] with a fixed heatmap range, so a part of the window can be
+/// redrawn in exactly the colours the whole window got.
+pub fn rasterise_styled(style: RasterStyle, src: &[u8], width: usize, rows: usize, row_stride: usize, out: &mut [Color32]) {
     debug_assert_eq!(out.len(), width * rows);
     if width == 0 || rows == 0 {
         return;
     }
+    let format = style.format;
     let row_bytes = format.bytes_for_pixels(width);
     debug_assert!(row_stride >= row_bytes);
     debug_assert!(src.len() >= row_stride * rows);
 
     const PARALLEL_THRESHOLD: usize = 1 << 18;
+    let palette = if format.is_signed() { Palette::Diverging } else { style.palette };
     let lut = palette.lut();
-    let render_row = |row_src: &[u8], row_out: &mut [Color32]| rasterise_row(format, lut, row_src, row_out);
+    let range = style.range.or_else(|| numeric_range(format, src, width, rows, row_stride));
+    let render_row = |row_src: &[u8], row_out: &mut [Color32]| match range {
+        Some(range) if format.is_numeric() => rasterise_numeric_row(format, lut, range, row_src, row_out),
+        _ => rasterise_row(format, lut, row_src, row_out),
+    };
 
     if width * rows >= PARALLEL_THRESHOLD {
         out.par_chunks_mut(width)
@@ -377,6 +612,31 @@ fn rasterise_row(format: PixelFormat, lut: &[Color32; 256], src: &[u8], out: &mu
                 *pixel = Color32::from_rgb(chunk[2], chunk[1], chunk[0]);
             }
         }
+        // Heatmaps go through `rasterise_numeric_row` once their range is known.
+        PixelFormat::U16Le
+        | PixelFormat::U16Be
+        | PixelFormat::I16Le
+        | PixelFormat::I16Be
+        | PixelFormat::U32Le
+        | PixelFormat::U32Be
+        | PixelFormat::I32Le
+        | PixelFormat::I32Be
+        | PixelFormat::F32Le
+        | PixelFormat::F32Be => {
+            let range = range_of_values(&mut [], format.is_signed());
+            rasterise_numeric_row(format, lut, range, src, out);
+        }
+    }
+}
+
+/// Colour each number in a row by where it falls in `range`.
+fn rasterise_numeric_row(format: PixelFormat, lut: &[Color32; 256], range: ValueRange, src: &[u8], out: &mut [Color32]) {
+    let last_entry = (lut.len() - 1) as f64;
+    for (pixel, bytes) in out.iter_mut().zip(src.chunks_exact(format.bytes_per_pixel())) {
+        *pixel = match format.decode_value(bytes) {
+            Some(value) => lut[(range.fraction(value) * last_entry).round() as usize],
+            None => NOT_A_NUMBER_COLOUR,
+        };
     }
 }
 
@@ -498,5 +758,70 @@ mod tests {
         difference_rows(RowDifference::None, &mut buffer, 2);
         assert_eq!(buffer, [1, 2, 3, 4]);
         assert_eq!(RowDifference::None.next().next().next(), RowDifference::None);
+    }
+
+    #[test]
+    fn numeric_formats_decode_both_byte_orders() {
+        assert_eq!(PixelFormat::U16Le.decode_value(&[0x34, 0x12]), Some(f64::from(0x1234u16)));
+        assert_eq!(PixelFormat::U16Be.decode_value(&[0x12, 0x34]), Some(f64::from(0x1234u16)));
+        assert_eq!(PixelFormat::I16Le.decode_value(&[0xFE, 0xFF]), Some(-2.0));
+        assert_eq!(PixelFormat::I16Be.decode_value(&[0xFF, 0xFE]), Some(-2.0));
+        assert_eq!(PixelFormat::U32Be.decode_value(&[0, 1, 0, 0]), Some(65536.0));
+        assert_eq!(PixelFormat::I32Le.decode_value(&(-70_000i32).to_le_bytes()), Some(-70_000.0));
+        assert_eq!(PixelFormat::F32Be.decode_value(&1.5f32.to_be_bytes()), Some(1.5));
+        assert_eq!(PixelFormat::F32Le.decode_value(&f32::NAN.to_le_bytes()), None, "NaN has no place on the map");
+        assert_eq!(PixelFormat::F32Le.decode_value(&f32::INFINITY.to_le_bytes()), None);
+        assert_eq!(PixelFormat::Gray8.decode_value(&[1]), None);
+        assert_eq!(PixelFormat::U32Le.decode_value(&[1, 2]), None, "too few bytes");
+    }
+
+    #[test]
+    fn numeric_formats_have_short_names_and_sizes() {
+        for format in PixelFormat::ALL.into_iter().filter(|format| format.is_numeric()) {
+            assert_eq!(PixelFormat::from_short_name(format.short_name()), Some(format));
+            assert!(matches!(format.bits_per_pixel(), 16 | 32));
+        }
+        assert_eq!(PixelFormat::from_short_name("F32BE"), Some(PixelFormat::F32Be));
+        assert!(PixelFormat::I16Le.is_signed() && PixelFormat::F32Le.is_signed() && !PixelFormat::U32Le.is_signed());
+    }
+
+    #[test]
+    fn automatic_range_ignores_outliers_and_non_finite_values() {
+        let mut values: Vec<f32> = (0..1000).map(|i| i as f32).collect();
+        values[0] = -1.0e30;
+        values[999] = f32::NAN;
+        values[500] = f32::INFINITY;
+        let src: Vec<u8> = values.iter().flat_map(|value| value.to_le_bytes()).collect();
+        let range = numeric_range(PixelFormat::F32Le, &src, 100, 10, 400).unwrap();
+        assert!(range.low < 0.0 && range.low == -range.high, "signed ranges are symmetric: {range:?}");
+        assert!((980.0..=990.0).contains(&range.high), "the 99th percentile, not the outlier: {range:?}");
+
+        let unsigned: Vec<u8> = (0..200u16).flat_map(|value| value.to_le_bytes()).collect();
+        let range = numeric_range(PixelFormat::U16Le, &unsigned, 200, 1, 400).unwrap();
+        assert_eq!(range, ValueRange { low: 2.0, high: 197.0 });
+        assert_eq!(numeric_range(PixelFormat::Gray8, &unsigned, 200, 1, 400), None);
+    }
+
+    #[test]
+    fn a_flat_or_empty_window_still_gets_a_usable_range() {
+        assert_eq!(range_of_values(&mut [5.0, 5.0], false), ValueRange { low: 5.0, high: 6.0 });
+        assert_eq!(range_of_values(&mut [0.0], true), ValueRange { low: -1.0, high: 1.0 });
+        assert_eq!(range_of_values(&mut [], false), ValueRange { low: 0.0, high: 1.0 });
+    }
+
+    #[test]
+    fn signed_heatmaps_put_zero_at_the_white_centre_of_the_diverging_map() {
+        let src: Vec<u8> = [-100i16, 0, 100].iter().flat_map(|value| value.to_le_bytes()).collect();
+        let mut out = vec![Color32::TRANSPARENT; 3];
+        rasterise(PixelFormat::I16Le, Palette::Grey, &src, 3, 1, 6, &mut out);
+        let lut = Palette::Diverging.lut();
+        assert_eq!(out, [lut[0], lut[128], lut[255]]);
+        let centre = out[1];
+        assert!(centre.r() > 230 && centre.g() > 230 && centre.b() > 230, "zero is near white: {centre:?}");
+
+        let fixed = RasterStyle { format: PixelFormat::U16Le, palette: Palette::Grey, range: Some(ValueRange { low: 0.0, high: 200.0 }) };
+        let src: Vec<u8> = [0u16, 100, 400].iter().flat_map(|value| value.to_le_bytes()).collect();
+        rasterise_styled(fixed, &src, 3, 1, 6, &mut out);
+        assert_eq!(out, [Color32::BLACK, Palette::Grey.lut()[128], Color32::WHITE]);
     }
 }

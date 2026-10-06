@@ -18,6 +18,8 @@ use crate::panel_dotplot::DotPlotState;
 use crate::panel_firmware::FirmwareState;
 use crate::panel_image_finder::ImageFinderState;
 use crate::panel_structure_map::StructureMapState;
+use crate::panel_treemap::TreemapState;
+use crate::panel_trigram::TrigramState;
 
 /// The state of every self-contained tool panel.
 #[derive(Default)]
@@ -33,6 +35,8 @@ pub struct PanelStates {
     pub crc_solver: CrcSolverState,
     pub alignment: AlignmentState,
     pub structure_map: StructureMapState,
+    pub trigrams: TrigramState,
+    pub size_map: TreemapState,
 }
 
 /// Draw a panel, lending it its state from `app` for the frame. The state is

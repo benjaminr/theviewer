@@ -29,7 +29,8 @@ usage: theviewer [FILE] [--format NAME] [--palette NAME] [--width PIXELS] [--off
   --json     print the same report as JSON, for scripts and CI
 
   --format   one of: bit1 bit1lsb nibble4 gray8 class rgb565 gray16le gray16be rgb8 bgr8 rgba8 bgra8
-  --palette  one of: grey viridis inferno ocean amber (single-channel formats)
+             or a numeric heatmap: u16le u16be i16le i16be u32le u32be i32le i32be f32le f32be
+  --palette  one of: grey viridis inferno ocean amber diverging (single-channel formats)
   --width    pixels per row (default 512)
   --offset   byte offset of the first pixel (decimal or 0x hex)
   --cursor   initial cursor offset (decimal or 0x hex)
@@ -37,7 +38,7 @@ usage: theviewer [FILE] [--format NAME] [--palette NAME] [--width PIXELS] [--off
   --detect   scan for repeating periods on startup and open the structure panel
   --open     open the image, audio or video at the cursor
   --layout   start with a panel layout: default right left focus
-  --tool     open the tools dock on a tab: report structure-map ask dot-plot images template columns protocol bits statistics strings xor crypto checksums disassembly firmware unpacked forensics diff compare live
+  --tool     open the tools dock on a tab: report structure-map size-map ask dot-plot trigrams images template columns protocol bits statistics strings xor crypto checksums disassembly firmware unpacked forensics diff compare live
 ";
 
 /// How to print a report without opening a window.

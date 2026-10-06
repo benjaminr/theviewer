@@ -25,14 +25,14 @@ use crate::dock::{DockState, DockTab};
 use crate::layout::{self, Pane, Preset};
 use crate::findings::FindingsFilter;
 use crate::plot::PlotWindow;
-use crate::workbench::Workbench;
+use crate::workbench::{CurveColour, Layout, Workbench};
 use crate::media::{self, MediaFormat};
 use crate::player::{MediaPlayer, MediaRequest};
 use crate::document::Document;
 use crate::ops;
 use crate::patterns;
 use crate::plugin::{Category, Finding, Registry, ScanContext};
-use crate::raster::{self, Palette, PixelFormat, RowDifference};
+use crate::raster::{self, Palette, PixelFormat, RasterStyle, RowDifference, ValueRange};
 use crate::search::{self, SearchMode};
 use crate::theme;
 
@@ -156,6 +156,9 @@ struct RasterKey {
     top_row: usize,
     rows: usize,
     row_difference: RowDifference,
+    /// Fingerprint of the report's regions when the zoomed-out view is
+    /// coloured by region (zero when there is no report), `None` otherwise.
+    zoomed_out_colours: Option<u64>,
 }
 
 pub struct ViewerApp {
@@ -224,8 +227,9 @@ pub struct ViewerApp {
     pub dock: DockState,
     /// The arrangement of every pane.
     pub layout: egui_dock::DockState<Pane>,
-    /// Where the raster image and the hex dump's rows were drawn last frame;
-    /// panes move, so tests and tools read these rather than assume.
+    /// Where the raster image (or the curve layout's picture) and the hex
+    /// dump's rows were drawn last frame; panes move, so tests and tools
+    /// read these rather than assume.
     pub raster_rect: Option<egui::Rect>,
     pub hex_body_rect: Option<egui::Rect>,
     /// A non-tool pane to bring forward on the next frame.
@@ -270,6 +274,13 @@ pub struct ViewerApp {
     raster_prefix: usize,
     /// How each row is compared with the one above before it is drawn.
     pub row_difference: RowDifference,
+    /// Range the numeric heatmap formats spread over the palette, worked out
+    /// from the visible window; `None` for other formats.
+    pub value_range: Option<ValueRange>,
+    /// When zoomed out so far that a screen pixel covers several bytes, colour
+    /// the raster by region (or block class and entropy) rather than showing
+    /// raw subsampled bytes.
+    pub colour_regions_when_zoomed_out: bool,
     /// Hex values the raster drew inside pixels last frame (zero when zoomed
     /// out or over the per-frame limit); read by tests and the status bar.
     pub hex_labels_drawn: usize,
@@ -492,6 +503,8 @@ impl ViewerApp {
             byte_buffer: Vec::new(),
             raster_prefix: 0,
             row_difference: RowDifference::None,
+            value_range: None,
+            colour_regions_when_zoomed_out: true,
             hex_labels_drawn: 0,
             field_outlines_drawn: 0,
             last_raster_ms: 0.0,
@@ -2155,7 +2168,8 @@ impl ViewerApp {
         let shape = self.shape;
         let rows = rows.clamp(1, (MAX_TEXTURE_PIXELS / shape.width.max(1)).max(1));
         let row_difference = self.row_difference;
-        let key = RasterKey { version: self.document.version(), shape, top_row: self.top_row, rows, row_difference };
+        let zoomed_out_colours = self.colours_regions_now().then(|| crate::region_colours::regions_fingerprint(&self.bench.regions));
+        let key = RasterKey { version: self.document.version(), shape, top_row: self.top_row, rows, row_difference, zoomed_out_colours };
         if self.raster_key == Some(key) && self.texture.is_some() {
             return self.texture.as_ref();
         }
@@ -2165,7 +2179,13 @@ impl ViewerApp {
         let needed = stride * rows + 1;
         let mut pixels = vec![Color32::BLACK; shape.width * rows];
         let bytes = &self.byte_buffer[self.raster_prefix..self.raster_prefix + needed];
-        raster::rasterise(shape.format, shape.palette, bytes, shape.width, rows, stride, &mut pixels);
+        self.value_range = raster::numeric_range(shape.format, bytes, shape.width, rows, stride);
+        if zoomed_out_colours.is_some() {
+            self.colour_pixels_by_region(rows, &mut pixels);
+        } else {
+            let style = RasterStyle { format: shape.format, palette: shape.palette, range: self.value_range };
+            raster::rasterise_styled(style, bytes, shape.width, rows, stride, &mut pixels);
+        }
         let image = ColorImage::new([shape.width, rows], pixels);
         match &mut self.texture {
             Some(texture) => texture.set(image, TextureOptions::NEAREST),
@@ -2175,6 +2195,26 @@ impl ViewerApp {
         self.last_raster_ms = started.elapsed().as_secs_f32() * 1000.0;
         self.last_raster_pixels = shape.width * rows;
         self.texture.as_ref()
+    }
+
+    /// Whether the raster is zoomed out far enough, with the option on, to be
+    /// coloured by region instead of by its subsampled bytes.
+    pub fn colours_regions_now(&self) -> bool {
+        self.colour_regions_when_zoomed_out && self.zoom < 1.0
+    }
+
+    /// Colour `rows` rows from the top row by the report's regions, or by
+    /// each block's byte class and entropy when no report has been run.
+    fn colour_pixels_by_region(&mut self, rows: usize, pixels: &mut [Color32]) {
+        let len = self.document.len();
+        if !self.bench.regions.is_empty() {
+            crate::region_colours::region_pixels(&self.shape, self.top_row, len, &self.bench.regions, pixels);
+            return;
+        }
+        let start = self.raster_first_byte();
+        let mut window = vec![0u8; (self.shape.row_stride() * rows + 1).min(len - start)];
+        self.document.read_into(start, &mut window);
+        crate::region_colours::block_pixels(&self.shape, self.top_row, len, start, &window, pixels);
     }
 
     /// Read the bytes behind `rows` rows from the top row into
@@ -2533,9 +2573,22 @@ impl ViewerApp {
                     }
                 });
                 ui.separator();
-                let hilbert = self.bench.layout == crate::workbench::Layout::Hilbert;
-                if ui.selectable_label(!hilbert, "Layout: rows").clicked() { self.bench.layout = crate::workbench::Layout::Rows; ui.close(); }
-                if ui.selectable_label(hilbert, "Layout: Hilbert curve").clicked() { self.bench.layout = crate::workbench::Layout::Hilbert; ui.close(); }
+                for layout in Layout::ALL {
+                    if ui.selectable_label(self.bench.layout == layout, format!("Layout: {}", layout.label())).clicked() {
+                        self.bench.layout = layout;
+                        ui.close();
+                    }
+                }
+                ui.menu_button("Curve colours", |ui| {
+                    for mode in CurveColour::ALL {
+                        if ui.selectable_label(self.bench.curve_colour == mode, mode.label()).clicked() {
+                            self.bench.curve_colour = mode;
+                            ui.close();
+                        }
+                    }
+                });
+                ui.checkbox(&mut self.colour_regions_when_zoomed_out, "Colour by region when zoomed out")
+                    .on_hover_text("Below 1×, show what each part of the file is (report regions, or block class and entropy) instead of subsampled bytes");
                 ui.menu_button("Row difference", |ui| {
                     for mode in RowDifference::ALL {
                         if ui.selectable_label(self.row_difference == mode, mode.label()).clicked() {
@@ -2554,6 +2607,8 @@ impl ViewerApp {
                 if ui.button("Explain this file").clicked() { self.dock.open = true; self.dock.tab = DockTab::Report; self.start_report(); ui.close(); }
                 if ui.button("Structure map: segments, find similar, feature tracks").clicked() { self.dock.toggle(DockTab::StructureMap); ui.close(); }
                 if ui.button("Dot plot (self-similarity)").clicked() { self.dock.toggle(DockTab::DotPlot); ui.close(); }
+                if ui.button("Trigram cube").clicked() { self.dock.toggle(DockTab::Trigrams); ui.close(); }
+                if ui.button("Size map").clicked() { self.dock.toggle(DockTab::SizeMap); ui.close(); }
                 if ui.button("Find images").clicked() { self.dock.toggle(DockTab::Images); ui.close(); }
                 if ui.button("Firmware: processor, load address, vectors").clicked() { self.dock.toggle(DockTab::Firmware); ui.close(); }
                 if self.assistant_available() {
@@ -2623,7 +2678,7 @@ impl ViewerApp {
                 })
                 .response
                 .on_hover_text("How bytes become pixels");
-            if self.shape.format.bits_per_pixel() <= 16 && self.shape.format != PixelFormat::ByteClass && self.shape.format != PixelFormat::Rgb565 {
+            if self.shape.format.uses_palette() {
                 egui::ComboBox::from_id_salt("palette")
                     .selected_text(self.shape.palette.label())
                     .width(90.0)
@@ -3028,6 +3083,18 @@ impl ViewerApp {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.label(RichText::new(format!("{:.2} ms", self.last_raster_ms)).color(dim))
                     .on_hover_text(format!("Last raster: {} pixels", self.last_raster_pixels));
+                if let Some(range) = self.value_range {
+                    ui.separator();
+                    ui.monospace(format!("{} … {}", format_value(range.low), format_value(range.high)))
+                        .on_hover_text("Heatmap range: the 1st to 99th percentile of the visible values (symmetric about zero for signed formats). NaN and infinities are magenta.");
+                    ui.label(RichText::new("range").color(dim));
+                }
+                if self.colours_regions_now() && self.bench.layout == Layout::Rows {
+                    ui.separator();
+                    let source = if self.bench.regions.is_empty() { "block class and entropy" } else { "report regions" };
+                    ui.label(RichText::new(format!("zoomed out: coloured by {source}")).color(dim))
+                        .on_hover_text("Turn off in View ▸ Colour by region when zoomed out");
+                }
                 ui.separator();
                 ui.label(RichText::new(&self.status).color(dim));
             });
@@ -3236,5 +3303,21 @@ impl ActionHost for ViewerApp {
 
     fn set_status(&mut self, text: &str) {
         self.status = text.to_string();
+    }
+}
+
+/// A heatmap bound, short enough for the status bar.
+fn format_value(value: f64) -> String {
+    /// Magnitudes written in full; beyond them scientific notation is shorter.
+    const PLAIN_LIMIT: f64 = 1.0e6;
+    /// Magnitudes below this (other than zero) are written in scientific notation too.
+    const SMALL_LIMIT: f64 = 1.0e-3;
+    let magnitude = value.abs();
+    if value == value.trunc() && magnitude < PLAIN_LIMIT {
+        format!("{value:.0}")
+    } else if magnitude >= PLAIN_LIMIT || magnitude < SMALL_LIMIT {
+        format!("{value:.3e}")
+    } else {
+        format!("{value:.3}")
     }
 }

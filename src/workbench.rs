@@ -45,7 +45,70 @@ const MAX_TABLE_ROWS: usize = 5000;
 pub enum Layout {
     Rows,
     Hilbert,
+    /// Z-order: like Hilbert, the whole file at once without a width, with
+    /// power-of-two aligned blocks drawn as squares.
+    Morton,
 }
+
+impl Layout {
+    pub const ALL: [Layout; 3] = [Layout::Rows, Layout::Hilbert, Layout::Morton];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Layout::Rows => "rows",
+            Layout::Hilbert => "Hilbert curve",
+            Layout::Morton => "Morton (Z-order) curve",
+        }
+    }
+
+    /// The space-filling curve this layout follows, if it is not rows.
+    pub fn curve(self) -> Option<hilbert::Curve> {
+        match self {
+            Layout::Rows => None,
+            Layout::Hilbert => Some(hilbert::Curve::Hilbert),
+            Layout::Morton => Some(hilbert::Curve::Morton),
+        }
+    }
+}
+
+/// What the curve layouts colour each cell by.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum CurveColour {
+    /// The byte itself, through the palette (or its class in the byte-class format).
+    #[default]
+    Bytes,
+    /// The entropy of each small block of cells.
+    Entropy,
+    /// The kind of region the report found there.
+    RegionType,
+    /// Zeros, text, control bytes and high bytes in distinct colours.
+    ByteClass,
+}
+
+impl CurveColour {
+    pub const ALL: [CurveColour; 4] = [CurveColour::Bytes, CurveColour::Entropy, CurveColour::RegionType, CurveColour::ByteClass];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            CurveColour::Bytes => "Bytes",
+            CurveColour::Entropy => "Entropy",
+            CurveColour::RegionType => "Region type",
+            CurveColour::ByteClass => "Byte class",
+        }
+    }
+
+    /// The mode after this one, wrapping round.
+    pub fn next(self) -> CurveColour {
+        let index = CurveColour::ALL.iter().position(|&mode| mode == self).unwrap_or(0);
+        CurveColour::ALL[(index + 1) % CurveColour::ALL.len()]
+    }
+}
+
+/// Cells (a 8 × 8 square on either curve) whose entropy colours them
+/// together in the entropy mode.
+const CURVE_ENTROPY_CELLS: usize = 64;
+/// Height of the strip of controls above a curve layout.
+const CURVE_CONTROLS_HEIGHT: f32 = 26.0;
 
 /// Results that arrive from background work.
 enum Pending {
@@ -65,6 +128,8 @@ pub struct Workbench {
     pub show_file_map: bool,
 
     pub layout: Layout,
+    /// What the curve layouts colour cells by.
+    pub curve_colour: CurveColour,
     hilbert: Option<HilbertView>,
 
     pub template_source: String,
@@ -108,6 +173,7 @@ impl Default for Workbench {
             report: None,
             show_file_map: true,
             layout: Layout::Rows,
+            curve_colour: CurveColour::Bytes,
             hilbert: None,
             template_source: templates::builtin_templates().first().map(|(_, s)| s.to_string()).unwrap_or_default(),
             template_choice: templates::builtin_templates().first().map(|(n, _)| n.to_string()).unwrap_or_default(),
@@ -150,16 +216,25 @@ impl Workbench {
         self.pending.retain(|pending| matches!(pending, Pending::Source(_)));
     }
 
+    /// Switch to `layout`, or back to rows if it is already showing.
+    pub fn toggle_layout(&mut self, layout: Layout) {
+        self.layout = if self.layout == layout { Layout::Rows } else { layout };
+    }
+
     fn busy(&self, kind: fn(&Pending) -> bool) -> bool {
         self.pending.iter().any(kind)
     }
 }
 
-/// A cached Hilbert rendering of the whole file.
+/// A cached curve rendering of the whole file.
 struct HilbertView {
     version: u64,
     format: PixelFormat,
     palette: raster::Palette,
+    curve: hilbert::Curve,
+    colour: CurveColour,
+    /// Fingerprint of the regions the region-type mode was coloured by.
+    regions: u64,
     order: u32,
     texture: TextureHandle,
     /// Bytes represented by each cell.
@@ -277,6 +352,8 @@ impl ViewerApp {
             DockTab::Bits => panels::show(self, ui, |p| &mut p.bits, crate::panel_bits::show_bits),
             DockTab::Forensics => panels::show(self, ui, |p| &mut p.forensics, crate::panel_forensics::show_forensics),
             DockTab::DotPlot => panels::show(self, ui, |p| &mut p.dot_plot, crate::panel_dotplot::show_dot_plot),
+            DockTab::Trigrams => panels::show(self, ui, |p| &mut p.trigrams, crate::panel_trigram::show_trigram),
+            DockTab::SizeMap => panels::show(self, ui, |p| &mut p.size_map, crate::panel_treemap::show_treemap),
             DockTab::StructureMap => panels::show(self, ui, |p| &mut p.structure_map, crate::panel_structure_map::show_structure_map),
             DockTab::Images => panels::show(self, ui, |p| &mut p.images, crate::panel_image_finder::show_image_finder),
             DockTab::Firmware => panels::show(self, ui, |p| &mut p.firmware, crate::panel_firmware::show_firmware),
@@ -376,26 +453,38 @@ impl ViewerApp {
     }
 
     // -----------------------------------------------------------------------
-    // Hilbert view
+    // Curve layouts (Hilbert and Morton)
     // -----------------------------------------------------------------------
 
-    /// Draw the whole file along a Hilbert curve, which keeps nearby bytes
-    /// close together in two dimensions so structure shows without a width.
-    pub fn show_hilbert(&mut self, ui: &mut Ui, rect: Rect) {
+    /// Draw the whole file along the layout's space-filling curve, which
+    /// keeps nearby bytes close together in two dimensions so structure
+    /// shows without a width. A strip of controls above picks the colours.
+    pub fn show_curve(&mut self, ui: &mut Ui, rect: Rect) {
         let len = self.document.len();
+        let Some(curve) = self.bench.layout.curve() else { return };
         if len == 0 {
             return;
         }
+        let controls = Rect::from_min_size(rect.min, vec2(rect.width(), CURVE_CONTROLS_HEIGHT.min(rect.height())));
+        let rect = Rect::from_min_max(pos2(rect.min.x, controls.max.y), rect.max);
+        let colour = self.bench.curve_colour;
+        let needs_report = colour == CurveColour::RegionType && self.bench.regions.is_empty();
+        let regions = if colour == CurveColour::RegionType { crate::region_colours::regions_fingerprint(&self.bench.regions) } else { 0 };
         let stale = self.bench.hilbert.as_ref().is_none_or(|view| {
-            view.version != self.document.version() || view.format != self.shape.format || view.palette != self.shape.palette
+            view.version != self.document.version()
+                || view.format != self.shape.format
+                || view.palette != self.shape.palette
+                || view.curve != curve
+                || view.colour != colour
+                || view.regions != regions
         });
         if stale {
             let order = hilbert::order_for(len);
             let cells = 1usize << (2 * order);
             let bytes = sampled_bytes(&mut self.document, cells);
-            let lut = self.shape.palette.lut();
-            let class = self.shape.format == PixelFormat::ByteClass;
-            let pixels = hilbert::render(&bytes, order, |byte| if class { raster::byte_class_colour(byte) } else { lut[byte as usize] });
+            let bytes_per_cell = (len as f64 / cells as f64).max(1.0);
+            let along = curve_cell_colours(&bytes, bytes_per_cell, colour, self.shape.format, self.shape.palette, &self.bench.regions);
+            let pixels = hilbert::render_along(curve, order, &along);
             let side = 1usize << order;
             let image = ColorImage::new([side, side], pixels);
             let texture = ui.ctx().load_texture("hilbert", image, TextureOptions::NEAREST);
@@ -403,29 +492,24 @@ impl ViewerApp {
                 version: self.document.version(),
                 format: self.shape.format,
                 palette: self.shape.palette,
+                curve,
+                colour,
+                regions,
                 order,
                 texture,
-                bytes_per_cell: (len as f64 / cells as f64).max(1.0),
+                bytes_per_cell,
             });
         }
         let view = self.bench.hilbert.as_ref().expect("built above");
         let side = (1u32 << view.order) as f32;
-        let size = rect.width().min(rect.height());
+        let size = rect.width().min(rect.height()).max(0.0);
         let drawn = Rect::from_min_size(rect.min, vec2(size, size));
+        self.raster_rect = Some(drawn);
         let painter = ui.painter_at(rect);
         painter.image(view.texture.id(), drawn, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
         let cell = size / side;
         let (order, bytes_per_cell) = (view.order, view.bytes_per_cell);
-        let offset_at = |pointer: egui::Pos2| -> Option<usize> {
-            if !drawn.contains(pointer) {
-                return None;
-            }
-            let x = ((pointer.x - drawn.min.x) / cell) as u32;
-            let y = ((pointer.y - drawn.min.y) / cell) as u32;
-            let d = hilbert::xy_to_d(order, x.min(side as u32 - 1), y.min(side as u32 - 1));
-            let offset = (d as f64 * bytes_per_cell) as usize;
-            (offset < len).then_some(offset)
-        };
+        let offset_at = |pointer: egui::Pos2| curve_offset_at(curve, order, bytes_per_cell, len, drawn, pointer);
         let response = ui.interact(rect, ui.id().with("hilbert"), Sense::click());
         if let Some(pointer) = response.hover_pos() {
             self.hover = offset_at(pointer);
@@ -437,16 +521,41 @@ impl ViewerApp {
         }
         // Cursor marker.
         let d = (self.cursor as f64 / bytes_per_cell) as u64;
-        let (x, y) = hilbert::d_to_xy(order, d.min((1u64 << (2 * order)) - 1));
+        let (x, y) = curve.d_to_xy(order, d.min((1u64 << (2 * order)) - 1));
         let marker = Rect::from_min_size(drawn.min + vec2(x as f32 * cell, y as f32 * cell), vec2(cell.max(3.0), cell.max(3.0)));
         painter.rect_stroke(marker.expand(2.0), 0.0, Stroke::new(2.0, theme::CURSOR), StrokeKind::Outside);
-        painter.text(
-            drawn.right_top() + vec2(8.0, 0.0),
-            egui::Align2::LEFT_TOP,
-            format!("Hilbert curve, {} B per cell", bytes_per_cell.round() as usize),
-            egui::FontId::proportional(12.0),
-            theme::TEXT_DIM,
-        );
+        if needs_report {
+            painter.text(
+                drawn.center(),
+                egui::Align2::CENTER_CENTER,
+                "Run the report to colour by region type",
+                egui::FontId::proportional(15.0),
+                theme::TEXT,
+            );
+        }
+        self.show_curve_controls(ui, controls, curve, bytes_per_cell, needs_report);
+    }
+
+    /// The colour picker and description above a curve layout, with a
+    /// button that runs the report when the region colours need it.
+    fn show_curve_controls(&mut self, ui: &mut Ui, controls: Rect, curve: hilbert::Curve, bytes_per_cell: f64, needs_report: bool) {
+        ui.scope_builder(egui::UiBuilder::new().max_rect(controls).layout(egui::Layout::left_to_right(egui::Align::Center)), |ui| {
+            ui.label(RichText::new(format!("{}, {} B per cell", curve.label(), bytes_per_cell.round() as usize)).color(theme::TEXT_DIM));
+            ui.label(RichText::new("Colour by").color(theme::TEXT_DIM));
+            egui::ComboBox::from_id_salt("curve-colour")
+                .selected_text(self.bench.curve_colour.label())
+                .width(96.0)
+                .show_ui(ui, |ui| {
+                    for mode in CurveColour::ALL {
+                        ui.selectable_value(&mut self.bench.curve_colour, mode, mode.label());
+                    }
+                });
+            if needs_report && ui.button("Run the report").on_hover_text("Explain this file: find its regions so cells can be coloured by them").clicked() {
+                self.dock.open = true;
+                self.dock.tab = DockTab::Report;
+                self.start_report();
+            }
+        });
     }
 
     // -----------------------------------------------------------------------
@@ -1091,6 +1200,53 @@ fn render_fields_into(fields: &[Field], depth: usize, budget: usize, lines: &mut
 
 /// `cells` bytes spread evenly over the document, read in large chunks so a
 /// big file is sampled without a read per byte.
+/// The document offset under `pointer` in a curve layout drawn into
+/// `drawn`, or `None` outside the picture or past the end of the data.
+fn curve_offset_at(curve: hilbert::Curve, order: u32, bytes_per_cell: f64, len: usize, drawn: Rect, pointer: egui::Pos2) -> Option<usize> {
+    if !drawn.contains(pointer) {
+        return None;
+    }
+    let side = 1u32 << order;
+    let cell = drawn.width() / side as f32;
+    let x = (((pointer.x - drawn.min.x) / cell) as u32).min(side - 1);
+    let y = (((pointer.y - drawn.min.y) / cell) as u32).min(side - 1);
+    let offset = (curve.xy_to_d(order, x, y) as f64 * bytes_per_cell) as usize;
+    (offset < len).then_some(offset)
+}
+
+/// One colour per cell, in curve order, for the sampled `bytes` (cell `d`
+/// stands for the file from `d * bytes_per_cell`).
+fn curve_cell_colours(
+    bytes: &[u8],
+    bytes_per_cell: f64,
+    mode: CurveColour,
+    format: PixelFormat,
+    palette: raster::Palette,
+    regions: &[Region],
+) -> Vec<Color32> {
+    let lut = palette.lut();
+    match mode {
+        CurveColour::Bytes if format == PixelFormat::ByteClass => bytes.iter().map(|&byte| raster::byte_class_colour(byte)).collect(),
+        CurveColour::Bytes => bytes.iter().map(|&byte| lut[byte as usize]).collect(),
+        CurveColour::ByteClass => bytes.iter().map(|&byte| raster::byte_class_colour(byte)).collect(),
+        CurveColour::Entropy => bytes
+            .chunks(CURVE_ENTROPY_CELLS)
+            .flat_map(|block| {
+                let colour = crate::view::entropy_colour(crate::analysis::shannon_entropy(block));
+                std::iter::repeat_n(colour, block.len())
+            })
+            .collect(),
+        // Without a report there are no regions: show the bytes meanwhile.
+        CurveColour::RegionType if regions.is_empty() => bytes.iter().map(|&byte| lut[byte as usize]).collect(),
+        CurveColour::RegionType => {
+            let mut cursor = crate::region_colours::RegionCursor::new(regions);
+            (0..bytes.len())
+                .map(|cell| cursor.colour_at((cell as f64 * bytes_per_cell) as usize).unwrap_or(Color32::BLACK))
+                .collect()
+        }
+    }
+}
+
 fn sampled_bytes(document: &mut Document, cells: usize) -> Vec<u8> {
     let len = document.len();
     if len <= cells {

@@ -8,7 +8,10 @@ use eframe::egui::{self, Event, Key, Modifiers, PointerButton, pos2};
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
 use theviewer::app::{EditMode, Launch, ViewerApp};
+use theviewer::explain::{Region, RegionKind};
+use theviewer::hilbert::Curve;
 use theviewer::plugin::{Category, Field, Finding};
+use theviewer::workbench::{CurveColour, Layout};
 use theviewer::raster::{Palette, PixelFormat, RowDifference};
 
 const SAMPLE_LEN: usize = 64 * 1024;
@@ -285,7 +288,19 @@ fn every_format_palette_and_extreme_shape_renders() {
         (7, 0, 1, 0),
     ];
     for (width, offset, bit, padding) in extremes {
-        for format in [PixelFormat::Bit1Msb, PixelFormat::Nibble4, PixelFormat::Gray8, PixelFormat::Rgb8, PixelFormat::Rgba8] {
+        for format in [
+            PixelFormat::Bit1Msb,
+            PixelFormat::Nibble4,
+            PixelFormat::Gray8,
+            PixelFormat::Rgb8,
+            PixelFormat::Rgba8,
+            PixelFormat::U16Be,
+            PixelFormat::I16Le,
+            PixelFormat::U32Le,
+            PixelFormat::I32Be,
+            PixelFormat::F32Le,
+            PixelFormat::F32Be,
+        ] {
             let app = harness.state_mut();
             app.shape.format = format;
             app.shape.width = width;
@@ -309,6 +324,94 @@ fn every_format_palette_and_extreme_shape_renders() {
         let point = raster_point(&harness);
         click_at(&mut harness, point, Modifiers::NONE);
     }
+    // Every heatmap at both zoom extremes, with and without region colours.
+    for format in PixelFormat::ALL.into_iter().filter(|format| format.is_numeric()) {
+        for (zoom, by_region) in [(0.125f32, true), (0.125, false), (48.0, true)] {
+            let app = harness.state_mut();
+            app.reset_origin();
+            app.shape.format = format;
+            app.shape.width = 64;
+            app.shape.row_padding = 0;
+            app.zoom = zoom;
+            app.colour_regions_when_zoomed_out = by_region;
+            steps(&mut harness, 2);
+            let point = raster_point(&harness);
+            click_at(&mut harness, point, Modifiers::NONE);
+            let range = harness.state().value_range.expect("heatmaps show their range");
+            assert!(range.low < range.high, "{format:?}: {range:?}");
+            if format.is_signed() {
+                assert_eq!(range.low, -range.high, "{format:?} is centred on zero");
+            }
+        }
+    }
+    harness.state_mut().shape.format = PixelFormat::Gray8;
+    steps(&mut harness, 2);
+    assert_eq!(harness.state().value_range, None, "only heatmaps have a range");
+}
+
+#[test]
+fn zoomed_out_raster_is_coloured_by_block_or_report_region_and_can_be_turned_off() {
+    let mut harness = harness(sample_file("semantic-zoom.bin"));
+    harness.state_mut().zoom = 0.25;
+    steps(&mut harness, 3);
+    assert!(harness.state().colour_regions_when_zoomed_out, "on by default");
+    assert!(harness.state().colours_regions_now());
+    let without_report = harness.state().last_raster_pixels;
+    assert!(without_report > 0);
+
+    harness.state_mut().bench.regions = vec![Region {
+        start: 0,
+        len: SAMPLE_LEN,
+        kind: RegionKind::Data,
+        label: "records".to_string(),
+        detail: String::new(),
+        confident: true,
+    }];
+    harness.state_mut().last_raster_pixels = 0;
+    steps(&mut harness, 2);
+    assert!(harness.state().last_raster_pixels > 0, "new regions redraw the raster");
+
+    harness.state_mut().colour_regions_when_zoomed_out = false;
+    harness.state_mut().last_raster_pixels = 0;
+    steps(&mut harness, 2);
+    assert!(!harness.state().colours_regions_now());
+    assert!(harness.state().last_raster_pixels > 0, "turning it off redraws the raw bytes");
+
+    harness.state_mut().zoom = 2.0;
+    harness.state_mut().colour_regions_when_zoomed_out = true;
+    steps(&mut harness, 2);
+    assert!(!harness.state().colours_regions_now(), "only below 1×");
+}
+
+#[test]
+fn morton_layout_renders_every_colour_mode_and_a_click_goes_to_that_cell() {
+    let mut harness = harness(sample_file("morton.bin"));
+    harness.state_mut().bench.layout = Layout::Morton;
+    for mode in CurveColour::ALL {
+        harness.state_mut().bench.curve_colour = mode;
+        steps(&mut harness, 2);
+    }
+    harness.state_mut().bench.curve_colour = CurveColour::RegionType;
+    steps(&mut harness, 2);
+    harness.get_by_label("Run the report"); // offered while there is no report
+    harness.state_mut().bench.curve_colour = CurveColour::Bytes;
+    steps(&mut harness, 2);
+
+    // 64 KiB fills a 256 × 256 grid, one byte per cell.
+    let drawn = harness.state().raster_rect.expect("the curve has been drawn");
+    let cell = drawn.width() / 256.0;
+    let (x, y) = (5u32, 3u32);
+    let point = drawn.min + egui::vec2((x as f32 + 0.5) * cell, (y as f32 + 0.5) * cell);
+    click_at(&mut harness, point, Modifiers::NONE);
+    let expected = Curve::Morton.xy_to_d(8, x, y) as usize;
+    assert_eq!(expected, 27, "x 101 and y 011 interleave to 011011");
+    assert_eq!(harness.state().cursor, expected);
+
+    // The same click on the Hilbert curve lands on a different byte.
+    harness.state_mut().bench.layout = Layout::Hilbert;
+    steps(&mut harness, 2);
+    click_at(&mut harness, point, Modifiers::NONE);
+    assert_eq!(harness.state().cursor, Curve::Hilbert.xy_to_d(8, x, y) as usize);
 }
 
 #[test]

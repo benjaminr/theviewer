@@ -83,11 +83,17 @@ with its shortcut, or right-click a byte for the actions that apply to it.
 **See the data**
 - Twelve pixel formats, from 1-bit to 32-bit colour, plus *Byte class*,
   which colours zeros, text, control bytes and high bytes differently.
-  Five colour palettes.
+  Six colour palettes.
+- Numeric heatmaps of 16- and 32-bit integers and 32-bit floats in either
+  byte order, scaled automatically to the visible values (1st to 99th
+  percentile) and centred on zero for signed types.
+- Zoomed out below 1×, the view colours each part by what it is (report
+  regions, or block class and entropy) rather than showing noise.
 - Any width, row padding, and a starting offset down to the bit.
 - A hex dump and value inspector that follow the cursor.
-- A Hilbert-curve layout that shows structure without choosing a width, and
-  arrows from values that look like offsets to the bytes they point at.
+- Hilbert and Morton (Z-order) curve layouts that show structure without
+  choosing a width, coloured by bytes, entropy, region type or byte class,
+  and arrows from values that look like offsets to the bytes they point at.
 - Optional pattern highlights over the view and hex dump (`H`).
 - Zoomed in far enough, every pixel shows its value in hex, and template
   and structure fields are outlined and named.
@@ -134,6 +140,8 @@ right-click menu. Each one is a panel you can dock anywhere.
 | **Report** | A plain-language overview of the whole file, with every sentence linked to its bytes, and a coloured map of the file above the view. |
 | **Structure map** | *Segments* splits the file into regions of one kind (text, tables, code, compressed, padding…) with boundaries on the real edges, groups similar regions into types and colours them on a strip and the file map. *Find more like this* scores every part of the file against the selection and highlights the matches. *Feature tracks* draws entropy, compressibility, printable and zero bytes, the mix of byte kinds and the best record width at each point along the file; *Use width here* applies that width. |
 | **Dot plot** | The file compared with itself on a grid: repeated sections show as diagonal lines and uniform regions as blocks, so structure shows without choosing a width. Click a point to jump to either copy. |
+| **Trigrams** | A rotatable 3D cloud of byte triples. Text, machine code, tables and compressed data each make a recognisable shape, a sharper fingerprint than byte pairs; click a point to jump to it. |
+| **Size map** | Nested rectangles sized by what takes up the space: the report's regions, or the unpacked contents with archives and filesystems inside each other. Click to jump or open; right-click to zoom into a container. |
 | **Images** | Finds uncompressed pictures, fonts, splash screens and framebuffers by trying widths and pixel formats across the file; click a result to show it in the view at the right width and format. |
 | **Columns** | For a table of fixed-size records: a profile of each byte position (constant, counter, timestamp, a few values, text, random) and the fields it adds up to. One click applies them as a template. |
 | **Protocol** | For captures, serial logs and streams of messages: finds the framing (sync words, delimiters, length prefixes or fixed size), splits the messages, and identifies types, sequence numbers, lengths, timestamps and checksums. *Align messages* groups messages into types and lines them up, so constant, counting and length fields line up even when messages differ in length. |
@@ -257,8 +265,8 @@ theviewer firmware.bin --json > report.json
 
 | Option | Effect |
 | --- | --- |
-| `--format NAME` | Pixel format: `bit1` `bit1lsb` `nibble4` `gray8` `class` `rgb565` `gray16le` `gray16be` `rgb8` `bgr8` `rgba8` `bgra8` |
-| `--palette NAME` | Palette for single-channel formats: `grey` `viridis` `inferno` `ocean` `amber` |
+| `--format NAME` | Pixel format: `bit1` `bit1lsb` `nibble4` `gray8` `class` `rgb565` `gray16le` `gray16be` `rgb8` `bgr8` `rgba8` `bgra8`, or a numeric heatmap: `u16le` `u16be` `i16le` `i16be` `u32le` `u32be` `i32le` `i32be` `f32le` `f32be` |
+| `--palette NAME` | Palette for single-channel formats: `grey` `viridis` `inferno` `ocean` `amber` `diverging` |
 | `--width PIXELS` | Pixels per row |
 | `--offset BYTES` | Byte shown at the top left (decimal or `0x` hex) |
 | `--cursor BYTES` | Where the cursor starts |
@@ -317,7 +325,7 @@ never your Keychain.
 | `plugins.rs` | The sandboxed Lua plugin host. |
 | `compress.rs` `unpack.rs` | Stream detection, bounded decompression and compression; recursive extraction. |
 | `media.rs` `player.rs` | Media detection and decoding; the image, audio and video viewer. |
-| `explain.rs` `hilbert.rs` | The whole-file report and map; the Hilbert-curve layout. |
+| `explain.rs` `hilbert.rs` `region_colours.rs` | The whole-file report and map; the Hilbert and Morton curve layouts; colours by region, block class and entropy. |
 | `columns.rs` `protocol.rs` `templates.rs` | Record profiling, protocol analysis, and the template language. |
 | `stats.rs` `strings.rs` `xor.rs` | Statistics and randomness tests, strings, XOR key recovery. |
 | `disasm.rs` `pointers.rs` `checksums.rs` `diff.rs` | Disassembly, the pointer graph, checksums, file comparison. |
