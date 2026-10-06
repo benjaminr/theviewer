@@ -1,2 +1,2813 @@
-# Reference notes: see src/reference.rs for the schema. Notes are written for
-# this project in its own words; specifications are cited, not copied.
+# Reference notes on application-layer protocols: mail, file sharing and
+# remote access, directories and authentication, the web, voice and video,
+# messaging, databases, industrial control and the internet of things. See
+# src/reference.rs for the schema. Notes are written for this project in its
+# own words; specifications are cited, not copied.
+#
+# Ports follow the IANA Service Name and Transport Protocol Port Number
+# Registry. A port that is not registered for the protocol but is its
+# universal default (Kafka 9092, NATS 4222) is noted as such in the text.
+# Protocols covered elsewhere: DNS, HTTP/1.x, TLS, SSH, NTP, MQTT and
+# Modbus/TCP in network.toml; DHCP, TFTP, SNMP, Syslog, QUIC, STUN, NetBIOS
+# and routing in network-infrastructure.toml.
+
+# ---------------------------------------------------------------------------
+# Mail
+# ---------------------------------------------------------------------------
+
+[[format]]
+id = "smtp"
+name = "Simple Mail Transfer Protocol"
+keys = ["SMTP", "Simple Mail Transfer Protocol", "ESMTP", "Extended SMTP", "SMTP submission"]
+summary = "The text protocol that moves email between mail servers and from mail clients to their outgoing server: the client names the sender and recipients, then sends the message itself."
+group = "Mail"
+ports = ["tcp/25", "tcp/587", "tcp/465"]
+organisation = """
+SMTP is a line-oriented ASCII dialogue over TCP, every line ending in CR LF. The server speaks first with a 220 greeting. The client then sends commands, each a four-letter verb and its arguments ("MAIL FROM:<alice@example.org>"), and waits for a reply after each one unless the server has offered PIPELINING. Commands and replies are matched purely by order.
+
+Every reply begins with a three-digit code. The first digit gives the outcome (2 done, 3 send more, 4 temporary failure, 5 permanent failure) and the text after it is for people. A reply that runs over several lines puts a hyphen after the code on every line but the last ("250-SIZE", then "250 HELP").
+
+A transaction is MAIL FROM, one RCPT TO per recipient, then DATA. After a 354 reply the client sends the message (headers, an empty line and the body in Internet Message Format) and ends it with a line holding a single full stop; any line of the message that starts with a full stop has another one added in front, which the server removes. EHLO lists the extensions the server supports, such as STARTTLS, AUTH, SIZE, 8BITMIME and CHUNKING (BDAT).
+
+Port 25 carries relay between servers, port 587 is message submission from clients (normally upgraded with STARTTLS and authenticated), and port 465 is submission with TLS from the first byte, so nothing on it is readable without the keys.
+"""
+
+[[format.specs]]
+document = "RFC 5321"
+title = "Simple Mail Transfer Protocol"
+url = "https://www.rfc-editor.org/rfc/rfc5321"
+rfc = 5321
+section = "4.1"
+
+[[format.specs]]
+document = "RFC 6409"
+title = "Message Submission for Mail"
+url = "https://www.rfc-editor.org/rfc/rfc6409"
+rfc = 6409
+
+[[format.specs]]
+document = "RFC 8314"
+title = "Cleartext Considered Obsolete: Use of Transport Layer Security (TLS) for Email Submission and Access"
+url = "https://www.rfc-editor.org/rfc/rfc8314"
+rfc = 8314
+
+[[format.fields]]
+name = "Command"
+meaning = "A verb such as EHLO, MAIL, RCPT, DATA, RSET, NOOP, QUIT, STARTTLS or AUTH, followed by its arguments. Verbs are case-insensitive."
+section = "4.1"
+
+[[format.fields]]
+name = "Reply code"
+aliases = ["Response code"]
+meaning = "Three digits: 220 service ready, 250 completed, 354 start message input, 421 closing, 450 or 451 try later, 530 authentication required, 550 mailbox unavailable, 554 transaction failed."
+section = "4.2"
+
+[[format.fields]]
+name = "MAIL FROM"
+aliases = ["Sender"]
+meaning = "The envelope sender (the return path for bounces), which need not match the From header inside the message. An empty path <> marks a bounce."
+section = "4.1.1.2"
+
+[[format.fields]]
+name = "RCPT TO"
+aliases = ["Recipient"]
+meaning = "One envelope recipient. Each RCPT gets its own reply, so a server can accept some recipients and refuse others."
+section = "4.1.1.3"
+
+[[format.fields]]
+name = "DATA"
+meaning = "Starts the message content, which ends with a line holding only a full stop. Leading full stops inside the message are doubled on the wire."
+section = "4.1.1.4"
+
+[[format.fields]]
+name = "EHLO"
+aliases = ["HELO"]
+meaning = "The client's greeting with its host name. EHLO asks the server to list its extensions in a multi-line 250 reply; HELO is the older form without extensions."
+section = "4.1.1.1"
+
+[[format]]
+id = "pop3"
+name = "Post Office Protocol version 3"
+keys = ["POP3", "POP", "Post Office Protocol", "Post Office Protocol version 3", "Post Office Protocol - Version 3"]
+summary = "A simple text protocol for downloading mail from a mailbox: the client logs in, lists the messages, fetches the ones it wants and usually deletes them from the server."
+group = "Mail"
+ports = ["tcp/110", "tcp/995"]
+organisation = """
+POP3 is a line-oriented ASCII dialogue over TCP with CR LF line ends. The server greets first; the client sends one command at a time (a keyword of three or four letters and its arguments) and the server answers each with a status indicator: "+OK" for success or "-ERR" for failure, followed by free text.
+
+Replies to RETR, TOP, LIST and UIDL without an argument run over several lines and end with a line holding a single full stop. Lines of the message that begin with a full stop have another one added in front, which the client removes.
+
+A session moves through three states: authorisation (USER and PASS, or APOP with a digest of the timestamp in the greeting), transaction (STAT, LIST, RETR, DELE and so on) and update, entered on QUIT, when deletions are applied. Passwords cross in clear text unless the session is upgraded with STLS or runs on port 995, where TLS starts with the first byte.
+"""
+
+[[format.specs]]
+document = "RFC 1939"
+title = "Post Office Protocol - Version 3"
+url = "https://www.rfc-editor.org/rfc/rfc1939"
+rfc = 1939
+section = "3"
+
+[[format.specs]]
+document = "RFC 8314"
+title = "Cleartext Considered Obsolete: Use of Transport Layer Security (TLS) for Email Submission and Access"
+url = "https://www.rfc-editor.org/rfc/rfc8314"
+rfc = 8314
+
+[[format.fields]]
+name = "Command"
+meaning = "USER, PASS, APOP, STAT, LIST, RETR, DELE, NOOP, RSET, TOP, UIDL, CAPA, STLS or QUIT, with arguments separated by spaces."
+section = "9"
+
+[[format.fields]]
+name = "Status indicator"
+aliases = ["Response"]
+meaning = "\"+OK\" when the command succeeded, \"-ERR\" when it did not; the rest of the line is human-readable."
+section = "3"
+
+[[format.fields]]
+name = "Greeting"
+meaning = "The server's first +OK line. A server that supports APOP puts a unique timestamp in angle brackets here, which the client hashes with the password."
+section = "4"
+
+[[format.fields]]
+name = "Message number"
+meaning = "Messages are numbered from 1 for the session; LIST gives each one's size in bytes and UIDL a unique identifier that stays the same across sessions."
+section = "5"
+
+[[format]]
+id = "imap"
+name = "Internet Message Access Protocol"
+keys = ["IMAP", "IMAP4", "IMAP4rev1", "IMAP4rev2", "Internet Message Access Protocol"]
+summary = "The text protocol for working with mail kept on a server: clients open mailboxes, search, fetch parts of messages and set flags, with many commands in flight at once."
+group = "Mail"
+ports = ["tcp/143", "tcp/993"]
+organisation = """
+IMAP is a line-oriented text protocol over TCP with CR LF line ends. Each client command starts with a tag that the client chooses ("a001 SELECT INBOX"), so several commands can be outstanding and their completions told apart.
+
+The server sends three kinds of line. Untagged responses start with "*" and carry data (mailbox sizes, FETCH results, capabilities) whenever the server has it, not only in reply to a particular command. A continuation request starts with "+" and asks the client to send more. A tagged response repeats the command's tag with OK, NO (refused) or BAD (not understood) and ends that command.
+
+Strings that may contain any byte are sent as literals: a byte count in braces at the end of a line ("{342}"), then CR LF and exactly that many bytes. A literal written "{342+}" is sent without waiting for the server's "+". Message bodies arrive this way inside FETCH responses, so a reader has to count bytes rather than look for line ends.
+
+Port 143 starts in clear text (STARTTLS upgrades it); port 993 is IMAP inside TLS from the first byte.
+"""
+
+[[format.specs]]
+document = "RFC 9051"
+title = "Internet Message Access Protocol (IMAP) - Version 4rev2"
+url = "https://www.rfc-editor.org/rfc/rfc9051"
+rfc = 9051
+section = "2.2"
+
+[[format.specs]]
+document = "RFC 8314"
+title = "Cleartext Considered Obsolete: Use of Transport Layer Security (TLS) for Email Submission and Access"
+url = "https://www.rfc-editor.org/rfc/rfc8314"
+rfc = 8314
+
+[[format.fields]]
+name = "Tag"
+meaning = "A short alphanumeric prefix the client puts on each command; the server's tagged completion carries the same tag."
+section = "2.2.1"
+
+[[format.fields]]
+name = "Command"
+meaning = "CAPABILITY, LOGIN, AUTHENTICATE, STARTTLS, SELECT, EXAMINE, LIST, FETCH, STORE, SEARCH, COPY, MOVE, EXPUNGE, IDLE, LOGOUT and others; UID in front makes message numbers unique identifiers."
+section = "6"
+
+[[format.fields]]
+name = "Untagged response"
+meaning = "A line starting \"* \": data such as \"* 23 EXISTS\", \"* 3 FETCH (FLAGS (\\Seen))\" or a status like \"* OK\", sent whenever the server has news."
+section = "7"
+
+[[format.fields]]
+name = "Status response"
+aliases = ["Completion"]
+meaning = "OK, NO or BAD after the tag, optionally with a response code in square brackets such as [READ-WRITE] or [AUTHENTICATIONFAILED]."
+section = "7.1"
+
+[[format.fields]]
+name = "Literal"
+meaning = "A byte count in braces followed by CR LF and that many bytes of arbitrary data."
+section = "4.3"
+
+# ---------------------------------------------------------------------------
+# File sharing and remote access
+# ---------------------------------------------------------------------------
+
+[[format]]
+id = "ftp"
+name = "File Transfer Protocol (control connection)"
+keys = ["FTP", "File Transfer Protocol", "FTP control", "FTPS"]
+summary = "The original internet file transfer protocol: commands and replies travel as text on a control connection, while each file or directory listing goes over a separate data connection."
+group = "File sharing and remote access"
+ports = ["tcp/21", "tcp/990"]
+carries = ["ftp-data"]
+organisation = """
+The control connection is a line-oriented ASCII dialogue over TCP with CR LF line ends. The server greets with a 220 reply; the client sends commands of three or four letters with arguments (USER, PASS, CWD, TYPE, PASV, RETR, STOR, LIST, QUIT) and gets one reply for each, in order.
+
+Replies use three-digit codes: 1yz started and more to come, 2yz done, 3yz send more, 4yz temporary failure, 5yz permanent failure. A multi-line reply starts "nnn-" and ends with a line starting "nnn " with the same code.
+
+Every transfer opens a new data connection. In active mode the client announces an address with PORT h1,h2,h3,h4,p1,p2 (or EPRT) and the server connects to it from port 20. In passive mode the client sends PASV and the server answers "227 Entering Passive Mode (h1,h2,h3,h4,p1,p2)", or EPSV and "229 (|||port|)"; the port is p1 times 256 plus p2. Following these replies is how the data connection's port is found.
+
+User names and passwords are sent in clear text. AUTH TLS upgrades the control connection (explicit FTPS); port 990 is FTP with TLS from the first byte (implicit FTPS).
+"""
+
+[[format.specs]]
+document = "RFC 959"
+title = "File Transfer Protocol"
+url = "https://www.rfc-editor.org/rfc/rfc959"
+rfc = 959
+section = "4.1"
+
+[[format.specs]]
+document = "RFC 2428"
+title = "FTP Extensions for IPv6 and NATs"
+url = "https://www.rfc-editor.org/rfc/rfc2428"
+rfc = 2428
+
+[[format.specs]]
+document = "RFC 4217"
+title = "Securing FTP with TLS"
+url = "https://www.rfc-editor.org/rfc/rfc4217"
+rfc = 4217
+
+[[format.fields]]
+name = "Command"
+meaning = "USER, PASS, ACCT, CWD, PWD, TYPE, MODE, PORT, PASV, EPRT, EPSV, RETR, STOR, LIST, NLST, DELE, MKD, RNFR, RNTO, SIZE, FEAT, AUTH, QUIT and others, case-insensitive."
+section = "4.1"
+
+[[format.fields]]
+name = "Reply code"
+aliases = ["Response code"]
+meaning = "Three digits: 150 opening data connection, 200 OK, 220 ready, 226 transfer complete, 227 entering passive mode, 230 logged in, 331 password needed, 425 cannot open data connection, 530 not logged in, 550 file unavailable."
+section = "4.2"
+
+[[format.fields]]
+name = "PORT"
+aliases = ["PASV"]
+meaning = "Six comma-separated decimals: four for the IPv4 address and two for the port (high byte, low byte) of the data connection."
+section = "4.1"
+
+[[format.fields]]
+name = "TYPE"
+meaning = "The representation of transferred files: A for ASCII text with CR LF line ends, I for image (binary, byte for byte)."
+section = "3.1"
+
+[[format]]
+id = "ftp-data"
+name = "FTP data connection"
+keys = ["FTP-DATA", "FTP data", "FTP data connection"]
+summary = "The separate TCP connection over which FTP sends one file or directory listing, with no framing of its own."
+group = "File sharing and remote access"
+ports = ["tcp/20", "tcp/989"]
+organisation = """
+A data connection carries exactly one transfer and has no header: the bytes are the file itself, or for LIST and NLST a directory listing as lines of text. In the usual stream mode the end of the file is marked by closing the connection, so a short connection after a 150 reply and before a 226 reply holds the whole file.
+
+Which connection belongs to which command is found on the control connection: the PORT, EPRT, 227 or 229 exchange names the address and port, and the RETR, STOR or LIST that follows says what will flow and in which direction. In ASCII type (TYPE A) text line ends are converted to CR LF on the wire; in image type (TYPE I) the bytes are unchanged, so the payload can be carved out as the original file.
+
+Active-mode data connections come from the server's port 20; passive-mode ones go to a high port the server chose. Port 989 is the data connection of implicit FTPS, which is TLS-encrypted.
+"""
+
+[[format.specs]]
+document = "RFC 959"
+title = "File Transfer Protocol"
+url = "https://www.rfc-editor.org/rfc/rfc959"
+rfc = 959
+section = "3"
+
+[[format]]
+id = "telnet"
+name = "Telnet"
+keys = ["Telnet", "TELNET", "Telnet Protocol"]
+summary = "A bidirectional terminal session over TCP: keystrokes go one way and screen output the other, with in-band commands to negotiate terminal options."
+group = "File sharing and remote access"
+ports = ["tcp/23"]
+organisation = """
+Telnet data is plain text in the network virtual terminal convention: 7-bit ASCII with CR LF line ends (a lone CR is sent as CR NUL). Everything travels unencrypted, including the login prompt, the user name and the password, which usually appear one character per segment because each keystroke is sent as it is typed.
+
+Control sequences are embedded in the stream, each starting with the byte 0xFF (IAC, interpret as command). The byte after IAC is the command: 251 WILL, 252 WON'T, 253 DO and 254 DON'T negotiate an option named by a third byte; 250 SB begins a subnegotiation that runs until IAC 240 SE; others such as 244 interrupt process and 246 are you there stand alone. A real 0xFF data byte is sent doubled.
+
+Common options are 0 binary transmission, 1 echo, 3 suppress go-ahead, 24 terminal type, 31 window size, 32 terminal speed, 34 line mode and 39 new environment (which can carry the user name). A session usually opens with a burst of option negotiation from both ends.
+"""
+
+[[format.specs]]
+document = "RFC 854"
+title = "Telnet Protocol Specification"
+url = "https://www.rfc-editor.org/rfc/rfc854"
+rfc = 854
+
+[[format.specs]]
+document = "RFC 855"
+title = "Telnet Option Specifications"
+url = "https://www.rfc-editor.org/rfc/rfc855"
+rfc = 855
+
+[[format.specs]]
+document = "IANA Telnet Options"
+title = "Telnet Options"
+url = "https://www.iana.org/assignments/telnet-options/telnet-options.xhtml"
+
+[[format.fields]]
+name = "IAC"
+meaning = "The byte 0xFF, which marks the next byte as a command rather than data. Two in a row stand for one 0xFF data byte."
+
+[[format.fields]]
+name = "Command"
+meaning = "The byte after IAC: 240 SE, 241 NOP, 243 break, 244 interrupt process, 246 are you there, 250 SB, 251 WILL, 252 WON'T, 253 DO, 254 DON'T."
+
+[[format.fields]]
+name = "Option"
+meaning = "The option a WILL, WON'T, DO, DON'T or SB refers to, such as 1 echo, 24 terminal type or 31 negotiate about window size."
+
+[[format]]
+id = "smb"
+name = "Server Message Block version 1 (CIFS)"
+keys = ["SMB", "SMB1", "SMBv1", "CIFS", "Common Internet File System", "Server Message Block version 1"]
+summary = "The original Windows file and printer sharing protocol, also used to carry named pipes for remote procedure calls; deprecated and disabled in current Windows, but still met on older and embedded systems."
+group = "File sharing and remote access"
+ports = ["tcp/445", "tcp/139"]
+carries = ["dcerpc"]
+organisation = """
+Over TCP port 445 each SMB message is preceded by a 4-byte header: a zero byte and a 24-bit big-endian length of the message that follows. On port 139 the same four bytes are a NetBIOS session service header (type 0x00, session message), after a session request naming the server.
+
+The message starts with a fixed 32-byte header: the signature bytes 0xFF "SMB", a 1-byte command, a 4-byte status (an NTSTATUS code in responses), flags, flags2, a security signature, then the tree ID, process ID, user ID and multiplex ID that identify the share, the process, the logged-on session and the request. Numbers are little-endian. A response is matched to its request by the multiplex ID, together with the process ID.
+
+After the header come a word count and that many 16-bit parameter words, then a byte count and that many data bytes. Commands with names ending "AndX" chain a further command into the same message through an offset in their parameter words, so one message can hold, for example, a session setup and a tree connect.
+
+The negotiate exchange lists dialect strings; a client offering "SMB 2.002" or "SMB 2.???" and a server choosing it switches to SMB2. SMB1's transaction commands were the target of the 2017 EternalBlue exploits.
+"""
+
+[[format.specs]]
+document = "[MS-CIFS]"
+title = "Common Internet File System (CIFS) Protocol"
+url = "https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-cifs/d416ff7c-c536-406e-a951-4f04b2fd1d2b"
+section = "2.2.3.1"
+
+[[format.specs]]
+document = "RFC 1002"
+title = "Protocol standard for a NetBIOS service on a TCP/UDP transport: Detailed specifications"
+url = "https://www.rfc-editor.org/rfc/rfc1002"
+rfc = 1002
+
+[[format.fields]]
+name = "Protocol"
+aliases = ["Signature"]
+meaning = "The four bytes 0xFF 'S' 'M' 'B' that open every SMB1 message."
+section = "2.2.3.1"
+
+[[format.fields]]
+name = "Command"
+meaning = "The operation: 0x72 negotiate, 0x73 session setup AndX, 0x75 tree connect AndX, 0xA2 NT create AndX, 0x2E read AndX, 0x2F write AndX, 0x04 close, 0x25 transaction, 0x32 transaction2, 0x71 tree disconnect."
+section = "2.2.3.1"
+
+[[format.fields]]
+name = "Status"
+meaning = "A 32-bit NTSTATUS in responses: 0 success, 0xC0000022 access denied, 0xC0000034 object name not found, 0xC000006D logon failure, 0xC0000016 more processing required (during authentication)."
+section = "2.2.3.1"
+
+[[format.fields]]
+name = "Tree ID"
+aliases = ["TID"]
+meaning = "Identifies the connected share, as returned by tree connect."
+section = "2.2.3.1"
+
+[[format.fields]]
+name = "User ID"
+aliases = ["UID"]
+meaning = "Identifies the authenticated session, as returned by session setup."
+section = "2.2.3.1"
+
+[[format.fields]]
+name = "Multiplex ID"
+aliases = ["MID"]
+meaning = "Chosen by the client for each request and copied into the response, so several requests can be outstanding."
+section = "2.2.3.1"
+
+[[format]]
+id = "smb2"
+name = "Server Message Block versions 2 and 3"
+keys = ["SMB2", "SMB3", "SMB 2", "SMB 3", "SMBv2", "SMBv3", "Server Message Block version 2", "Server Message Block version 3", "Server Message Block 2", "Server Message Block 3"]
+summary = "The Windows file sharing protocol in use today (also spoken by Samba and most NAS devices): opening, reading and writing files on shares, plus named pipes for remote procedure calls, with signing and, from SMB 3, encryption."
+group = "File sharing and remote access"
+ports = ["tcp/445", "tcp/139"]
+carries = ["dcerpc"]
+organisation = """
+On TCP port 445 every message is preceded by a 4-byte transport header: a zero byte and a 24-bit big-endian length. (Port 139 uses the NetBIOS session service, whose header has the same shape.) Several SMB2 messages may follow one transport header, chained by the Next Command offset.
+
+Each message starts with a 64-byte header, little-endian: the bytes 0xFE "SMB", a structure size of 64, a credit charge, a status (NTSTATUS in responses) or channel sequence, a 2-byte command, credits requested or granted, flags, the next-command offset, a 64-bit message ID, then either a process ID and tree ID or, for asynchronous replies, a 64-bit async ID, a 64-bit session ID and a 16-byte signature. Requests and responses are matched by message ID; the flags' first bit marks a response.
+
+The command-specific body follows, starting with its own 2-byte structure size. Buffers inside the body are located by offsets measured from the start of the SMB2 header.
+
+A message that starts with 0xFD "SMB" instead is an SMB 3 transform header: the 52-byte header carries a nonce and the session ID, and what follows is encrypted. 0xFC "SMB" marks a compressed message. Negotiate selects the dialect: 0x0202, 0x0210, 0x0300, 0x0302 or 0x0311.
+"""
+
+[[format.specs]]
+document = "[MS-SMB2]"
+title = "Server Message Block (SMB) Protocol Versions 2 and 3"
+url = "https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-smb2/5606ad47-5ee0-437a-817e-70c366052962"
+section = "2.2.1"
+
+[[format.fields]]
+name = "Protocol ID"
+aliases = ["Signature"]
+meaning = "0xFE 'S' 'M' 'B' for a normal SMB2 header, 0xFD 'S' 'M' 'B' for an encrypted transform header, 0xFC 'S' 'M' 'B' for a compression transform header."
+section = "2.2.1"
+
+[[format.fields]]
+name = "Command"
+meaning = "The operation: 0 negotiate, 1 session setup, 2 logoff, 3 tree connect, 4 tree disconnect, 5 create (open), 6 close, 7 flush, 8 read, 9 write, 10 lock, 11 ioctl, 12 cancel, 13 echo, 14 query directory, 15 change notify, 16 query info, 17 set info, 18 oplock break."
+section = "2.2.1"
+
+[[format.fields]]
+name = "Status"
+aliases = ["NT Status"]
+meaning = "In responses, an NTSTATUS code: 0 success, 0x00000103 pending, 0xC0000016 more processing required, 0xC0000022 access denied, 0xC0000034 name not found, 0xC000006D logon failure."
+section = "2.2.1"
+
+[[format.fields]]
+name = "Flags"
+meaning = "Bit 0 server to client (a response), bit 1 asynchronous, bit 2 related operations in a compound, bit 3 signed, bit 28 DFS operation."
+section = "2.2.1"
+
+[[format.fields]]
+name = "Message ID"
+meaning = "A 64-bit number the client gives each request; the response carries the same value."
+section = "2.2.1"
+
+[[format.fields]]
+name = "Credits"
+aliases = ["Credit request", "Credit response", "Credit charge"]
+meaning = "Flow control: the client asks for credits and the server grants them; each request spends credits in proportion to its size."
+section = "2.2.1"
+
+[[format.fields]]
+name = "Tree ID"
+meaning = "Identifies the share connected by tree connect, such as \\\\server\\share or the IPC$ share used for named pipes."
+section = "2.2.1"
+
+[[format.fields]]
+name = "Session ID"
+meaning = "Identifies the authenticated session established by session setup."
+section = "2.2.1"
+
+[[format.fields]]
+name = "Signature"
+meaning = "16 bytes: a keyed hash of the message when the signed flag is set, otherwise zero."
+section = "2.2.1"
+
+[[format]]
+id = "onc-rpc"
+name = "ONC Remote Procedure Call"
+keys = ["ONC RPC", "ONC-RPC", "Sun RPC", "SunRPC", "ONC Remote Procedure Call", "RPCBIND", "Portmapper", "Portmap"]
+summary = "Sun's remote procedure call protocol, used by NFS and its helpers: a client calls a numbered procedure of a numbered program, with arguments and results encoded in XDR."
+group = "File sharing and remote access"
+ports = ["tcp/111", "udp/111"]
+carries = ["nfs"]
+organisation = """
+Everything is encoded in XDR: big-endian 32-bit units, with strings and opaque data given a 4-byte length and padded to a multiple of four bytes. Over UDP each datagram is one message. Over TCP each message is split into record fragments, each preceded by a 4-byte record mark whose top bit means last fragment and whose other 31 bits give the fragment's length.
+
+A message begins with a transaction ID (xid) chosen by the caller and copied into the reply, then a message type (0 call, 1 reply). A call continues with the RPC version (2), the program number, program version and procedure number, a credential and a verifier (each a flavour and up to 400 bytes of opaque data), and then the procedure's arguments.
+
+A reply says whether the call was accepted or denied. An accepted reply carries a verifier and an accept status (0 success, 1 program unavailable, 2 version mismatch, 3 procedure unavailable, 4 garbage arguments, 5 system error), followed on success by the results. A reply has no program or procedure numbers, so it can only be decoded by finding the call with the same xid.
+
+Programs find each other through rpcbind (the portmapper, program 100000) on port 111, which maps program and version numbers to ports.
+"""
+
+[[format.specs]]
+document = "RFC 5531"
+title = "RPC: Remote Procedure Call Protocol Specification Version 2"
+url = "https://www.rfc-editor.org/rfc/rfc5531"
+rfc = 5531
+section = "9"
+
+[[format.specs]]
+document = "RFC 4506"
+title = "XDR: External Data Representation Standard"
+url = "https://www.rfc-editor.org/rfc/rfc4506"
+rfc = 4506
+
+[[format.specs]]
+document = "RFC 1833"
+title = "Binding Protocols for ONC RPC Version 2"
+url = "https://www.rfc-editor.org/rfc/rfc1833"
+rfc = 1833
+
+[[format.fields]]
+name = "Fragment header"
+aliases = ["Record mark"]
+meaning = "Over TCP only: top bit set on the last fragment of a message, the other 31 bits the fragment's length in bytes."
+section = "11"
+
+[[format.fields]]
+name = "XID"
+aliases = ["Transaction ID"]
+meaning = "Chosen by the caller and returned in the reply; the only link between a reply and its call."
+section = "9"
+
+[[format.fields]]
+name = "Message type"
+meaning = "0 for a call, 1 for a reply."
+section = "9"
+
+[[format.fields]]
+name = "Program"
+meaning = "The service being called: 100000 rpcbind, 100003 NFS, 100005 mount, 100021 network lock manager, 100024 status monitor."
+section = "9"
+
+[[format.fields]]
+name = "Procedure"
+meaning = "The numbered operation within the program and version; procedure 0 is conventionally a no-op used to ping a service."
+section = "9"
+
+[[format.fields]]
+name = "Credentials"
+aliases = ["Credential", "Verifier"]
+meaning = "An authentication flavour and opaque body: 0 none, 1 AUTH_SYS (Unix user and group IDs in clear), 6 RPCSEC_GSS (Kerberos)."
+section = "8.2"
+
+[[format.fields]]
+name = "Accept status"
+aliases = ["Reply status"]
+meaning = "In an accepted reply: 0 success, 1 program unavailable, 2 program version mismatch, 3 procedure unavailable, 4 garbage arguments, 5 system error."
+section = "9"
+
+[[format]]
+id = "nfs"
+name = "Network File System"
+keys = ["NFS", "NFSv3", "NFSv4", "Network File System"]
+summary = "The Unix network file system: a client reads and writes files on a server's exported directories by calling ONC RPC procedures of program 100003."
+group = "File sharing and remote access"
+ports = ["tcp/2049", "udp/2049"]
+organisation = """
+NFS messages are ONC RPC calls and replies for program 100003, so on TCP each one is preceded by an RPC record mark and starts with the RPC header; the version number in that header says how to read the rest. Everything is XDR: big-endian 32-bit units, with variable-length data padded to four bytes.
+
+In version 3 each operation is its own procedure (1 GETATTR, 3 LOOKUP, 4 ACCESS, 6 READ, 7 WRITE, 8 CREATE, 12 REMOVE, 16 READDIR, 17 READDIRPLUS, 21 COMMIT). Files are named by opaque file handles of up to 64 bytes, obtained from the separate mount protocol (program 100005) and LOOKUP, and access is usually checked with AUTH_SYS credentials, which simply state a user ID.
+
+Version 4 has only two procedures, NULL and COMPOUND. A COMPOUND carries a tag, a minor version (0, 1 or 2) and a list of operations run in order against a current file handle (PUTFH, LOOKUP, OPEN, READ, WRITE, GETATTR, CLOSE; version 4.1 adds SEQUENCE at the head of each compound). The reply lists the result of each operation up to the first failure. Version 4 needs only port 2049 and can use Kerberos through RPCSEC_GSS.
+"""
+
+[[format.specs]]
+document = "RFC 7530"
+title = "Network File System (NFS) Version 4 Protocol"
+url = "https://www.rfc-editor.org/rfc/rfc7530"
+rfc = 7530
+section = "15.2"
+
+[[format.specs]]
+document = "RFC 1813"
+title = "NFS Version 3 Protocol Specification"
+url = "https://www.rfc-editor.org/rfc/rfc1813"
+rfc = 1813
+section = "3"
+
+[[format.specs]]
+document = "RFC 8881"
+title = "Network File System (NFS) Version 4 Minor Version 1 Protocol"
+url = "https://www.rfc-editor.org/rfc/rfc8881"
+rfc = 8881
+
+[[format.fields]]
+name = "Procedure"
+meaning = "In version 4, 0 NULL or 1 COMPOUND; in version 3, the operation itself (6 READ, 7 WRITE and so on)."
+section = "15"
+
+[[format.fields]]
+name = "Tag"
+meaning = "A string the client puts on a COMPOUND, returned unchanged in the reply; often empty."
+section = "15.2"
+
+[[format.fields]]
+name = "Minor version"
+meaning = "0 for NFS 4.0, 1 for 4.1, 2 for 4.2."
+section = "15.2"
+
+[[format.fields]]
+name = "Operation"
+aliases = ["Operations"]
+meaning = "One operation in a COMPOUND, by number: 9 GETATTR, 10 GETFH, 15 LOOKUP, 18 OPEN, 22 PUTFH, 24 PUTROOTFH, 25 READ, 26 READDIR, 38 WRITE, 4 CLOSE, 53 SEQUENCE (4.1)."
+section = "15.2"
+
+[[format.fields]]
+name = "File handle"
+aliases = ["filehandle", "fh"]
+meaning = "An opaque identifier the server gives a file; the client sends it back to name the file in later calls. Its contents are the server's own business."
+
+[[format.fields]]
+name = "Status"
+meaning = "The NFS result code: 0 OK, 1 not owner, 2 no such file, 13 access denied, 17 file exists, 70 stale file handle."
+section = "15.2"
+
+[[format]]
+id = "dcerpc"
+name = "DCE/RPC and Microsoft RPC"
+keys = ["DCE/RPC", "DCERPC", "MSRPC", "MS-RPC", "MS-RPCE", "Microsoft RPC", "DCE RPC", "DCE Remote Procedure Call"]
+summary = "The remote procedure call protocol behind most Windows management interfaces (service control, registry, directory replication, scheduled tasks), carried over TCP or over SMB named pipes."
+group = "File sharing and remote access"
+ports = ["tcp/135", "udp/135"]
+organisation = """
+The connection-oriented form, used over TCP and named pipes, starts every PDU with a 16-byte header: version 5, minor version 0, a packet type, flags (first fragment 0x01, last fragment 0x02), a 4-byte data representation label, the fragment length, the authentication trailer length and a 4-byte call ID. The data representation label's first byte says whether the rest is little-endian (0x10, the usual case) or big-endian. Requests and responses share the call ID; large calls are split into fragments.
+
+A client first sends a bind (type 11) listing presentation contexts: each pairs an interface UUID and version, which names the service being called, with a transfer syntax (NDR or NDR64). The server's bind ack (12) accepts or rejects each. Requests (0) then carry an allocation hint, a context ID and an operation number (opnum) selecting the method; responses (2) carry the results and faults (3) a status code. Arguments are marshalled in NDR.
+
+When authentication is used, an 8-byte security trailer and the token (NTLM, Kerberos or SPNEGO) follow the stub data, and with packet privacy the stub data itself is encrypted. The endpoint mapper on port 135 tells clients which dynamic port serves an interface; over SMB, interfaces are reached through pipes such as \\pipe\\svcctl or \\pipe\\samr on the IPC$ share.
+"""
+
+[[format.specs]]
+document = "C706"
+title = "DCE 1.1: Remote Procedure Call - RPC PDU Encodings"
+url = "https://pubs.opengroup.org/onlinepubs/9629399/chap12.htm"
+section = "12.6"
+
+[[format.specs]]
+document = "[MS-RPCE]"
+title = "Remote Procedure Call Protocol Extensions"
+url = "https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rpce/290c38b1-92fe-4229-91e6-4fc376610c15"
+
+[[format.fields]]
+name = "Packet type"
+aliases = ["PTYPE"]
+meaning = "0 request, 2 response, 3 fault, 11 bind, 12 bind ack, 13 bind nak, 14 alter context, 15 alter context response, 16 auth3, 17 shutdown, 18 cancel, 19 orphaned."
+section = "12.6.3.1"
+
+[[format.fields]]
+name = "Packet flags"
+aliases = ["Flags"]
+meaning = "0x01 first fragment, 0x02 last fragment, 0x04 pending cancel, 0x20 did not execute, 0x40 maybe semantics, 0x80 an object UUID follows the header."
+section = "12.6.3.1"
+
+[[format.fields]]
+name = "Data representation"
+aliases = ["DREP"]
+meaning = "Four bytes describing the encoding: integer byte order in the first byte (0x10 little-endian), then character set and floating-point format."
+section = "12.6.3.1"
+
+[[format.fields]]
+name = "Fragment length"
+meaning = "The length of this PDU, header included."
+section = "12.6.3.1"
+
+[[format.fields]]
+name = "Call ID"
+meaning = "Identifies a call; every fragment of the request and response carries the same value."
+section = "12.6.3.1"
+
+[[format.fields]]
+name = "Opnum"
+meaning = "The operation number within the bound interface, which selects the method being called."
+section = "12.6.4.9"
+
+[[format.fields]]
+name = "Interface UUID"
+aliases = ["Abstract syntax"]
+meaning = "In a bind, names the interface: for example 367abb81-9844-35f1-ad32-98f038001003 service control (svcctl), 12345778-1234-abcd-ef00-0123456789ac SAMR, e3514235-4b06-11d1-ab04-00c04fc2dcd2 directory replication (DRSUAPI)."
+section = "12.6.4.3"
+
+[[format]]
+id = "rdp"
+name = "Remote Desktop Protocol"
+keys = ["RDP", "Remote Desktop Protocol", "MS-RDPBCGR", "Terminal Services", "MS WBT Server"]
+summary = "Microsoft's remote desktop protocol: screen updates flow from server to client and keyboard and mouse input the other way, almost always inside TLS once the first exchange is done."
+group = "File sharing and remote access"
+ports = ["tcp/3389", "udp/3389"]
+organisation = """
+A connection opens with TPKT and X.224 framing: a 4-byte TPKT header (version 3, a reserved byte and a 16-bit big-endian length that includes the header), then an X.224 connection request TPDU (code 0xE0). Its user data often begins with a text line "Cookie: mstshash=" and a user name, followed by an 8-byte negotiation request listing the security protocols the client can use: 0 standard RDP security, 1 TLS, 2 CredSSP (network level authentication), 8 CredSSP with early user authorisation. The server's connection confirm (0xD0) states the one it picked.
+
+With TLS or CredSSP chosen, a TLS handshake follows immediately, and with CredSSP the user is authenticated inside it before the session starts, so after the first two packets nothing more is readable on the wire. Inside, the session continues with the MCS (T.125) connect exchange carrying GCC conference data (client screen size, keyboard layout, client name and requested virtual channels), then licensing, capability exchange and the session's data PDUs.
+
+Later traffic uses either the slow path (TPKT, X.224 data, MCS send-data) or the fast path, whose first byte has its low two bits clear instead of a TPKT version. Virtual channels carry the clipboard, drive and printer redirection and audio. UDP port 3389 carries the optional UDP transport for graphics.
+"""
+
+[[format.specs]]
+document = "[MS-RDPBCGR]"
+title = "Remote Desktop Protocol: Basic Connectivity and Graphics Remoting"
+url = "https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/5073f4ed-1e93-45e1-b039-6e30c385867c"
+section = "2.2.1.1"
+
+[[format.specs]]
+document = "RFC 1006"
+title = "ISO Transport Service on top of the TCP Version: 3"
+url = "https://www.rfc-editor.org/rfc/rfc1006"
+rfc = 1006
+
+[[format.fields]]
+name = "TPKT header"
+aliases = ["TPKT"]
+meaning = "Version 3, a reserved byte and the 16-bit big-endian length of the whole packet including these four bytes."
+section = "2.2.1.1"
+
+[[format.fields]]
+name = "Cookie"
+aliases = ["routingToken", "mstshash"]
+meaning = "Optional text in the connection request, \"Cookie: mstshash=\" and a user name ending in CR LF, used by load balancers; a quick way to see who is connecting."
+section = "2.2.1.1"
+
+[[format.fields]]
+name = "Requested protocols"
+aliases = ["requestedProtocols"]
+meaning = "Flags in the client's negotiation request: 0x1 TLS, 0x2 CredSSP, 0x4 RDSTLS, 0x8 CredSSP with early user authorisation; 0 means standard RDP security only."
+section = "2.2.1.1.1"
+
+[[format.fields]]
+name = "Selected protocol"
+aliases = ["selectedProtocol"]
+meaning = "In the server's negotiation response, the one security protocol chosen from the client's list."
+section = "2.2.1.2.1"
+
+[[format]]
+id = "rfb"
+name = "Remote Framebuffer Protocol (VNC)"
+keys = ["RFB", "VNC", "Remote Framebuffer", "Remote Framebuffer Protocol", "Virtual Network Computing"]
+summary = "The protocol of VNC remote desktops: the server sends rectangles of screen pixels and the client sends key and pointer events."
+group = "File sharing and remote access"
+ports = ["tcp/5900"]
+organisation = """
+The server speaks first with a 12-byte version string such as "RFB 003.008" and a newline; the client answers with the version it will use. The server then lists security types (1 none, 2 VNC authentication, plus vendor and TLS-based types). VNC authentication is a 16-byte random challenge that the client encrypts with DES using the password as key, so a captured exchange can be attacked offline. A 4-byte security result (0 OK) follows.
+
+The client sends a 1-byte ClientInit (whether to share the desktop) and the server a ServerInit: framebuffer width and height, a 16-byte pixel format and the desktop name with a 4-byte length. All numbers are big-endian.
+
+After that, each message starts with a 1-byte type and its layout is fixed by the type, with no general length field, so a reader must understand every message to stay in step. Client messages: 0 set pixel format, 2 set encodings, 3 framebuffer update request, 4 key event, 5 pointer event, 6 cut text. Server messages: 0 framebuffer update, 1 set colour map entries, 2 bell, 3 cut text. Key events carry X11 keysyms, so unencrypted sessions reveal typed text.
+
+Display number n listens on port 5900 + n.
+"""
+
+[[format.specs]]
+document = "RFC 6143"
+title = "The Remote Framebuffer Protocol"
+url = "https://www.rfc-editor.org/rfc/rfc6143"
+rfc = 6143
+section = "7"
+
+[[format.fields]]
+name = "ProtocolVersion"
+aliases = ["Version"]
+meaning = "Twelve bytes such as \"RFB 003.008\" and a newline; 3.3, 3.7 and 3.8 are the published versions."
+section = "7.1.1"
+
+[[format.fields]]
+name = "Security type"
+aliases = ["Security types"]
+meaning = "1 none, 2 VNC authentication (DES challenge and response); other numbers are registered for TLS and vendor schemes."
+section = "7.1.2"
+
+[[format.fields]]
+name = "Message type"
+meaning = "The first byte of each message after initialisation; the same numbers mean different messages in each direction."
+section = "7.5"
+
+[[format.fields]]
+name = "KeyEvent"
+aliases = ["Key"]
+meaning = "A down flag and a 32-bit X11 keysym for one key press or release."
+section = "7.5.4"
+
+[[format.fields]]
+name = "FramebufferUpdate"
+aliases = ["Rectangles"]
+meaning = "A count of rectangles, each with position, size and an encoding type (0 raw, 1 copy rectangle, 2 RRE, 5 Hextile, 16 ZRLE; negative numbers are pseudo-encodings such as cursor shape and desktop size)."
+section = "7.6.1"
+
+# ---------------------------------------------------------------------------
+# Directory and authentication
+# ---------------------------------------------------------------------------
+
+[[format]]
+id = "ldap"
+name = "Lightweight Directory Access Protocol"
+keys = ["LDAP", "LDAPS", "CLDAP", "Lightweight Directory Access Protocol", "Connectionless LDAP"]
+summary = "The protocol for querying and updating directories such as Active Directory and OpenLDAP: binding (logging in), searching for entries and modifying their attributes."
+group = "Directory and authentication"
+ports = ["tcp/389", "udp/389", "tcp/636", "tcp/3268", "tcp/3269"]
+organisation = """
+Each message is an ASN.1 structure encoded with BER, so it begins with 0x30 (a SEQUENCE) and a BER length that says how long the whole message is; messages simply follow one another on the TCP stream. Inside are a message ID chosen by the client, the operation and, optionally, controls tagged [0].
+
+The operation is identified by its APPLICATION tag: 0x60 bind request, 0x61 bind response, 0x42 unbind, 0x63 search request, 0x64 search result entry, 0x65 search result done, 0x73 search result reference, 0x66 and 0x67 modify, 0x68 and 0x69 add, 0x4A and 0x6B delete, 0x77 and 0x78 extended request and response. Responses repeat the request's message ID; a search returns any number of entries and references and then one search-done carrying the result code.
+
+A simple bind sends the distinguished name and the password in clear text; SASL binds carry Kerberos (GSS-SPNEGO) or other mechanisms and may sign or seal what follows. The StartTLS extended operation upgrades port 389; port 636 is LDAP inside TLS from the start, and ports 3268 and 3269 are the Active Directory global catalogue. UDP port 389 carries connectionless LDAP, which Windows clients use to locate domain controllers.
+"""
+
+[[format.specs]]
+document = "RFC 4511"
+title = "Lightweight Directory Access Protocol (LDAP): The Protocol"
+url = "https://www.rfc-editor.org/rfc/rfc4511"
+rfc = 4511
+section = "4.1.1"
+
+[[format.fields]]
+name = "Message ID"
+aliases = ["messageID"]
+meaning = "A number the client gives each request; every response to that request carries it."
+section = "4.1.1.1"
+
+[[format.fields]]
+name = "Protocol op"
+aliases = ["protocolOp", "Operation"]
+meaning = "The operation, by APPLICATION tag number: 0 bind request, 1 bind response, 2 unbind, 3 search request, 4 search entry, 5 search done, 6 modify, 8 add, 10 delete, 12 modify DN, 14 compare, 16 abandon, 19 search reference, 23 extended request, 24 extended response."
+section = "4.2"
+
+[[format.fields]]
+name = "Result code"
+aliases = ["resultCode"]
+meaning = "The outcome of an operation: 0 success, 1 operations error, 32 no such object, 49 invalid credentials, 50 insufficient access rights, 53 unwilling to perform."
+section = "4.1.9"
+
+[[format.fields]]
+name = "Base object"
+aliases = ["baseObject", "DN"]
+meaning = "The distinguished name a search starts from, such as dc=example,dc=com."
+section = "4.5.1"
+
+[[format.fields]]
+name = "Filter"
+meaning = "A search filter tree such as (&(objectClass=user)(sAMAccountName=alice)), encoded in BER rather than as text."
+section = "4.5.1.7"
+
+[[format.fields]]
+name = "Controls"
+meaning = "Optional extensions to an operation, each an OID, a criticality flag and a value, such as paged results (1.2.840.113556.1.4.319)."
+section = "4.1.11"
+
+[[format]]
+id = "kerberos"
+name = "Kerberos version 5"
+keys = ["Kerberos", "Kerberos 5", "Kerberos V5", "KRB5", "Kerberos version 5"]
+summary = "The ticket-based authentication protocol of Active Directory and many Unix realms: a client proves its identity to a key distribution centre once and receives tickets that admit it to individual services."
+group = "Directory and authentication"
+ports = ["tcp/88", "udp/88", "tcp/464", "udp/464"]
+organisation = """
+Messages are ASN.1 structures encoded with DER, each wrapped in an APPLICATION tag that names its type: 10 AS-REQ (first byte 0x6A), 11 AS-REP (0x6B), 12 TGS-REQ (0x6C), 13 TGS-REP (0x6D), 14 AP-REQ (0x6E), 15 AP-REP (0x6F), 30 KRB-ERROR (0x7E). Inside, numbered context tags hold the fields, including the protocol version 5 and the message type again.
+
+Over UDP each datagram is one message. Over TCP each message is preceded by a 4-byte big-endian length. Requests and replies are paired by a nonce in the request body that the encrypted part of the reply returns.
+
+An AS exchange obtains a ticket-granting ticket: the request names the client principal, the realm and the service krbtgt, and lists the encryption types the client supports (17 and 18 AES, 23 RC4-HMAC). Pre-authentication data (an encrypted timestamp) proves the password. A TGS exchange presents that ticket to obtain a ticket for a service, such as cifs/fileserver or HTTP/web; AP-REQ then hands it to the service, usually inside SMB, LDAP or HTTP authentication. Tickets and reply parts are encrypted with the keys of the service or the user, so a reply encrypted with RC4 is the material for offline password attacks.
+
+Port 464 carries password changes (kpasswd).
+"""
+
+[[format.specs]]
+document = "RFC 4120"
+title = "The Kerberos Network Authentication Service (V5)"
+url = "https://www.rfc-editor.org/rfc/rfc4120"
+rfc = 4120
+section = "5"
+
+[[format.fields]]
+name = "Message type"
+aliases = ["msg-type"]
+meaning = "10 AS-REQ, 11 AS-REP, 12 TGS-REQ, 13 TGS-REP, 14 AP-REQ, 15 AP-REP, 20 KRB-SAFE, 21 KRB-PRIV, 22 KRB-CRED, 30 KRB-ERROR."
+section = "7.5.7"
+
+[[format.fields]]
+name = "Record mark"
+aliases = ["Length"]
+meaning = "Over TCP only: a 4-byte big-endian length in front of each message; the top bit is reserved and must be zero."
+section = "7.2.2"
+
+[[format.fields]]
+name = "padata"
+aliases = ["Pre-authentication data", "PA-DATA"]
+meaning = "Pre-authentication items, each a type and a value: 2 encrypted timestamp, 19 encryption type information, 128 PAC request (Microsoft)."
+section = "5.2.7"
+
+[[format.fields]]
+name = "cname"
+aliases = ["Client name"]
+meaning = "The client principal, such as alice in the realm EXAMPLE.COM."
+section = "5.4.1"
+
+[[format.fields]]
+name = "sname"
+aliases = ["Server name", "Service name"]
+meaning = "The service principal the ticket is for, such as krbtgt/EXAMPLE.COM or cifs/fileserver.example.com."
+section = "5.4.1"
+
+[[format.fields]]
+name = "etype"
+aliases = ["Encryption type"]
+meaning = "Encryption types: 17 AES128-CTS-HMAC-SHA1-96, 18 AES256-CTS-HMAC-SHA1-96, 23 RC4-HMAC, 3 DES-CBC-MD5 (obsolete)."
+section = "5.4.1"
+
+[[format.fields]]
+name = "Error code"
+aliases = ["error-code"]
+meaning = "In KRB-ERROR: 6 client unknown, 7 server unknown, 18 client credentials revoked, 24 pre-authentication failed, 25 pre-authentication required, 32 ticket expired, 37 clock skew too great, 68 wrong realm."
+section = "7.5.9"
+
+[[format]]
+id = "radius"
+name = "Remote Authentication Dial In User Service"
+keys = ["RADIUS", "Remote Authentication Dial In User Service", "RADIUS Accounting"]
+summary = "The protocol network equipment (VPN concentrators, Wi-Fi controllers, switches) uses to ask a central server whether a user may connect, and to report sessions for accounting."
+group = "Directory and authentication"
+ports = ["udp/1812", "udp/1813"]
+organisation = """
+Each UDP datagram is one packet with a 20-byte header: a 1-byte code, a 1-byte identifier, a 2-byte big-endian length (20 to 4096) covering the whole packet, and a 16-byte authenticator. Attributes fill the rest.
+
+The identifier pairs a reply with its request. In an Access-Request the authenticator is 16 random bytes; in a reply it is an MD5 hash over the reply, the request's authenticator and the shared secret, which proves the reply came from the server. Accounting requests carry a similar hash of their own.
+
+Attributes are type-length-value: a 1-byte type, a 1-byte length that includes these two bytes, and the value. User-Password is hidden by XORing it with MD5 of the shared secret and the request authenticator, which is weak if the secret is weak. Vendor-Specific (26) wraps a 4-byte vendor number and the vendor's own attributes; EAP-Message (79) carries EAP, and Message-Authenticator (80) is an HMAC-MD5 of the packet.
+
+Port 1812 carries authentication and 1813 accounting; older equipment uses 1645 and 1646.
+"""
+
+[[format.specs]]
+document = "RFC 2865"
+title = "Remote Authentication Dial In User Service (RADIUS)"
+url = "https://www.rfc-editor.org/rfc/rfc2865"
+rfc = 2865
+section = "3"
+
+[[format.specs]]
+document = "RFC 2866"
+title = "RADIUS Accounting"
+url = "https://www.rfc-editor.org/rfc/rfc2866"
+rfc = 2866
+
+[[format.fields]]
+name = "Code"
+meaning = "1 Access-Request, 2 Access-Accept, 3 Access-Reject, 4 Accounting-Request, 5 Accounting-Response, 11 Access-Challenge, 12 Status-Server."
+section = "3"
+
+[[format.fields]]
+name = "Identifier"
+meaning = "Matches a reply to its request; a client changes it for each new request."
+section = "3"
+
+[[format.fields]]
+name = "Length"
+meaning = "The whole packet's length in bytes, header included; bytes beyond it are padding to be ignored."
+section = "3"
+
+[[format.fields]]
+name = "Authenticator"
+meaning = "16 bytes: random in an Access-Request, an MD5-based check in replies and accounting requests."
+section = "3"
+
+[[format.fields]]
+name = "Attribute"
+aliases = ["Attributes", "AVP"]
+meaning = "Type, length and value: 1 User-Name, 2 User-Password, 4 NAS-IP-Address, 5 NAS-Port, 8 Framed-IP-Address, 26 Vendor-Specific, 31 Calling-Station-Id, 79 EAP-Message, 80 Message-Authenticator."
+section = "5"
+
+[[format]]
+id = "tacacs-plus"
+name = "TACACS+"
+keys = ["TACACS+", "TACACS Plus", "Terminal Access Controller Access-Control System Plus"]
+summary = "The protocol network devices use to authenticate administrators against a central server, authorise each command they type and record what they did."
+group = "Directory and authentication"
+ports = ["tcp/49"]
+organisation = """
+TACACS+ runs over TCP. Every packet starts with a 12-byte header: a version byte (major version 0xC in the top four bits, minor 0 or 1 below), a type (1 authentication, 2 authorisation, 3 accounting), a sequence number, flags, a 4-byte session ID and a 4-byte big-endian body length.
+
+The sequence number is 1 in the first packet of a session and goes up by one with each packet, so the client sends odd numbers and the server even ones. The session ID ties the packets of one exchange together; with the single-connection flag (0x04) several sessions share one TCP connection.
+
+The body is normally obfuscated: XORed with a pad built from repeated MD5 hashes of the session ID, the shared key, the version and the sequence number. Only when the unencrypted flag (0x01) is set is it readable directly. Inside, authentication START, REPLY and CONTINUE bodies carry the user name, password and prompts; authorisation and accounting bodies carry argument-value pairs such as service=shell and cmd=show running-config.
+"""
+
+[[format.specs]]
+document = "RFC 8907"
+title = "The Terminal Access Controller Access-Control System Plus (TACACS+) Protocol"
+url = "https://www.rfc-editor.org/rfc/rfc8907"
+rfc = 8907
+section = "4.1"
+
+[[format.fields]]
+name = "Version"
+meaning = "Major version 0xC in the top nibble; minor version 0 by default or 1 for some authentication types."
+section = "4.1"
+
+[[format.fields]]
+name = "Type"
+meaning = "1 authentication, 2 authorisation, 3 accounting."
+section = "4.1"
+
+[[format.fields]]
+name = "Sequence number"
+aliases = ["seq_no"]
+meaning = "1 for the first packet of a session, increasing by one per packet; odd from the client, even from the server."
+section = "4.1"
+
+[[format.fields]]
+name = "Flags"
+meaning = "0x01 body not obfuscated, 0x04 single connection mode."
+section = "4.1"
+
+[[format.fields]]
+name = "Session ID"
+meaning = "A random 4-byte value identifying one authentication, authorisation or accounting exchange."
+section = "4.1"
+
+[[format.fields]]
+name = "Length"
+meaning = "The length of the body after the header, in bytes."
+section = "4.1"
+
+# ---------------------------------------------------------------------------
+# Web
+# ---------------------------------------------------------------------------
+
+[[format]]
+id = "http2"
+name = "HTTP/2"
+keys = ["HTTP/2", "HTTP2", "h2", "h2c", "HTTP version 2"]
+summary = "The binary framing of HTTP that runs many requests and responses at once over one TCP connection, as interleaved frames on numbered streams with compressed headers."
+group = "Web"
+carries = ["grpc"]
+organisation = """
+HTTP/2 nearly always runs inside TLS, chosen during the handshake by the ALPN name "h2"; cleartext HTTP/2 (h2c) is rare. The client begins with a fixed 24-byte preface, "PRI * HTTP/2.0" followed by CR LF CR LF "SM" CR LF CR LF, and both ends then send a SETTINGS frame.
+
+Everything after that is frames. Each has a 9-byte header: a 24-bit length of the payload, an 8-bit type, an 8-bit flags field and a 31-bit stream identifier (the top bit is reserved). All numbers are big-endian. Stream 0 is the connection itself (SETTINGS, PING, GOAWAY); client-initiated streams have odd numbers, and one request with its response uses one stream.
+
+A request or response is a HEADERS frame (continued in CONTINUATION frames if large) followed by DATA frames; the END_STREAM flag marks the last frame in each direction. Header fields are compressed with HPACK, which refers to a table built up over the connection, so headers cannot be read from a single frame taken out of context. Pseudo-headers such as :method, :path, :authority and :status stand in for the HTTP/1.1 request and status lines.
+"""
+
+[[format.specs]]
+document = "RFC 9113"
+title = "HTTP/2"
+url = "https://www.rfc-editor.org/rfc/rfc9113"
+rfc = 9113
+section = "4.1"
+
+[[format.specs]]
+document = "RFC 7541"
+title = "HPACK: Header Compression for HTTP/2"
+url = "https://www.rfc-editor.org/rfc/rfc7541"
+rfc = 7541
+
+[[format.fields]]
+name = "Length"
+meaning = "The frame payload's length in bytes, not counting the 9-byte header; at most 16,384 unless SETTINGS allows more."
+section = "4.1"
+
+[[format.fields]]
+name = "Type"
+aliases = ["Frame type"]
+meaning = "0 DATA, 1 HEADERS, 2 PRIORITY, 3 RST_STREAM, 4 SETTINGS, 5 PUSH_PROMISE, 6 PING, 7 GOAWAY, 8 WINDOW_UPDATE, 9 CONTINUATION."
+section = "6"
+
+[[format.fields]]
+name = "Flags"
+meaning = "Meaning depends on the type: 0x1 END_STREAM (DATA, HEADERS) or ACK (SETTINGS, PING), 0x4 END_HEADERS, 0x8 PADDED, 0x20 PRIORITY."
+section = "4.1"
+
+[[format.fields]]
+name = "Stream identifier"
+aliases = ["Stream ID"]
+meaning = "Which stream the frame belongs to; 0 for frames about the whole connection. Clients open odd-numbered streams."
+section = "4.1"
+
+[[format.fields]]
+name = "Error code"
+meaning = "In RST_STREAM and GOAWAY: 0 no error, 1 protocol error, 2 internal error, 3 flow control error, 7 refused stream, 8 cancel, 11 enhance your calm."
+section = "7"
+
+[[format]]
+id = "http3"
+name = "HTTP/3"
+keys = ["HTTP/3", "HTTP3", "h3", "HTTP version 3"]
+summary = "HTTP mapped onto QUIC: each request and response travels on its own QUIC stream as a sequence of small frames, with headers compressed by QPACK."
+group = "Web"
+organisation = """
+HTTP/3 has no framing of its own below the QUIC stream: QUIC (on UDP, usually port 443) provides encrypted, independently ordered streams, and the ALPN name "h3" selects HTTP/3 during QUIC's handshake. Nothing of HTTP/3 is visible on the wire without the session keys.
+
+Within a stream, each frame is a variable-length integer type, a variable-length integer length and the payload. QUIC's variable-length integers use the top two bits of the first byte to give their size (1, 2, 4 or 8 bytes). Frame types are 0x00 DATA, 0x01 HEADERS, 0x03 CANCEL_PUSH, 0x04 SETTINGS, 0x05 PUSH_PROMISE, 0x07 GOAWAY and 0x0D MAX_PUSH_ID; others are reserved or extensions.
+
+A request uses one client-initiated bidirectional stream: HEADERS, optional DATA frames and optional trailing HEADERS, and the response comes back the same way on that stream. Each side also opens unidirectional streams whose first byte gives their type: 0x00 control (carrying SETTINGS first), 0x01 push, 0x02 QPACK encoder and 0x03 QPACK decoder.
+"""
+
+[[format.specs]]
+document = "RFC 9114"
+title = "HTTP/3"
+url = "https://www.rfc-editor.org/rfc/rfc9114"
+rfc = 9114
+section = "7.1"
+
+[[format.specs]]
+document = "RFC 9204"
+title = "QPACK: Field Compression for HTTP/3"
+url = "https://www.rfc-editor.org/rfc/rfc9204"
+rfc = 9204
+
+[[format.fields]]
+name = "Type"
+aliases = ["Frame type"]
+meaning = "0x00 DATA, 0x01 HEADERS, 0x03 CANCEL_PUSH, 0x04 SETTINGS, 0x05 PUSH_PROMISE, 0x07 GOAWAY, 0x0D MAX_PUSH_ID, as a variable-length integer."
+section = "7.2"
+
+[[format.fields]]
+name = "Length"
+meaning = "The payload's length in bytes, as a variable-length integer."
+section = "7.1"
+
+[[format.fields]]
+name = "Stream type"
+meaning = "The first value on a unidirectional stream: 0x00 control, 0x01 push, 0x02 QPACK encoder, 0x03 QPACK decoder."
+section = "6.2"
+
+[[format]]
+id = "websocket"
+name = "WebSocket"
+keys = ["WebSocket", "WebSockets", "WebSocket Protocol", "ws", "wss"]
+summary = "A two-way message channel between a browser and a server, set up with an HTTP request and then carried as small binary frames on the same TCP connection."
+group = "Web"
+organisation = """
+A connection starts as HTTP/1.1: the client sends a GET with "Upgrade: websocket", "Connection: Upgrade", a random Sec-WebSocket-Key and Sec-WebSocket-Version 13, and the server answers "101 Switching Protocols" with a Sec-WebSocket-Accept value derived from the key by SHA-1. From then on the connection carries frames, on whatever port the HTTP request used (80, or 443 inside TLS for wss).
+
+Each frame begins with two bytes: FIN (last fragment of a message), three reserved bits (RSV1 marks a compressed message when permessage-deflate is in use) and a 4-bit opcode, then a MASK bit and a 7-bit payload length. A length of 126 means a 16-bit length follows, 127 a 64-bit length, both big-endian.
+
+Every frame from client to server is masked: a 4-byte masking key follows the length, and each payload byte is XORed with key byte (index mod 4). Server frames are not masked. A message can be split over several frames, the first with its opcode and the rest with opcode 0 (continuation); control frames (close, ping, pong) may appear between them but are never fragmented.
+"""
+
+[[format.specs]]
+document = "RFC 6455"
+title = "The WebSocket Protocol"
+url = "https://www.rfc-editor.org/rfc/rfc6455"
+rfc = 6455
+section = "5.2"
+
+[[format.fields]]
+name = "FIN"
+meaning = "Set on the last frame of a message."
+section = "5.2"
+
+[[format.fields]]
+name = "Opcode"
+meaning = "0 continuation, 1 text (UTF-8), 2 binary, 8 close, 9 ping, 10 pong."
+section = "5.2"
+
+[[format.fields]]
+name = "Mask"
+aliases = ["Masked"]
+meaning = "Set when a masking key follows; always set from client to server."
+section = "5.2"
+
+[[format.fields]]
+name = "Payload length"
+meaning = "0 to 125 directly, or 126 followed by a 16-bit length, or 127 followed by a 64-bit length."
+section = "5.2"
+
+[[format.fields]]
+name = "Masking key"
+meaning = "Four bytes XORed in turn over the payload; unmasking is the same operation."
+section = "5.3"
+
+[[format.fields]]
+name = "Close code"
+aliases = ["Status code"]
+meaning = "The first two bytes of a close frame's payload: 1000 normal, 1001 going away, 1002 protocol error, 1006 closed without a close frame (never sent), 1008 policy violation, 1011 server error."
+section = "7.4"
+
+[[format]]
+id = "grpc"
+name = "gRPC"
+keys = ["gRPC", "gRPC over HTTP/2", "application/grpc"]
+summary = "A remote procedure call framework that sends Protocol Buffers messages as HTTP/2 requests and responses, used widely between microservices."
+group = "Web"
+organisation = """
+A gRPC call is one HTTP/2 stream. The request's HEADERS frame has :method POST, a :path of "/" package and service "/" method (for example /helloworld.Greeter/SayHello), content-type application/grpc (often with +proto), "te: trailers" and optionally grpc-timeout and grpc-encoding.
+
+The bodies in both directions are DATA frames holding length-prefixed messages: a 1-byte compressed flag, a 4-byte big-endian message length and the message itself, normally a serialised Protocol Buffers message whose schema is not on the wire. Streaming calls send many such messages on one stream, and a message may span DATA frames.
+
+The response begins with HEADERS (:status 200 and the content type) and ends with a trailing HEADERS frame carrying grpc-status, a decimal status code, and an optional grpc-message. A failed call may consist of trailers alone. Because HTTP/2 headers are HPACK-compressed and usually inside TLS, the method name is only readable when the connection is decrypted and the header table followed from the start.
+"""
+
+[[format.specs]]
+document = "gRPC over HTTP2"
+title = "gRPC over HTTP2"
+url = "https://github.com/grpc/grpc/blob/master/doc/PROTOCOL-HTTP2.md"
+
+[[format.specs]]
+document = "gRPC status codes"
+title = "Status codes and their use in gRPC"
+url = "https://github.com/grpc/grpc/blob/master/doc/statuscodes.md"
+
+[[format.fields]]
+name = "Compressed flag"
+meaning = "1 when the message is compressed with the algorithm named in grpc-encoding, otherwise 0."
+
+[[format.fields]]
+name = "Message length"
+meaning = "The length of the message that follows, as a 4-byte big-endian number."
+
+[[format.fields]]
+name = "grpc-status"
+aliases = ["Status"]
+meaning = "0 OK, 1 cancelled, 2 unknown, 3 invalid argument, 4 deadline exceeded, 5 not found, 7 permission denied, 8 resource exhausted, 12 unimplemented, 13 internal, 14 unavailable, 16 unauthenticated."
+
+[[format.fields]]
+name = ":path"
+aliases = ["Path", "Method"]
+meaning = "The service and method being called, as /package.Service/Method."
+
+# ---------------------------------------------------------------------------
+# Voice and video
+# ---------------------------------------------------------------------------
+
+[[format]]
+id = "sip"
+name = "Session Initiation Protocol"
+keys = ["SIP", "SIPS", "Session Initiation Protocol"]
+summary = "The signalling protocol of internet telephony: it registers phones, sets up and tears down calls and negotiates their media, which then flows separately over RTP."
+group = "Voice and video"
+ports = ["udp/5060", "tcp/5060", "tcp/5061"]
+carries = ["sdp"]
+organisation = """
+SIP is text in the style of HTTP. A request line is a method, a request URI and the version ("INVITE sip:bob@example.com SIP/2.0"); a status line is the version, a three-digit code and a reason ("SIP/2.0 180 Ringing"). Header fields follow, one per line with CR LF line ends, then an empty line and an optional body, usually an SDP offer or answer.
+
+Over UDP each datagram is one message. Over TCP and TLS messages follow each other and Content-Length, which is then mandatory, gives the body's size. Port 5061 is SIP over TLS.
+
+Messages are tied together by header fields rather than by the connection. Call-ID names the call (dialog) and stays the same for its life, together with the From and To tags. CSeq holds a number and a method and orders requests within a dialog. Each Via header records a hop the request passed through, and its branch parameter, starting with the magic cookie "z9hG4bK", identifies a transaction, so responses travel back along the same path.
+
+Responses are provisional (1xx, such as 100 Trying and 180 Ringing) or final (2xx success, 3xx redirection, 4xx client error such as 401 Unauthorized and 486 Busy Here, 5xx server error, 6xx global failure). An INVITE's final response is confirmed by an ACK; BYE ends the call. Many headers have one-letter compact forms (v Via, f From, t To, i Call-ID, m Contact, l Content-Length, c Content-Type).
+"""
+
+[[format.specs]]
+document = "RFC 3261"
+title = "SIP: Session Initiation Protocol"
+url = "https://www.rfc-editor.org/rfc/rfc3261"
+rfc = 3261
+section = "7"
+
+[[format.fields]]
+name = "Method"
+meaning = "INVITE, ACK, BYE, CANCEL, REGISTER and OPTIONS from the core specification; SUBSCRIBE, NOTIFY, REFER, MESSAGE, INFO, UPDATE and PRACK from extensions."
+section = "7.1"
+
+[[format.fields]]
+name = "Status code"
+meaning = "1xx provisional, 2xx success, 3xx redirection, 4xx client error, 5xx server error, 6xx global failure."
+section = "7.2"
+
+[[format.fields]]
+name = "Call-ID"
+meaning = "A globally unique identifier for the call or registration; every message of the dialog carries it."
+section = "20.8"
+
+[[format.fields]]
+name = "CSeq"
+meaning = "A sequence number and the request method; the response repeats it, so it pairs responses with requests."
+section = "20.16"
+
+[[format.fields]]
+name = "Via"
+meaning = "One per hop, with the transport, the sender's address and a branch parameter that identifies the transaction."
+section = "20.42"
+
+[[format.fields]]
+name = "From"
+aliases = ["To"]
+meaning = "The caller and callee as SIP URIs with display names; the tag parameters on From and To identify the dialog."
+section = "20.20"
+
+[[format.fields]]
+name = "Contact"
+meaning = "Where the sender can be reached directly for later requests in the dialog, or the address being registered."
+section = "20.10"
+
+[[format]]
+id = "sdp"
+name = "Session Description Protocol"
+keys = ["SDP", "Session Description Protocol", "application/sdp"]
+summary = "A text format describing a multimedia session: which media streams there are, the addresses and ports to send them to and the codecs on offer. It travels inside SIP, RTSP and WebRTC signalling."
+group = "Voice and video"
+organisation = """
+An SDP description is UTF-8 text, one field per line in the form of a single letter, an equals sign and a value ("v=0"), with CR LF (or LF) line ends. The letters must appear in a fixed order: the session part first (v protocol version, o origin, s session name, optional i, u, e, p, c connection, b bandwidth, then one or more t timing lines and a attributes), followed by any number of media sections.
+
+Each media section starts with an m= line giving the media type, the transport port, the protocol and a list of formats, for example "m=audio 49170 RTP/AVP 0 8 101": audio to port 49170 over RTP with payload types 0, 8 and 101. Its own c=, b= and a= lines follow and override the session's.
+
+Attributes do most of the work: a=rtpmap maps a dynamic payload type to a codec and clock rate ("a=rtpmap:101 telephone-event/8000"), a=fmtp gives codec parameters, a=sendrecv, sendonly or recvonly set the direction, and in WebRTC a=ice-ufrag, a=fingerprint and a=candidate carry ICE and DTLS details. In offer and answer, the answer's m= lines line up one-for-one with the offer's.
+"""
+
+[[format.specs]]
+document = "RFC 8866"
+title = "SDP: Session Description Protocol"
+url = "https://www.rfc-editor.org/rfc/rfc8866"
+rfc = 8866
+section = "5"
+
+[[format.fields]]
+name = "v="
+aliases = ["Version"]
+meaning = "Protocol version; always 0."
+section = "5.1"
+
+[[format.fields]]
+name = "o="
+aliases = ["Origin"]
+meaning = "User name, session ID, session version, network type, address type and the originator's address."
+section = "5.2"
+
+[[format.fields]]
+name = "c="
+aliases = ["Connection information", "Connection"]
+meaning = "Network type, address type and the address media should be sent to, such as \"IN IP4 192.0.2.10\"."
+section = "5.7"
+
+[[format.fields]]
+name = "m="
+aliases = ["Media description", "Media"]
+meaning = "Media type (audio, video, application), port, protocol (RTP/AVP, RTP/SAVPF, UDP/TLS/RTP/SAVPF) and the payload format numbers."
+section = "5.14"
+
+[[format.fields]]
+name = "a="
+aliases = ["Attribute"]
+meaning = "A property attribute (a=recvonly) or a value attribute (a=rtpmap:96 opus/48000/2)."
+section = "5.13"
+
+[[format]]
+id = "rtp"
+name = "Real-time Transport Protocol"
+keys = ["RTP", "Real-time Transport Protocol", "RTP media"]
+summary = "The packet format that carries audio and video in calls and streams: each packet holds a slice of encoded media with a sequence number and timestamp so the receiver can reorder it and play it out at the right time."
+group = "Voice and video"
+ports = ["udp/5004"]
+carries = ["rtcp"]
+organisation = """
+RTP normally runs over UDP on even-numbered ports chosen in the signalling (SDP), so it is usually recognised by its header rather than its port; 5004 is only a registered default. The fixed header is 12 bytes, big-endian: two bits of version (always 2, so the first byte is usually 0x80 to 0x9F), a padding bit, an extension bit, a 4-bit count of contributing sources, a marker bit, a 7-bit payload type, a 16-bit sequence number, a 32-bit timestamp and a 32-bit synchronisation source (SSRC) identifier.
+
+The sequence number rises by one per packet, so gaps show loss and reordering. The timestamp counts in the media's clock (8000 per second for narrowband voice, 90,000 for video) and gives the sampling instant of the first byte of payload; video frames split across several packets share one timestamp, and the marker bit typically flags a frame's last packet. The SSRC identifies one stream; a call's two directions have different SSRCs.
+
+Up to 15 contributing-source identifiers (4 bytes each) follow when a mixer has combined streams. If the extension bit is set, a header extension follows: a 16-bit profile value (0xBEDE for one-byte extensions), a 16-bit length in 32-bit words and the extension data. Then comes the payload, whose codec is given by the payload type: 0 PCMU, 8 PCMA, 9 G.722 and 18 G.729 are static assignments, and 96 to 127 are dynamic and mapped to codecs by SDP. SRTP keeps this header readable and encrypts only the payload.
+"""
+
+[[format.specs]]
+document = "RFC 3550"
+title = "RTP: A Transport Protocol for Real-Time Applications"
+url = "https://www.rfc-editor.org/rfc/rfc3550"
+rfc = 3550
+section = "5.1"
+
+[[format.specs]]
+document = "RFC 3551"
+title = "RTP Profile for Audio and Video Conferences with Minimal Control"
+url = "https://www.rfc-editor.org/rfc/rfc3551"
+rfc = 3551
+
+[[format.specs]]
+document = "RFC 8285"
+title = "A General Mechanism for RTP Header Extensions"
+url = "https://www.rfc-editor.org/rfc/rfc8285"
+rfc = 8285
+
+[[format.fields]]
+name = "Version"
+meaning = "Two bits, always 2."
+section = "5.1"
+
+[[format.fields]]
+name = "Marker"
+meaning = "Defined by the profile; for video usually the last packet of a frame, for voice the first packet after silence."
+section = "5.1"
+
+[[format.fields]]
+name = "Payload type"
+meaning = "The media format: 0 PCMU, 3 GSM, 8 PCMA, 9 G.722, 18 G.729, 26 JPEG, 34 H.263; 96 to 127 are dynamic, defined by an a=rtpmap line in SDP."
+section = "5.1"
+
+[[format.fields]]
+name = "Sequence number"
+meaning = "Increases by one per packet from a random start; used to detect loss and restore order."
+section = "5.1"
+
+[[format.fields]]
+name = "Timestamp"
+meaning = "The sampling instant of the payload in units of the media clock, from a random start."
+section = "5.1"
+
+[[format.fields]]
+name = "SSRC"
+aliases = ["Synchronization source", "Synchronisation source"]
+meaning = "A random 32-bit identifier for the stream's source, unique within the session."
+section = "5.1"
+
+[[format.fields]]
+name = "CSRC"
+aliases = ["Contributing source"]
+meaning = "The SSRCs of the streams a mixer combined into this one, up to 15."
+section = "5.1"
+
+[[format]]
+id = "rtcp"
+name = "RTP Control Protocol"
+keys = ["RTCP", "RTP Control Protocol", "RTP control"]
+summary = "RTP's companion: periodic reports from senders and receivers on packets sent, loss and jitter, plus names for the streams, used to monitor and adapt call quality."
+group = "Voice and video"
+ports = ["udp/5005"]
+organisation = """
+RTCP traditionally uses the odd port just above its RTP stream's port, though it is now often multiplexed on the same port as RTP and told apart by its packet type byte (200 to 204 and above, where RTP payload types would be 72 to 76 with the marker bit set). Packets are sent together as a compound packet in one datagram, starting with a sender or receiver report.
+
+Each RTCP packet starts with a 4-byte header: version 2, a padding bit, a 5-bit count (of report blocks or items), an 8-bit packet type and a 16-bit length in 32-bit words minus one, so the next packet starts at (length + 1) times 4 bytes. All numbers are big-endian. Most types then give the sender's SSRC.
+
+A sender report (200) carries a 64-bit NTP wall-clock time and the matching RTP timestamp, which let a receiver synchronise audio and video, and the sender's packet and byte counts. Sender and receiver reports (201) then hold report blocks about each stream received: fraction lost, cumulative packets lost, the highest sequence number seen, interarrival jitter and the timing of the last sender report, from which round-trip time can be worked out. SDES (202) carries the CNAME and other names, BYE (203) says a source is leaving, and feedback types 205 and 206 carry NACKs and picture loss indications.
+"""
+
+[[format.specs]]
+document = "RFC 3550"
+title = "RTP: A Transport Protocol for Real-Time Applications"
+url = "https://www.rfc-editor.org/rfc/rfc3550"
+rfc = 3550
+section = "6.4"
+
+[[format.specs]]
+document = "RFC 4585"
+title = "Extended RTP Profile for Real-time Transport Control Protocol (RTCP)-Based Feedback (RTP/AVPF)"
+url = "https://www.rfc-editor.org/rfc/rfc4585"
+rfc = 4585
+
+[[format.specs]]
+document = "RFC 5761"
+title = "Multiplexing RTP Data and Control Packets on a Single Port"
+url = "https://www.rfc-editor.org/rfc/rfc5761"
+rfc = 5761
+
+[[format.fields]]
+name = "Packet type"
+meaning = "200 sender report, 201 receiver report, 202 source description, 203 goodbye, 204 application-defined, 205 transport feedback, 206 payload-specific feedback."
+section = "6.4.1"
+
+[[format.fields]]
+name = "Reception report count"
+aliases = ["Count"]
+meaning = "The number of report blocks in a sender or receiver report, or of items in SDES and BYE."
+section = "6.4.1"
+
+[[format.fields]]
+name = "Length"
+meaning = "The packet's length in 32-bit words, minus one, header included."
+section = "6.4.1"
+
+[[format.fields]]
+name = "NTP timestamp"
+meaning = "In a sender report, the wall-clock time the report was sent, as 32 bits of seconds since 1900 and 32 bits of fraction."
+section = "6.4.1"
+
+[[format.fields]]
+name = "Fraction lost"
+meaning = "The share of packets lost since the previous report, as a fixed-point number with the binary point at the left (divide by 256)."
+section = "6.4.1"
+
+[[format.fields]]
+name = "Interarrival jitter"
+aliases = ["Jitter"]
+meaning = "A smoothed estimate of the variation in packet transit time, in RTP timestamp units."
+section = "6.4.1"
+
+[[format]]
+id = "rtsp"
+name = "Real-Time Streaming Protocol"
+keys = ["RTSP", "RTSPS", "Real-Time Streaming Protocol", "Real Time Streaming Protocol"]
+summary = "The control protocol for streaming media servers and IP cameras: a client describes, sets up, plays and pauses streams whose media then flows over RTP."
+group = "Voice and video"
+ports = ["tcp/554", "udp/554", "tcp/322"]
+carries = ["sdp", "rtp", "rtcp"]
+organisation = """
+RTSP is text in the style of HTTP: a request line of method, URL and version ("DESCRIBE rtsp://camera/stream1 RTSP/1.0"), header lines, an empty line and an optional body; responses have a status line with codes like HTTP's. Most devices still speak version 1.0 (RFC 2326), which RFC 7826 (version 2.0) has replaced; the framing is the same.
+
+Every request carries a CSeq header that the response repeats, which is how they are matched. A typical exchange is OPTIONS, DESCRIBE (answered with an SDP description of the streams), SETUP for each stream with a Transport header, then PLAY, and finally TEARDOWN. SETUP's response returns a Session identifier that later requests must carry. Credentials are often sent with HTTP Basic or Digest authentication.
+
+The Transport header says where the media goes: RTP over UDP to the listed client ports, or interleaved on the RTSP TCP connection itself. Interleaved data is framed by a "$" byte (0x24), a 1-byte channel number and a 2-byte big-endian length, followed by one RTP or RTCP packet; even channels usually carry RTP and odd ones RTCP. Port 322 is RTSP over TLS.
+"""
+
+[[format.specs]]
+document = "RFC 7826"
+title = "Real-Time Streaming Protocol Version 2.0"
+url = "https://www.rfc-editor.org/rfc/rfc7826"
+rfc = 7826
+section = "5"
+
+[[format.fields]]
+name = "Method"
+meaning = "OPTIONS, DESCRIBE, SETUP, PLAY, PAUSE, TEARDOWN, GET_PARAMETER, SET_PARAMETER, REDIRECT and PLAY_NOTIFY; version 1.0 also has ANNOUNCE and RECORD."
+section = "13"
+
+[[format.fields]]
+name = "CSeq"
+meaning = "A sequence number on every request, repeated in its response."
+section = "18.20"
+
+[[format.fields]]
+name = "Session"
+meaning = "The session identifier the server assigned in its SETUP response, with an optional timeout."
+section = "18.49"
+
+[[format.fields]]
+name = "Transport"
+meaning = "How media is delivered, such as RTP/AVP;unicast;client_port=5000-5001 or RTP/AVP/TCP;interleaved=0-1."
+section = "18.54"
+
+[[format.fields]]
+name = "Channel"
+aliases = ["Interleaved channel"]
+meaning = "In interleaved data, the channel number that says which stream the packet belongs to, as agreed in the Transport header."
+section = "14"
+
+# ---------------------------------------------------------------------------
+# Messaging
+# ---------------------------------------------------------------------------
+
+[[format]]
+id = "xmpp"
+name = "Extensible Messaging and Presence Protocol"
+keys = ["XMPP", "Jabber", "Extensible Messaging and Presence Protocol"]
+summary = "An instant messaging and presence protocol in which clients and servers exchange a long-lived stream of XML elements."
+group = "Messaging"
+ports = ["tcp/5222", "tcp/5269"]
+organisation = """
+An XMPP session is two XML documents, one in each direction, that grow for as long as the connection lasts. Each side opens with a <stream:stream> element naming the domain (to, from), version='1.0' and the namespace (jabber:client from clients on port 5222, jabber:server between servers on port 5269). The element is closed only when the session ends, so no complete XML document appears until then.
+
+The server answers with <stream:features>, offering STARTTLS, SASL authentication mechanisms and resource binding. After TLS is negotiated the stream restarts and everything that follows is encrypted; after SASL succeeds it restarts again, unencrypted streams then revealing the authentication exchange in base64.
+
+Communication is in stanzas, which are complete child elements of the stream: <message> (chat text in a <body>), <presence> (availability) and <iq> (request and response, with type get, set, result or error and an id attribute that the reply repeats). Addresses are JIDs of the form user@domain/resource. Extensions add elements in their own namespaces inside stanzas.
+"""
+
+[[format.specs]]
+document = "RFC 6120"
+title = "Extensible Messaging and Presence Protocol (XMPP): Core"
+url = "https://www.rfc-editor.org/rfc/rfc6120"
+rfc = 6120
+section = "4"
+
+[[format.fields]]
+name = "Stream header"
+aliases = ["stream:stream"]
+meaning = "The opening element of each direction's stream, with to, from, id, version and the default namespace."
+section = "4.7"
+
+[[format.fields]]
+name = "Stanza"
+aliases = ["message", "presence", "iq"]
+meaning = "One unit of communication: message, presence or iq, with to, from, id and type attributes."
+section = "8"
+
+[[format.fields]]
+name = "Stream error"
+meaning = "A <stream:error> element, after which the stream is closed, such as host-unknown or not-authorized."
+section = "4.9"
+
+[[format]]
+id = "irc"
+name = "Internet Relay Chat"
+keys = ["IRC", "Internet Relay Chat"]
+summary = "The long-standing text chat protocol: clients join channels on a network of servers and send messages as single lines of text. Also used by some botnets for command and control."
+group = "Messaging"
+ports = ["tcp/194", "tcp/6665", "tcp/6666", "tcp/6667", "tcp/6668", "tcp/6669", "tcp/6697"]
+organisation = """
+IRC is a stream of text lines over TCP, each at most 512 bytes including the CR LF at its end. A line has an optional prefix starting with ":" that names the sender (a server, or nick!user@host), a command, and up to 15 parameters separated by spaces; the last parameter may start with ":" and then runs to the end of the line, spaces included.
+
+Commands are words (NICK, USER, JOIN, PART, PRIVMSG, NOTICE, MODE, PING, PONG, QUIT) or, from servers, three-digit numeric replies: 001 welcome, 332 channel topic, 353 names list, 372 message of the day, 433 nickname already in use. A server sends PING periodically and the client must answer PONG with the same token.
+
+There is no request identifier, so replies are related to requests only by order and content. A client registers with NICK and USER (after PASS if a password is needed); IRCv3 adds CAP negotiation and message tags, a prefix starting with "@". Port 6667 is the usual cleartext port, 6697 IRC over TLS.
+"""
+
+[[format.specs]]
+document = "RFC 2812"
+title = "Internet Relay Chat: Client Protocol"
+url = "https://www.rfc-editor.org/rfc/rfc2812"
+rfc = 2812
+section = "2.3"
+
+[[format.specs]]
+document = "RFC 7194"
+title = "Default Port for Internet Relay Chat (IRC) via TLS/SSL"
+url = "https://www.rfc-editor.org/rfc/rfc7194"
+rfc = 7194
+
+[[format.fields]]
+name = "Prefix"
+meaning = "Optional, starting with \":\": the server or user (nick!user@host) the message comes from."
+section = "2.3"
+
+[[format.fields]]
+name = "Command"
+meaning = "A command word such as PRIVMSG or JOIN, or a three-digit numeric reply from a server."
+section = "2.3"
+
+[[format.fields]]
+name = "Parameters"
+aliases = ["Params"]
+meaning = "Up to 15 space-separated parameters; the last may begin with \":\" and contain spaces."
+section = "2.3.1"
+
+[[format.fields]]
+name = "PRIVMSG"
+meaning = "A message to a user or a channel (a name starting with # or &), with the text as the last parameter."
+section = "3.3.1"
+
+[[format]]
+id = "amqp-0-9-1"
+name = "AMQP 0-9-1"
+keys = ["AMQP 0-9-1", "AMQP 0.9.1", "AMQP 0-9", "Advanced Message Queuing Protocol 0-9-1"]
+summary = "The message broker protocol spoken by RabbitMQ and similar brokers: clients declare exchanges and queues, publish messages to exchanges and consume them from queues."
+group = "Messaging"
+ports = ["tcp/5672", "tcp/5671"]
+organisation = """
+The client opens with an 8-byte protocol header, "AMQP" followed by the bytes 0, 0, 9, 1. Everything after it is frames: a 1-byte type, a 2-byte channel number, a 4-byte payload size, the payload and a frame-end byte 0xCE. All numbers are big-endian. Channel 0 is the connection itself; other channels are independent sessions multiplexed on one TCP connection.
+
+Frame types are 1 method, 2 content header, 3 content body and 8 heartbeat. A method frame's payload starts with a 2-byte class ID and a 2-byte method ID, then the method's arguments (short strings with a 1-byte length, long strings and field tables with a 4-byte length). Classes are 10 connection, 20 channel, 40 exchange, 50 queue, 60 basic, 85 confirm and 90 transactions; for example 60/40 is basic.publish and 60/60 basic.deliver.
+
+A message is a method frame (basic.publish or basic.deliver), then a content header frame giving the class, the total body size (8 bytes) and properties such as content-type, delivery-mode and correlation-id, then as many body frames as the size requires. Login happens in connection.start-ok, whose response field carries the SASL credentials (with PLAIN, the user name and password in clear). Port 5671 is AMQP inside TLS.
+"""
+
+[[format.specs]]
+document = "AMQP 0-9-1 specification"
+title = "AMQP: Advanced Message Queuing Protocol, Protocol Specification, Version 0-9-1"
+url = "https://www.rabbitmq.com/resources/specs/amqp0-9-1.pdf"
+section = "4.2.3"
+
+[[format.fields]]
+name = "Protocol header"
+meaning = "The 8 bytes \"AMQP\" 0 0 9 1 sent by the client before anything else."
+section = "4.2.2"
+
+[[format.fields]]
+name = "Frame type"
+aliases = ["Type"]
+meaning = "1 method, 2 content header, 3 content body, 8 heartbeat."
+section = "4.2.3"
+
+[[format.fields]]
+name = "Channel"
+meaning = "The channel the frame belongs to; 0 for connection-level methods and heartbeats."
+section = "4.2.3"
+
+[[format.fields]]
+name = "Size"
+aliases = ["Payload size"]
+meaning = "The payload's length in bytes, not counting the 7-byte header or the frame-end byte."
+section = "4.2.3"
+
+[[format.fields]]
+name = "Class ID"
+aliases = ["Method"]
+meaning = "With the method ID, names the method: 10 connection, 20 channel, 40 exchange, 50 queue, 60 basic, 85 confirm, 90 tx."
+section = "4.2.4"
+
+[[format.fields]]
+name = "Frame end"
+meaning = "The byte 0xCE closing every frame; any other value means the stream is out of step."
+section = "4.2.3"
+
+[[format]]
+id = "amqp-1-0"
+name = "AMQP 1.0"
+keys = ["AMQP 1.0", "AMQP", "Advanced Message Queuing Protocol", "Advanced Message Queuing Protocol 1.0"]
+summary = "The OASIS and ISO standard messaging protocol used by Azure Service Bus, ActiveMQ Artemis, Qpid and others: links between nodes carry messages with settled or unsettled delivery."
+group = "Messaging"
+ports = ["tcp/5672", "tcp/5671"]
+organisation = """
+Each layer starts with an 8-byte protocol header: "AMQP", a protocol ID (0 AMQP, 2 TLS, 3 SASL) and the version bytes 1, 0, 0. A SASL layer, if used, comes first and is followed by a second header for AMQP itself. Unlike AMQP 0-9-1, both sides send a header.
+
+Frames have an 8-byte header: a 4-byte total size (the whole frame), a 1-byte data offset (DOFF, the header length in 4-byte words, at least 2), a 1-byte type (0 AMQP, 1 SASL) and two type-specific bytes, which for AMQP frames are the channel. All numbers are big-endian. An empty frame body is a heartbeat.
+
+The body is a performative encoded in the AMQP type system: a described type whose descriptor is a 0x00 byte followed by a small unsigned long such as 0x53 0x10. Performatives are open (0x10), begin (0x11), attach (0x12), flow (0x13), transfer (0x14), disposition (0x15), detach (0x16), end (0x17) and close (0x18). A transfer is followed in the same frame by message sections (header, properties, application properties, data or AMQP value), themselves described types. Port 5671 is AMQP inside TLS.
+"""
+
+[[format.specs]]
+document = "OASIS AMQP 1.0 Part 2"
+title = "OASIS Advanced Message Queuing Protocol (AMQP) Version 1.0, Part 2: Transport"
+url = "https://docs.oasis-open.org/amqp/core/v1.0/os/amqp-core-transport-v1.0-os.html"
+section = "2.3"
+
+[[format.specs]]
+document = "OASIS AMQP 1.0 Part 1"
+title = "OASIS Advanced Message Queuing Protocol (AMQP) Version 1.0, Part 1: Types"
+url = "https://docs.oasis-open.org/amqp/core/v1.0/os/amqp-core-types-v1.0-os.html"
+
+[[format.fields]]
+name = "Protocol header"
+meaning = "\"AMQP\", a protocol ID (0 AMQP, 2 TLS, 3 SASL) and the version 1.0.0."
+section = "2.2"
+
+[[format.fields]]
+name = "Size"
+meaning = "The frame's total length in bytes, header included."
+section = "2.3.1"
+
+[[format.fields]]
+name = "DOFF"
+aliases = ["Data offset"]
+meaning = "Where the body starts, in 4-byte words from the start of the frame; 2 when there is no extended header."
+section = "2.3.1"
+
+[[format.fields]]
+name = "Type"
+meaning = "0 for an AMQP frame, 1 for a SASL frame."
+section = "2.3.1"
+
+[[format.fields]]
+name = "Channel"
+meaning = "In AMQP frames, the session channel the frame belongs to."
+section = "2.3.2"
+
+[[format.fields]]
+name = "Performative"
+meaning = "The frame's operation: open, begin, attach, flow, transfer, disposition, detach, end or close, identified by descriptor 0x10 to 0x18."
+section = "2.7"
+
+[[format]]
+id = "kafka"
+name = "Apache Kafka protocol"
+keys = ["Kafka", "Apache Kafka", "Kafka protocol", "Kafka wire protocol"]
+summary = "The binary request and response protocol between Kafka clients and brokers, for producing records to topic partitions, fetching them and coordinating consumer groups."
+group = "Messaging"
+ports = ["tcp/9092"]
+organisation = """
+Every request and response is preceded by a 4-byte big-endian size. A request header follows: a 2-byte API key naming the operation, a 2-byte API version, a 4-byte correlation ID and a client ID string (a 2-byte length then the text); newer header versions append tagged fields. A response starts with the same correlation ID, which is the only way to match it to its request, since responses do not repeat the API key.
+
+Body layouts depend on the API key and version, and newer versions use compact encodings: unsigned variable-length integers for lengths and a tagged-field section at the end of each structure. A client normally begins with ApiVersions (18) to learn which versions the broker supports.
+
+Produce requests and fetch responses carry record batches: a 61-byte batch header (base offset, batch length, leader epoch, magic byte 2, a CRC-32C, attributes whose low three bits give the compression codec, timestamps, producer ID and the record count) followed by records whose fields are zigzag variable-length integers. The batch may be compressed with gzip, Snappy, LZ4 or Zstandard.
+
+Port 9092 is the universal default for brokers but is not registered for Kafka with IANA; TLS listeners often use 9093.
+"""
+
+[[format.specs]]
+document = "Kafka protocol guide"
+title = "Kafka protocol guide"
+url = "https://kafka.apache.org/protocol"
+
+[[format.fields]]
+name = "Size"
+aliases = ["Length"]
+meaning = "The length of the request or response that follows, not counting these four bytes."
+
+[[format.fields]]
+name = "API key"
+aliases = ["request_api_key"]
+meaning = "The operation: 0 Produce, 1 Fetch, 2 ListOffsets, 3 Metadata, 8 OffsetCommit, 9 OffsetFetch, 10 FindCoordinator, 11 JoinGroup, 12 Heartbeat, 14 SyncGroup, 17 SaslHandshake, 18 ApiVersions, 36 SaslAuthenticate."
+
+[[format.fields]]
+name = "API version"
+aliases = ["request_api_version"]
+meaning = "The version of the request layout the client used; the response uses the matching version."
+
+[[format.fields]]
+name = "Correlation ID"
+aliases = ["correlation_id"]
+meaning = "Chosen by the client and returned in the response."
+
+[[format.fields]]
+name = "Client ID"
+aliases = ["client_id"]
+meaning = "A free-form name for the client application, useful in broker logs."
+
+[[format.fields]]
+name = "Error code"
+meaning = "A 2-byte code in responses: 0 none, 3 unknown topic or partition, 6 not leader or follower, 16 not coordinator, 25 unknown member ID, 27 rebalance in progress, 35 unsupported version, 58 SASL authentication failed."
+
+[[format]]
+id = "nats"
+name = "NATS"
+keys = ["NATS", "NATS protocol", "NATS client protocol"]
+summary = "A lightweight publish/subscribe messaging system whose client protocol is a handful of text commands, with message payloads as counted bytes."
+group = "Messaging"
+ports = ["tcp/4222"]
+organisation = """
+The client protocol is text over TCP with CR LF line ends. The server speaks first with INFO and a JSON object (server ID, version, maximum payload, whether TLS or authentication is required); the client replies with CONNECT and its own JSON options, which may include a user name and password, a token or a signed nonce.
+
+Commands are an upper-case word and space-separated arguments: SUB subject [queue group] sid, UNSUB sid [max], PUB subject [reply-to] size, and from the server MSG subject sid [reply-to] size. PUB and MSG lines are followed by exactly size bytes of payload and another CR LF, so a reader must count bytes rather than look for the next line end. HPUB and HMSG add a header block in the style of HTTP ("NATS/1.0" then header lines) and give both the header size and the total size.
+
+Subjects are dot-separated tokens with * and > wildcards in subscriptions. The server sends PING and expects PONG to check the connection; +OK and -ERR acknowledge commands when verbose mode is on, and -ERR always reports protocol errors.
+
+Port 4222 is the default for clients but is not registered with IANA; servers use 6222 for clustering and 8222 for HTTP monitoring.
+"""
+
+[[format.specs]]
+document = "NATS Client Protocol"
+title = "Client Protocol"
+url = "https://docs.nats.io/reference/reference-protocols/nats-protocol"
+
+[[format.fields]]
+name = "Command"
+aliases = ["Operation"]
+meaning = "INFO, CONNECT, PUB, HPUB, SUB, UNSUB, MSG, HMSG, PING, PONG, +OK or -ERR."
+
+[[format.fields]]
+name = "Subject"
+meaning = "The dot-separated name a message is published to, such as orders.eu.created."
+
+[[format.fields]]
+name = "sid"
+aliases = ["Subscription ID"]
+meaning = "The client's identifier for a subscription; MSG names the subscription that matched."
+
+[[format.fields]]
+name = "Reply-to"
+aliases = ["Reply subject"]
+meaning = "An optional subject the receiver should answer on, used for request and reply."
+
+[[format.fields]]
+name = "Size"
+aliases = ["Payload size"]
+meaning = "The number of payload bytes after the command line."
+
+[[format]]
+id = "zmtp"
+name = "ZeroMQ Message Transport Protocol"
+keys = ["ZMTP", "ZeroMQ", "ZMQ", "0MQ", "ZeroMQ Message Transport Protocol"]
+summary = "The wire protocol of ZeroMQ sockets: a fixed greeting, a security handshake and then a stream of length-prefixed frames making up multipart messages."
+group = "Messaging"
+organisation = """
+ZeroMQ has no registered port; applications choose their own. Each peer begins with a 64-byte greeting: a 10-byte signature (0xFF, eight padding bytes, 0x7F), a major and minor version (3 and 0 or 1 for ZMTP 3.x), a 20-byte security mechanism name padded with zeros ("NULL", "PLAIN" or "CURVE"), an as-server byte and 31 bytes of filler. The signature is chosen so that older ZMTP 1.0 and 2.0 peers can be detected.
+
+The security handshake follows as command frames. With NULL each side sends READY with metadata properties such as Socket-Type (REQ, REP, PUB, SUB, DEALER, ROUTER) and Identity. PLAIN sends a user name and password in clear; CURVE performs a CurveZMQ handshake, after which everything is encrypted.
+
+Frames have a 1-byte flags field (bit 0 more frames follow, bit 1 long size, bit 2 command), then the size in 1 byte, or in 8 big-endian bytes when the long flag is set, then the body. A message is one or more frames, all but the last with the more flag set. Command frames start with a 1-byte name length and the name (READY, ERROR, SUBSCRIBE, PING and so on).
+"""
+
+[[format.specs]]
+document = "ZeroMQ RFC 37/ZMTP"
+title = "ZeroMQ Message Transport Protocol, version 3.1"
+url = "https://rfc.zeromq.org/spec/37/"
+
+[[format.specs]]
+document = "ZeroMQ RFC 23/ZMTP"
+title = "ZeroMQ Message Transport Protocol, version 3.0"
+url = "https://rfc.zeromq.org/spec/23/"
+
+[[format.fields]]
+name = "Signature"
+meaning = "Ten bytes: 0xFF, eight bytes of padding and 0x7F."
+
+[[format.fields]]
+name = "Mechanism"
+meaning = "The security mechanism name, NULL, PLAIN or CURVE, padded with zeros to 20 bytes."
+
+[[format.fields]]
+name = "Flags"
+meaning = "Bit 0 MORE (another frame of the same message follows), bit 1 LONG (8-byte size), bit 2 COMMAND."
+
+[[format.fields]]
+name = "Size"
+meaning = "The frame body's length: one byte, or eight big-endian bytes when the LONG flag is set."
+
+# ---------------------------------------------------------------------------
+# Databases
+# ---------------------------------------------------------------------------
+
+[[format]]
+id = "mysql"
+name = "MySQL client/server protocol"
+keys = ["MySQL", "MariaDB", "MySQL protocol", "MySQL client/server protocol"]
+summary = "The protocol between MySQL or MariaDB clients and servers: a handshake and login, then text SQL queries or prepared statements and their result sets."
+group = "Databases"
+ports = ["tcp/3306"]
+organisation = """
+Every packet starts with a 4-byte header: a 3-byte little-endian payload length and a 1-byte sequence ID. The sequence ID starts at 0 for each new command and goes up by one with every packet in either direction, so it shows where a packet sits in an exchange. A payload of 16 MB or more is split, each full-size piece being followed by the next.
+
+The server speaks first with an initial handshake: protocol version 10, a null-terminated server version string, a connection ID, the first part of a random challenge, capability flags, the character set and status, and the name of the authentication plugin. The client answers with a handshake response (capabilities, maximum packet size, user name, the scrambled password and the database), or first with a short SSL request after which TLS takes over.
+
+In the command phase the first payload byte is the command: 0x03 COM_QUERY (followed by the SQL text), 0x16 prepare, 0x17 execute, 0x02 change database, 0x0E ping, 0x01 quit. Replies start with 0x00 (OK: affected rows and last insert ID as length-encoded integers), 0xFF (error: a 2-byte code, "#", a five-character SQLSTATE and a message) or, for a result set, a column count followed by column definitions and rows, each row a series of length-encoded strings, ended by an EOF or OK packet starting 0xFE.
+"""
+
+[[format.specs]]
+document = "MySQL Client/Server Protocol"
+title = "MySQL Source Code Documentation: Client/Server Protocol"
+url = "https://dev.mysql.com/doc/dev/mysql-server/latest/PAGE_PROTOCOL.html"
+
+[[format.fields]]
+name = "Payload length"
+aliases = ["Length", "Packet length"]
+meaning = "The payload's size in bytes, three bytes little-endian, not counting the 4-byte header."
+
+[[format.fields]]
+name = "Sequence ID"
+aliases = ["Packet number"]
+meaning = "Restarts at 0 with each command and increases by one for each packet that follows, in either direction."
+
+[[format.fields]]
+name = "Command"
+meaning = "The first byte of a command packet: 0x01 quit, 0x02 init DB, 0x03 query, 0x0E ping, 0x16 statement prepare, 0x17 statement execute, 0x19 statement close."
+
+[[format.fields]]
+name = "Error code"
+meaning = "In an error packet (0xFF), a 2-byte little-endian code such as 1045 access denied, 1064 SQL syntax error or 1146 table does not exist."
+
+[[format.fields]]
+name = "SQL state"
+aliases = ["SQLSTATE"]
+meaning = "Five characters after a '#' in an error packet, a standard SQL error class such as 28000 or 42S02."
+
+[[format.fields]]
+name = "Capability flags"
+aliases = ["Capabilities"]
+meaning = "Bits each side sets for features it supports, such as 0x200 protocol 4.1, 0x800 SSL, 0x8000 secure connection, 0x80000 plugin authentication."
+
+[[format]]
+id = "postgresql"
+name = "PostgreSQL frontend/backend protocol"
+keys = ["PostgreSQL", "Postgres", "PGSQL", "PostgreSQL protocol", "PostgreSQL wire protocol"]
+summary = "The protocol between PostgreSQL clients and servers (and many compatible databases): start-up and authentication, then simple queries or the extended parse, bind and execute cycle, with results as row messages."
+group = "Databases"
+ports = ["tcp/5432"]
+organisation = """
+After start-up, every message is a 1-byte type character followed by a 4-byte big-endian length that counts itself and the body but not the type byte. Messages follow each other on the stream with nothing in between.
+
+The very first message has no type byte: a length, then a 4-byte code. 196608 (version 3.0) or 196610 (3.2) starts a session and is followed by null-terminated name and value pairs such as user, database and application_name. The special codes 80877103 (SSL request), 80877104 (GSS encryption request) and 80877102 (cancel request) come first instead when the client wants encryption or to cancel a query; the server answers an SSL request with a single "S" or "N" byte, and a TLS handshake follows an "S".
+
+From the client, Q sends a simple query as SQL text; P (parse), B (bind), D (describe), E (execute) and S (sync) make up the extended protocol; p carries passwords and SASL responses; X ends the session. From the server, R is an authentication request (0 OK, 3 clear-text password, 5 MD5, 10 SASL), S a parameter status, K the backend key, T a row description, D a data row (a column count, then for each column a 4-byte length, -1 for NULL, and the value), C command complete ("SELECT 3"), E an error, N a notice and Z ready for query, whose status byte is I idle, T in a transaction or E in a failed transaction.
+"""
+
+[[format.specs]]
+document = "PostgreSQL Message Formats"
+title = "PostgreSQL Documentation: Frontend/Backend Protocol, Message Formats"
+url = "https://www.postgresql.org/docs/current/protocol-message-formats.html"
+
+[[format.specs]]
+document = "PostgreSQL Message Flow"
+title = "PostgreSQL Documentation: Frontend/Backend Protocol, Message Flow"
+url = "https://www.postgresql.org/docs/current/protocol-flow.html"
+
+[[format.fields]]
+name = "Type"
+aliases = ["Message type"]
+meaning = "One ASCII character naming the message; the same letter can mean different things in each direction (S is Sync from the client, ParameterStatus from the server)."
+
+[[format.fields]]
+name = "Length"
+meaning = "The message length in bytes, including these four bytes but not the type byte."
+
+[[format.fields]]
+name = "Protocol version"
+aliases = ["Request code"]
+meaning = "In the first message: 196608 for 3.0, 196610 for 3.2, or a special request code (80877103 SSL, 80877104 GSS encryption, 80877102 cancel)."
+
+[[format.fields]]
+name = "Query"
+meaning = "The SQL text of a simple query (Q), null-terminated; may hold several statements separated by semicolons."
+
+[[format.fields]]
+name = "Authentication type"
+meaning = "In an R message: 0 OK, 3 clear-text password, 5 MD5 password with a 4-byte salt, 7 GSSAPI, 10 SASL (SCRAM-SHA-256), 11 SASL continue, 12 SASL final."
+
+[[format.fields]]
+name = "Error fields"
+aliases = ["Severity", "SQLSTATE", "Message"]
+meaning = "An E or N message is a list of fields, each a code byte and a null-terminated string: S severity, C SQLSTATE code, M message, D detail, H hint, P position."
+
+[[format]]
+id = "tds"
+name = "Tabular Data Stream"
+keys = ["TDS", "Tabular Data Stream", "MS-TDS", "Microsoft SQL Server protocol", "MSSQL"]
+summary = "The protocol between clients and Microsoft SQL Server (and Sybase ASE): login, SQL batches and remote procedure calls in one direction, tabular results as token streams in the other."
+group = "Databases"
+ports = ["tcp/1433", "udp/1434"]
+organisation = """
+Messages are split into packets, each with an 8-byte header: a type, a status byte, a 2-byte length of the packet including the header (big-endian, unlike the rest of the protocol), a 2-byte server process ID, a 1-byte packet ID and a 1-byte window. The end-of-message bit (0x01) in the status marks a message's last packet; the packet ID counts packets within a message.
+
+A connection opens with PRELOGIN (type 18) packets that negotiate version and encryption. When encryption is chosen the TLS handshake travels inside further PRELOGIN packets, and afterwards the TLS records flow directly; often only the login is encrypted and everything later is clear. In TDS 8.0 TLS starts first, before any TDS packet. A LOGIN7 message (type 16) then carries the client host name, user name, a lightly obfuscated password (each byte's nibbles swapped and XORed with 0xA5), application name, server name and database.
+
+Requests are SQL batches (type 1, the query text in UTF-16LE after a headers block), RPC calls (type 3, stored procedure name or ID and parameters) and attention (type 6, cancel). Responses are type 4: a stream of tokens, each a 1-byte token type and its data, such as 0x81 column metadata, 0xD1 row, 0xAA error, 0xAB info, 0xE3 environment change and 0xFD done. Other numbers are little-endian. UDP port 1434 is the SQL Server Browser, which tells clients the ports of named instances.
+"""
+
+[[format.specs]]
+document = "[MS-TDS]"
+title = "Tabular Data Stream Protocol"
+url = "https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-tds/b46a581a-39de-4745-b076-ec4dbb7d13ec"
+section = "2.2.3.1"
+
+[[format.fields]]
+name = "Type"
+aliases = ["Packet type"]
+meaning = "1 SQL batch, 2 pre-TDS7 login, 3 RPC, 4 tabular result, 6 attention, 7 bulk load, 8 federated authentication token, 14 transaction manager request, 16 TDS7 login, 17 SSPI, 18 pre-login."
+section = "2.2.3.1.1"
+
+[[format.fields]]
+name = "Status"
+meaning = "Bit 0x01 end of message; 0x02 ignore this event; 0x08 and 0x10 reset the connection before the request."
+section = "2.2.3.1.2"
+
+[[format.fields]]
+name = "Length"
+meaning = "The packet's length including the 8-byte header, big-endian."
+section = "2.2.3.1.3"
+
+[[format.fields]]
+name = "SPID"
+aliases = ["Server process ID"]
+meaning = "The server's session ID for the connection, filled in by the server in responses."
+section = "2.2.3.1.4"
+
+[[format.fields]]
+name = "PacketID"
+aliases = ["Packet ID"]
+meaning = "Counts packets within a message, wrapping at 255."
+section = "2.2.3.1.5"
+
+[[format.fields]]
+name = "Token"
+aliases = ["Token type"]
+meaning = "In a response, the type of each item: 0x81 COLMETADATA, 0xD1 ROW, 0xAA ERROR, 0xAB INFO, 0xAD LOGINACK, 0xE3 ENVCHANGE, 0xFD DONE, 0xFE DONEPROC, 0xFF DONEINPROC."
+section = "2.2.7"
+
+[[format]]
+id = "mongodb"
+name = "MongoDB wire protocol"
+keys = ["MongoDB", "Mongo", "MongoDB wire protocol", "OP_MSG"]
+summary = "The protocol between MongoDB drivers and servers: commands and their replies as BSON documents inside a small binary message header."
+group = "Databases"
+ports = ["tcp/27017"]
+organisation = """
+Every message starts with a 16-byte header of little-endian 32-bit integers: the total message length (header included), a request ID, the ID of the request this one responds to (responseTo, 0 in requests) and an opcode. A reply is matched to its request by responseTo.
+
+Current servers use OP_MSG (opcode 2013) for everything. It has 4 bytes of flag bits (bit 0 checksum present, bit 1 more to come, bit 16 exhaust allowed), then one or more sections and an optional CRC-32C checksum. A kind 0 section is a single BSON document, the command or reply, such as {find: "users", filter: {...}, $db: "app"}. A kind 1 section is a document sequence: a 4-byte size, a null-terminated identifier such as "documents" and BSON documents, used for bulk inserts and updates.
+
+BSON documents begin with their own 4-byte little-endian length, so each can be skipped without decoding. OP_COMPRESSED (2012) wraps another message with snappy, zlib or zstd compression, naming the original opcode and size. The legacy opcodes OP_QUERY (2004) and OP_REPLY (1) still appear in the initial hello or isMaster handshake from older drivers.
+"""
+
+[[format.specs]]
+document = "MongoDB Wire Protocol"
+title = "MongoDB Wire Protocol"
+url = "https://www.mongodb.com/docs/manual/reference/mongodb-wire-protocol/"
+
+[[format.specs]]
+document = "BSON specification"
+title = "BSON Specification Version 1.1"
+url = "https://bsonspec.org/spec.html"
+
+[[format.fields]]
+name = "Message length"
+aliases = ["messageLength"]
+meaning = "The total size of the message in bytes, including the header."
+
+[[format.fields]]
+name = "Request ID"
+aliases = ["requestID"]
+meaning = "An identifier the sender chooses for this message."
+
+[[format.fields]]
+name = "Response to"
+aliases = ["responseTo"]
+meaning = "In a reply, the request ID of the message being answered; 0 otherwise."
+
+[[format.fields]]
+name = "Opcode"
+aliases = ["opCode"]
+meaning = "2013 OP_MSG, 2012 OP_COMPRESSED; legacy 1 OP_REPLY, 2004 OP_QUERY and others removed in recent servers."
+
+[[format.fields]]
+name = "Flag bits"
+aliases = ["flagBits"]
+meaning = "In OP_MSG: bit 0 a CRC-32C checksum ends the message, bit 1 no reply will follow (more to come), bit 16 the client accepts several replies."
+
+[[format.fields]]
+name = "Section kind"
+aliases = ["Kind"]
+meaning = "0 a single BSON body document, 1 a named sequence of documents."
+
+[[format]]
+id = "redis"
+name = "Redis serialisation protocol"
+keys = ["Redis", "RESP", "RESP2", "RESP3", "Redis serialization protocol", "Redis serialisation protocol", "Valkey"]
+summary = "The simple text-framed protocol of Redis and compatible stores such as Valkey: commands go as arrays of strings and replies as typed values."
+group = "Databases"
+ports = ["tcp/6379"]
+organisation = """
+Every value starts with a type byte and ends with CR LF. In RESP2: "+" a simple string ("+OK"), "-" an error ("-ERR unknown command"), ":" an integer, "$" a bulk string (a decimal length, CR LF, that many bytes and CR LF; "$-1" is null) and "*" an array (an element count followed by that many values, which may themselves be arrays).
+
+A client sends each command as an array of bulk strings, for example "*2", "$3", "GET", "$5", "mykey", one item per line. Servers also accept inline commands, plain space-separated text ending in CR LF, which is how a typed telnet session looks. Replies come back in the order the commands were sent, which is what makes pipelining possible; there is no request identifier.
+
+RESP3, chosen by sending HELLO 3, adds "_" null, "#" boolean, "," double, "(" big number, "!" bulk error, "=" verbatim string, "%" map, "~" set, "|" attributes and ">" push messages (used for pub/sub and client-side caching). AUTH sends the password in clear unless the connection uses TLS.
+"""
+
+[[format.specs]]
+document = "Redis serialization protocol specification"
+title = "Redis serialization protocol specification"
+url = "https://redis.io/docs/latest/develop/reference/protocol-spec/"
+
+[[format.fields]]
+name = "Type"
+aliases = ["Type byte"]
+meaning = "The first byte of a value: + simple string, - error, : integer, $ bulk string, * array; RESP3 adds _ , # ( ! = % ~ | and >."
+
+[[format.fields]]
+name = "Length"
+aliases = ["Count"]
+meaning = "For bulk strings, the byte length of the data (-1 for null); for arrays, the number of elements."
+
+[[format.fields]]
+name = "Command"
+meaning = "The first element of a request array: GET, SET, HGETALL, AUTH, CONFIG, EVAL, SUBSCRIBE and so on, case-insensitive."
+
+[[format]]
+id = "memcached"
+name = "Memcached protocol"
+keys = ["Memcached", "Memcache", "Memcached protocol", "Memcached binary protocol"]
+summary = "The protocol of the memcached cache: clients store and fetch values by key, using a text protocol (or an older binary one) over TCP or UDP."
+group = "Databases"
+ports = ["tcp/11211", "udp/11211"]
+organisation = """
+The text protocol is lines ending in CR LF. Retrieval commands name keys ("get user:42"); the server answers with a "VALUE key flags bytes [cas]" line, the data block and CR LF for each hit, then "END". Storage commands (set, add, replace, append, prepend, cas) give the key, client flags, expiry time and byte count on the command line, followed by the data block; the reply is STORED, NOT_STORED, EXISTS or NOT_FOUND. Data blocks are counted, not delimited. Newer meta commands (mg, ms, md, ma) use short flags instead.
+
+The older binary protocol, now deprecated, uses a 24-byte header: magic 0x80 for requests and 0x81 for responses, an opcode (0x00 get, 0x01 set, 0x04 delete), key length, extras length, data type, a vbucket ID or status, total body length, an opaque value echoed in the reply and an 8-byte CAS value, all big-endian.
+
+Over UDP each datagram begins with an 8-byte frame header (request ID, sequence number, datagram count and a reserved field) before the text. Because a tiny UDP request can produce a very large reply, open UDP memcached servers were abused for amplification attacks, and UDP is now off by default.
+"""
+
+[[format.specs]]
+document = "memcached protocol.txt"
+title = "Memcached protocol"
+url = "https://github.com/memcached/memcached/blob/master/doc/protocol.txt"
+
+[[format.fields]]
+name = "Command"
+meaning = "get, gets, gat, set, add, replace, append, prepend, cas, delete, incr, decr, touch, stats, flush_all, version, or the meta commands mg, ms, md, ma, mn."
+
+[[format.fields]]
+name = "Key"
+meaning = "Up to 250 bytes of text without spaces or control characters."
+
+[[format.fields]]
+name = "Flags"
+meaning = "A 32-bit number the client stores with the value and gets back unchanged; libraries use it to record how the value was serialised."
+
+[[format.fields]]
+name = "Bytes"
+aliases = ["Length"]
+meaning = "The length of the data block that follows the command or VALUE line."
+
+[[format.fields]]
+name = "Magic"
+meaning = "In the binary protocol, 0x80 for a request and 0x81 for a response."
+
+# ---------------------------------------------------------------------------
+# Internet of things
+# ---------------------------------------------------------------------------
+
+[[format]]
+id = "coap"
+name = "Constrained Application Protocol"
+keys = ["CoAP", "CoAPS", "Constrained Application Protocol"]
+summary = "A compact binary counterpart of HTTP for small devices: GET, POST, PUT and DELETE on resources, normally over UDP, with optional reliability and observation of changing values."
+group = "Internet of things"
+ports = ["udp/5683", "udp/5684", "tcp/5683", "tcp/5684"]
+organisation = """
+Over UDP each datagram is one message, starting with a 4-byte header: a 2-bit version (1), a 2-bit type, a 4-bit token length, an 8-bit code and a 16-bit message ID. The type says how the message is delivered: 0 confirmable (acknowledgement required, retransmitted until it arrives), 1 non-confirmable, 2 acknowledgement and 3 reset. The message ID matches an acknowledgement to its confirmable message and detects duplicates.
+
+The code is written class.detail: 0.01 GET, 0.02 POST, 0.03 PUT and 0.04 DELETE for requests, 2.xx success (2.05 Content), 4.xx client errors (4.04 Not Found) and 5.xx server errors for responses. A token of 0 to 8 bytes follows the header and pairs a response with its request, which matters when the response comes separately from the acknowledgement.
+
+Options come next, each encoded as a delta from the previous option's number and a length (a byte holding two 4-bit fields, with 13 and 14 announcing extended values), so options must appear in number order: 11 Uri-Path, 15 Uri-Query, 12 Content-Format, 6 Observe, 23 and 27 Block2 and Block1. If a payload follows, it is preceded by the marker byte 0xFF. Port 5684 carries CoAP over DTLS (or TLS); over TCP and WebSockets the header replaces type and message ID with a length.
+"""
+
+[[format.specs]]
+document = "RFC 7252"
+title = "The Constrained Application Protocol (CoAP)"
+url = "https://www.rfc-editor.org/rfc/rfc7252"
+rfc = 7252
+section = "3"
+
+[[format.specs]]
+document = "RFC 8323"
+title = "CoAP (Constrained Application Protocol) over TCP, TLS, and WebSockets"
+url = "https://www.rfc-editor.org/rfc/rfc8323"
+rfc = 8323
+
+[[format.fields]]
+name = "Type"
+meaning = "0 confirmable, 1 non-confirmable, 2 acknowledgement, 3 reset."
+section = "3"
+
+[[format.fields]]
+name = "Token length"
+aliases = ["TKL"]
+meaning = "The number of token bytes after the header, 0 to 8."
+section = "3"
+
+[[format.fields]]
+name = "Code"
+meaning = "Class and detail, written c.dd: 0.00 empty, 0.01 GET, 0.02 POST, 0.03 PUT, 0.04 DELETE, 2.01 Created, 2.04 Changed, 2.05 Content, 4.00 Bad Request, 4.01 Unauthorized, 4.04 Not Found, 5.00 Internal Server Error."
+section = "3"
+
+[[format.fields]]
+name = "Message ID"
+meaning = "Matches acknowledgements and resets to confirmable messages and detects duplicates."
+section = "3"
+
+[[format.fields]]
+name = "Token"
+meaning = "Chosen by the client and echoed in the response; links a response to its request independently of the message ID."
+section = "5.3.1"
+
+[[format.fields]]
+name = "Options"
+aliases = ["Option"]
+meaning = "Delta-encoded option numbers and values: 3 Uri-Host, 6 Observe, 7 Uri-Port, 11 Uri-Path, 12 Content-Format, 14 Max-Age, 15 Uri-Query, 17 Accept, 23 Block2, 27 Block1, 60 Size1."
+section = "3.1"
+
+[[format]]
+id = "mqtt-sn"
+name = "MQTT for Sensor Networks"
+keys = ["MQTT-SN", "MQTT-S", "MQTT for Sensor Networks"]
+summary = "A variant of MQTT for small battery-powered devices on datagram networks such as UDP, Zigbee or LoRa: topic names are replaced by short numeric IDs and a gateway connects the devices to an ordinary MQTT broker."
+group = "Internet of things"
+organisation = """
+Each message is one datagram starting with a length and a message type. The length is a single byte giving the whole message's size, or, for longer messages, the byte 0x01 followed by a 2-byte big-endian length. The message type is one byte: 0x00 ADVERTISE, 0x01 SEARCHGW, 0x02 GWINFO, 0x04 CONNECT, 0x05 CONNACK, 0x0A REGISTER, 0x0B REGACK, 0x0C PUBLISH, 0x0D PUBACK, 0x12 SUBSCRIBE, 0x13 SUBACK, 0x16 PINGREQ, 0x17 PINGRESP, 0x18 DISCONNECT.
+
+Many messages carry a flags byte: DUP, two QoS bits (with 0b11 meaning QoS -1, a publish sent without connecting first), Retain, Will, CleanSession and two bits giving the topic ID type (0 normal registered ID, 1 predefined ID, 2 two-character short name).
+
+Instead of sending a topic name with every publish, a client registers the name once with REGISTER and receives a 2-byte topic ID in REGACK; PUBLISH then carries the flags, the topic ID, a 2-byte message ID and the data. Message IDs match acknowledgements to requests.
+
+There is no IANA port. Gateways often listen on UDP 1883 or 1884, the ports of MQTT and its neighbour, but this varies; the protocol is usually recognised by its structure.
+"""
+
+[[format.specs]]
+document = "MQTT-SN v1.2"
+title = "MQTT For Sensor Networks (MQTT-SN) Protocol Specification Version 1.2"
+url = "https://www.oasis-open.org/committees/download.php/66091/MQTT-SN_spec_v1.2.pdf"
+section = "5.2"
+
+[[format.fields]]
+name = "Length"
+meaning = "The message length in bytes, including itself: one byte, or 0x01 followed by two bytes for messages of 256 bytes or more."
+section = "5.2.1"
+
+[[format.fields]]
+name = "MsgType"
+aliases = ["Message type"]
+meaning = "The kind of message, from 0x00 ADVERTISE to 0x1D WILLMSGRESP; 0xFE wraps a message passed on by a forwarder."
+section = "5.2.2"
+
+[[format.fields]]
+name = "Flags"
+meaning = "DUP, QoS (two bits), Retain, Will, CleanSession and TopicIdType (two bits)."
+section = "5.3.4"
+
+[[format.fields]]
+name = "TopicId"
+aliases = ["Topic ID"]
+meaning = "A 2-byte number standing for a topic name, assigned by REGACK or agreed in advance, or two characters of a short topic name."
+section = "5.3.11"
+
+[[format.fields]]
+name = "MsgId"
+aliases = ["Message ID"]
+meaning = "Matches an acknowledgement (REGACK, PUBACK, SUBACK) to the message it answers."
+section = "5.3.7"
+
+[[format.fields]]
+name = "ReturnCode"
+aliases = ["Return code"]
+meaning = "0x00 accepted, 0x01 rejected because of congestion, 0x02 rejected because of an invalid topic ID, 0x03 rejected as not supported."
+section = "5.3.10"
+
+[[format]]
+id = "knxnet-ip"
+name = "KNXnet/IP"
+keys = ["KNXnet/IP", "KNXnetIP", "KNX/IP", "KNX IP", "EIBnet/IP"]
+summary = "The way KNX building automation (lighting, blinds, heating) is carried over IP: tunnelling connects a tool or gateway to a KNX line, and routing multicasts KNX telegrams between IP-connected lines."
+group = "Industrial control"
+ports = ["udp/3671", "tcp/3671"]
+organisation = """
+Every frame starts with a 6-byte header, big-endian: a header length (always 0x06), a protocol version (0x10), a 2-byte service type and a 2-byte total length that includes the header. The service type's high byte gives the family: 0x02 core (0x0201 search request, 0x0202 search response, 0x0203 description request, 0x0205 connect request, 0x0206 connect response, 0x0207 connection state request, 0x0209 disconnect request), 0x03 device management, 0x04 tunnelling (0x0420 request, 0x0421 acknowledgement) and 0x05 routing (0x0530 routing indication).
+
+Discovery and connection messages carry host protocol address information blocks: 8 bytes giving a length, a protocol code (1 UDP, 2 TCP), an IPv4 address and a port. Tunnelling messages carry a 4-byte connection header (length, channel ID, sequence counter, status) that the acknowledgement repeats.
+
+The payload of tunnelling and routing frames is a cEMI message: a message code (0x11 data request, 0x29 data indication, 0x2E data confirmation), additional information, two control bytes, the 2-byte individual source address (area.line.device), the 2-byte destination group address (main/middle/sub) and the transport and application control fields with the data, such as a group value write. Routing uses multicast to 224.0.23.12. KNX IP Secure wraps frames in service type 0x0950.
+"""
+
+[[format.specs]]
+document = "KNX Standard 03.08.02"
+title = "KNX Standard, Volume 3: System Specifications, Part 8: KNXnet/IP, Chapter 2: Core"
+url = "https://www.knx.org/knx-en/for-professionals/Standards/KNX-Standard/"
+
+[[format.fields]]
+name = "Header length"
+meaning = "Always 0x06."
+
+[[format.fields]]
+name = "Protocol version"
+meaning = "0x10 for KNXnet/IP 1.0."
+
+[[format.fields]]
+name = "Service type"
+aliases = ["Service type identifier"]
+meaning = "Which request or response this is, such as 0x0205 connect request, 0x0420 tunnelling request or 0x0530 routing indication."
+
+[[format.fields]]
+name = "Total length"
+meaning = "The whole frame's length including the 6-byte header."
+
+[[format.fields]]
+name = "Channel ID"
+aliases = ["Communication channel ID"]
+meaning = "The tunnelling connection, assigned by the server in its connect response."
+
+[[format.fields]]
+name = "Sequence counter"
+meaning = "Counts tunnelling requests on a channel; the acknowledgement repeats it."
+
+[[format.fields]]
+name = "Message code"
+meaning = "In the cEMI payload: 0x11 L_Data.req, 0x29 L_Data.ind, 0x2E L_Data.con."
+
+[[format.fields]]
+name = "Destination address"
+aliases = ["Group address"]
+meaning = "The KNX group address a telegram is sent to, written main/middle/sub such as 1/2/3, or an individual address area.line.device."
+
+# ---------------------------------------------------------------------------
+# Industrial control
+# ---------------------------------------------------------------------------
+
+[[format]]
+id = "dnp3"
+name = "Distributed Network Protocol 3"
+keys = ["DNP3", "DNP 3", "DNP", "Distributed Network Protocol", "IEEE 1815"]
+summary = "The SCADA protocol of North American electricity and water utilities: a control station polls outstations for measurements and events and sends them commands."
+group = "Industrial control"
+ports = ["tcp/20000", "udp/20000"]
+organisation = """
+DNP3 keeps its serial-line framing when carried over TCP or UDP. Each data link frame begins with the start bytes 0x05 0x64, a 1-byte length, a control byte (direction, primary bit and a function code), a 2-byte destination address and a 2-byte source address, both little-endian, followed by a 2-byte CRC over those 8 bytes. The length counts control, addresses and user data but not the CRCs. The user data follows in blocks of up to 16 bytes, each followed by its own 2-byte CRC, so CRCs must be removed before the rest can be read.
+
+The first byte of user data is the transport header: FIN and FIR bits marking the last and first segment of an application message and a 6-bit sequence number. Segments are joined to form one application fragment.
+
+The application header is a control byte (FIR, FIN, CON confirmation requested, UNS unsolicited and a 4-bit sequence number) and a function code; responses add 2 bytes of internal indications that report device state (restart, time needs synchronising, buffer overflow and so on). Object headers follow, each naming a data type by group and variation (group 1 binary inputs, 30 analogue inputs, 12 control relay output block, 60 class data), a qualifier saying how the range or count of points is given, and then the data. Numbers are little-endian. Secure Authentication adds challenge and reply objects for critical commands.
+"""
+
+[[format.specs]]
+document = "IEEE 1815-2012"
+title = "IEEE Standard for Electric Power Systems Communications - Distributed Network Protocol (DNP3)"
+url = "https://standards.ieee.org/ieee/1815/5414/"
+
+[[format.fields]]
+name = "Start"
+aliases = ["Start bytes"]
+meaning = "The two bytes 0x05 0x64 that begin every link-layer frame."
+
+[[format.fields]]
+name = "Length"
+meaning = "Bytes of control, destination, source and user data in the frame, not counting the start bytes, the length itself or the CRCs; 5 to 255."
+
+[[format.fields]]
+name = "Control"
+aliases = ["Link control"]
+meaning = "Direction bit, primary bit, frame count bits and a link function code (for example 4 unconfirmed user data, 9 request link status)."
+
+[[format.fields]]
+name = "Destination"
+aliases = ["Source"]
+meaning = "16-bit station addresses, little-endian; 0xFFFD to 0xFFFF are broadcast."
+
+[[format.fields]]
+name = "Transport header"
+aliases = ["Transport control"]
+meaning = "FIN (last segment), FIR (first segment) and a 6-bit sequence number."
+
+[[format.fields]]
+name = "Application control"
+meaning = "FIR, FIN, CON (confirmation wanted), UNS (unsolicited) and a 4-bit application sequence number."
+
+[[format.fields]]
+name = "Function code"
+meaning = "0 confirm, 1 read, 2 write, 3 select, 4 operate, 5 direct operate, 13 cold restart, 14 warm restart, 20 enable unsolicited, 21 disable unsolicited, 129 response, 130 unsolicited response."
+
+[[format.fields]]
+name = "Internal indications"
+aliases = ["IIN"]
+meaning = "Two bytes of flags in every response: device restart, time synchronisation needed, events of class 1 to 3 available, function not supported, object unknown, parameter error and others."
+
+[[format.fields]]
+name = "Object header"
+aliases = ["Group", "Variation", "Qualifier"]
+meaning = "The data type as group and variation numbers, then a qualifier saying how the points are listed (a start and stop index, a count, or a list of indexes)."
+
+[[format]]
+id = "iec-104"
+name = "IEC 60870-5-104"
+keys = ["IEC 60870-5-104", "IEC 104", "IEC-104", "IEC104", "IEC 60870-5-104 APCI"]
+summary = "The telecontrol protocol used by European and many other power grids to exchange measurements, status changes and commands between control centres and substations over TCP."
+group = "Industrial control"
+ports = ["tcp/2404"]
+organisation = """
+Each message (APDU) begins with a start byte 0x68 and a 1-byte length of what follows, at most 253, then four control bytes. The low bits of the first control byte give the frame format. I-format (bit 0 clear) carries data, with 15-bit send and receive sequence numbers in the control bytes. S-format (bits 01) only acknowledges received I-frames with a receive sequence number. U-format (bits 11) controls the link: STARTDT and STOPDT to start and stop data transfer, and TESTFR to test an idle connection, each as an activation and a confirmation.
+
+An I-format frame carries an ASDU. Its first byte is the type identification: 1 single-point information, 3 double-point, 9 measured value (normalised), 13 measured value (short float), 30 single point with a time tag, 45 single command, 46 double command, 100 general interrogation, 103 clock synchronisation. The variable structure qualifier gives the number of information objects and whether they are sequential (SQ bit).
+
+Then come the cause of transmission (6 bits plus a negative-confirmation bit and a test bit, followed by an originator address byte), the 2-byte common address of the ASDU (the station) and the information objects, each a 3-byte information object address and the elements of the type, such as a value and a quality descriptor, sometimes with a 7-byte CP56Time2a time tag. Numbers are little-endian.
+"""
+
+[[format.specs]]
+document = "IEC 60870-5-104:2006"
+title = "Telecontrol equipment and systems - Part 5-104: Transmission protocols - Network access for IEC 60870-5-101 using standard transport profiles"
+url = "https://webstore.iec.ch/en/publication/3746"
+
+[[format.specs]]
+document = "IEC 60870-5-101:2003"
+title = "Telecontrol equipment and systems - Part 5-101: Transmission protocols - Companion standard for basic telecontrol tasks"
+url = "https://webstore.iec.ch/en/publication/3743"
+
+[[format.fields]]
+name = "Start"
+meaning = "The byte 0x68 that begins every APDU."
+
+[[format.fields]]
+name = "APDU length"
+aliases = ["Length"]
+meaning = "Bytes after the length byte: the four control bytes and the ASDU, at most 253."
+
+[[format.fields]]
+name = "Control field"
+aliases = ["Format"]
+meaning = "Four bytes; bit 0 clear is I-format (send and receive sequence numbers), bits 01 S-format (receive sequence number only), bits 11 U-format (STARTDT, STOPDT, TESTFR act and con)."
+
+[[format.fields]]
+name = "Type identification"
+aliases = ["Type ID", "TypeID"]
+meaning = "The ASDU's data type, such as 1 M_SP_NA_1 single point, 13 M_ME_NC_1 short float measurement, 30 M_SP_TB_1 single point with time, 45 C_SC_NA_1 single command, 100 C_IC_NA_1 interrogation, 103 C_CS_NA_1 clock synchronisation."
+
+[[format.fields]]
+name = "Cause of transmission"
+aliases = ["COT"]
+meaning = "Why the ASDU was sent: 1 periodic, 3 spontaneous, 6 activation, 7 activation confirmation, 10 activation termination, 20 response to station interrogation, 44 to 47 unknown type, cause, common address or object address. Includes the P/N and test bits and an originator address."
+
+[[format.fields]]
+name = "Common address"
+aliases = ["ASDU address", "Station address"]
+meaning = "The 2-byte address of the station or logical device the ASDU concerns; 65535 is broadcast."
+
+[[format.fields]]
+name = "Information object address"
+aliases = ["IOA"]
+meaning = "A 3-byte address of one data point within the station."
+
+[[format]]
+id = "bacnet"
+name = "BACnet/IP"
+keys = ["BACnet", "BACnet/IP", "BVLC", "BACnet Virtual Link Control", "Building Automation and Control Networks"]
+summary = "The building automation protocol for heating, ventilation, access control and lighting systems, here carried over UDP: devices discover each other and read and write the properties of objects such as sensors and set points."
+group = "Industrial control"
+ports = ["udp/47808"]
+organisation = """
+Each UDP datagram starts with a 4-byte BACnet Virtual Link Control header: type 0x81 (BACnet/IP), a function and a 2-byte big-endian length of the whole datagram. Functions include 0x0A original unicast NPDU, 0x0B original broadcast NPDU, 0x04 forwarded NPDU (which first gives the original sender's 6-byte address), 0x05 register foreign device and 0x00 result.
+
+The network layer header (NPDU) follows: version 0x01 and a control byte whose bits say whether this is a network-layer message (bit 7), whether destination and source network addresses are present (bits 5 and 3), whether a reply is expected (bit 2) and the priority (bits 0 and 1). Optional destination and source network numbers and MAC addresses and a hop count come next.
+
+The application layer header (APDU) begins with the PDU type in its top four bits: 0 confirmed request, 1 unconfirmed request, 2 simple acknowledgement, 3 complex acknowledgement, 4 segment acknowledgement, 5 error, 6 reject, 7 abort. Confirmed requests carry an invoke ID that the acknowledgement repeats, and a service choice such as 12 readProperty, 14 readPropertyMultiple or 15 writeProperty; unconfirmed services include 0 I-Am, 7 Who-Has and 8 Who-Is. Parameters are tagged values naming object types and instances (analog-input 1), property identifiers (85 present-value) and their data.
+"""
+
+[[format.specs]]
+document = "ANSI/ASHRAE Standard 135"
+title = "BACnet - A Data Communication Protocol for Building Automation and Control Networks"
+url = "https://www.ashrae.org/technical-resources/bookstore/bacnet"
+section = "Annex J"
+
+[[format.fields]]
+name = "BVLC type"
+aliases = ["Type"]
+meaning = "0x81 for BACnet/IP (0x82 for BACnet/IPv6)."
+section = "J.2"
+
+[[format.fields]]
+name = "BVLC function"
+aliases = ["Function"]
+meaning = "0x00 result, 0x04 forwarded NPDU, 0x05 register foreign device, 0x0A original unicast NPDU, 0x0B original broadcast NPDU, 0x0C secure BVLL."
+section = "J.2"
+
+[[format.fields]]
+name = "BVLC length"
+aliases = ["Length"]
+meaning = "The datagram's total length including the 4-byte BVLC header."
+section = "J.2"
+
+[[format.fields]]
+name = "NPDU control"
+aliases = ["Control"]
+meaning = "Bit 7 network layer message, bit 5 destination specified, bit 3 source specified, bit 2 reply expected, bits 0 and 1 priority."
+section = "6.2.2"
+
+[[format.fields]]
+name = "PDU type"
+aliases = ["APDU type"]
+meaning = "Top four bits of the APDU: 0 confirmed request, 1 unconfirmed request, 2 simple ack, 3 complex ack, 4 segment ack, 5 error, 6 reject, 7 abort."
+section = "20.1"
+
+[[format.fields]]
+name = "Invoke ID"
+meaning = "Chosen by the requester of a confirmed service and repeated in the reply."
+section = "20.1"
+
+[[format.fields]]
+name = "Service choice"
+meaning = "Which service: confirmed 12 readProperty, 14 readPropertyMultiple, 15 writeProperty, 20 reinitializeDevice; unconfirmed 0 I-Am, 1 I-Have, 7 Who-Has, 8 Who-Is."
+section = "21"
+
+[[format]]
+id = "opc-ua"
+name = "OPC UA binary protocol"
+keys = ["OPC UA", "OPC-UA", "OPCUA", "OPC Unified Architecture", "UA TCP", "UACP", "OPC UA Connection Protocol"]
+summary = "The industrial interoperability protocol: clients browse a server's address space of nodes, read and write variables, call methods and subscribe to changes, over a secure channel on TCP."
+group = "Industrial control"
+ports = ["tcp/4840", "tcp/4843", "udp/4840"]
+organisation = """
+Every message chunk starts with an 8-byte header: a 3-character ASCII message type, a 1-byte chunk type and a 4-byte little-endian message size that includes the header. Message types are HEL (hello) and ACK (acknowledge), which agree buffer sizes and carry the endpoint URL, ERR (error), RHE (reverse hello), and OPN, MSG and CLO, which open, use and close a secure channel. The chunk type is 'F' for the final chunk of a message, 'C' for an intermediate one and 'A' to abort a message.
+
+OPN, MSG and CLO continue with a 4-byte secure channel ID and a security header: for OPN an asymmetric one with the security policy URI (such as http://opcfoundation.org/UA/SecurityPolicy#None or #Basic256Sha256), the sender's certificate and the receiver's certificate thumbprint; for MSG and CLO a 4-byte token ID. A sequence header follows: a sequence number and a request ID, which the response repeats.
+
+The body is a service request or response in OPC UA binary encoding, beginning with the numeric node ID of its encoding (for example 631 ReadRequest, 634 ReadResponse, 527 BrowseRequest, 446 OpenSecureChannelRequest) and then a request header with an authentication token, timestamp and request handle. With the None policy everything is readable; with Sign the body is signed, and with SignAndEncrypt everything after the security header is encrypted. All numbers are little-endian. Port 4843 is OPC UA over TLS; UDP port 4840 carries multicast discovery and PubSub.
+"""
+
+[[format.specs]]
+document = "OPC 10000-6"
+title = "OPC Unified Architecture - Part 6: Mappings"
+url = "https://reference.opcfoundation.org/Core/Part6/v105/docs/7.1.2"
+section = "7.1.2"
+
+[[format.specs]]
+document = "OPC 10000-6, Secure Conversation"
+title = "OPC Unified Architecture - Part 6: Mappings, OPC UA Secure Conversation"
+url = "https://reference.opcfoundation.org/Core/Part6/v105/docs/6.7"
+section = "6.7"
+
+[[format.fields]]
+name = "Message type"
+aliases = ["MessageType"]
+meaning = "Three ASCII characters: HEL, ACK, ERR, RHE, OPN, MSG or CLO."
+section = "7.1.2"
+
+[[format.fields]]
+name = "Chunk type"
+aliases = ["IsFinal", "Reserved"]
+meaning = "'F' final chunk, 'C' intermediate chunk, 'A' final chunk of an aborted message."
+section = "7.1.2"
+
+[[format.fields]]
+name = "Message size"
+aliases = ["MessageSize"]
+meaning = "The chunk's length in bytes, header included."
+section = "7.1.2"
+
+[[format.fields]]
+name = "Secure channel ID"
+aliases = ["SecureChannelId"]
+meaning = "Identifies the secure channel, assigned by the server in its OpenSecureChannel response."
+section = "6.7.2"
+
+[[format.fields]]
+name = "Security policy URI"
+aliases = ["SecurityPolicyUri"]
+meaning = "In OPN messages, the algorithms in use; http://opcfoundation.org/UA/SecurityPolicy#None means no signing or encryption."
+section = "6.7.2"
+
+[[format.fields]]
+name = "Sequence number"
+meaning = "Increases by one for every chunk sent on the channel."
+section = "6.7.2"
+
+[[format.fields]]
+name = "Request ID"
+aliases = ["RequestId"]
+meaning = "Identifies a request; every chunk of the request and of its response carries it."
+section = "6.7.2"
+
+[[format.fields]]
+name = "Endpoint URL"
+aliases = ["EndpointUrl"]
+meaning = "In HEL, the URL the client is connecting to, such as opc.tcp://plc.example:4840/."
+section = "7.1.2"
+
+[[format]]
+id = "tpkt-cotp"
+name = "ISO transport over TCP (TPKT and COTP)"
+keys = ["TPKT", "COTP", "ISO-TSAP", "ISO on TCP", "RFC 1006", "ISO 8073", "X.224", "Connection-Oriented Transport Protocol"]
+summary = "The small framing layers that carry OSI protocols over TCP: TPKT gives each packet a length, and the ISO transport protocol (COTP) connects to a named transport service access point. Used by Siemens S7, IEC 61850 MMS, ICCP and the start of RDP."
+group = "Industrial control"
+ports = ["tcp/102"]
+carries = ["s7comm", "rdp"]
+organisation = """
+A TPKT header is 4 bytes: version 3, a reserved byte (0) and a 16-bit big-endian length of the whole packet including the header. One TPKT packet carries one COTP TPDU.
+
+A COTP TPDU starts with a length indicator, the number of header bytes that follow it, then a code whose top four bits give the type: 0xE0 connection request (CR), 0xD0 connection confirm (CC), 0x80 disconnect request (DR), 0xF0 data (DT), 0x70 error. Connection requests and confirms carry 2-byte destination and source references, a class option byte (class 0 over TCP), and parameters as type, length and value: 0xC0 maximum TPDU size, 0xC1 calling TSAP and 0xC2 called TSAP.
+
+The TSAPs name the endpoints being connected; for Siemens controllers the called TSAP encodes the connection type, rack and slot of the CPU. A data TPDU has a 2-byte header after the length indicator, 0xF0 and a byte whose top bit marks the end of the user's message (EOT); the user data, such as an S7 or MMS message, follows.
+"""
+
+[[format.specs]]
+document = "RFC 1006"
+title = "ISO Transport Service on top of the TCP Version: 3"
+url = "https://www.rfc-editor.org/rfc/rfc1006"
+rfc = 1006
+section = "6"
+
+[[format.specs]]
+document = "RFC 2126"
+title = "ISO Transport Service on top of TCP (ITOT)"
+url = "https://www.rfc-editor.org/rfc/rfc2126"
+rfc = 2126
+
+[[format.specs]]
+document = "ITU-T X.224"
+title = "Information technology - Open Systems Interconnection - Protocol for providing the connection-mode transport service"
+url = "https://www.itu.int/rec/T-REC-X.224"
+
+[[format.fields]]
+name = "Version"
+aliases = ["TPKT version"]
+meaning = "Always 3."
+section = "6"
+
+[[format.fields]]
+name = "Length"
+aliases = ["TPKT length"]
+meaning = "The whole TPKT packet's length including its 4-byte header, big-endian; at most 65,535."
+section = "6"
+
+[[format.fields]]
+name = "Length indicator"
+aliases = ["LI"]
+meaning = "The COTP header's length in bytes, not counting this byte."
+
+[[format.fields]]
+name = "PDU type"
+aliases = ["TPDU code", "Code"]
+meaning = "0xE0 connection request, 0xD0 connection confirm, 0x80 disconnect request, 0xC0 disconnect confirm, 0xF0 data, 0x70 TPDU error."
+
+[[format.fields]]
+name = "Called TSAP"
+aliases = ["Destination TSAP", "Calling TSAP", "Source TSAP"]
+meaning = "Transport service access points naming the two ends of the connection; for S7 the called TSAP's second byte encodes rack and slot."
+
+[[format.fields]]
+name = "EOT"
+aliases = ["Last data unit"]
+meaning = "Top bit of the byte after 0xF0 in a data TPDU: set on the last TPDU of a user message."
+
+[[format]]
+id = "s7comm"
+name = "Siemens S7 communication (S7comm)"
+keys = ["S7comm", "S7", "S7 Communication", "Siemens S7", "S7comm-plus", "S7CommPlus"]
+summary = "Siemens' proprietary protocol for programming and reading or writing data in SIMATIC S7 controllers, carried over ISO transport on TCP port 102. No official specification is published; what is known comes from reverse engineering."
+group = "Industrial control"
+ports = ["tcp/102"]
+organisation = """
+S7comm is a vendor protocol without a public specification; the layout below is what open-source tools and research have established. It travels as user data of COTP data TPDUs inside TPKT on TCP port 102, after a COTP connection whose called TSAP selects the CPU's rack and slot.
+
+Each message starts with a 10- or 12-byte header, big-endian: protocol ID 0x32, a message type (ROSCTR: 1 job request, 2 acknowledgement, 3 acknowledgement with data, 7 user data), 2 reserved bytes, a 2-byte PDU reference that the reply repeats, a 2-byte parameter length and a 2-byte data length. Acknowledgements add an error class and error code. The parameter block follows, then the data block.
+
+The parameter block's first byte is the function: 0xF0 setup communication (negotiating the PDU size and parallel jobs, always first), 0x04 read variable, 0x05 write variable, 0x1A to 0x1F download and upload of program blocks, 0x28 PLC control (such as a start) and 0x29 PLC stop. Read and write requests list items, each addressing a memory area (0x81 inputs, 0x82 outputs, 0x83 flags, 0x84 data blocks with a DB number), a data type, a length and a start address in bits. User data (type 7) carries diagnostics and other functions grouped by a function group and subfunction, such as reading the system status list.
+
+Newer controllers (S7-1200 and S7-1500) use S7comm-plus, which starts with protocol ID 0x72 and adds integrity protection; its structure is different and only partly understood.
+"""
+
+[[format.specs]]
+document = "RFC 1006"
+title = "ISO Transport Service on top of the TCP Version: 3"
+url = "https://www.rfc-editor.org/rfc/rfc1006"
+rfc = 1006
+
+[[format.specs]]
+document = "ITU-T X.224"
+title = "Information technology - Open Systems Interconnection - Protocol for providing the connection-mode transport service"
+url = "https://www.itu.int/rec/T-REC-X.224"
+
+[[format.fields]]
+name = "Protocol ID"
+meaning = "0x32 for S7comm; 0x72 for S7comm-plus."
+
+[[format.fields]]
+name = "ROSCTR"
+aliases = ["Message type"]
+meaning = "1 job (request), 2 acknowledgement without data, 3 acknowledgement with data, 7 user data."
+
+[[format.fields]]
+name = "PDU reference"
+meaning = "Chosen by the requester and repeated in the reply."
+
+[[format.fields]]
+name = "Parameter length"
+aliases = ["Data length"]
+meaning = "Sizes of the parameter and data blocks that follow the header."
+
+[[format.fields]]
+name = "Error class"
+aliases = ["Error code"]
+meaning = "In acknowledgements: 0 no error, 0x81 application relationship error, 0x82 object definition error, 0x83 no resources, 0x84 service processing error, 0x85 error on supplies, 0x87 access error."
+
+[[format.fields]]
+name = "Function"
+meaning = "0xF0 setup communication, 0x04 read variable, 0x05 write variable, 0x1A request download, 0x1D start upload, 0x28 PLC control, 0x29 PLC stop."
+
+[[format.fields]]
+name = "Area"
+aliases = ["Memory area"]
+meaning = "Which memory a read or write item addresses: 0x81 process inputs, 0x82 process outputs, 0x83 flags (markers), 0x84 data blocks, 0x1C counters, 0x1D timers."
+
+[[format]]
+id = "enip-cip"
+name = "EtherNet/IP and CIP"
+keys = ["EtherNet/IP", "ENIP", "EtherNet-IP", "CIP", "Common Industrial Protocol"]
+summary = "The industrial Ethernet protocol of Rockwell (Allen-Bradley) and other controllers: an encapsulation layer on TCP and UDP carrying the Common Industrial Protocol, used for explicit request and response messaging and cyclic I/O."
+group = "Industrial control"
+ports = ["tcp/44818", "udp/44818", "udp/2222"]
+organisation = """
+Explicit messages travel on TCP port 44818 (and UDP for discovery) inside a 24-byte encapsulation header, little-endian: a 2-byte command, a 2-byte length of the data after the header, a 4-byte session handle, a 4-byte status, 8 bytes of sender context that the reply copies, and 4 bytes of options. Commands include 0x0004 ListServices, 0x0063 ListIdentity (a broadcast that makes devices report vendor, product name, serial number and revision), 0x0065 RegisterSession, 0x0066 UnRegisterSession, 0x006F SendRRData and 0x0070 SendUnitData.
+
+SendRRData (unconnected) and SendUnitData (connected) carry an interface handle, a timeout and a common packet format: an item count and items, each a 2-byte type ID, a 2-byte length and data. An address item (0x0000 null, 0x00A1 connected address) is followed by a data item (0x00B2 unconnected data, 0x00B1 connected data) that holds the CIP message.
+
+A CIP request is a service code, a path size in 16-bit words and a path of segments naming the class, instance and attribute (0x20 class, 0x24 instance, 0x30 attribute), then the service data. The reply sets the service's top bit (0x80) and gives a general status (0 success) and any additional status. Common services are 0x01 Get_Attributes_All, 0x0E Get_Attribute_Single, 0x10 Set_Attribute_Single, 0x52 Unconnected_Send, 0x54 Forward_Open and 0x4E Forward_Close; Logix controllers add 0x4C Read Tag and 0x4D Write Tag with symbolic tag names in the path. Cyclic I/O set up by Forward_Open flows over UDP port 2222.
+"""
+
+[[format.specs]]
+document = "ODVA CIP Networks Library, Volume 2"
+title = "The CIP Networks Library, Volume 2: EtherNet/IP Adaptation of CIP"
+url = "https://www.odva.org/technology-standards/key-technologies/ethernet-ip/"
+section = "2"
+
+[[format.specs]]
+document = "ODVA CIP Networks Library, Volume 1"
+title = "The CIP Networks Library, Volume 1: Common Industrial Protocol"
+url = "https://www.odva.org/technology-standards/key-technologies/common-industrial-protocol-cip/"
+
+[[format.fields]]
+name = "Command"
+meaning = "0x0004 ListServices, 0x0063 ListIdentity, 0x0064 ListInterfaces, 0x0065 RegisterSession, 0x0066 UnRegisterSession, 0x006F SendRRData, 0x0070 SendUnitData."
+
+[[format.fields]]
+name = "Length"
+meaning = "The number of bytes after the 24-byte encapsulation header."
+
+[[format.fields]]
+name = "Session handle"
+meaning = "Returned by RegisterSession and carried in every later message of the session."
+
+[[format.fields]]
+name = "Status"
+meaning = "0 success; non-zero values report encapsulation errors such as 0x0001 invalid command or 0x0064 invalid session handle."
+
+[[format.fields]]
+name = "Sender context"
+meaning = "Eight bytes the sender chooses and the receiver copies into its reply."
+
+[[format.fields]]
+name = "Item type"
+aliases = ["Type ID"]
+meaning = "In the common packet format: 0x0000 null address, 0x000C ListIdentity response, 0x00A1 connected address, 0x00B1 connected data, 0x00B2 unconnected data, 0x8002 sequenced address."
+
+[[format.fields]]
+name = "Service"
+aliases = ["Service code"]
+meaning = "The CIP service: 0x01 Get_Attributes_All, 0x0E Get_Attribute_Single, 0x10 Set_Attribute_Single, 0x4C Read Tag, 0x4D Write Tag, 0x4E Forward_Close, 0x52 Unconnected_Send, 0x54 Forward_Open; replies add 0x80."
+
+[[format.fields]]
+name = "Request path"
+aliases = ["Path"]
+meaning = "Segments naming what the service acts on: 0x20 class, 0x24 instance, 0x30 attribute, 0x91 a symbolic tag name."
+
+[[format.fields]]
+name = "General status"
+meaning = "In a reply: 0x00 success, 0x01 connection failure, 0x04 path segment error, 0x05 path destination unknown, 0x08 service not supported, 0x0F privilege violation."
+
+[[format]]
+id = "profinet"
+name = "PROFINET"
+keys = ["PROFINET", "PROFINET IO", "PROFINET RT", "PROFINET DCP", "PN-DCP", "PROFINET Real-Time"]
+summary = "The industrial Ethernet standard of PROFIBUS and PROFINET International, used with Siemens and many other controllers: cyclic I/O data straight on Ethernet, device discovery and naming with DCP, and connection set-up over DCE/RPC on UDP."
+group = "Industrial control"
+ethertypes = [0x8892]
+ports = ["udp/34964"]
+carries = ["dcerpc"]
+organisation = """
+Real-time PROFINET frames use EtherType 0x8892 directly, without IP, usually with an 802.1Q priority tag. The payload begins with a 2-byte big-endian frame ID that says what follows: values from 0x8000 to 0xFBFF are cyclic I/O data of a particular connection, 0xFC01 and 0xFE01 are high and low priority alarms, and 0xFEFC to 0xFEFF are DCP (hello, get and set, identify request and identify response). Lower values are used for clock synchronisation and isochronous traffic.
+
+A cyclic data frame holds the I/O data of the provider, each submodule's value followed by a status byte, then at the end a 2-byte cycle counter, a data status byte and a transfer status byte. Frames are sent at a fixed interval and consumers treat missing ones as a fault.
+
+DCP (discovery and configuration) frames carry a service ID (1 get, 2 set, 3 identify, 4 hello), a service type, a 4-byte transaction ID, a response delay, a data length and blocks of option, suboption, length and value, such as the station name, IP parameters and device vendor. Because DCP set can change a device's name or address without authentication, it is a common concern in assessments.
+
+Connection set-up, parameterisation and record reads and writes go through the context manager: DCE/RPC over UDP port 34964.
+"""
+
+[[format.specs]]
+document = "PROFINET specification"
+title = "PROFINET Specification (IEC 61158 and IEC 61784, type 10)"
+url = "https://www.profibus.com/download/profinet-specification"
+
+[[format.specs]]
+document = "PROFINET technology overview"
+title = "PROFINET - the leading Industrial Ethernet Standard"
+url = "https://www.profibus.com/technologies/profinet"
+
+[[format.fields]]
+name = "FrameID"
+aliases = ["Frame ID"]
+meaning = "The first two bytes after the EtherType: 0x8000 to 0xFBFF cyclic real-time data, 0xFC01 high priority alarm, 0xFE01 low priority alarm, 0xFEFC DCP hello, 0xFEFD DCP get and set, 0xFEFE DCP identify request, 0xFEFF DCP identify response."
+
+[[format.fields]]
+name = "Cycle counter"
+meaning = "Counts in units of 31.25 microseconds in cyclic frames, so gaps and jitter can be measured."
+
+[[format.fields]]
+name = "Data status"
+meaning = "Flags at the end of a cyclic frame: primary or backup, data valid, provider running or stopped, station problem."
+
+[[format.fields]]
+name = "Service ID"
+meaning = "In DCP: 1 get, 2 set, 3 identify, 4 hello."
+
+[[format.fields]]
+name = "Xid"
+aliases = ["Transaction ID"]
+meaning = "In DCP, matches responses to the request."
+
+[[format.fields]]
+name = "Option"
+aliases = ["Suboption", "Block"]
+meaning = "DCP blocks: option 1 IP (address, mask, gateway), 2 device properties (vendor, station name, device ID, role), 5 control, 255 all selector."
