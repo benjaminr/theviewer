@@ -13,6 +13,11 @@
 //! Large inputs are fed in sampled windows ([`sample_windows`]); trigrams are
 //! counted within each window and never across a window boundary.
 //!
+//! The counter can also be given labelled spans of the data (regions from
+//! segmentation or the report, numbered as groups) and a selection. Each kept
+//! cell then says how many of its trigrams came from each group and from the
+//! selection, so the cloud can be coloured and labelled by region.
+//!
 //! Everything here is pure and safe on any input, including empty slices.
 
 /// Cells along each axis of the quantised cube.
@@ -29,6 +34,16 @@ pub const SAMPLE_LIMIT: usize = 16 * 1024 * 1024;
 pub const SAMPLE_WINDOW: usize = 256 * 1024;
 /// Marks a cell that has not been seen yet.
 const UNSEEN: usize = usize::MAX;
+/// Most region groups a cloud attributes its trigrams to.
+pub const MAX_GROUPS: usize = 12;
+
+/// Bytes `start..end` (absolute offsets) belong to region group `group`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LabelledSpan {
+    pub start: usize,
+    pub end: usize,
+    pub group: u8,
+}
 
 /// One occupied cell of the quantised cube.
 #[derive(Clone, Debug, PartialEq)]
@@ -43,6 +58,10 @@ pub struct TrigramPoint {
     pub count: u64,
     /// Log-scaled weight, from just above 0 (rarest kept) to 1 (most common).
     pub weight: f32,
+    /// Trigrams per region group, most first; empty when nothing was labelled.
+    pub groups: Vec<(u8, u32)>,
+    /// Trigrams from inside the selection, when one was given.
+    pub in_selection: u32,
 }
 
 impl TrigramPoint {
@@ -50,6 +69,16 @@ impl TrigramPoint {
     pub fn unit_position(&self) -> [f32; 3] {
         let last = (CELLS_PER_AXIS - 1) as f32;
         self.cell.map(|coordinate| coordinate as f32 / last)
+    }
+
+    /// The group most of this cell's trigrams came from.
+    pub fn dominant_group(&self) -> Option<u8> {
+        self.groups.first().map(|&(group, _)| group)
+    }
+
+    /// Trigrams in this cell from `group`.
+    pub fn count_in(&self, group: u8) -> u32 {
+        self.groups.iter().find(|&&(known, _)| known == group).map_or(0, |&(_, count)| count)
     }
 
     /// The range of byte values this cell covers along one axis.
@@ -99,6 +128,14 @@ pub struct TrigramCounter {
     exemplars: Vec<[u8; 3]>,
     bytes_read: usize,
     total_trigrams: u64,
+    /// Labelled spans, sorted by start and not overlapping.
+    spans: Vec<LabelledSpan>,
+    group_count: usize,
+    /// `TOTAL_CELLS × group_count` counts, cell-major; empty without labels.
+    group_counts: Vec<u32>,
+    selection: Option<(usize, usize)>,
+    /// Per-cell counts from inside the selection; empty without one.
+    selection_counts: Vec<u32>,
 }
 
 impl Default for TrigramCounter {
@@ -109,12 +146,27 @@ impl Default for TrigramCounter {
 
 impl TrigramCounter {
     pub fn new() -> Self {
+        Self::with_labels(Vec::new(), 0, None)
+    }
+
+    /// A counter that also attributes each trigram to the group of the span
+    /// it starts in (at most [`MAX_GROUPS`] groups; spans of other groups are
+    /// ignored) and counts trigrams starting inside `selection` (start, len).
+    pub fn with_labels(mut spans: Vec<LabelledSpan>, group_count: usize, selection: Option<(usize, usize)>) -> Self {
+        let group_count = group_count.min(MAX_GROUPS);
+        spans.retain(|span| (span.group as usize) < group_count && span.end > span.start);
+        spans.sort_by_key(|span| span.start);
         TrigramCounter {
             counts: vec![0; TOTAL_CELLS],
             first_offsets: vec![UNSEEN; TOTAL_CELLS],
             exemplars: vec![[0; 3]; TOTAL_CELLS],
             bytes_read: 0,
             total_trigrams: 0,
+            group_counts: vec![0; if group_count > 0 { TOTAL_CELLS * group_count } else { 0 }],
+            spans,
+            group_count,
+            selection_counts: vec![0; if selection.is_some() { TOTAL_CELLS } else { 0 }],
+            selection,
         }
     }
 
@@ -122,16 +174,43 @@ impl TrigramCounter {
     /// offset `offset`. Windows shorter than three bytes add nothing.
     pub fn add_window(&mut self, offset: usize, bytes: &[u8]) {
         self.bytes_read = self.bytes_read.saturating_add(bytes.len());
+        // Spans are sorted and positions only increase, so one cursor walks them.
+        let mut span_index = self.spans.partition_point(|span| span.end <= offset);
         for (index, trigram) in bytes.windows(3).enumerate() {
             let trigram = [trigram[0], trigram[1], trigram[2]];
             let cell = cell_index(trigram);
+            let position = offset.saturating_add(index);
             self.counts[cell] += 1;
             if self.first_offsets[cell] == UNSEEN {
-                self.first_offsets[cell] = offset.saturating_add(index);
+                self.first_offsets[cell] = position;
                 self.exemplars[cell] = trigram;
             }
             self.total_trigrams += 1;
+            while span_index < self.spans.len() && self.spans[span_index].end <= position {
+                span_index += 1;
+            }
+            if let Some(span) = self.spans.get(span_index).filter(|span| span.start <= position) {
+                self.group_counts[cell * self.group_count + span.group as usize] += 1;
+            }
+            if let Some((start, len)) = self.selection
+                && position >= start
+                && position < start.saturating_add(len)
+            {
+                self.selection_counts[cell] += 1;
+            }
         }
+    }
+
+    /// Group counts of one cell, most first, leaving out empty groups.
+    fn groups_of(&self, cell: usize) -> Vec<(u8, u32)> {
+        if self.group_count == 0 {
+            return Vec::new();
+        }
+        let counts = &self.group_counts[cell * self.group_count..(cell + 1) * self.group_count];
+        let mut groups: Vec<(u8, u32)> =
+            counts.iter().enumerate().filter(|&(_, &count)| count > 0).map(|(group, &count)| (group as u8, count)).collect();
+        groups.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+        groups
     }
 
     /// Reduce the counts to at most `max_points` points for the range
@@ -152,6 +231,8 @@ impl TrigramCounter {
                 offset: self.first_offsets[cell],
                 count: self.counts[cell],
                 weight: log_weight(self.counts[cell], highest),
+                groups: self.groups_of(cell),
+                in_selection: self.selection_counts.get(cell).copied().unwrap_or(0),
             })
             .collect();
         TrigramCloud { start, len, bytes_read: self.bytes_read, total_trigrams: self.total_trigrams, occupied_cells, points }
@@ -179,6 +260,11 @@ pub fn sample_windows(len: usize, limit: usize, window: usize) -> Vec<(usize, us
     let count = (limit / window).max(1);
     let stride = len / count;
     (0..count).map(|index| (index * stride, window.min(len - index * stride))).collect()
+}
+
+/// Cell coordinates of the cell holding `trigram`, as in [`TrigramPoint::cell`].
+pub fn cell_of(trigram: [u8; 3]) -> [u8; 3] {
+    trigram.map(|byte| (byte as usize / VALUES_PER_CELL) as u8)
 }
 
 /// Index of the cell holding `trigram`.
@@ -303,6 +389,33 @@ mod tests {
         assert!(total <= 4096);
         assert!(windows.iter().all(|&(start, size)| start + size <= len));
         assert!(windows.last().is_some_and(|&(start, _)| start > len / 2), "windows should spread over the range");
+    }
+
+    #[test]
+    fn trigrams_are_attributed_to_the_region_they_start_in() {
+        let text = b"labelled regions of text ".repeat(40);
+        let mut data = text.clone();
+        data.extend(std::iter::repeat_n(0u8, 1000));
+        let spans = vec![
+            LabelledSpan { start: 100, end: 100 + text.len(), group: 0 },
+            LabelledSpan { start: 100 + text.len(), end: 100 + data.len(), group: 1 },
+        ];
+        let mut counter = TrigramCounter::with_labels(spans, 2, Some((100 + text.len(), 10)));
+        counter.add_window(100, &data);
+        let cloud = counter.finish(100, data.len(), DEFAULT_MAX_POINTS);
+        let zeros = cloud.points.iter().find(|point| point.exemplar == [0, 0, 0]).expect("the zero cell");
+        assert_eq!(zeros.dominant_group(), Some(1));
+        assert_eq!(zeros.in_selection, 10, "ten trigrams start inside the selection");
+        let text_cell = cloud.points.iter().find(|point| point.exemplar == *b"lab").expect("a text cell");
+        assert_eq!(text_cell.dominant_group(), Some(0));
+        assert_eq!(text_cell.in_selection, 0);
+        assert_eq!(zeros.count_in(0), 0);
+    }
+
+    #[test]
+    fn without_labels_points_have_no_groups() {
+        let cloud = cloud_of(b"no labels here at all", 0, DEFAULT_MAX_POINTS);
+        assert!(cloud.points.iter().all(|point| point.groups.is_empty() && point.dominant_group().is_none()));
     }
 
     #[test]

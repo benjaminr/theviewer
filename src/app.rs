@@ -593,6 +593,11 @@ impl ViewerApp {
                 DockTab::Unpacked => app.start_unpack(),
                 DockTab::Statistics => crate::analysis_stats::start_statistics(&mut app),
                 DockTab::Protocol => crate::analysis_tools::start_protocol(&mut app),
+                DockTab::Trigrams => {
+                    let mut trigrams = std::mem::take(&mut app.bench.panels.trigrams);
+                    crate::panel_trigram::start_counting(&mut trigrams, &mut app);
+                    app.bench.panels.trigrams = trigrams;
+                }
                 _ => {}
             }
         }

@@ -6,6 +6,14 @@
 //! orthographic projection, far points first. Drag to rotate, scroll to zoom
 //! and double-click to reset. Hovering a point names its trigram; a click
 //! jumps to the occurrence of that trigram closest to the cursor.
+//!
+//! Points can be labelled by region. The file is segmented (or the report's
+//! regions are used) and every trigram is attributed to the region type it
+//! comes from, so each type forms its own coloured cluster with a label at its
+//! centre. A legend shows or hides each type, a strip of the file under the
+//! cube lights up the hovered type's regions, and a click jumps into a region
+//! of the type the point belongs to. Plotting the whole file with a selection
+//! highlights the selection's trigrams against everything else.
 
 use std::f32::consts::{FRAC_PI_2, FRAC_PI_4};
 use std::sync::mpsc::{self, Receiver};
@@ -16,9 +24,11 @@ use eframe::egui::{self, Align2, Color32, FontId, Painter, Pos2, RichText, Sense
 
 use crate::app::ViewerApp;
 use crate::compress::human_bytes;
+use crate::explain::Region;
+use crate::segments::{self, SegmentOptions};
 use crate::raster::{Palette, byte_class_colour};
 use crate::theme;
-use crate::trigram::{self, TrigramCloud, TrigramCounter, TrigramPoint};
+use crate::trigram::{self, LabelledSpan, MAX_GROUPS, TrigramCloud, TrigramCounter, TrigramPoint};
 
 /// How often to look for a finished cloud while one is being counted.
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
@@ -46,22 +56,41 @@ const HOVER_SLOP: f32 = 3.0;
 /// How far either side of the cursor a clicked trigram is searched for.
 const SEARCH_RADIUS: usize = 8 * 1024 * 1024;
 const LABEL_FONT_SIZE: f32 = 11.0;
+/// Most bytes segmented to label the cloud.
+const SEGMENT_LIMIT: usize = 64 * 1024 * 1024;
+/// Most bytes read when looking for a clicked trigram inside its region.
+const REGION_SEARCH_LIMIT: usize = 16 * 1024 * 1024;
+/// Height of the file strip under the cube.
+const STRIP_HEIGHT: f32 = 14.0;
+/// Opacity kept by points outside the selection, or outside the hovered type.
+const DIMMED_ALPHA_FACTOR: f32 = 0.18;
+/// Font size of the cluster labels.
+const CLUSTER_LABEL_FONT_SIZE: f32 = 12.0;
+/// Padding around a cluster label's text.
+const CLUSTER_LABEL_PADDING: f32 = 3.0;
+/// Space kept between cluster labels nudged apart.
+const CLUSTER_LABEL_GAP: f32 = 2.0;
+/// Radius of the dot marking a cluster's centre.
+const CLUSTER_CENTRE_RADIUS: f32 = 3.0;
 
 /// What a point's colour shows.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum PointColouring {
-    /// The third byte's value, on the Viridis ramp.
+    /// The region type most of the point's trigrams come from.
     #[default]
+    Region,
+    /// The third byte's value, on the Viridis ramp.
     ThirdByte,
     /// The byte class (zero, text, control, high, 0xFF) of the middle byte.
     MiddleByteClass,
 }
 
 impl PointColouring {
-    pub const ALL: [PointColouring; 2] = [PointColouring::ThirdByte, PointColouring::MiddleByteClass];
+    pub const ALL: [PointColouring; 3] = [PointColouring::Region, PointColouring::ThirdByte, PointColouring::MiddleByteClass];
 
     pub fn label(self) -> &'static str {
         match self {
+            PointColouring::Region => "Colour by region",
             PointColouring::ThirdByte => "Colour by z",
             PointColouring::MiddleByteClass => "Colour by middle byte class",
         }
@@ -120,14 +149,93 @@ impl Camera {
     }
 }
 
+/// Where the region labels come from.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum LabelSource {
+    /// Segment the plotted range (automatic, typed regions).
+    #[default]
+    Segments,
+    /// The report's regions, if the report has been run.
+    ReportRegions,
+    Nothing,
+}
+
+impl LabelSource {
+    pub const ALL: [LabelSource; 3] = [LabelSource::Segments, LabelSource::ReportRegions, LabelSource::Nothing];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            LabelSource::Segments => "Label by segments",
+            LabelSource::ReportRegions => "Label by report regions",
+            LabelSource::Nothing => "No labels",
+        }
+    }
+}
+
+/// One type of region the cloud's trigrams are attributed to.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RegionGroup {
+    pub label: String,
+    pub colour: Color32,
+    /// The regions of this type, as (start, len).
+    pub spans: Vec<(usize, usize)>,
+    pub bytes: usize,
+}
+
+/// A finished count: the cloud, its region groups and the selection it
+/// highlights.
+struct Counted {
+    cloud: TrigramCloud,
+    groups: Vec<RegionGroup>,
+    selection: Option<(usize, usize)>,
+}
+
 /// Everything the trigram panel keeps between frames.
-#[derive(Default)]
 pub struct TrigramState {
     pub colouring: PointColouring,
     pub camera: Camera,
-    pending: Option<Receiver<TrigramCloud>>,
+    pub label_source: LabelSource,
+    /// Plot the whole file even when there is a selection, highlighting it.
+    pub whole_file: bool,
+    /// Dim trigrams that do not occur in the highlighted selection.
+    pub highlight_selection: bool,
+    /// Region groups whose points are hidden.
+    pub hidden: [bool; MAX_GROUPS],
+    pending: Option<Receiver<Counted>>,
     /// The most recent finished cloud.
     pub cloud: Option<TrigramCloud>,
+    /// The region groups the cloud's points refer to.
+    pub groups: Vec<RegionGroup>,
+    /// The selection highlighted in the cloud, if any.
+    pub selection: Option<(usize, usize)>,
+    /// The group under the pointer last frame (a point, legend row or strip).
+    pub hovered_group: Option<u8>,
+}
+
+impl Default for TrigramState {
+    fn default() -> Self {
+        TrigramState {
+            colouring: PointColouring::default(),
+            camera: Camera::default(),
+            label_source: LabelSource::default(),
+            whole_file: false,
+            highlight_selection: true,
+            hidden: [false; MAX_GROUPS],
+            pending: None,
+            cloud: None,
+            groups: Vec::new(),
+            selection: None,
+            hovered_group: None,
+        }
+    }
+}
+
+/// What the background job labels the cloud from.
+enum LabelInput {
+    /// The plotted bytes from `start`, to segment.
+    Bytes { start: usize, bytes: Vec<u8> },
+    Regions(Vec<Region>),
+    Nothing,
 }
 
 /// A point placed on screen for this frame.
@@ -138,38 +246,104 @@ struct PlacedPoint {
     radius: f32,
 }
 
-/// The selection, else the whole file, with a word for which.
-fn scope(app: &ViewerApp) -> (usize, usize, &'static str) {
-    match app.selection() {
+/// The selection (unless the whole file is asked for), else the whole file,
+/// with a word for which.
+fn scope(state: &TrigramState, app: &ViewerApp) -> (usize, usize, &'static str) {
+    match app.selection().filter(|_| !state.whole_file) {
         Some((start, len)) => (start, len, "selection"),
         None => (0, app.document.len(), "whole file"),
     }
 }
 
-/// Read the scope (sampled when large) and count it on a background thread.
-fn start_counting(state: &mut TrigramState, app: &mut ViewerApp) {
-    let (start, len, _) = scope(app);
+/// Read the scope (sampled when large) and count it on a background thread,
+/// labelling trigrams by region and highlighting the selection when the whole
+/// file is plotted around it.
+pub fn start_counting(state: &mut TrigramState, app: &mut ViewerApp) {
+    let (start, len, _) = scope(state, app);
     let windows: Vec<(usize, Vec<u8>)> = trigram::sample_windows(len, trigram::SAMPLE_LIMIT, trigram::SAMPLE_WINDOW)
         .into_iter()
         .map(|(offset, size)| (start + offset, app.document.read_range(start + offset, size)))
         .collect();
+    let selection = app.selection().filter(|&(selected, selected_len)| selected_len < len && selected >= start);
+    let labels = match state.label_source {
+        LabelSource::Segments => LabelInput::Bytes { start, bytes: app.document.read_range(start, len.min(SEGMENT_LIMIT)) },
+        LabelSource::ReportRegions => LabelInput::Regions(app.bench.regions.clone()),
+        LabelSource::Nothing => LabelInput::Nothing,
+    };
     let (sender, receiver) = mpsc::channel();
     thread::spawn(move || {
-        let mut counter = TrigramCounter::new();
+        let groups = region_groups(labels);
+        let spans = labelled_spans(&groups);
+        let mut counter = TrigramCounter::with_labels(spans, groups.len(), selection);
         for (offset, bytes) in &windows {
             counter.add_window(*offset, bytes);
         }
+        let cloud = counter.finish(start, len, trigram::DEFAULT_MAX_POINTS);
         // The receiver may be gone if the panel was closed; nothing to do then.
-        let _ = sender.send(counter.finish(start, len, trigram::DEFAULT_MAX_POINTS));
+        let _ = sender.send(Counted { cloud, groups, selection });
     });
     state.pending = Some(receiver);
+}
+
+/// The region groups to label the cloud with, at most [`MAX_GROUPS`].
+fn region_groups(input: LabelInput) -> Vec<RegionGroup> {
+    match input {
+        LabelInput::Bytes { start, bytes } => {
+            let segmentation = segments::segment_file(&bytes, &SegmentOptions::default());
+            let mut groups: Vec<RegionGroup> = segmentation
+                .types
+                .iter()
+                .take(MAX_GROUPS)
+                .map(|kind| RegionGroup { label: kind.label.clone(), colour: kind.colour, spans: Vec::new(), bytes: 0 })
+                .collect();
+            for segment in &segmentation.segments {
+                if let Some(group) = groups.get_mut(segment.type_id) {
+                    group.spans.push((start + segment.start, segment.len));
+                    group.bytes += segment.len;
+                }
+            }
+            groups
+        }
+        LabelInput::Regions(regions) => {
+            let mut groups: Vec<RegionGroup> = Vec::new();
+            for region in regions {
+                let label = region.kind.label();
+                let index = match groups.iter().position(|group| group.label == label) {
+                    Some(index) => index,
+                    None if groups.len() < MAX_GROUPS => {
+                        groups.push(RegionGroup { label: label.to_string(), colour: region.kind.colour(), spans: Vec::new(), bytes: 0 });
+                        groups.len() - 1
+                    }
+                    None => continue,
+                };
+                groups[index].spans.push((region.start, region.len));
+                groups[index].bytes += region.len;
+            }
+            groups
+        }
+        LabelInput::Nothing => Vec::new(),
+    }
+}
+
+/// Every group's regions as labelled spans for the counter.
+fn labelled_spans(groups: &[RegionGroup]) -> Vec<LabelledSpan> {
+    groups
+        .iter()
+        .enumerate()
+        .flat_map(|(group, region_group)| {
+            region_group.spans.iter().map(move |&(start, len)| LabelledSpan { start, end: start + len, group: group as u8 })
+        })
+        .collect()
 }
 
 fn poll(state: &mut TrigramState, ctx: &egui::Context) {
     let Some(receiver) = &state.pending else { return };
     match receiver.try_recv() {
-        Ok(cloud) => {
-            state.cloud = Some(cloud);
+        Ok(counted) => {
+            state.cloud = Some(counted.cloud);
+            state.groups = counted.groups;
+            state.selection = counted.selection;
+            state.hidden = [false; MAX_GROUPS];
             state.pending = None;
         }
         Err(mpsc::TryRecvError::Empty) => ctx.request_repaint_after(POLL_INTERVAL),
@@ -184,7 +358,7 @@ pub fn show_trigram(state: &mut TrigramState, app: &mut ViewerApp, ui: &mut Ui) 
 
     let Some(cloud) = &state.cloud else {
         ui.label(
-            RichText::new("Plots every run of three bytes as a point in a 256 × 256 × 256 cube. Different kinds of data make different shapes.")
+            RichText::new("Plots every run of three bytes as a point in a 256 × 256 × 256 cube. Different kinds of data make different shapes; labelled by region, each part of the file forms its own coloured cluster.")
                 .color(theme::TEXT_DIM),
         );
         return;
@@ -195,19 +369,29 @@ pub fn show_trigram(state: &mut TrigramState, app: &mut ViewerApp, ui: &mut Ui) 
     }
     ui.label(RichText::new(caption(cloud)).small().color(theme::TEXT_DIM));
 
-    let jump = show_cube(state, ui);
-    show_legend(state.colouring, ui);
+    let mut hovered = None;
+    let jump = show_cube(state, ui, &mut hovered);
+    show_legend(state, ui, &mut hovered);
+    if let Some(offset) = show_file_strip(state, ui, &mut hovered) {
+        app.jump_to_offset(offset);
+    }
+    state.hovered_group = hovered;
     if let Some(point) = jump {
-        jump_to_trigram(app, &point);
+        jump_to_trigram(app, &point, &state.groups);
     }
 }
 
 fn show_toolbar(state: &mut TrigramState, app: &mut ViewerApp, ui: &mut Ui) {
-    let (_, len, what) = scope(app);
+    let (_, len, what) = scope(state, app);
     ui.horizontal_wrapped(|ui| {
         if ui.button(format!("Plot {what} ({})", human_bytes(len))).clicked() {
             start_counting(state, app);
         }
+        egui::ComboBox::from_id_salt("trigram-labels").selected_text(state.label_source.label()).show_ui(ui, |ui| {
+            for source in LabelSource::ALL {
+                ui.selectable_value(&mut state.label_source, source, source.label());
+            }
+        });
         egui::ComboBox::from_id_salt("trigram-colouring").selected_text(state.colouring.label()).show_ui(ui, |ui| {
             for colouring in PointColouring::ALL {
                 ui.selectable_value(&mut state.colouring, colouring, colouring.label());
@@ -218,11 +402,26 @@ fn show_toolbar(state: &mut TrigramState, app: &mut ViewerApp, ui: &mut Ui) {
                 state.camera = Camera { zoom: state.camera.zoom, ..preset };
             }
         }
+        if app.selection().is_some() {
+            ui.checkbox(&mut state.whole_file, "Whole file, selection highlighted")
+                .on_hover_text("Plot everything and pick out the selection's trigrams against the rest");
+        }
+        if state.selection.is_some() {
+            ui.checkbox(&mut state.highlight_selection, "Dim the rest");
+        }
         if state.pending.is_some() {
             ui.spinner();
             ui.label(RichText::new("Counting trigrams…").color(theme::TEXT_DIM));
         }
     });
+    if state.label_source == LabelSource::ReportRegions && app.bench.regions.is_empty() {
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("The report has not been run, so there are no regions to label with.").small().color(theme::TEXT_DIM));
+            if ui.small_button("Run the report").clicked() {
+                app.start_report();
+            }
+        });
+    }
 }
 
 fn caption(cloud: &TrigramCloud) -> String {
@@ -237,10 +436,14 @@ fn caption(cloud: &TrigramCloud) -> String {
     )
 }
 
+/// Whether `point` is drawn: its region type is not hidden.
+fn is_visible(state: &TrigramState, point: &TrigramPoint) -> bool {
+    point.dominant_group().is_none_or(|group| !state.hidden.get(group as usize).copied().unwrap_or(false))
+}
+
 /// Draw the cube and handle rotation, zoom and hovering. Returns the point
-/// clicked, if any.
-fn show_cube(state: &mut TrigramState, ui: &mut Ui) -> Option<TrigramPoint> {
-    let cloud = state.cloud.as_ref()?;
+/// clicked, if any, and notes the region type under the pointer.
+fn show_cube(state: &mut TrigramState, ui: &mut Ui, hovered_group: &mut Option<u8>) -> Option<TrigramPoint> {
     let side = ui.available_width().min(ui.available_height() - LEGEND_HEIGHT).max(MIN_VIEW_SIDE);
     let (response, painter) = ui.allocate_painter(vec2(ui.available_width().max(side), side), Sense::click_and_drag());
     let rect = response.rect;
@@ -259,6 +462,7 @@ fn show_cube(state: &mut TrigramState, ui: &mut Ui) -> Option<TrigramPoint> {
         state.camera = Camera::ISOMETRIC;
     }
 
+    let cloud = state.cloud.as_ref()?;
     let scale = side * CUBE_SCALE;
     let camera = state.camera;
     let to_screen = |unit: [f32; 3]| {
@@ -267,20 +471,22 @@ fn show_cube(state: &mut TrigramState, ui: &mut Ui) -> Option<TrigramPoint> {
     };
     draw_cube_frame(&painter, &to_screen);
 
-    let placed = place_points(&cloud.points, &to_screen);
+    let visible: Vec<TrigramPoint> = cloud.points.iter().filter(|point| is_visible(state, point)).cloned().collect();
+    let placed = place_points(&visible, &to_screen);
     let hovered = response.hover_pos().and_then(|pointer| nearest_point(&placed, pointer));
     for point in &placed {
-        let colour = point_colour(&cloud.points[point.index], state.colouring);
-        painter.circle_filled(point.position, point.radius, colour);
+        painter.circle_filled(point.position, point.radius, point_colour(state, &visible[point.index]));
     }
+    draw_cluster_labels(state, &visible, &painter, &to_screen);
+
     let hovered_point = hovered.map(|placed_index| &placed[placed_index]);
     if let Some(point) = hovered_point {
         painter.circle_stroke(point.position, point.radius + 2.0, Stroke::new(1.5, theme::CURSOR));
+        *hovered_group = visible[point.index].dominant_group();
     }
-
-    let clicked = hovered_point.filter(|_| response.clicked()).map(|point| cloud.points[point.index].clone());
+    let clicked = hovered_point.filter(|_| response.clicked()).map(|point| visible[point.index].clone());
     if let Some(point) = hovered_point {
-        response.on_hover_text(describe_point(&cloud.points[point.index], cloud.total_trigrams));
+        response.on_hover_text(describe_point(&visible[point.index], cloud.total_trigrams, &state.groups));
     }
     clicked
 }
@@ -337,17 +543,113 @@ fn nearest_point(placed: &[PlacedPoint], pointer: Pos2) -> Option<usize> {
         .map(|(index, _)| index)
 }
 
-fn point_colour(point: &TrigramPoint, colouring: PointColouring) -> Color32 {
-    let base = match colouring {
-        PointColouring::ThirdByte => Palette::Viridis.lut()[point.value_range(2).0 as usize],
-        PointColouring::MiddleByteClass => byte_class_colour(point.exemplar[1]),
+/// A point's colour: by region, value or class, then dimmed when it is not
+/// part of the highlighted selection or the hovered region type.
+fn point_colour(state: &TrigramState, point: &TrigramPoint) -> Color32 {
+    let region_colour = point.dominant_group().and_then(|group| state.groups.get(group as usize)).map(|group| group.colour);
+    let base = match (state.colouring, region_colour) {
+        (PointColouring::Region, Some(colour)) => colour,
+        (PointColouring::Region, None) if !state.groups.is_empty() => theme::TEXT_DIM,
+        (PointColouring::MiddleByteClass, _) => byte_class_colour(point.exemplar[1]),
+        _ => Palette::Viridis.lut()[point.value_range(2).0 as usize],
     };
-    let alpha = MIN_POINT_ALPHA + (255.0 - MIN_POINT_ALPHA) * point.weight.clamp(0.0, 1.0);
+    let mut alpha = MIN_POINT_ALPHA + (255.0 - MIN_POINT_ALPHA) * point.weight.clamp(0.0, 1.0);
+    let outside_selection = state.selection.is_some() && state.highlight_selection && point.in_selection == 0;
+    let outside_hovered = state.hovered_group.is_some_and(|group| point.dominant_group() != Some(group));
+    if outside_selection || outside_hovered {
+        alpha *= DIMMED_ALPHA_FACTOR;
+    }
     Color32::from_rgba_unmultiplied(base.r(), base.g(), base.b(), alpha as u8)
 }
 
-/// Hover text for a point: its trigram, the cell it stands for and its count.
-fn describe_point(point: &TrigramPoint, total: u64) -> String {
+/// Where each region type's trigrams sit on average, in unit cube
+/// coordinates, weighting each cell by its trigrams from that type. Types
+/// with no points give `None`.
+pub fn cluster_centres(points: &[TrigramPoint], group_count: usize) -> Vec<Option<[f32; 3]>> {
+    let mut sums = vec![([0.0f64; 3], 0.0f64); group_count];
+    for point in points {
+        let position = point.unit_position();
+        for &(group, count) in &point.groups {
+            if let Some((sum, weight)) = sums.get_mut(group as usize) {
+                let point_weight = (1.0 + count as f64).ln();
+                for axis in 0..3 {
+                    sum[axis] += position[axis] as f64 * point_weight;
+                }
+                *weight += point_weight;
+            }
+        }
+    }
+    sums.into_iter()
+        .map(|(sum, weight)| (weight > 0.0).then(|| sum.map(|value| (value / weight) as f32)))
+        .collect()
+}
+
+/// A short label for a region type: its name and, for a single region, where
+/// it is; for several, how many.
+fn group_caption(group: &RegionGroup) -> String {
+    match group.spans.as_slice() {
+        [(start, len)] => format!("{} · {start:#x}–{:#x}", group.label, start + len),
+        spans => format!("{} · {} regions", group.label, spans.len()),
+    }
+}
+
+/// Write each visible region type's name at the centre of its cluster.
+fn draw_cluster_labels(state: &TrigramState, points: &[TrigramPoint], painter: &Painter, to_screen: &impl Fn([f32; 3]) -> (Pos2, f32)) {
+    if state.colouring != PointColouring::Region {
+        return;
+    }
+    let font = FontId::proportional(CLUSTER_LABEL_FONT_SIZE);
+    let mut labels = Vec::new();
+    for (index, centre) in cluster_centres(points, state.groups.len()).into_iter().enumerate() {
+        let (Some(centre), Some(group)) = (centre, state.groups.get(index)) else { continue };
+        if state.hidden[index] {
+            continue;
+        }
+        let emphasised = state.hovered_group == Some(index as u8);
+        let galley = painter.layout_no_wrap(group_caption(group), font.clone(), if emphasised { theme::CURSOR } else { theme::TEXT });
+        let anchor = to_screen(centre).0;
+        let box_rect = Align2::CENTER_CENTER.anchor_size(anchor, galley.size()).expand(CLUSTER_LABEL_PADDING);
+        labels.push((index, anchor, box_rect, galley));
+    }
+    let placed = spread_labels(labels.iter().map(|(_, _, rect, _)| *rect).collect());
+    for ((index, anchor, _, galley), box_rect) in labels.into_iter().zip(placed) {
+        let colour = state.groups[index].colour;
+        painter.circle_filled(anchor, CLUSTER_CENTRE_RADIUS, colour);
+        if !box_rect.contains(anchor) {
+            let edge = Pos2::new(anchor.x.clamp(box_rect.left(), box_rect.right()), anchor.y.clamp(box_rect.top(), box_rect.bottom()));
+            painter.line_segment([anchor, edge], Stroke::new(1.0, colour));
+        }
+        painter.rect_filled(box_rect, 3.0, theme::SURFACE.gamma_multiply(0.9));
+        painter.rect_stroke(box_rect, 3.0, Stroke::new(1.5, colour), egui::StrokeKind::Outside);
+        painter.galley(box_rect.min + Vec2::splat(CLUSTER_LABEL_PADDING), galley, theme::TEXT);
+    }
+}
+
+/// Move label boxes apart so none overlap: taken top to bottom, each box that
+/// overlaps one already placed moves down just below it. Boxes keep their
+/// horizontal position, so each stays near its cluster. Returns the boxes in
+/// the order given.
+pub fn spread_labels(boxes: Vec<egui::Rect>) -> Vec<egui::Rect> {
+    let mut order: Vec<usize> = (0..boxes.len()).collect();
+    order.sort_by(|&a, &b| boxes[a].top().total_cmp(&boxes[b].top()));
+    let mut placed: Vec<egui::Rect> = boxes.clone();
+    let mut settled: Vec<usize> = Vec::new();
+    for index in order {
+        let mut rect = boxes[index];
+        // Each move clears one overlap; with n boxes that is at most n moves.
+        for _ in 0..=settled.len() {
+            let Some(blocker) = settled.iter().map(|&other| placed[other]).find(|other| other.intersects(rect)) else { break };
+            rect = rect.translate(vec2(0.0, blocker.bottom() + CLUSTER_LABEL_GAP - rect.top()));
+        }
+        placed[index] = rect;
+        settled.push(index);
+    }
+    placed
+}
+
+/// Hover text for a point: its trigram, the cell it stands for, its count and
+/// the region types it comes from.
+fn describe_point(point: &TrigramPoint, total: u64, groups: &[RegionGroup]) -> String {
     let [a, b, c] = point.exemplar;
     let printable = |byte: u8| if (0x20..=0x7E).contains(&byte) { byte as char } else { '·' };
     let range = |axis: usize| {
@@ -355,8 +657,8 @@ fn describe_point(point: &TrigramPoint, total: u64) -> String {
         format!("{low:02X}–{high:02X}")
     };
     let share = point.count as f64 / total.max(1) as f64 * 100.0;
-    format!(
-        "{a:02X} {b:02X} {c:02X}  \"{}{}{}\"\nCell x {} · y {} · z {}\n{} trigrams in this cell ({share:.2}%)\nFirst at {:#x}; click to jump to the one nearest the cursor",
+    let mut text = format!(
+        "{a:02X} {b:02X} {c:02X}  \"{}{}{}\"\nCell x {} · y {} · z {}\n{} trigrams in this cell ({share:.2}%)\nFirst at {:#x}",
         printable(a),
         printable(b),
         printable(c),
@@ -365,26 +667,62 @@ fn describe_point(point: &TrigramPoint, total: u64) -> String {
         range(2),
         point.count,
         point.offset
-    )
+    );
+    let labelled: u32 = point.groups.iter().map(|&(_, count)| count).sum();
+    for &(group, count) in point.groups.iter().take(3) {
+        if let Some(region) = groups.get(group as usize) {
+            text.push_str(&format!("\n{}: {:.0}%", region.label, count as f64 / labelled.max(1) as f64 * 100.0));
+        }
+    }
+    if point.in_selection > 0 {
+        text.push_str(&format!("\n{} in the selection", point.in_selection));
+    }
+    text.push_str(if point.groups.is_empty() {
+        "\nClick to jump to the one nearest the cursor"
+    } else {
+        "\nClick to jump into a region of its main type"
+    });
+    text
 }
 
-fn show_legend(colouring: PointColouring, ui: &mut Ui) {
-    ui.horizontal_wrapped(|ui| match colouring {
-        PointColouring::ThirdByte => {
-            ui.label(RichText::new("Colour: third byte, dark (0x00) to yellow (0xFF). Size and opacity: how common.").small().color(theme::TEXT_DIM));
-        }
-        PointColouring::MiddleByteClass => {
-            for (colour, name) in [
-                (theme::CLASS_NULL, "0x00"),
-                (theme::CLASS_TEXT, "text"),
-                (theme::CLASS_CONTROL, "control"),
-                (theme::CLASS_HIGH, "high"),
-                (theme::CLASS_FULL, "0xFF"),
-            ] {
-                theme::swatch(ui, colour, name);
+/// The legend: one row per region type (with a checkbox to show or hide it),
+/// or the colour key, and the typical shapes.
+fn show_legend(state: &mut TrigramState, ui: &mut Ui, hovered_group: &mut Option<u8>) {
+    if state.colouring == PointColouring::Region && !state.groups.is_empty() {
+        ui.horizontal_wrapped(|ui| {
+            for (index, group) in state.groups.iter().enumerate() {
+                let row = ui
+                    .horizontal(|ui| {
+                        let mut shown = !state.hidden[index];
+                        if ui.checkbox(&mut shown, "").changed() {
+                            state.hidden[index] = !shown;
+                        }
+                        theme::swatch(ui, group.colour, &format!("{} ({}, {})", group.label, group.spans.len(), human_bytes(group.bytes)));
+                    })
+                    .response;
+                if row.hovered() {
+                    *hovered_group = Some(index as u8);
+                }
             }
-        }
-    });
+        });
+    } else {
+        ui.horizontal_wrapped(|ui| match state.colouring {
+            PointColouring::MiddleByteClass => {
+                for (colour, name) in [
+                    (theme::CLASS_NULL, "0x00"),
+                    (theme::CLASS_TEXT, "text"),
+                    (theme::CLASS_CONTROL, "control"),
+                    (theme::CLASS_HIGH, "high"),
+                    (theme::CLASS_FULL, "0xFF"),
+                ] {
+                    theme::swatch(ui, colour, name);
+                }
+            }
+            _ => {
+                ui.label(RichText::new("Colour: third byte, dark (0x00) to yellow (0xFF). Size and opacity: how common.").small().color(theme::TEXT_DIM));
+            }
+        });
+    }
     for shape in [
         "Text: a dense cluster in 0x20–0x7E.",
         "Machine code: diagonal planes and streaks along a few opcode values.",
@@ -394,15 +732,91 @@ fn show_legend(colouring: PointColouring, ui: &mut Ui) {
     }
 }
 
-/// Move the cursor to the occurrence of `point`'s trigram nearest the
-/// cursor, else to the first one counted.
-fn jump_to_trigram(app: &mut ViewerApp, point: &TrigramPoint) {
-    let window_start = app.cursor.saturating_sub(SEARCH_RADIUS);
-    let window = app.document.read_range(window_start, SEARCH_RADIUS * 2);
-    let target = closest_occurrence(&window, window_start, &point.exemplar, app.cursor).unwrap_or(point.offset);
+/// A strip of the plotted range with each region coloured by type; the
+/// hovered type stands out. Returns the offset clicked, if any.
+fn show_file_strip(state: &TrigramState, ui: &mut Ui, hovered_group: &mut Option<u8>) -> Option<usize> {
+    let cloud = state.cloud.as_ref()?;
+    if state.groups.is_empty() || cloud.len == 0 {
+        return None;
+    }
+    let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), STRIP_HEIGHT), Sense::click());
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(rect, 2.0, theme::BACKGROUND);
+    let x_of = |offset: usize| rect.left() + (offset.saturating_sub(cloud.start) as f32 / cloud.len as f32) * rect.width();
+    let emphasis = state.hovered_group;
+    for (index, group) in state.groups.iter().enumerate() {
+        let dimmed = emphasis.is_some_and(|hovered| hovered as usize != index) || state.hidden[index];
+        let colour = if dimmed { group.colour.gamma_multiply(DIMMED_ALPHA_FACTOR) } else { group.colour };
+        for &(start, len) in &group.spans {
+            let span = egui::Rect::from_x_y_ranges(x_of(start)..=x_of(start + len).max(x_of(start) + 1.0), rect.y_range());
+            painter.rect_filled(span, 0.0, colour);
+        }
+    }
+    if let Some((start, len)) = state.selection {
+        let span = egui::Rect::from_x_y_ranges(x_of(start)..=x_of(start + len).max(x_of(start) + 2.0), rect.y_range());
+        painter.rect_stroke(span, 0.0, Stroke::new(1.5, theme::CURSOR), egui::StrokeKind::Inside);
+    }
+    let pointer_offset = response.hover_pos().map(|pointer| {
+        cloud.start + (((pointer.x - rect.left()) / rect.width()).clamp(0.0, 1.0) * cloud.len as f32) as usize
+    });
+    if let Some(offset) = pointer_offset {
+        let under = state.groups.iter().position(|group| group.spans.iter().any(|&(start, len)| offset >= start && offset < start + len));
+        if let Some(index) = under {
+            *hovered_group = Some(index as u8);
+            response.clone().on_hover_text(format!("{} at {offset:#x}; click to jump", state.groups[index].label));
+        }
+    }
+    pointer_offset.filter(|_| response.clicked())
+}
+
+/// Move the cursor to an occurrence of `point`'s cell: inside a region of its
+/// main type when it has one, nearest the cursor; else to the occurrence of
+/// its first trigram nearest the cursor, else to the first one counted.
+fn jump_to_trigram(app: &mut ViewerApp, point: &TrigramPoint, groups: &[RegionGroup]) {
+    let in_region = point
+        .dominant_group()
+        .and_then(|group| groups.get(group as usize))
+        .and_then(|group| nearest_cell_occurrence(app, &group.spans, point.cell).map(|offset| (offset, group.label.clone())));
+    let (target, place) = match in_region {
+        Some((offset, label)) => (offset, format!(" in {label}")),
+        None => {
+            let window_start = app.cursor.saturating_sub(SEARCH_RADIUS);
+            let window = app.document.read_range(window_start, SEARCH_RADIUS * 2);
+            (closest_occurrence(&window, window_start, &point.exemplar, app.cursor).unwrap_or(point.offset), String::new())
+        }
+    };
     app.jump_to_offset(target);
     let [a, b, c] = point.exemplar;
-    app.status = format!("Trigram {a:02X} {b:02X} {c:02X} at {target:#x}");
+    app.status = format!("Trigram {a:02X} {b:02X} {c:02X} cell at {target:#x}{place}");
+}
+
+/// The occurrence, inside `spans`, of any trigram in `cell` that is nearest
+/// the cursor, reading at most [`REGION_SEARCH_LIMIT`] bytes, nearest spans first.
+fn nearest_cell_occurrence(app: &mut ViewerApp, spans: &[(usize, usize)], cell: [u8; 3]) -> Option<usize> {
+    let cursor = app.cursor;
+    let mut ordered: Vec<(usize, usize)> = spans.to_vec();
+    let distance = |&(start, len): &(usize, usize)| if cursor < start { start - cursor } else { cursor.saturating_sub(start + len) };
+    ordered.sort_by_key(distance);
+    let mut budget = REGION_SEARCH_LIMIT;
+    let mut best: Option<usize> = None;
+    for (start, len) in ordered {
+        if budget == 0 {
+            break;
+        }
+        let bytes = app.document.read_range(start, len.min(budget));
+        budget -= bytes.len();
+        let found = bytes
+            .windows(3)
+            .enumerate()
+            .filter(|(_, trigram)| trigram::cell_of([trigram[0], trigram[1], trigram[2]]) == cell)
+            .map(|(index, _)| start + index)
+            .min_by_key(|&offset| offset.abs_diff(cursor));
+        best = match (best, found) {
+            (Some(known), Some(new)) => Some(if new.abs_diff(cursor) < known.abs_diff(cursor) { new } else { known }),
+            (known, new) => known.or(new),
+        };
+    }
+    best
 }
 
 /// Absolute offset of the occurrence of `needle` in `haystack` (which starts
@@ -550,5 +964,100 @@ mod tests {
         ];
         assert_eq!(nearest_point(&placed, Pos2::new(12.5, 10.0)), Some(1));
         assert_eq!(nearest_point(&placed, Pos2::new(100.0, 100.0)), None);
+    }
+
+    /// Text, then zeros, then pseudo-random bytes: three kinds of region.
+    fn three_part_file() -> (Vec<u8>, std::ops::Range<usize>) {
+        let mut bytes = "Readable sentences make a tight printable cluster. ".repeat(400).into_bytes();
+        let text = 0..bytes.len();
+        bytes.extend(std::iter::repeat_n(0u8, 16 * 1024));
+        let mut state = 0x2545_F491_u32;
+        bytes.extend((0..16 * 1024).map(|_| {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            state as u8
+        }));
+        (bytes, text)
+    }
+
+    #[test]
+    fn plotting_labels_each_region_type_and_centres_its_cluster() {
+        let (bytes, _) = three_part_file();
+        let mut harness = harness_for(bytes);
+        plot_whole_file(&mut harness);
+        let (state, _) = harness.state();
+        assert!(state.groups.len() >= 2, "{:?}", state.groups.iter().map(|g| &g.label).collect::<Vec<_>>());
+        let cloud = state.cloud.as_ref().unwrap();
+        assert!(cloud.points.iter().any(|point| point.dominant_group().is_some()));
+        let centres = cluster_centres(&cloud.points, state.groups.len());
+        let text_group = cloud.points.iter().find(|point| point.exemplar == *b"Rea").and_then(TrigramPoint::dominant_group).expect("text is labelled");
+        let text_centre = centres[text_group as usize].expect("the text cluster has a centre");
+        let printable = (0x20 as f32 / 255.0)..=(0x7E as f32 / 255.0);
+        assert!(text_centre.iter().all(|axis| printable.contains(axis)), "{text_centre:?}");
+        let zero_group = cloud.points.iter().find(|point| point.exemplar == [0, 0, 0]).and_then(TrigramPoint::dominant_group).unwrap();
+        let zero_centre = centres[zero_group as usize].unwrap();
+        assert!(zero_centre.iter().all(|&axis| axis < 0.1), "zeros sit at the origin: {zero_centre:?}");
+    }
+
+    #[test]
+    fn hiding_a_region_type_hides_its_points() {
+        let (bytes, _) = three_part_file();
+        let mut harness = harness_for(bytes);
+        plot_whole_file(&mut harness);
+        let (state, _) = harness.state_mut();
+        let point = state.cloud.as_ref().unwrap().points.iter().find(|point| point.exemplar == [0, 0, 0]).unwrap().clone();
+        assert!(is_visible(state, &point));
+        state.hidden[point.dominant_group().unwrap() as usize] = true;
+        assert!(!is_visible(state, &point));
+    }
+
+    #[test]
+    fn plotting_the_whole_file_counts_the_selections_trigrams_apart() {
+        let (bytes, text) = three_part_file();
+        let mut harness = harness_for(bytes);
+        {
+            let (state, app) = harness.state_mut();
+            app.set_cursor(text.start, false);
+            app.set_cursor(text.end, true);
+            state.whole_file = true;
+        }
+        plot_whole_file(&mut harness);
+        let (state, _) = harness.state();
+        assert_eq!(state.selection, Some((text.start, text.end - text.start)));
+        let cloud = state.cloud.as_ref().unwrap();
+        let text_point = cloud.points.iter().find(|point| point.exemplar == *b"Rea").unwrap();
+        let zero_point = cloud.points.iter().find(|point| point.exemplar == [0, 0, 0]).unwrap();
+        assert!(text_point.in_selection > 0);
+        assert_eq!(zero_point.in_selection, 0, "zeros are outside the selected text");
+    }
+
+    #[test]
+    fn a_clicked_point_jumps_into_a_region_of_its_type() {
+        let (bytes, text) = three_part_file();
+        let mut harness = harness_for(bytes);
+        plot_whole_file(&mut harness);
+        let (state, app) = harness.state_mut();
+        app.set_cursor(app.document.len() - 1, false);
+        let point = state.cloud.as_ref().unwrap().points.iter().find(|point| point.exemplar == *b"Rea").unwrap().clone();
+        jump_to_trigram(app, &point, &state.groups);
+        assert!(text.contains(&app.cursor), "landed at {:#x}, inside the text", app.cursor);
+        assert!(app.status.contains(" in "), "{}", app.status);
+    }
+
+    #[test]
+    fn overlapping_cluster_labels_are_moved_apart_and_stay_in_their_column() {
+        let label = |x: f32, y: f32| egui::Rect::from_min_size(Pos2::new(x, y), vec2(120.0, 18.0));
+        let boxes = vec![label(100.0, 100.0), label(110.0, 104.0), label(90.0, 98.0), label(400.0, 100.0)];
+        let placed = spread_labels(boxes.clone());
+        for (a, first) in placed.iter().enumerate() {
+            for second in &placed[a + 1..] {
+                assert!(!first.intersects(*second), "{first:?} overlaps {second:?}");
+            }
+        }
+        for (before, after) in boxes.iter().zip(&placed) {
+            assert_eq!(before.left(), after.left(), "labels only move vertically");
+        }
+        assert_eq!(placed[3], boxes[3], "a label with room of its own does not move");
     }
 }
