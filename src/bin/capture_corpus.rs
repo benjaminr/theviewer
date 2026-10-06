@@ -13,6 +13,7 @@
 //! The captures have no licence statement, so they stay in the cache and are
 //! never copied into the repository.
 
+use std::io::Read;
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -60,6 +61,13 @@ fn run_corpus(paths: &CorpusPaths, options: &[String]) -> Result<(), String> {
         .map_err(|error| format!("{}: {error}; run `capture_corpus fetch` first", paths.captures.display()))?
         .filter_map(|entry| entry.ok().map(|entry| entry.path()))
         .filter(|path| path.is_file())
+        .filter(|path| {
+            let mut head = Vec::new();
+            if let Ok(file) = std::fs::File::open(path) {
+                let _ = file.take(16).read_to_end(&mut head);
+            }
+            fetch::looks_like_capture(&path.file_name().unwrap_or_default().to_string_lossy(), &head)
+        })
         .filter(|path| only.as_deref().is_none_or(|text| path.to_string_lossy().contains(text)))
         .collect();
     files.sort();

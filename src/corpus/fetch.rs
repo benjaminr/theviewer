@@ -119,6 +119,12 @@ pub fn is_capture_name(name: &str) -> bool {
     CAPTURE_EXTENSIONS.contains(&last) || PACKED_EXTENSIONS.contains(&last)
 }
 
+/// Whether an unpacked file is worth keeping: a capture by its name, or by
+/// a pcap or pcapng header. Archives also hold notes, keys and scripts.
+pub fn looks_like_capture(name: &str, bytes: &[u8]) -> bool {
+    is_capture_name(name) || crate::packets::sources::capture_format(bytes).is_some()
+}
+
 /// The last part of a URL's path, with percent escapes decoded and anything
 /// unsafe in a file name replaced.
 pub fn file_name_of(url: &str) -> String {
@@ -222,6 +228,10 @@ pub fn fetch(paths: &CorpusPaths, mut log: impl FnMut(&str)) -> Result<Manifest,
                 let unpacked = archive::unpack(&file, bytes, MAX_UNPACKED_BYTES);
                 download.problems = unpacked.problems;
                 for (name, data) in unpacked.files {
+                    if !looks_like_capture(&name, &data) {
+                        download.problems.push(format!("{name}: not a capture, left out"));
+                        continue;
+                    }
                     let capture = CaptureFile { file: name.clone(), size: data.len(), sha256: sha256_hex(&data) };
                     std::fs::write(paths.captures.join(&name), &data).map_err(|error| format!("{name}: {error}"))?;
                     download.captures.push(capture);
@@ -266,6 +276,14 @@ mod tests {
                 "https://wiki.wireshark.org/uploads/x/TRACE.CAP",
             ]
         );
+    }
+
+    #[test]
+    fn notes_and_keys_unpacked_from_an_archive_are_not_taken_for_captures() {
+        assert!(looks_like_capture("trace.pcapng", b""));
+        assert!(looks_like_capture("capture.dat", &[0xD4, 0xC3, 0xB2, 0xA1, 2, 0, 4, 0]));
+        assert!(!looks_like_capture("README.txt", b"About these captures"));
+        assert!(!looks_like_capture("acme.keytab", &[5, 2, 0, 0]));
     }
 
     #[test]

@@ -464,12 +464,12 @@ fn run_tshark(file: &str, path: &Path, tshark: &Path, ours: &OurSide, result: &m
     let outcome = tshark::decode_file(tshark, path, &TSHARK_LIMITS, &cancel, |packet| decoded.push(packet));
     result.tshark = Some(match &outcome {
         Ok(_) => Ok(decoded.len()),
-        Err(error) => Err(error.to_string()),
+        Err(error) => Err(describe_tshark_error(error)),
     });
     if let Err(error) = &outcome
         && decoded.is_empty()
     {
-        result.failures.push(Failure { file: file.to_string(), stage: "tshark".to_string(), packet: None, detail: error.to_string() });
+        result.failures.push(Failure { file: file.to_string(), stage: "tshark".to_string(), packet: None, detail: describe_tshark_error(error) });
         return;
     }
     let Some(set) = &ours.set else {
@@ -494,6 +494,15 @@ fn run_tshark(file: &str, path: &Path, tshark: &Path, ours: &OurSide, result: &m
             // Frames we cannot read still count towards coverage.
             result.comparisons.add_packet(file, index + 1, &Dissection::default(), theirs);
         }
+    }
+}
+
+/// Why tshark gave nothing, in our words: its own error text stays out of
+/// the reports.
+fn describe_tshark_error(error: &tshark::TsharkError) -> String {
+    match error {
+        tshark::TsharkError::Failed { status, .. } => format!("tshark did not read the file ({status})"),
+        other => other.to_string(),
     }
 }
 
