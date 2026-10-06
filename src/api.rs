@@ -282,14 +282,28 @@ pub struct MethodDescription {
     pub result: Value,
 }
 
+/// One topic of the workspace bus as `api.describe` lists it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct TopicDescription {
+    /// Dotted name, such as `record_width.estimated`.
+    pub name: String,
+    /// Facts are kept (the latest per producer, document and key); events are not.
+    pub kind: crate::bus::Kind,
+    pub description: String,
+    /// JSON Schema of the payload.
+    pub payload: Value,
+}
+
 /// The whole method table, as `api.describe` returns it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Description {
     pub version: String,
     pub methods: Vec<MethodDescription>,
+    /// The bus's topics, which `events.facts` and `events.poll` read.
+    pub topics: Vec<TopicDescription>,
 }
 
-/// Every method with its schemas.
+/// Every method and topic with its schemas.
 pub fn describe() -> Description {
     let methods = METHODS
         .iter()
@@ -302,7 +316,11 @@ pub fn describe() -> Description {
             result: (method.result)().to_value(),
         })
         .collect();
-    Description { version: API_VERSION.to_string(), methods }
+    let topics = crate::bus::topics::TOPICS
+        .iter()
+        .map(|topic| TopicDescription { name: topic.name.to_string(), kind: topic.kind, description: topic.description.to_string(), payload: (topic.payload)().to_value() })
+        .collect();
+    Description { version: API_VERSION.to_string(), methods, topics }
 }
 
 fn describe_method(_workspace: &mut dyn Workspace, _params: values::NoParams) -> Result<Description, ApiError> {
@@ -350,6 +368,21 @@ call reads or returns at most 16 MiB.\n\n",
         out.push_str(&properties_table("Parameter", &method.params, "None."));
         out.push('\n');
         out.push_str(&properties_table("Result field", &method.result, "Nothing."));
+    }
+    out.push_str(
+        "\n## Topics\n\nWhat tools, panels and plugins publish on the workspace bus. Facts are kept, the latest per \
+producer, document and key, and count as stale once the document has changed since (unless the edits did not touch \
+their span, which carries them forward); events are not kept. Every message has an envelope: `id`, `topic`, `kind`, \
+`producer`, `document`, `version`, `span`, `confidence`, `key`, `caused_by` and the `payload` below.\n\n\
+| Topic | Kind | Description |\n| --- | --- | --- |\n",
+    );
+    for topic in &description.topics {
+        let kind = serde_json::to_value(topic.kind).ok().and_then(|value| value.as_str().map(str::to_string)).unwrap_or_default();
+        out.push_str(&format!("| [`{}`](#{}) | {kind} | {} |\n", topic.name, topic.name.replace('.', ""), topic.description));
+    }
+    for topic in &description.topics {
+        out.push_str(&format!("\n### {}\n\n{}\n\n", topic.name, topic.description));
+        out.push_str(&properties_table("Payload field", &topic.payload, "None."));
     }
     out
 }
@@ -625,6 +658,11 @@ mod tests {
         let read = methods.iter().find(|method| method["name"] == "bytes.read").unwrap();
         assert_eq!(read["effect"], "read");
         assert!(read["params"]["properties"]["start"].is_object());
+        let topics = description["topics"].as_array().unwrap();
+        assert_eq!(topics.len(), crate::bus::topics::TOPICS.len());
+        let width = topics.iter().find(|topic| topic["name"] == "record_width.estimated").unwrap();
+        assert_eq!(width["kind"], "fact");
+        assert!(width["payload"]["properties"]["width"].is_object());
     }
 
     #[test]

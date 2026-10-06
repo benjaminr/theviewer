@@ -14,6 +14,7 @@ use std::sync::{Arc, Mutex, Weak};
 
 use mlua::{AnyUserData, Function, HookTriggers, Lua, LuaOptions, RegistryKey, StdLib, Table, UserData, UserDataMethods, Value, VmState};
 
+use crate::bus::topics::{LogLevel, PluginLog};
 use crate::plugin::{Category, CodecKind, CodecPlugin, Decoded, Detector, Field, Finding, Parser, ScanContext};
 
 /// Memory a single script may allocate.
@@ -70,7 +71,8 @@ struct ScriptState {
     lua: Mutex<Lua>,
     /// Instructions executed by the callback currently running.
     instructions: AtomicU64,
-    log: Mutex<Vec<String>>,
+    /// Lines logged and callback errors, until the host collects them.
+    log: Mutex<Vec<PluginLog>>,
 }
 
 impl ScriptState {
@@ -129,9 +131,9 @@ impl ScriptState {
         .map_err(|e| e.to_string())
     }
 
-    fn log(&self, text: String) {
+    fn log(&self, level: LogLevel, text: String) {
         if let Ok(mut log) = self.log.lock() {
-            log.push(format!("{}: {text}", self.name));
+            log.push(PluginLog { plugin: self.name.clone(), level, text });
         }
     }
 
@@ -339,7 +341,7 @@ impl Detector for LuaDetector {
         match result {
             Ok(findings) => findings,
             Err(error) => {
-                self.state.log(error);
+                self.state.log(LogLevel::Error, error);
                 Vec::new()
             }
         }
@@ -372,7 +374,7 @@ impl Parser for LuaParser {
             function.call::<bool>(window).map_err(|e| lua_error(&self.id, e))
         });
         result.unwrap_or_else(|error| {
-            self.state.log(error);
+            self.state.log(LogLevel::Error, error);
             false
         })
     }
@@ -389,7 +391,7 @@ impl Parser for LuaParser {
             }
         });
         result.unwrap_or_else(|error| {
-            self.state.log(error);
+            self.state.log(LogLevel::Error, error);
             None
         })
     }
@@ -426,7 +428,7 @@ impl CodecPlugin for LuaCodec {
             function.call::<bool>(window).map_err(|e| lua_error(&self.id, e))
         });
         result.unwrap_or_else(|error| {
-            self.state.log(error);
+            self.state.log(LogLevel::Error, error);
             false
         })
     }
@@ -607,7 +609,7 @@ fn install_api(lua: &Lua, state: Weak<ScriptState>) -> mlua::Result<()> {
         "log",
         lua.create_function(move |_, text: String| {
             if let Some(state) = state.upgrade() {
-                state.log(text);
+                state.log(LogLevel::Info, text);
             }
             Ok(())
         })?,
@@ -634,7 +636,6 @@ struct Script {
 pub struct LuaHost {
     scripts: Vec<Script>,
     loaded_dirs: Vec<PathBuf>,
-    log: Vec<String>,
 }
 
 impl LuaHost {
@@ -777,15 +778,21 @@ impl LuaHost {
         result
     }
 
-    /// Messages logged by scripts and errors from their callbacks, cleared on read.
-    pub fn take_log(&mut self) -> Vec<String> {
-        let mut lines = std::mem::take(&mut self.log);
+    /// Lines logged by scripts and errors from their callbacks, from the
+    /// UI thread and background scans alike, cleared on read.
+    pub fn take_entries(&mut self) -> Vec<PluginLog> {
+        let mut lines = Vec::new();
         for script in &self.scripts {
             if let Ok(mut log) = script.state.log.lock() {
                 lines.append(&mut log);
             }
         }
         lines
+    }
+
+    /// [`LuaHost::take_entries`] as text, each line led by its script's name.
+    pub fn take_log(&mut self) -> Vec<String> {
+        self.take_entries().into_iter().map(|line| format!("{}: {}", line.plugin, line.text)).collect()
     }
 
     pub fn script_names(&self) -> Vec<String> {
@@ -957,6 +964,21 @@ mod tests {
         assert!(findings.is_empty());
         let log = host.take_log();
         assert!(log.iter().any(|line| line.contains("aborted")), "{log:?}");
+    }
+
+    #[test]
+    fn a_failing_detector_is_logged_as_an_error_and_a_logged_line_as_information() {
+        let mut host = LuaHost::new();
+        host.load_source("faulty.lua", "theviewer.register_detector{ id='faulty', scan=function(w, ctx) theviewer.log('looking'); error('no luck') end }").unwrap();
+        let detector = host.detectors().remove(0);
+        // Scans run on background threads, away from the host.
+        std::thread::spawn(move || detector.scan(&[0u8; 8], &ScanContext::default())).join().unwrap();
+        let lines = host.take_entries();
+        assert_eq!(lines.len(), 2, "{lines:?}");
+        assert_eq!((lines[0].plugin.as_str(), lines[0].level, lines[0].text.as_str()), ("faulty.lua", LogLevel::Info, "looking"));
+        assert_eq!(lines[1].level, LogLevel::Error);
+        assert!(lines[1].text.contains("no luck"), "{lines:?}");
+        assert!(host.take_entries().is_empty(), "collected once");
     }
 
     #[test]

@@ -77,6 +77,7 @@ Parameters: None.
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `methods` | array of MethodDescription | yes |  |
+| `topics` | array of TopicDescription | yes | The bus's topics, which `events.facts` and `events.poll` read. |
 | `version` | string | yes |  |
 
 ### documents.list
@@ -595,3 +596,165 @@ Reference entries whose notes mention every word of a query, or that a port or n
 | --- | --- | --- | --- |
 | `entries` | array of EntrySummary | yes |  |
 | `next` | string | no | Pass back as `next` for more entries; absent after the last. |
+
+## Topics
+
+What tools, panels and plugins publish on the workspace bus. Facts are kept, the latest per producer, document and key, and count as stale once the document has changed since (unless the edits did not touch their span, which carries them forward); events are not kept. Every message has an envelope: `id`, `topic`, `kind`, `producer`, `document`, `version`, `span`, `confidence`, `key`, `caused_by` and the `payload` below.
+
+| Topic | Kind | Description |
+| --- | --- | --- |
+| [`document.opened`](#documentopened) | event | A document was opened, or replaced the one shown. |
+| [`document.closed`](#documentclosed) | event | A document was closed or replaced; what was known about it is forgotten. |
+| [`document.edited`](#documentedited) | event | The document's bytes changed: each change's offset, bytes removed and bytes inserted, undo and redo included. |
+| [`cursor.moved`](#cursormoved) | event | The cursor moved in the main view. |
+| [`selection.changed`](#selectionchanged) | event | What is selected changed, in the main view or by a tool selecting bytes in the document. |
+| [`findings.published`](#findingspublished) | fact | What one producer recognises in the document: the scan, signatures, templates, the structure map, crypto constants, a comparison, checksums or protocol messages. |
+| [`structure.identified`](#structureidentified) | fact | A structure parsed at the cursor, or a template applied, with its field tree. |
+| [`regions.mapped`](#regionsmapped) | fact | The file split into regions of one kind, from the report. |
+| [`record_width.estimated`](#record_widthestimated) | fact | The length of the records the data repeats in, from the period scan. |
+| [`frames.defined`](#framesdefined) | fact | Message or packet boundaries: from the protocol framing, a capture or the packet viewer's splitting rules. |
+| [`protocol.identified`](#protocolidentified) | fact | The protocol a set of frames or a payload is, and how that was decided. |
+| [`reference.focus`](#referencefocus) | event | A tool asks the Reference tab to show a format or protocol. |
+| [`job.started`](#jobstarted) | event | Background work started. |
+| [`job.finished`](#jobfinished) | event | Background work finished, with a one-line outcome. |
+| [`plugin.log`](#pluginlog) | event | A plugin logged a line, or one of its callbacks failed (in a background scan, say). |
+
+### document.opened
+
+A document was opened, or replaced the one shown.
+
+| Payload field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `len` | integer | yes | Length in bytes. |
+| `name` | string | yes | File name, or the name of a derived document. |
+| `path` | string | no | Path on disk, for a document opened from a file. |
+
+### document.closed
+
+A document was closed or replaced; what was known about it is forgotten.
+
+| Payload field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `name` | string | yes | The document's name. |
+
+### document.edited
+
+The document's bytes changed: each change's offset, bytes removed and bytes inserted, undo and redo included.
+
+| Payload field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `complete` | boolean | yes | False when the edit log no longer held every change since the last message; spans described before then cannot be mapped forward. |
+| `edits` | array of Edit | yes | The changes, oldest first, each with the version it made. |
+
+### cursor.moved
+
+The cursor moved in the main view.
+
+| Payload field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `offset` | integer | yes | Document offset of the cursor. |
+
+### selection.changed
+
+What is selected changed, in the main view or by a tool selecting bytes in the document.
+
+| Payload field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `cursor` | integer | yes | Document offset of the cursor. |
+| `selection` | Selection | no | `None` when nothing is selected. |
+
+### findings.published
+
+What one producer recognises in the document: the scan, signatures, templates, the structure map, crypto constants, a comparison, checksums or protocol messages.
+
+| Payload field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `findings` | array of Finding | yes | What was found, each with its offset, length, category and title. |
+
+### structure.identified
+
+A structure parsed at the cursor, or a template applied, with its field tree.
+
+| Payload field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `fields` | array of Field | yes | The field tree, at document offsets. |
+| `format` | string | yes | The parser or template's id, such as `parser:pcap` or `template:Header`. |
+| `len` | integer | yes |  |
+| `start` | integer | yes | Document offset of the structure's first byte. |
+| `title` | string | yes | Such as "PNG image". |
+
+### regions.mapped
+
+The file split into regions of one kind, from the report.
+
+| Payload field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `regions` | array of MappedRegion | yes | The regions in document order. |
+
+### record_width.estimated
+
+The length of the records the data repeats in, from the period scan.
+
+| Payload field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `alternatives` | array of integer | yes | The next best widths, best first. |
+| `score` | number | yes | How alike records this far apart are, 0 to 1. |
+| `width` | integer | yes | Bytes per record. |
+
+### frames.defined
+
+Message or packet boundaries: from the protocol framing, a capture or the packet viewer's splitting rules.
+
+| Payload field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `frames` | array of FrameSpan | yes | The first [`MOST_FRAMES`] frames, in document order. |
+| `origin` | string | yes | How they were found, such as "length prefix u16be" or "pcap capture at 0x40". |
+| `total` | integer | yes | How many frames there are in all. |
+
+### protocol.identified
+
+The protocol a set of frames or a payload is, and how that was decided.
+
+| Payload field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `frames` | array of FrameSpan | yes | The frames it was found for; empty when it is about one payload, which the message's span gives. |
+| `how` | string | yes | How it was decided, such as "read 30 of 32 sampled frames in full". |
+| `protocol` | string | yes | Such as "DNS" or "Modbus/TCP". |
+
+### reference.focus
+
+A tool asks the Reference tab to show a format or protocol.
+
+| Payload field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `key` | string | yes | A reference id, finding id or layer name. |
+
+### job.started
+
+Background work started.
+
+| Payload field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `job` | string | yes | Unique for the session, such as "period-scan-3". |
+| `title` | string | yes | What the job does, such as "Period scan". |
+
+### job.finished
+
+Background work finished, with a one-line outcome.
+
+| Payload field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `job` | string | yes | The id `job.started` gave. |
+| `ok` | boolean | yes | Whether it produced a result. |
+| `outcome` | string | yes | One line on what it found, or why it stopped. |
+| `title` | string | yes |  |
+
+### plugin.log
+
+A plugin logged a line, or one of its callbacks failed (in a background scan, say).
+
+| Payload field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `level` | `"info"` \| `"error"` | yes | `error` for a failed callback, `info` for a line the plugin logged. |
+| `plugin` | string | yes | The plugin's file name, such as `modbus_rtu.lua`. |
+| `text` | string | yes |  |

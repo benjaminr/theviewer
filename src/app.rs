@@ -356,6 +356,12 @@ pub struct ViewerApp {
     /// The Insert window (opened with I) is showing.
     pub insert_dialog_open: bool,
     scroll_accumulator: f32,
+    /// What tools, panels and plugins have published: facts and events.
+    pub bus: crate::bus::Bus,
+    /// What the app last published of its own state.
+    pub(crate) bus_watch: crate::bus::window::BusWatch,
+    /// Run for each message the bus delivers.
+    pub(crate) reactions: Vec<crate::bus::window::Reaction>,
 }
 
 /// Matches of the Find box within a window of the document, for highlighting.
@@ -604,6 +610,9 @@ impl ViewerApp {
             move_drag: None,
             insert_dialog_open: false,
             scroll_accumulator: 0.0,
+            bus: crate::bus::Bus::new(),
+            bus_watch: Default::default(),
+            reactions: crate::bus::window::builtin_reactions(),
         };
         if launch.restore_layout {
             app.persist_layout = true;
@@ -729,6 +738,7 @@ impl ViewerApp {
         match Document::open(path) {
             Ok(document) => {
                 self.stop_live_sources();
+                let previous_name = self.display_name();
                 self.document = document;
                 self.bench.document_changed();
                 self.parents.clear();
@@ -748,6 +758,7 @@ impl ViewerApp {
                 self.cursor_structure = None;
                 self.cursor_structure_key = None;
                 self.start_entropy_map();
+                self.publish_document_replaced(previous_name);
                 let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
                 self.status = format!("Loaded {name}");
                 let remembered_shape = self.load_sidecar(path);
@@ -1925,8 +1936,9 @@ impl ViewerApp {
             return;
         };
         let result = host.run_action(id, self);
-        for line in host.take_log() {
-            self.status = line;
+        for line in host.take_entries() {
+            self.status = format!("{}: {}", line.plugin, line.text);
+            self.bus.publish(crate::bus::Draft::new(format!("plugin:{}", line.plugin), crate::bus::Payload::PluginLog(line)));
         }
         if let Err(message) = result {
             self.status = format!("Plugin action failed: {message}");
@@ -2183,9 +2195,11 @@ impl ViewerApp {
 
     /// Swap the document being viewed and reset everything derived from it.
     fn install_document(&mut self, document: Document, derived_name: Option<String>) {
+        let previous_name = self.display_name();
         self.document = document;
         self.bench.document_changed();
         self.derived_name = derived_name;
+        self.publish_document_replaced(previous_name);
         self.cursor = 0;
         self.anchor = None;
         self.clear_secondary_selection();
@@ -3673,6 +3687,8 @@ impl eframe::App for ViewerApp {
         self.poll_analysis(ctx);
         self.handle_shortcuts(ctx);
         self.folds.clamp_to(self.document.len());
+        // After the shortcuts' edits and before anything that follows them.
+        self.run_bus();
         self.follow_edits(ctx);
         crate::panels::with(self, |panels| &mut panels.structure_map, crate::panel_structure_map::follow_document);
         self.poll_workbench(ctx);

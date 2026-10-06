@@ -4,7 +4,8 @@
 //! The window is one workspace ([`ViewerApp`] implements [`Workspace`]); a
 //! [`HeadlessWorkspace`] is another, holding files opened from paths, for the
 //! command line and, later, the MCP server. Methods see only the trait, so
-//! the same method works in both.
+//! the same method works in both. Each workspace has its own bus of facts
+//! and events.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -14,6 +15,8 @@ use serde::{Deserialize, Serialize};
 
 use super::ApiError;
 use crate::app::ViewerApp;
+use crate::bus::topics::DocumentOpened;
+use crate::bus::{Bus, Draft, Payload};
 use crate::document::Document;
 use crate::plugin::Registry;
 use crate::selection::Selection;
@@ -21,7 +24,7 @@ use crate::selection::Selection;
 /// The name that stands for the current document.
 pub const CURRENT: &str = "current";
 /// The id the window gives its document, which is the only one it shows.
-const WINDOW_DOCUMENT_ID: &str = "doc-1";
+pub const WINDOW_DOCUMENT_ID: &str = "doc-1";
 
 /// One open document, as `documents.list` and `documents.info` describe it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -66,6 +69,8 @@ pub trait Workspace {
     fn registry(&self) -> Arc<Registry>;
     /// Open the file at `path` and make it current, returning its id.
     fn open_path(&mut self, path: &Path) -> Result<String, ApiError>;
+    /// The workspace's bus, with every message published so far delivered.
+    fn bus(&mut self) -> &mut Bus;
 }
 
 /// The id of the document `doc` names: an id, an open document's path, or
@@ -109,18 +114,22 @@ pub struct HeadlessWorkspace {
     registry: Arc<Registry>,
     /// Documents ever opened, for the next id.
     opened: usize,
+    bus: Bus,
 }
 
 impl HeadlessWorkspace {
     pub fn new(registry: Arc<Registry>) -> Self {
-        HeadlessWorkspace { documents: Vec::new(), current: None, registry, opened: 0 }
+        HeadlessWorkspace { documents: Vec::new(), current: None, registry, opened: 0, bus: Bus::new() }
     }
 
     /// Add a document and make it current; returns its id.
     pub fn add_document(&mut self, name: impl Into<String>, document: Document) -> String {
         self.opened += 1;
         let id = format!("doc-{}", self.opened);
-        self.documents.push(OpenDocument { id: id.clone(), name: name.into(), document, view: ViewState::default() });
+        let name = name.into();
+        let opened = DocumentOpened { name: name.clone(), path: document.path().map(|path| path.display().to_string()), len: document.len() };
+        self.bus.publish(Draft::new("workspace", Payload::DocumentOpened(opened)).about(id.clone(), document.version()));
+        self.documents.push(OpenDocument { id: id.clone(), name, document, view: ViewState::default() });
         self.current = Some(self.documents.len() - 1);
         id
     }
@@ -175,6 +184,13 @@ impl Workspace for HeadlessWorkspace {
         let name = path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_else(|| path.display().to_string());
         Ok(self.add_document(name, document))
     }
+
+    /// With no frame loop to deliver messages, they are delivered whenever
+    /// the bus is asked for.
+    fn bus(&mut self) -> &mut Bus {
+        self.bus.deliver_all();
+        &mut self.bus
+    }
 }
 
 /// The window shows one document at a time, which the API calls `doc-1`.
@@ -212,6 +228,11 @@ impl Workspace for ViewerApp {
             return Ok(WINDOW_DOCUMENT_ID.to_string());
         }
         Err(ApiError::not_found(format!("{} is not the open document; switching documents from the API is not supported yet", path.display())))
+    }
+
+    /// Messages are delivered once per frame, before the API is called.
+    fn bus(&mut self) -> &mut Bus {
+        &mut self.bus
     }
 }
 

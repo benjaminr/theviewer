@@ -13,6 +13,7 @@ pub mod base_address;
 pub mod bits;
 pub mod blocks;
 pub mod bookmarks;
+pub mod bus;
 pub mod catalog;
 pub mod charset;
 pub mod checksums;
