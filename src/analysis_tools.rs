@@ -8,6 +8,7 @@ use eframe::egui::{self, Color32, ColorImage, Rect, RichText, Sense, Stroke, Tex
 
 use crate::app::ViewerApp;
 use crate::columns::{self, ColumnKind, ColumnProfile, FieldGuess};
+use crate::packets;
 use crate::plugin::{Category, Finding};
 use crate::protocol::{self, FramingCandidate, Message, MessageField};
 use crate::theme;
@@ -59,9 +60,24 @@ pub struct ProtocolView {
     pub report: protocol::ProtocolReport,
     pub candidates: Vec<FramingCandidate>,
     pub chosen: usize,
+    /// The protocol the messages read as, such as DNS, when they do.
+    pub messages_decode_as: Option<packets::Detection>,
 }
 
 impl ProtocolView {
+    fn new(base: usize, bytes: Vec<u8>, report: protocol::ProtocolReport, candidates: Vec<FramingCandidate>) -> ProtocolView {
+        let mut view = ProtocolView { base, bytes, report, candidates, chosen: 0, messages_decode_as: None };
+        view.detect_message_protocol();
+        view
+    }
+
+    /// Find out whether the messages are a protocol the packet viewer
+    /// dissects.
+    fn detect_message_protocol(&mut self) {
+        let messages: Vec<&[u8]> = self.report.messages.iter().filter_map(|message| self.bytes.get(message.offset..message.offset + message.len)).collect();
+        self.messages_decode_as = packets::detect_frame_protocol(&messages);
+    }
+
     /// The bytes that were analysed; message offsets count from their start,
     /// which is document offset `base`.
     pub fn bytes(&self) -> &[u8] {
@@ -236,7 +252,7 @@ pub fn poll_protocol(app: &mut ViewerApp) {
     let Some(receiver) = &app.bench.tools.protocol_pending else { return };
     if let Ok((base, bytes, report, candidates)) = receiver.try_recv() {
         app.bench.tools.protocol_pending = None;
-        app.bench.tools.protocol = Some(ProtocolView { base, bytes, report, candidates, chosen: 0 });
+        app.bench.tools.protocol = Some(ProtocolView::new(base, bytes, report, candidates));
         pin_messages(app);
     }
 }
@@ -276,6 +292,7 @@ fn choose_framing(app: &mut ViewerApp, index: usize) {
     view.report.messages = messages;
     view.report.fields = fields;
     view.chosen = index;
+    view.detect_message_protocol();
     pin_messages(app);
 }
 
@@ -302,6 +319,7 @@ pub fn show_protocol(app: &mut ViewerApp, ui: &mut Ui) {
     let report = view.report.clone();
     let candidates = view.candidates.clone();
     let chosen = view.chosen;
+    let messages_decode_as = view.messages_decode_as;
     let mut pick = None;
     ui.horizontal_wrapped(|ui| {
         ui.label(RichText::new("Framing").strong());
@@ -330,6 +348,17 @@ pub fn show_protocol(app: &mut ViewerApp, ui: &mut Ui) {
         report.length_mean
     ))
     .color(theme::TEXT_DIM));
+    if let Some(detection) = messages_decode_as.filter(|_| app.preferences.detect_frame_protocols) {
+        ui.label(
+            RichText::new(format!(
+                "The messages are {} ({} of {} sampled read in full); the packet viewer decodes them as it.",
+                detection.protocol.label(),
+                detection.matched,
+                detection.sampled
+            ))
+            .color(theme::ACCENT),
+        );
+    }
     if ui.button("Open in packet viewer").on_hover_text("List these messages as packets: dissect, filter, edit and export them").clicked() {
         crate::panel_packets::open_protocol_messages(app);
     }
@@ -420,4 +449,24 @@ pub fn heatmap_texture(ctx: &egui::Context, name: &str, counts: &[u32]) -> Textu
         .map(|&count| if count == 0 { Color32::BLACK } else { lut[(((count as f32).ln_1p() / max.ln_1p()) * 255.0) as usize] })
         .collect();
     ctx.load_texture(name, ColorImage::new([256, 256], pixels), TextureOptions::NEAREST)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn messages_the_framing_found_are_named_by_the_protocol_they_read_as() {
+        let mut bytes = Vec::new();
+        let mut messages = Vec::new();
+        for transaction in 0..5u8 {
+            messages.push(Message { offset: bytes.len(), len: 12 });
+            bytes.extend_from_slice(&[0, transaction, 0, 0, 0, 6, 1, 4, 0, 0, 0, 2]);
+        }
+        let report = protocol::ProtocolReport { messages, ..Default::default() };
+        let view = ProtocolView::new(0, bytes, report, Vec::new());
+        assert_eq!(view.messages_decode_as.map(|detection| detection.protocol), Some(packets::FrameProtocol::ModbusTcp));
+        let unknown = ProtocolView::new(0, vec![0xA5; 40], protocol::ProtocolReport { messages: vec![Message { offset: 0, len: 20 }, Message { offset: 20, len: 20 }], ..Default::default() }, Vec::new());
+        assert_eq!(unknown.messages_decode_as, None);
+    }
 }
