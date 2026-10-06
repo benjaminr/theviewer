@@ -1,5 +1,5 @@
 //! Small, defensive parsers for application protocols carried over TCP and
-//! UDP: DNS, HTTP, NTP, Modbus/TCP and MQTT here, and SNMP, DHCP, the
+//! UDP: DNS, HTTP, NTP, Modbus/TCP and MQTT here, and SNMP, DHCP, TFTP, the
 //! NetBIOS session service with SMB, and ISO transport (TPKT and COTP) with
 //! S7comm in their own modules.
 //!
@@ -7,17 +7,23 @@
 //! field offsets are relative to the payload's first byte, or `None` when the
 //! bytes do not look like that protocol. Protocols carried inside others
 //! (SMB in the NetBIOS session service, S7comm in COTP in TPKT) give
-//! several layers, one after another. None of them can panic, and every loop is bounded.
+//! several layers, one after another. Protocols that move to ports chosen
+//! on the fly (TFTP) are followed with what the rest of the packet set says
+//! ([`SetHints`]). None of them can panic, and every loop is bounded.
 
 use crate::patterns::format_unix_seconds;
 use crate::plugin::Field;
 
-use super::flows::Transport;
+use super::flows::{Flow, Transport};
 
 mod dhcp;
 mod iso_transport;
+mod set_hints;
 mod smb;
 mod snmp;
+mod tftp;
+
+pub use set_hints::SetHints;
 
 /// Well-known ports.
 const PORT_HTTP: u16 = 80;
@@ -34,6 +40,7 @@ const PORT_DHCP_CLIENT: u16 = 68;
 const PORT_NETBIOS_SESSION: u16 = 139;
 const PORT_SMB: u16 = 445;
 const PORT_ISO_TSAP: u16 = 102;
+const PORT_TFTP: u16 = 69;
 
 /// A parsed application layer.
 #[derive(Clone, Debug, PartialEq)]
@@ -50,14 +57,17 @@ pub struct AppLayer {
     pub info: String,
 }
 
-/// Parse `payload` by the ports it travels between, falling back to content
+/// Parse `payload` by the ports of the flow it travels in, then by what
+/// `hints` learned from the rest of the set, falling back to content
 /// sniffing for HTTP on any TCP port. Returns the layers found, outermost
 /// first, each starting where the one before it ends; none when the bytes
 /// are not a protocol known here.
-pub fn dissect_application(transport: Transport, source_port: u16, destination_port: u16, payload: &[u8]) -> Vec<AppLayer> {
+pub fn dissect_application(flow: &Flow, payload: &[u8], hints: &SetHints) -> Vec<AppLayer> {
+    let (Some(source_port), Some(destination_port)) = (flow.source.port, flow.destination.port) else { return Vec::new() };
     if payload.is_empty() {
         return Vec::new();
     }
+    let transport = flow.transport;
     let uses = |port: u16| source_port == port || destination_port == port;
     let stacked = match transport {
         Transport::Tcp if uses(PORT_NETBIOS_SESSION) => smb::dissect_netbios_session(payload, false),
@@ -74,6 +84,7 @@ pub fn dissect_application(transport: Transport, source_port: u16, destination_p
         Transport::Udp if uses(PORT_NTP) => dissect_ntp(payload),
         Transport::Udp if uses(PORT_SNMP) || uses(PORT_SNMP_TRAP) => snmp::dissect_snmp(payload),
         Transport::Udp if uses(PORT_DHCP_SERVER) || uses(PORT_DHCP_CLIENT) => dhcp::dissect_dhcp(payload),
+        Transport::Udp if uses(PORT_TFTP) || hints.is_tftp(flow) => tftp::dissect_tftp(payload),
         Transport::Tcp if uses(PORT_MODBUS) => dissect_modbus(payload, destination_port == PORT_MODBUS),
         Transport::Tcp if uses(PORT_MQTT) => dissect_mqtt(payload),
         Transport::Tcp if uses(PORT_HTTP) || PORT_HTTP_ALTERNATIVES.iter().any(|&port| uses(port)) => dissect_http(payload),
@@ -804,6 +815,7 @@ pub fn dissect_mqtt(payload: &[u8]) -> Option<AppLayer> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::packets::flows::Endpoint;
 
     /// A DNS query for `name`, type A, with transaction ID 0x1234.
     fn dns_query(name: &str) -> Vec<u8> {
@@ -928,7 +940,7 @@ mod tests {
             b"ttp-equiv=\"refresh\" content=\"0\">\r\nHTTP/1.1 200 OK\r\n",
         ] {
             assert!(dissect_http(payload).is_none(), "{}", String::from_utf8_lossy(payload));
-            assert_eq!(dissect_application(Transport::Tcp, 40000, 80, payload), Vec::new());
+            assert_eq!(by_ports(Transport::Tcp, 40000, 80, payload), Vec::new());
         }
         assert!(dissect_http(b"HTTP/1.0 404\r\n\r\n").is_some(), "a reason phrase may be left out");
         assert!(dissect_http(b"PROPFIND /dav/ HTTP/1.1\r\nDepth: 1\r\n\r\n").is_some());
@@ -1072,9 +1084,17 @@ mod tests {
         }
     }
 
+    /// The layers found in `payload` between two ports of two hosts, with
+    /// nothing learned from other packets.
+    fn by_ports(transport: Transport, source_port: u16, destination_port: u16, payload: &[u8]) -> Vec<AppLayer> {
+        let endpoint = |last: u8, port: u16| Endpoint { address: std::net::IpAddr::from([10, 0, 0, last]), port: Some(port) };
+        let flow = Flow { transport, source: endpoint(2, source_port), destination: endpoint(1, destination_port), tcp_sequence: None };
+        dissect_application(&flow, payload, &SetHints::default())
+    }
+
     /// The innermost layer found in `payload` between the two ports.
     fn innermost(transport: Transport, source_port: u16, destination_port: u16, payload: &[u8]) -> Option<AppLayer> {
-        dissect_application(transport, source_port, destination_port, payload).pop()
+        by_ports(transport, source_port, destination_port, payload).pop()
     }
 
     #[test]
@@ -1102,7 +1122,7 @@ mod tests {
         let mut payload = vec![0, 0, 0, 64];
         payload.extend_from_slice(&smb2);
         for port in [139, 445] {
-            let layers = dissect_application(Transport::Tcp, 50000, port, &payload);
+            let layers = by_ports(Transport::Tcp, 50000, port, &payload);
             let names: Vec<&str> = layers.iter().map(|layer| layer.name).collect();
             assert_eq!(names, ["NetBIOS Session Service", "SMB2"], "port {port}");
         }
@@ -1112,10 +1132,29 @@ mod tests {
     #[test]
     fn tpkt_on_port_102_carries_cotp_and_s7comm() {
         let payload = [3, 0, 0, 25, 2, 0xF0, 0x80, 0x32, 1, 0, 0, 0, 1, 0, 8, 0, 0, 0xF0, 0, 0, 1, 0, 1, 0x03, 0xC0];
-        let layers = dissect_application(Transport::Tcp, 102, 49152, &payload);
+        let layers = by_ports(Transport::Tcp, 102, 49152, &payload);
         let names: Vec<&str> = layers.iter().map(|layer| layer.name).collect();
         assert_eq!(names, ["TPKT", "COTP", "S7comm"]);
         assert_eq!(layers.iter().map(|layer| layer.len).sum::<usize>(), payload.len(), "the layers follow one another");
-        assert!(dissect_application(Transport::Tcp, 102, 49152, &[0x16, 0x03, 0x01]).is_empty());
+        assert!(by_ports(Transport::Tcp, 102, 49152, &[0x16, 0x03, 0x01]).is_empty());
+    }
+
+    #[test]
+    fn tftp_is_read_on_port_69_and_on_the_ports_a_request_in_the_set_began() {
+        let request = b"\x00\x01boot.img\x00octet\x00";
+        assert_eq!(innermost(Transport::Udp, 50000, 69, request).map(|l| l.key), Some("tftp"));
+        let data = b"\x00\x03\x00\x01data";
+        assert_eq!(innermost(Transport::Udp, 61000, 50000, data), None, "without the request, ephemeral ports say nothing");
+        let endpoint = |last: u8, port: u16| Endpoint { address: std::net::IpAddr::from([10, 0, 0, last]), port: Some(port) };
+        let request_packet = {
+            let builder = etherparse::PacketBuilder::ipv4([10, 0, 0, 2], [10, 0, 0, 1], 64).udp(50000, 69);
+            let mut packet = Vec::new();
+            builder.write(&mut packet, request).expect("a packet");
+            packet
+        };
+        let hints = SetHints::learn([(request_packet.as_slice(), crate::packets::LinkKind::RawIp)]);
+        let flow = Flow { transport: Transport::Udp, source: endpoint(1, 61000), destination: endpoint(2, 50000), tcp_sequence: None };
+        let layers = dissect_application(&flow, data, &hints);
+        assert_eq!(layers.last().map(|l| l.info.as_str()), Some("Data Packet, Block: 1"));
     }
 }

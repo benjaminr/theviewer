@@ -34,7 +34,7 @@ use crate::analysis_tools;
 use crate::app::ViewerApp;
 use crate::dock::DockTab;
 use crate::packets::sources::{self, CaptureLocation, MarkerMode, Recipe};
-use crate::packets::{self, Dissection, Flow, Layer, LinkKind, PacketSet, RawFrames, Summary};
+use crate::packets::{self, Dissection, Flow, Layer, LinkKind, PacketSet, RawFrames, SetHints, Summary};
 use crate::parsers::captures::{CAPTURE_FINDING_IDS, GZIP_CAPTURE_FINDING_ID};
 use crate::panel_packets_grid::{self as grid, GridState};
 use crate::panel_packets_tshark::{self as tshark_view, TsharkState};
@@ -174,6 +174,9 @@ struct DissectionJob {
     bytes: Arc<PacketBytes>,
     rows: Vec<PacketRow>,
     snapshot: Snapshot,
+    /// What the whole set says about its flows, for dissecting one packet
+    /// again later.
+    hints: SetHints,
 }
 
 /// The selected packet, dissected from the document's current bytes.
@@ -642,9 +645,10 @@ fn start_dissection(state: &mut PacketsState, app: &mut ViewerApp, set: PacketSe
     let snapshot = Snapshot { version: app.document.version(), document_len: app.document.len() };
     state.requested_version = Some(snapshot.version);
     let links: Vec<LinkKind> = set.packets.iter().map(|packet| state.link_choice.apply(packet.link)).collect();
-    let raw = state.raw.clone();
+    let mut raw = state.raw.clone();
     let (sender, receiver) = mpsc::channel();
     thread::spawn(move || {
+        raw.hints = SetHints::learn(links.iter().enumerate().map(|(index, &link)| (bytes.packet(index), link)));
         let rows = links
             .iter()
             .enumerate()
@@ -653,7 +657,7 @@ fn start_dissection(state: &mut PacketsState, app: &mut ViewerApp, set: PacketSe
                 PacketRow::from(dissection)
             })
             .collect();
-        let _ = sender.send(DissectionJob { set, bytes: Arc::new(bytes), rows, snapshot });
+        let _ = sender.send(DissectionJob { set, bytes: Arc::new(bytes), rows, snapshot, hints: raw.hints });
     });
     state.pending = Some(receiver);
 }
@@ -697,6 +701,7 @@ fn install(state: &mut PacketsState, job: DissectionJob) {
     state.set = Some(job.set);
     state.bytes = job.bytes;
     state.rows = job.rows;
+    state.raw.hints = job.hints;
     state.built = Some(job.snapshot);
     state.detail = None;
     state.set_generation += 1;

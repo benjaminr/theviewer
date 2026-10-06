@@ -3,7 +3,8 @@
 
 use etherparse::PacketBuilder;
 use theviewer::packets::LinkKind;
-use theviewer::packets::dissect::{Dissection, dissect};
+use theviewer::packets::dissect::{Dissection, RawFrames, dissect, dissect_with};
+use theviewer::packets::SetHints;
 use theviewer::packets::filter::wireshark_values;
 use theviewer::plugin::Field;
 use theviewer::reference;
@@ -181,11 +182,26 @@ fn s7_connection_and_setup() -> (Vec<u8>, Vec<u8>) {
     (ipv4_tcp(102, &request), ipv4_tcp(102, &setup))
 }
 
+/// A TFTP read request, and the server's first data block from a port of
+/// its own choosing.
+fn tftp_read_and_data() -> (Vec<u8>, Vec<u8>) {
+    let request = build(PacketBuilder::ipv4(CLIENT_IPV4, SERVER_IPV4, 64).udp(50000, 69), b"\x00\x01config.txt\x00netascii\x00");
+    let data = build(PacketBuilder::ipv4(SERVER_IPV4, CLIENT_IPV4, 64).udp(61000, 50000), b"\x00\x03\x00\x01hostname plc\r\n");
+    (request, data)
+}
+
 fn dns_over_tcp() -> Vec<u8> {
     let query = dns_query();
     let mut payload = (query.len() as u16).to_be_bytes().to_vec();
     payload.extend_from_slice(&query);
     ipv4_tcp(53, &payload)
+}
+
+/// The TFTP data block dissected with what its read request taught.
+fn tftp_data_in_its_set() -> Dissection {
+    let (request, data) = tftp_read_and_data();
+    let hints = SetHints::learn([(request.as_slice(), LinkKind::RawIp), (data.as_slice(), LinkKind::RawIp)]);
+    dissect_with(&data, LinkKind::RawIp, &RawFrames { hints, ..RawFrames::default() })
 }
 
 /// Common traffic, dissected.
@@ -206,6 +222,8 @@ fn sample_dissections() -> Vec<(&'static str, Dissection)> {
         ("IPv4/TCP/NBSS/SMB2", dissect(&smb2_negotiate(), LinkKind::RawIp)),
         ("IPv4/TCP/TPKT/COTP", dissect(&s7_connection_and_setup().0, LinkKind::RawIp)),
         ("IPv4/TCP/TPKT/COTP/S7comm", dissect(&s7_connection_and_setup().1, LinkKind::RawIp)),
+        ("IPv4/UDP/TFTP", dissect(&tftp_read_and_data().0, LinkKind::RawIp)),
+        ("IPv4/UDP/TFTP data", tftp_data_in_its_set()),
     ]
 }
 
@@ -269,6 +287,7 @@ fn every_layer_of_common_traffic_has_reference_notes_explaining_each_field() {
         "TPKT",
         "COTP",
         "S7comm",
+        "TFTP",
     ] {
         assert!(expected_layers.contains(layer), "the sample traffic should include a '{layer}' layer, found {expected_layers:?}");
     }
@@ -289,6 +308,7 @@ fn wireshark_field_names_reach_the_fields_of_the_newer_dissectors_through_the_no
     assert_eq!(wireshark_values(&s7, "s7comm.header.rosctr"), ["1 (Job)"]);
     assert_eq!(wireshark_values(&s7, "tpkt.length"), ["25"]);
     assert_eq!(s7.summary.info, "ROSCTR:[Job       ] Function:[Setup communication]");
+    assert_eq!(wireshark_values(&tftp_data_in_its_set(), "tftp.block"), ["1"]);
 }
 
 #[test]

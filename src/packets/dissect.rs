@@ -14,7 +14,7 @@ use std::net::{IpAddr, Ipv4Addr};
 
 use etherparse::{Ethernet2HeaderSlice, Ipv4HeaderSlice, Ipv6HeaderSlice, SingleVlanHeaderSlice, TcpHeaderSlice, UdpHeaderSlice};
 
-use super::application::{self, AppLayer};
+use super::application::{self, AppLayer, SetHints};
 use super::flows::{Endpoint, Flow, Transport};
 use super::{LinkKind, hex_preview};
 use crate::plugin::Field;
@@ -147,13 +147,17 @@ impl WiresharkNames {
     }
 }
 
-/// How to decode frames of unknown format.
+/// How to decode what a packet does not say about itself: frames of unknown
+/// format, and flows the rest of the set identified.
 #[derive(Clone, Debug, Default)]
 pub struct RawFrames {
     /// Applied to each frame when set.
     pub template: Option<Template>,
     /// Header fields found by the protocol analysis, used without a template.
     pub guesses: Vec<MessageField>,
+    /// Flows identified by other packets of the set, such as the ports a
+    /// TFTP transfer moved to.
+    pub hints: SetHints,
 }
 
 /// Dissect a packet whose first byte is described by `link`.
@@ -164,7 +168,7 @@ pub fn dissect(bytes: &[u8], link: LinkKind) -> Dissection {
 /// Dissect a packet, decoding frames of unknown format as `raw` says.
 pub fn dissect_with(bytes: &[u8], link: LinkKind, raw: &RawFrames) -> Dissection {
     let resolved = resolve_link(bytes, link);
-    let mut walk = Walk { bytes, out: Dissection { link: resolved, ..Dissection::default() } };
+    let mut walk = Walk { bytes, out: Dissection { link: resolved, ..Dissection::default() }, hints: &raw.hints };
     match resolved {
         LinkKind::Ethernet => walk.ethernet(),
         LinkKind::RawIp => {
@@ -359,6 +363,7 @@ enum ChainOutcome {
 struct Walk<'a> {
     bytes: &'a [u8],
     out: Dissection,
+    hints: &'a SetHints,
 }
 
 impl Walk<'_> {
@@ -787,7 +792,7 @@ impl Walk<'_> {
             "TCP",
             format!("{source_port} → {destination_port} [{flags}] Seq={sequence}{acknowledgement_text} Win={} Len={payload_len}", header.window_size()),
         );
-        self.application(Transport::Tcp, source_port, destination_port, payload_at, end);
+        self.application(payload_at, end);
     }
 
     fn udp(&mut self, source: IpAddr, destination: IpAddr, at: usize, end: usize) {
@@ -823,17 +828,15 @@ impl Walk<'_> {
         let payload_at = at + header_len;
         self.out.payload = Some((payload_at, udp_end - payload_at));
         self.set_top("UDP", format!("{source_port} → {destination_port} Len={}", udp_end - payload_at));
-        self.application(Transport::Udp, source_port, destination_port, payload_at, udp_end);
+        self.application(payload_at, udp_end);
     }
 
     // -- Application layer -------------------------------------------------
 
-    fn application(&mut self, transport: Transport, source_port: u16, destination_port: u16, start: usize, end: usize) {
-        if start >= end {
-            return;
-        }
+    fn application(&mut self, start: usize, end: usize) {
+        let Some(flow) = self.out.flow.filter(|_| start < end) else { return };
         let payload = &self.bytes[start..end];
-        let layers = application::dissect_application(transport, source_port, destination_port, payload);
+        let layers = application::dissect_application(&flow, payload, self.hints);
         if layers.is_empty() {
             self.data_layer(start, end, "Payload");
             return;
@@ -1119,7 +1122,7 @@ mod tests {
     fn raw_frames_use_the_template_when_one_is_chosen_and_the_field_guesses_otherwise() {
         let frame = [0xAA, 0x55, 0x02, 0x00, 0x07, 0xDE, 0xAD];
         let template = Template::parse("struct Frame { sync: u16be  kind: u8  sequence: u16be  body: bytes[2] }").expect("a template");
-        let raw = RawFrames { template: Some(template), guesses: Vec::new() };
+        let raw = RawFrames { template: Some(template), ..RawFrames::default() };
         let dissection = dissect_with(&frame, LinkKind::Unknown, &raw);
         assert_eq!(dissection.layers[0].name, "Frame (template)");
         let names: Vec<&str> = dissection.layers[0].fields.iter().map(|f| f.name.as_str()).collect();
@@ -1132,7 +1135,7 @@ mod tests {
             MessageField { start: 2, len: 2, kind: "checksum".to_string(), detail: String::new(), values: vec![], from_end: true },
             MessageField { start: 40, len: 2, kind: "beyond".to_string(), detail: String::new(), values: vec![], from_end: false },
         ];
-        let dissection = dissect_with(&frame, LinkKind::Unknown, &RawFrames { template: None, guesses });
+        let dissection = dissect_with(&frame, LinkKind::Unknown, &RawFrames { guesses, ..RawFrames::default() });
         let data = layer(&dissection, "Data");
         assert_eq!(data.fields.len(), 3, "the field beyond the frame is left out");
         let checksum = field(data, "checksum");
@@ -1150,7 +1153,7 @@ mod tests {
             state
         };
         let template = Template::parse("struct T { a: u8  n: u8  body: bytes[n] }").ok();
-        let raw = RawFrames { template, guesses: Vec::new() };
+        let raw = RawFrames { template, ..RawFrames::default() };
         for round in 0..3000 {
             let len = (next() % 200) as usize;
             let mut bytes: Vec<u8> = (0..len).map(|_| next() as u8).collect();

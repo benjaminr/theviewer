@@ -33,6 +33,7 @@ pub mod split;
 pub mod tshark;
 pub mod tshark_layers;
 
+pub use application::SetHints;
 pub use dissect::{Dissection, Layer, RawFrames, Summary, dissect, dissect_with};
 pub use export::{ExportError, ExportPacket, write_pcap, write_pcap_as};
 pub use filter::{Filter, FilterError, FilterSubject, parse_filter};

@@ -43,7 +43,7 @@ const SAMPLE_FILTER: &str = "udp port:53 len>20 proto:dns hex:0001";
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Failure {
     pub file: String,
-    /// "open", "dissect", "scan", "reference", "export", "flows", "tshark",
+    /// "open", "hints", "dissect", "scan", "reference", "export", "flows", "tshark",
     /// "tshark-layers", "timeout" or "slow".
     pub stage: String,
     /// The packet, from 1, when the failure belongs to one.
@@ -371,11 +371,14 @@ fn run_ours(file: &str, bytes: &[u8], registry: &Registry, result: &mut FileResu
     let findings = scan(file, bytes, registry);
     let Some(set) = &side.set else { return side };
     let filter = packets::parse_filter(SAMPLE_FILTER).unwrap_or_default();
+    working_on(file, "hints", None);
+    let compared = || set.packets.iter().take(MAX_PACKETS_PER_FILE).map(|packet| (bytes.get(packet.offset..packet.end()).unwrap_or_default(), packet.link));
+    let raw = packets::RawFrames { hints: guarded(|| packets::SetHints::learn(compared())).unwrap_or_default(), ..packets::RawFrames::default() };
     for (index, packet) in set.packets.iter().take(MAX_PACKETS_PER_FILE).enumerate() {
         *result.link_types.entry(packet.link_type).or_default() += 1;
         let data = bytes.get(packet.offset..packet.end()).unwrap_or_default();
         working_on(file, "dissect", Some(index + 1));
-        let Some(dissection) = guarded(|| packets::dissect(data, packet.link)) else {
+        let Some(dissection) = guarded(|| packets::dissect_with(data, packet.link, &raw)) else {
             side.dissections.push(Dissection::default());
             continue;
         };
