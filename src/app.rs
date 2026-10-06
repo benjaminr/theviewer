@@ -1140,23 +1140,23 @@ impl ViewerApp {
     }
 
     /// Select every match of the Find box in the document, as several ranges.
+    /// Select every match of the Find box in the document, as several
+    /// ranges: found as `search.find_all`, a page at a time, then selected
+    /// as `selection.set`.
     pub fn select_all_matches(&mut self) {
         const MOST_MATCHES: usize = 100_000;
         let Some(needle) = self.search_needle() else { return };
-        let mut ranges = Vec::new();
-        let mut from = 0;
-        while ranges.len() < MOST_MATCHES
-            && let Some(at) = search::find_next(&mut self.document, &needle, from)
-        {
-            ranges.push((at, needle.len()));
-            from = at + 1;
-        }
+        let Ok(matches) = self.find_all_in_document(MOST_MATCHES) else { return };
+        let ranges: Vec<(usize, usize)> = matches.into_iter().map(|at| (at, needle.len())).collect();
         if ranges.is_empty() {
             self.status = "No match".to_string();
             return;
         }
         let count = ranges.len();
-        self.select_ranges(ranges, None);
+        let end = ranges.last().map_or(0, |&(at, len)| at + len);
+        if !self.select_as_person(crate::selection_menu::selection_of(ranges), end) {
+            return;
+        }
         self.reveal_cursor_centred();
         self.reveal_cursor_in_hex(true);
         self.status = format!("Selected {count} matches");
@@ -1605,20 +1605,22 @@ impl ViewerApp {
         }
     }
 
+    /// Select the match at `at`, as `selection.set`, and show it.
     fn show_match(&mut self, at: usize, len: usize, index_hint: &str) {
-        self.clear_secondary_selection();
-        self.anchor = Some(at);
-        self.cursor = at + len;
-        self.pending_low_nibble = false;
+        if !self.select_as_person(Some(Selection::Range(at, len)), at + len) {
+            return;
+        }
         self.reveal_cursor_centred();
         self.reveal_cursor_in_hex(true);
         self.status = format!("Match at {at:#x}{index_hint}");
     }
 
+    /// The next match after the selection's start (or the cursor),
+    /// wrapping round, found as `search.find` and selected.
     pub fn find_next(&mut self) {
         let Some(needle) = self.search_needle() else { return };
         let from = self.selection().map(|(start, _)| start + 1).unwrap_or(self.cursor);
-        let found = search::find_next(&mut self.document, &needle, from).or_else(|| search::find_next(&mut self.document, &needle, 0));
+        let Ok(found) = self.find_in_document(from, false) else { return };
         match found {
             Some(at) => {
                 let total = self.search_count.unwrap_or_else(|| search::count_matches(&mut self.document, &needle, 10_000));
@@ -1629,12 +1631,12 @@ impl ViewerApp {
         }
     }
 
+    /// The match before the selection (or the cursor), wrapping round,
+    /// found as `search.find` and selected.
     pub fn find_previous(&mut self) {
         let Some(needle) = self.search_needle() else { return };
         let before = self.selection().map(|(start, _)| start).unwrap_or(self.cursor);
-        let document_len = self.document.len();
-        let found = search::find_previous(&mut self.document, &needle, before)
-            .or_else(|| search::find_previous(&mut self.document, &needle, document_len));
+        let Ok(found) = self.find_in_document(before, true) else { return };
         match found {
             Some(at) => self.show_match(at, needle.len(), ""),
             None => self.status = "No match".to_string(),

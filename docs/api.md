@@ -504,6 +504,7 @@ The next (or previous) occurrence of hex bytes, text, UTF-16 text or an integer 
 | `little_endian` | boolean | no | For integers: store them little-endian (the default) or big-endian. |
 | `mode` | `"hex"` \| `"text"` \| `"utf16"` \| `"integer"` | no | How to read the query: "hex", "text" (the default), "utf16" (little-endian) or "integer". |
 | `query` | string | yes | Hex bytes such as "89 50 4E 47", text, or a decimal or 0x hex integer. |
+| `wrap` | boolean | no | When nothing is found before the end (or, backwards, the start), search on from the other end. |
 
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |

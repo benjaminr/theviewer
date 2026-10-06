@@ -23,6 +23,7 @@ pub(super) fn examples() -> Vec<(&'static str, serde_json::Value)> {
     use serde_json::json;
     vec![
         ("search.find", json!({"query": "fox", "mode": "text"})),
+        ("search.find", json!({"query": "fox", "mode": "text", "from": 40, "wrap": true})),
         ("search.find_all", json!({"query": "6f 78", "mode": "hex", "limit": 5})),
         ("search.count", json!({"query": "the"})),
     ]
@@ -59,6 +60,9 @@ pub struct FindParams {
     /// Search towards the start of the document.
     #[serde(default)]
     pub backwards: bool,
+    /// When nothing is found before the end (or, backwards, the start), search on from the other end.
+    #[serde(default)]
+    pub wrap: bool,
 }
 
 /// The result of `search.find`.
@@ -143,12 +147,15 @@ fn needle(mode: SearchMode, query: &str, little_endian: bool) -> Result<Vec<u8>,
 pub fn find(workspace: &mut dyn Workspace, params: FindParams) -> Result<FindResult, ApiError> {
     let needle = needle(params.mode, &params.query, params.little_endian)?;
     let (_, document) = workspace::document(workspace, params.doc.as_deref())?;
+    let len = document.len();
     let at = if params.backwards {
-        let before = params.from.map_or(document.len(), |from| from.min(document.len() as u64) as usize);
-        search::find_previous(document, &needle, before)
+        let before = params.from.map_or(len, |from| from.min(len as u64) as usize);
+        let found = search::find_previous(document, &needle, before);
+        if found.is_none() && params.wrap { search::find_previous(document, &needle, len) } else { found }
     } else {
-        let (from, _) = values::span_within(document.len(), params.from.unwrap_or(0), None)?;
-        search::find_next(document, &needle, from)
+        let (from, _) = values::span_within(len, params.from.unwrap_or(0), None)?;
+        let found = search::find_next(document, &needle, from);
+        if found.is_none() && params.wrap { search::find_next(document, &needle, 0) } else { found }
     };
     Ok(FindResult { at: at.map(|at| at as u64) })
 }
@@ -196,6 +203,16 @@ mod tests {
         assert_eq!(call(&mut workspace, "search.find", json!({"query": "PK", "from": 1})).unwrap()["at"], 4);
         assert_eq!(call(&mut workspace, "search.find", json!({"query": "50 4b", "mode": "hex", "from": 5, "backwards": true})).unwrap()["at"], 4);
         assert_eq!(call(&mut workspace, "search.find", json!({"query": "ZIP"})).unwrap()["at"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn a_wrapping_search_carries_on_from_the_other_end() {
+        let mut workspace = workspace_with("a.bin", b"PK..PK....");
+        assert_eq!(call(&mut workspace, "search.find", json!({"query": "PK", "from": 5})).unwrap()["at"], serde_json::Value::Null);
+        assert_eq!(call(&mut workspace, "search.find", json!({"query": "PK", "from": 5, "wrap": true})).unwrap()["at"], 0);
+        assert_eq!(call(&mut workspace, "search.find", json!({"query": "PK", "from": 0, "backwards": true, "wrap": true})).unwrap()["at"], 4);
+        assert_eq!(call(&mut workspace, "search.find", json!({"query": "ZIP", "wrap": true})).unwrap()["at"], serde_json::Value::Null);
+        assert_eq!(call(&mut workspace, "search.find", json!({"query": "PK", "from": 11, "wrap": true})).unwrap_err().code, ErrorCode::OutOfRange);
     }
 
     #[test]

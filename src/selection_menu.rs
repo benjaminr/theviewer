@@ -12,7 +12,10 @@ use std::sync::Arc;
 
 use eframe::egui::{self, Color32, Frame, Id, Order, Pos2, Rect, RichText, Ui, vec2};
 
+use crate::api::ApiError;
 use crate::api::edits::{EditResult, HistoryResult};
+use crate::api::search::{FindAllResult, FindResult};
+use crate::api::values::MAX_PAGE;
 use crate::app::{DialogKind, FileAction, ViewerApp};
 use crate::compress::{self, Codec};
 use crate::document::Document;
@@ -235,6 +238,44 @@ impl ViewerApp {
             self.after_edit(cursor);
         }
         done
+    }
+}
+
+impl ViewerApp {
+    /// What the Find box asks for, as the `search.*` methods take it.
+    fn search_query(&self) -> serde_json::Value {
+        serde_json::json!({ "query": self.search_text, "mode": self.search_mode, "little_endian": self.search_little_endian })
+    }
+
+    /// Where the Find box's query next occurs from `from` (before it when
+    /// `backwards`), wrapping round, as `search.find`.
+    pub(crate) fn find_in_document(&mut self, from: usize, backwards: bool) -> Result<Option<usize>, ApiError> {
+        let mut params = self.search_query();
+        params["from"] = serde_json::json!(from);
+        params["backwards"] = serde_json::json!(backwards);
+        params["wrap"] = serde_json::json!(true);
+        let found: FindResult = self.perform_typed("search.find", params)?;
+        Ok(found.at.map(|at| at as usize))
+    }
+
+    /// Where the Find box's query occurs, up to `most` matches, as
+    /// `search.find_all` a page at a time.
+    pub(crate) fn find_all_in_document(&mut self, most: usize) -> Result<Vec<usize>, ApiError> {
+        let mut matches = Vec::new();
+        let mut next: Option<String> = None;
+        loop {
+            let mut params = self.search_query();
+            params["limit"] = serde_json::json!((most - matches.len()).min(MAX_PAGE));
+            if let Some(next) = &next {
+                params["next"] = serde_json::json!(next);
+            }
+            let page: FindAllResult = self.perform_typed("search.find_all", params)?;
+            matches.extend(page.matches.into_iter().map(|at| at as usize));
+            next = page.next;
+            if next.is_none() || matches.len() >= most {
+                return Ok(matches);
+            }
+        }
     }
 }
 
@@ -892,6 +933,55 @@ mod tests {
         assert_eq!(take_performed(), [performed("history.undo", json!({})), performed("history.redo", json!({}))]);
         app.redo();
         assert!(take_performed().is_empty());
+    }
+
+    fn find(from: usize, backwards: bool) -> (String, serde_json::Value) {
+        performed("search.find", json!({"query": "PK", "mode": "text", "little_endian": true, "from": from, "backwards": backwards, "wrap": true}))
+    }
+
+    #[test]
+    fn find_next_and_previous_search_through_the_api_wrap_round_and_select_the_match() {
+        let mut app = app_with(b"PK..PK....");
+        app.search_mode = crate::search::SearchMode::Text;
+        app.search_text = "PK".to_string();
+        app.set_cursor(1, false);
+        app.find_next();
+        assert_eq!((app.current_selection(), app.status.as_str()), (Some(Selection::Range(4, 2)), "Match at 0x4 (2 in file)"));
+        app.find_next();
+        assert_eq!(app.current_selection(), Some(Selection::Range(0, 2)), "past the last match it wraps to the first");
+        app.find_previous();
+        assert_eq!((app.current_selection(), app.status.as_str()), (Some(Selection::Range(4, 2)), "Match at 0x4"));
+        assert_eq!(
+            take_performed(),
+            [
+                find(1, false),
+                performed("selection.set", json!({"selection": {"range": [4, 2]}, "cursor": 6})),
+                find(5, false),
+                performed("selection.set", json!({"selection": {"range": [0, 2]}, "cursor": 2})),
+                find(0, true),
+                performed("selection.set", json!({"selection": {"range": [4, 2]}, "cursor": 6})),
+            ]
+        );
+        app.search_text = "ZIP".to_string();
+        app.find_next();
+        assert_eq!(app.status, "No match");
+        assert_eq!(take_performed().len(), 1, "only the search, nothing selected");
+    }
+
+    #[test]
+    fn all_matches_are_found_through_the_api_and_selected_as_ranges() {
+        let mut app = app_with(b"PK..PK....");
+        app.search_mode = crate::search::SearchMode::Text;
+        app.search_text = "PK".to_string();
+        app.select_all_matches();
+        assert_eq!(
+            take_performed(),
+            [
+                performed("search.find_all", json!({"query": "PK", "mode": "text", "little_endian": true, "limit": crate::api::values::MAX_PAGE})),
+                performed("selection.set", json!({"selection": {"ranges": [[0, 2], [4, 2]]}, "cursor": 6})),
+            ]
+        );
+        assert_eq!((app.current_selection(), app.status.as_str()), (Some(Selection::Ranges(vec![(0, 2), (4, 2)])), "Selected 2 matches"));
     }
 
     #[test]
