@@ -434,6 +434,30 @@ fn columns_and_protocol_tabs_recover_structure() {
 }
 
 #[test]
+fn columns_start_from_the_record_width_the_period_scan_published() {
+    let mut records = Vec::new();
+    for i in 0..512u32 {
+        records.extend_from_slice(b"REC:");
+        records.extend_from_slice(&i.to_le_bytes());
+        records.extend_from_slice(&xorshift_bytes(16, i + 1));
+    }
+    let path = temp_path("records24.bin");
+    std::fs::write(&path, &records).unwrap();
+    let mut harness = harness_for(path.clone());
+    harness.state_mut().start_period_scan();
+    wait_for(&mut harness, |app| !app.scan_pending);
+    steps(&mut harness, 2);
+    let published = harness.state().bus.latest::<theviewer::bus::topics::RecordWidthEstimated>("doc-1").map(|(fact, estimate)| (fact.producer().to_string(), estimate.width));
+    assert_eq!(published, Some(("tool:period-scan".to_string(), 24)));
+
+    harness.state_mut().dock.toggle(DockTab::Columns);
+    steps(&mut harness, 3);
+    assert_eq!(harness.state().bench.tools.record_len, 24, "Columns reads the width from the bus");
+    assert!(harness.query_by_label("Use detected 24 B").is_some());
+    std::fs::remove_file(path).ok();
+}
+
+#[test]
 fn statistics_strings_and_xor_tabs_diagnose_data() {
     let text = "The configuration server is at http://10.0.0.7/api and the log path is /var/log/device.log. ".repeat(40);
     let key = b"K3Y!";

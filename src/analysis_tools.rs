@@ -8,7 +8,8 @@ use eframe::egui::{self, Color32, ColorImage, Rect, RichText, Sense, Stroke, Tex
 
 use crate::app::ViewerApp;
 use crate::bus::Payload;
-use crate::bus::topics::{FrameSpan, FramesDefined, ProtocolIdentified};
+use crate::api::workspace::WINDOW_DOCUMENT_ID;
+use crate::bus::topics::{FrameSpan, FramesDefined, ProtocolIdentified, RecordWidthEstimated};
 use crate::bus::window::job_finished;
 use crate::columns::{self, ColumnKind, ColumnProfile, FieldGuess};
 use crate::packets;
@@ -115,14 +116,14 @@ fn records_origin(app: &ViewerApp, record_len: usize) -> usize {
     origin + into_table / record_len.max(1) * record_len.max(1)
 }
 
+/// The record width published on the bus (by the period scan), if any.
+fn estimated_record_width(app: &ViewerApp) -> Option<usize> {
+    app.bus.latest::<RecordWidthEstimated>(WINDOW_DOCUMENT_ID).map(|(_, estimate)| estimate.width)
+}
+
 pub fn show_columns(app: &mut ViewerApp, ui: &mut Ui) {
     if app.bench.tools.record_len == 0 {
-        app.bench.tools.record_len = app
-            .period_scan
-            .as_ref()
-            .and_then(|scan| scan.candidates.first().map(|c| c.period))
-            .unwrap_or_else(|| app.shape.row_stride())
-            .clamp(1, 65_536);
+        app.bench.tools.record_len = estimated_record_width(app).unwrap_or_else(|| app.shape.row_stride()).clamp(1, 65_536);
     }
     let origin = records_origin(app, app.bench.tools.record_len);
     ui.horizontal(|ui| {
@@ -131,7 +132,7 @@ pub fn show_columns(app: &mut ViewerApp, ui: &mut Ui) {
         if ui.button("Use row width").on_hover_text("The raster's bytes per row").clicked() {
             app.bench.tools.record_len = app.shape.row_stride();
         }
-        if let Some(best) = app.period_scan.as_ref().and_then(|s| s.candidates.first()).map(|c| c.period)
+        if let Some(best) = estimated_record_width(app)
             && ui.button(format!("Use detected {best} B")).clicked()
         {
             app.bench.tools.record_len = best;
