@@ -75,19 +75,26 @@ impl ViewerApp {
 
     /// Publish what changed in the app, then deliver every queued message
     /// and run the reactions to each. Called once per frame from `logic()`.
-    pub fn run_bus(&mut self) {
+    /// Returns whether messages were left for the next frame, because more
+    /// than a frame's worth were queued.
+    pub fn run_bus(&mut self) -> bool {
         self.publish_edits();
         self.publish_selection_if_changed(MAIN_VIEW);
         self.publish_pinned_findings();
         self.publish_plugin_log();
         let reactions = std::mem::take(&mut self.reactions);
+        let mut delivered_all = false;
         for _ in 0..MOST_PER_FRAME {
-            let Some(message) = self.bus.deliver_next() else { break };
+            let Some(message) = self.bus.deliver_next() else {
+                delivered_all = true;
+                break;
+            };
             for reaction in reactions.iter().filter(|reaction| reaction.topic == message.topic()) {
                 (reaction.react)(self, &message);
             }
         }
         self.reactions = reactions;
+        !delivered_all
     }
 
     /// The reactions run when messages are delivered.
@@ -210,6 +217,16 @@ mod tests {
         app.open_bytes(bytes.to_vec(), "test.bin".to_string());
         app.run_bus();
         app
+    }
+
+    #[test]
+    fn a_flood_of_messages_is_finished_on_the_next_frame_rather_than_left_waiting() {
+        let mut app = app_with(b"some bytes");
+        for offset in 0..MOST_PER_FRAME + 10 {
+            app.publish("test", Payload::CursorMoved(CursorMoved { offset }));
+        }
+        assert!(app.run_bus(), "more than a frame's worth is left for the next frame, which the app asks for");
+        assert!(!app.run_bus(), "the rest are delivered then");
     }
 
     /// The topics delivered after `cursor`, in order.

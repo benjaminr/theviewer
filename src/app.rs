@@ -3735,7 +3735,9 @@ impl eframe::App for ViewerApp {
         self.handle_shortcuts(ctx);
         self.folds.clamp_to(self.document.len());
         // After the shortcuts' edits and before anything that follows them.
-        self.run_bus();
+        if self.run_bus() {
+            ctx.request_repaint();
+        }
         self.follow_edits(ctx);
         crate::panels::with(self, |panels| &mut panels.structure_map, crate::panel_structure_map::follow_document);
         self.poll_workbench(ctx);
