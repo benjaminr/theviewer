@@ -107,6 +107,9 @@ Errors are `{code, message, data}`, with these codes:
 | [`jobs.list`](#jobslist) | read | The background jobs tools and callers started (the last 100): what each does, who started it, whether it is running, how far it has got and how it ended. |
 | [`jobs.status`](#jobsstatus) | read | One job's state, progress and outcome, and once it has finished, the result of a job a method started. |
 | [`jobs.cancel`](#jobscancel) | read | Ask a running job to stop; it ends as cancelled, without a result, as soon as it notices. |
+| [`statistics.analyse`](#statisticsanalyse) | job | Start the Statistics tool's measure of a span (at most 64 MiB) as a job: the ent randomness tests with a verdict, the byte histogram, entropy and compressibility along the span and the most repeated byte sequences are job.finished's result, and in the window they fill the Statistics tab. |
+| [`strings.find`](#stringsfind) | job | Start the Strings tool's search of a span (at most 64 MiB) for runs of text at least min_chars long in the encodings chosen, as a job: the strings found (at most 200000), each with its offset, length, encoding, text and what it looks like (a URL, a path, a key…), are job.finished's result, and in the window they fill the Strings tab. |
+| [`xor.recover_keys`](#xorrecover_keys) | read | Recover single-byte and repeating XOR keys for a span (at most 1 MiB) by letter frequency, index of coincidence and the key showing through zero padding, best first, with a preview of each decode and the likely key lengths; transform.apply with {"op": "xor"} applies one. |
 | [`view.get_shape`](#viewget_shape) | read | The shape a document's bytes are drawn in: the pixel format, pixels per row, the offset of the first pixel, a bit shift and the bytes skipped after each row. |
 | [`view.set_shape`](#viewset_shape) | view | Change the shape a document's bytes are drawn in (the pixel format, pixels per row, the first pixel's offset and bit, the padding after each row); what is not given stays as it is. |
 | [`view.fold`](#viewfold) | view | Skip ranges of a document in its views (the raster and the hex dump) without deleting them; a marker shows where each was. |
@@ -1616,6 +1619,54 @@ Ask a running job to stop; it ends as cancelled, without a result, as soon as it
 | `state` | `"running"` \| `"cancelling"` \| `"finished"` \| `"failed"` \| `"cancelled"` | yes | Where a job is. |
 | `title` | string | yes | What the job does, such as "Report". |
 | `total` | integer | no | Units of work in all, when known. |
+
+### statistics.analyse
+
+Start the Statistics tool's measure of a span (at most 64 MiB) as a job: the ent randomness tests with a verdict, the byte histogram, entropy and compressibility along the span and the most repeated byte sequences are job.finished's result, and in the window they fill the Statistics tab.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `doc` | string | no | Document id, path or "current" (the default). |
+| `len` | integer | no | Bytes measured, at most 64 MiB; to the end of the document (or 64 MiB) when omitted. |
+| `start` | integer | no | First offset measured (0 by default). |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `job` | string | yes | Follow it with jobs.status, or on job.progress and job.finished. |
+
+### strings.find
+
+Start the Strings tool's search of a span (at most 64 MiB) for runs of text at least min_chars long in the encodings chosen, as a job: the strings found (at most 200000), each with its offset, length, encoding, text and what it looks like (a URL, a path, a key…), are job.finished's result, and in the window they fill the Strings tab.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `doc` | string | no | Document id, path or "current" (the default). |
+| `encodings` | array of `"ascii"` \| `"utf8"` \| `"utf16le"` \| `"utf16be"` | no | The encodings looked for (ascii, utf8 and utf16le by default). |
+| `len` | integer | no | Bytes searched, at most 64 MiB; to the end of the document (or 64 MiB) when omitted. |
+| `min_chars` | integer | no | Fewest characters in a string, 2 to 256 (6 by default). |
+| `start` | integer | no | First offset searched (0 by default). |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `job` | string | yes | Follow it with jobs.status, or on job.progress and job.finished. |
+
+### xor.recover_keys
+
+Recover single-byte and repeating XOR keys for a span (at most 1 MiB) by letter frequency, index of coincidence and the key showing through zero padding, best first, with a preview of each decode and the likely key lengths; transform.apply with {"op": "xor"} applies one.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `doc` | string | no | Document id, path or "current" (the default). |
+| `len` | integer | no | Bytes searched, at most 1 MiB; to the end of the document (or 1 MiB) when omitted. |
+| `max_key` | integer | no | Longest key looked for, 1 to 256 bytes (32 by default). |
+| `start` | integer | no | First offset of the suspect bytes (0 by default). |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `candidates` | array of KeyCandidate | yes | The keys proposed, best first. |
+| `key_lengths` | array of KeyLength | yes | The likely key lengths, best first. |
+| `len` | integer | yes | Bytes searched. |
+| `start` | integer | yes | First offset searched. |
 
 ### view.get_shape
 

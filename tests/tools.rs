@@ -499,7 +499,7 @@ fn statistics_strings_and_xor_tabs_diagnose_data() {
     harness.get_by_label_contains("Find strings").click();
     wait_for(&mut harness, |app| app.bench.tools.stats.strings.is_some());
     steps(&mut harness, 3);
-    let (_, found) = harness.state().bench.tools.stats.strings.clone().unwrap();
+    let found = harness.state().bench.tools.stats.strings.as_ref().unwrap().strings.clone();
     assert!(found.iter().any(|s| s.text.contains("http://10.0.0.7/api")), "{} strings", found.len());
 
     // XOR: the encrypted copy's key is recovered and applied as an edit.
