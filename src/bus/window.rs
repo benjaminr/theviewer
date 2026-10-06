@@ -78,7 +78,7 @@ impl ViewerApp {
     /// Returns whether messages were left for the next frame, because more
     /// than a frame's worth were queued.
     pub fn run_bus(&mut self) -> bool {
-        self.publish_edits();
+        self.publish_edits_as(crate::api::workspace::DOCUMENT_PRODUCER);
         self.publish_selection_if_changed(MAIN_VIEW);
         self.publish_pinned_findings();
         self.publish_plugin_log();
@@ -112,19 +112,13 @@ impl ViewerApp {
         self.bus_watch.pinned.clear();
     }
 
-    /// Publish the edits made since the last `document.edited`.
-    fn publish_edits(&mut self) {
-        let version = self.document.version();
-        if version == self.bus_watch.version {
-            return;
-        }
-        // When the log no longer reaches back, the edits are not listed and
-        // nothing can be carried through them.
-        let edits = self.document.edits_since(self.bus_watch.version);
-        let complete = edits.is_some();
-        let edits = edits.unwrap_or_default();
-        self.publish("document", Payload::DocumentEdited(DocumentEdited { edits, complete }));
-        self.bus_watch.version = version;
+    /// Publish the edits made since the last `document.edited` as
+    /// `producer`'s: the document's own when made by hand, or the API
+    /// caller's that made them.
+    pub(crate) fn publish_edits_as(&mut self, producer: &str) {
+        let Some(edited) = crate::api::workspace::edits_since(&self.document, self.bus_watch.version) else { return };
+        self.publish(producer, Payload::DocumentEdited(edited));
+        self.bus_watch.version = self.document.version();
     }
 
     /// Publish the selection (and the cursor, if it moved) as `producer`'s

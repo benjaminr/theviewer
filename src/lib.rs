@@ -23,6 +23,7 @@ pub mod columns;
 pub mod commands;
 pub mod compress;
 pub mod config;
+pub mod confirmations;
 pub mod corpus;
 pub mod correlation;
 pub mod cortex_m;

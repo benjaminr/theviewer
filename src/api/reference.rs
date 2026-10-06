@@ -82,7 +82,8 @@ mod tests {
     use serde_json::json;
 
     use crate::api::test_support::workspace_with;
-    use crate::api::{ErrorCode, call};
+    use crate::api::ErrorCode;
+    use crate::api::test_support::call;
 
     #[test]
     fn notes_are_found_by_id_by_port_and_by_words() {

@@ -1,11 +1,15 @@
-//! `findings.*`: what the detectors recognise in a span.
+//! `findings.*`: what the detectors recognise in a span, and findings a
+//! caller publishes on the bus for every tool to show.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use super::values;
+use super::permissions::Caller;
 use super::workspace::{self, Workspace};
 use super::ApiError;
+use crate::bus::topics::FindingsPublished;
+use crate::bus::{Draft, Payload};
 use crate::patterns;
 use crate::plugin::{Category, Finding, ScanContext};
 
@@ -72,6 +76,80 @@ pub fn query(workspace: &mut dyn Workspace, params: QueryParams) -> Result<Query
     Ok(QueryResult { findings, next })
 }
 
+/// Most findings one `findings.publish` may carry.
+const MOST_PUBLISHED: usize = 10_000;
+
+/// Parameters of `findings.publish`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PublishParams {
+    /// Document id, path or "current" (the default).
+    #[serde(default)]
+    pub doc: Option<String>,
+    /// The findings, in document offsets; they replace those the caller published before under the same key.
+    pub findings: Vec<Finding>,
+    /// Tells apart several sets of findings one caller keeps (empty by default).
+    #[serde(default)]
+    pub key: String,
+}
+
+/// Parameters of `findings.retract`.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RetractParams {
+    /// Document id, path or "current" (the default).
+    #[serde(default)]
+    pub doc: Option<String>,
+    /// The key the findings were published under (empty by default).
+    #[serde(default)]
+    pub key: String,
+}
+
+/// The result of `findings.publish` and `findings.retract`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct PublishResult {
+    /// Id of the document.
+    pub doc: String,
+    /// Who the findings are published as, such as "mcp:claude-code".
+    pub producer: String,
+    /// Findings published (none for a retraction).
+    pub findings: usize,
+}
+
+/// The `findings.published` message for `findings` about document `doc`, as `caller`'s.
+fn findings_draft(workspace: &mut dyn Workspace, caller: &Caller, doc: &str, key: String, findings: Vec<Finding>) -> Result<Draft, ApiError> {
+    let version = workspace::info(workspace, doc)?.version;
+    let mut draft = Draft::new(caller.producer(), Payload::FindingsPublished(FindingsPublished { findings: Vec::new() })).about(doc, version).key(key);
+    if let Some(start) = findings.iter().map(|finding| finding.start).min() {
+        let end = findings.iter().map(Finding::end).max().unwrap_or(start);
+        draft = draft.span(start, end - start);
+    }
+    draft.payload = Payload::FindingsPublished(FindingsPublished { findings });
+    Ok(draft)
+}
+
+pub fn publish(workspace: &mut dyn Workspace, caller: &Caller, params: PublishParams) -> Result<PublishResult, ApiError> {
+    if params.findings.len() > MOST_PUBLISHED {
+        return Err(ApiError::too_large(format!("{} findings is over the limit of {MOST_PUBLISHED} for one call", params.findings.len())));
+    }
+    let doc = workspace::resolve(workspace, params.doc.as_deref())?;
+    let len = workspace::info(workspace, &doc)?.len as usize;
+    if let Some(outside) = params.findings.iter().find(|finding| finding.end() > len) {
+        return Err(ApiError::out_of_range(format!("the finding '{}' at {:#x} runs past the end of the document ({len} bytes)", outside.id, outside.start)));
+    }
+    let count = params.findings.len();
+    let draft = findings_draft(workspace, caller, &doc, params.key, params.findings)?;
+    workspace.bus().publish(draft);
+    Ok(PublishResult { doc, producer: caller.producer(), findings: count })
+}
+
+pub fn retract(workspace: &mut dyn Workspace, caller: &Caller, params: RetractParams) -> Result<PublishResult, ApiError> {
+    let doc = workspace::resolve(workspace, params.doc.as_deref())?;
+    let draft = findings_draft(workspace, caller, &doc, params.key, Vec::new())?.retraction();
+    workspace.bus().publish(draft);
+    Ok(PublishResult { doc, producer: caller.producer(), findings: 0 })
+}
+
 #[cfg(test)]
 mod tests {
     use std::io::Write;
@@ -79,7 +157,8 @@ mod tests {
     use serde_json::json;
 
     use crate::api::test_support::workspace_with;
-    use crate::api::{ErrorCode, call};
+    use crate::api::ErrorCode;
+    use crate::api::test_support::call;
 
     fn file_with_gzip() -> (Vec<u8>, usize) {
         let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
@@ -112,5 +191,22 @@ mod tests {
         assert_eq!(first["findings"].as_array().unwrap().len(), total.min(1));
         assert_eq!(first["next"].is_string(), total > 1, "a cursor is given exactly when more findings follow");
         assert_eq!(call(&mut workspace, "findings.query", json!({"categories": ["melted"]})).unwrap_err().code, ErrorCode::InvalidParams);
+    }
+
+    #[test]
+    fn published_findings_are_kept_as_the_callers_until_retracted() {
+        let mut workspace = workspace_with("a.bin", &[0u8; 64]);
+        let caller = crate::api::Caller::Plugin("sync_word.lua".into());
+        let finding = json!({"id": "sync", "source": "sync_word", "category": "protocol", "start": 8, "len": 2, "title": "Sync word", "detail": "", "confidence": 0.9, "fields": []});
+        let published = crate::api::call(&mut workspace, &caller, "findings.publish", json!({"findings": [finding], "key": "sync"})).unwrap();
+        assert_eq!(published["producer"], "plugin:sync_word.lua");
+        let facts = call(&mut workspace, "events.facts", json!({"topic": "findings.published", "producer": "plugin:sync_word.lua"})).unwrap();
+        assert_eq!(facts["facts"][0]["span"], json!({"start": 8, "len": 2}));
+        assert_eq!(facts["facts"][0]["key"], "sync");
+        crate::api::call(&mut workspace, &caller, "findings.retract", json!({"key": "sync"})).unwrap();
+        let facts = call(&mut workspace, "events.facts", json!({"topic": "findings.published", "producer": "plugin:sync_word.lua"})).unwrap();
+        assert!(facts["facts"].as_array().unwrap().is_empty());
+        let outside = json!({"id": "x", "source": "x", "category": "custom", "start": 60, "len": 8, "title": "", "detail": "", "confidence": 1.0, "fields": []});
+        assert_eq!(call(&mut workspace, "findings.publish", json!({"findings": [outside]})).unwrap_err().code, ErrorCode::OutOfRange);
     }
 }

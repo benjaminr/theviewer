@@ -301,7 +301,8 @@ mod tests {
     use serde_json::json;
 
     use crate::api::test_support::workspace_with;
-    use crate::api::{ErrorCode, call};
+    use crate::api::ErrorCode;
+    use crate::api::test_support::call;
 
     fn text_then_zeros() -> Vec<u8> {
         let mut bytes = b"The quick brown fox jumps over the lazy dog. ".repeat(200);

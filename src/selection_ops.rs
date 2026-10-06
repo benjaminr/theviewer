@@ -91,6 +91,59 @@ impl Operation {
         }
     }
 
+    /// The operation's short name, as the undo history labels it ("XOR").
+    pub fn name(&self) -> &'static str {
+        match self {
+            Operation::Delete => "Delete",
+            Operation::InsertBefore(_) => "Insert before",
+            Operation::InsertAfter(_) => "Insert after",
+            Operation::Fill(_) => "Fill",
+            Operation::Invert => "Invert",
+            Operation::Xor(_) => "XOR",
+            Operation::Add(_) => "Add",
+            Operation::Subtract(_) => "Subtract",
+            Operation::Reverse => "Reverse",
+            Operation::MirrorBits => "Mirror bits",
+            Operation::ShiftBits(_) => "Shift bits",
+            Operation::RotateBits(_) => "Rotate bits",
+            Operation::RotateBytes(_) => "Rotate bytes",
+            Operation::SwapByteOrder(_) => "Swap byte order",
+            Operation::Counter { .. } => "Number",
+            Operation::Duplicate => "Duplicate",
+            Operation::Compress(_) => "Compress",
+            Operation::Decompress => "Decompress",
+        }
+    }
+
+    /// The operation applied to `target` (such as "128 selected bytes"),
+    /// in plain words: "XOR 128 selected bytes with 5A".
+    pub fn describe(&self, target: &str) -> String {
+        let hex = |bytes: &[u8]| preview_hex(bytes);
+        match self {
+            Operation::Delete => format!("Delete {target}"),
+            Operation::InsertBefore(bytes) => format!("Insert {} before {target}", hex(bytes)),
+            Operation::InsertAfter(bytes) => format!("Insert {} after {target}", hex(bytes)),
+            Operation::Fill(pattern) => format!("Fill {target} with {}", hex(pattern)),
+            Operation::Invert => format!("Invert {target}"),
+            Operation::Xor(key) => format!("XOR {target} with {}", hex(key)),
+            Operation::Add(key) => format!("Add {} to {target}", hex(key)),
+            Operation::Subtract(key) => format!("Subtract {} from {target}", hex(key)),
+            Operation::Reverse => format!("Reverse {target}"),
+            Operation::MirrorBits => format!("Mirror the bits of {target}"),
+            Operation::ShiftBits(amount) => format!("Shift the bits of {target} by {amount}"),
+            Operation::RotateBits(amount) => format!("Rotate the bits of {target} by {amount}"),
+            Operation::RotateBytes(amount) => format!("Rotate {target} by {amount} bytes"),
+            Operation::SwapByteOrder(width) => format!("Swap the byte order of the {width}-byte values in {target}"),
+            Operation::Counter { start, step, little_endian } => {
+                let order = if *little_endian { "little-endian" } else { "big-endian" };
+                format!("Number {target} from {start} in steps of {step}, {order}")
+            }
+            Operation::Duplicate => format!("Duplicate {target}"),
+            Operation::Compress(codec) => format!("Compress {target} with {}", codec.label()),
+            Operation::Decompress => format!("Decompress {target}"),
+        }
+    }
+
     /// Whether each range keeps its length, so a column stays a column.
     pub fn keeps_length(&self) -> bool {
         !matches!(
@@ -220,6 +273,18 @@ impl From<OperationJson> for Operation {
             OperationJson::Decompress => Operation::Decompress,
         }
     }
+}
+
+/// Most bytes [`preview_hex`] shows before it stops with an ellipsis.
+const PREVIEW_BYTES: usize = 16;
+
+/// Bytes as a short upper-case hex preview for messages: "DE AD BE EF",
+/// cut off after 16 bytes with "… (40 bytes)".
+pub fn preview_hex(bytes: &[u8]) -> String {
+    if bytes.len() <= PREVIEW_BYTES {
+        return ops::to_hex_string(bytes);
+    }
+    format!("{} … ({} bytes)", ops::to_hex_string(&bytes[..PREVIEW_BYTES]), bytes.len())
 }
 
 /// The new bytes for one selected range. `index` counts the ranges from the

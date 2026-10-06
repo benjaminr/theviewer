@@ -92,6 +92,11 @@ pub struct ApplyParams {
     /// The `next` cursor of the previous page of records.
     #[serde(default)]
     pub next: Option<String>,
+    /// Pin the parse as the template tool does: its records are outlined
+    /// in the views and its structure published, in place of the last
+    /// template pinned.
+    #[serde(default)]
+    pub pin: bool,
 }
 
 /// One leaf value of a record.
@@ -180,10 +185,13 @@ pub fn apply_template(workspace: &mut dyn Workspace, params: ApplyParams) -> Res
         (None, Some(source)) => Template::parse(source).map_err(|error| ApiError::invalid_params(format!("the template does not parse: {error}")))?,
         _ => return Err(ApiError::invalid_params("give the template by name or as source, not both")),
     };
-    let (_, document) = workspace::document(workspace, params.doc.as_deref())?;
+    let (doc, document) = workspace::document(workspace, params.doc.as_deref())?;
     let (at, available) = values::span_within(document.len(), params.at, None)?;
     let bytes = document.read_range(at, available.min(MAX_CALL_BYTES));
     let applied = template.apply(&bytes, at);
+    if params.pin {
+        workspace.pin_template(&doc, applied.finding.clone());
+    }
     let columns = applied.columns();
     let total_records = applied.records.len() as u64;
     let records = applied
@@ -204,7 +212,8 @@ mod tests {
     use serde_json::json;
 
     use crate::api::test_support::workspace_with;
-    use crate::api::{ErrorCode, call};
+    use crate::api::ErrorCode;
+    use crate::api::test_support::call;
 
     fn png() -> Vec<u8> {
         let image = image::RgbaImage::from_fn(3, 2, |x, _| image::Rgba([x as u8, 0, 0, 255]));
@@ -248,5 +257,17 @@ mod tests {
         assert_eq!(call(&mut workspace, "templates.apply", json!({})).unwrap_err().code, ErrorCode::InvalidParams);
         assert_eq!(call(&mut workspace, "templates.apply", json!({"source": "struct {"})).unwrap_err().code, ErrorCode::InvalidParams);
         assert_eq!(call(&mut workspace, "templates.apply", json!({"name": "no such"})).unwrap_err().code, ErrorCode::NotFound);
+    }
+
+    #[test]
+    fn a_pinned_template_is_published_as_the_template_tools() {
+        let mut workspace = workspace_with("a.bin", &[1, 0, 2, 0]);
+        call(&mut workspace, "templates.apply", json!({"source": "endian little\nstruct R { n: u16 }\nroot R[until_end]"})).unwrap();
+        let none = call(&mut workspace, "events.facts", json!({"producer": "tool:templates"})).unwrap();
+        assert!(none["facts"].as_array().unwrap().is_empty(), "applying alone pins nothing");
+        call(&mut workspace, "templates.apply", json!({"source": "endian little\nstruct R { n: u16 }\nroot R[until_end]", "pin": true})).unwrap();
+        let pinned = call(&mut workspace, "events.facts", json!({"producer": "tool:templates"})).unwrap();
+        let topics: Vec<&str> = pinned["facts"].as_array().unwrap().iter().filter_map(|fact| fact["topic"].as_str()).collect();
+        assert!(topics.contains(&"structure.identified") && topics.contains(&"findings.published"), "{topics:?}");
     }
 }

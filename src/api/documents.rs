@@ -32,6 +32,38 @@ pub struct OpenParams {
     pub path: String,
 }
 
+/// Parameters of `documents.save`.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SaveParams {
+    /// Document id, path or "current" (the default).
+    #[serde(default)]
+    pub doc: Option<String>,
+    /// Where to save; over the document's own file when omitted.
+    #[serde(default)]
+    pub path: Option<String>,
+}
+
+/// Parameters of `documents.new`.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct NewParams {
+    /// What to call the document ("untitled" by default).
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+pub fn save(workspace: &mut dyn Workspace, params: SaveParams) -> Result<DocumentInfo, ApiError> {
+    let id = workspace::resolve(workspace, params.doc.as_deref())?;
+    workspace.save(&id, params.path.as_deref().map(Path::new))?;
+    workspace::info(workspace, &id)
+}
+
+pub fn new(workspace: &mut dyn Workspace, params: NewParams) -> Result<DocumentInfo, ApiError> {
+    let id = workspace.new_document(params.name.as_deref().unwrap_or("untitled"))?;
+    workspace::info(workspace, &id)
+}
+
 pub fn list(workspace: &mut dyn Workspace, _params: NoParams) -> Result<DocumentList, ApiError> {
     Ok(DocumentList { documents: workspace.documents() })
 }
@@ -51,7 +83,8 @@ mod tests {
     use serde_json::json;
 
     use crate::api::test_support::workspace_with;
-    use crate::api::{ErrorCode, call};
+    use crate::api::ErrorCode;
+    use crate::api::test_support::call;
 
     #[test]
     fn the_open_documents_are_listed_with_their_lengths() {
@@ -72,6 +105,23 @@ mod tests {
         let mut workspace = workspace_with("first.bin", b"x");
         let opened = call(&mut workspace, "documents.open", json!({"path": path.display().to_string()})).unwrap();
         assert_eq!((opened["id"].as_str(), opened["len"].as_u64(), opened["current"].as_bool()), (Some("doc-2"), Some(3), Some(true)));
+        std::fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn saving_writes_the_edits_and_a_new_document_starts_empty() {
+        let path = std::env::temp_dir().join(format!("theviewer-api-save-{}.bin", std::process::id()));
+        std::fs::write(&path, b"abc").unwrap();
+        let mut workspace = workspace_with("first.bin", b"x");
+        call(&mut workspace, "documents.open", json!({"path": path.display().to_string()})).unwrap();
+        call(&mut workspace, "bytes.write", json!({"start": 0, "data": "41"})).unwrap();
+        assert_eq!(call(&mut workspace, "documents.info", json!({})).unwrap()["modified"], true);
+        let saved = call(&mut workspace, "documents.save", json!({})).unwrap();
+        assert_eq!(saved["modified"], false);
+        assert_eq!(std::fs::read(&path).unwrap(), b"Abc");
+        assert_eq!(call(&mut workspace, "documents.save", json!({"doc": "doc-1"})).unwrap_err().code, ErrorCode::InvalidParams, "a document with no file needs a path");
+        let fresh = call(&mut workspace, "documents.new", json!({"name": "scratch"})).unwrap();
+        assert_eq!((fresh["name"].as_str(), fresh["len"].as_u64(), fresh["current"].as_bool()), (Some("scratch"), Some(0), Some(true)));
         std::fs::remove_file(path).ok();
     }
 }

@@ -365,6 +365,11 @@ pub struct ViewerApp {
     pub(crate) bus_watch: crate::bus::window::BusWatch,
     /// Run for each message the bus delivers.
     pub(crate) reactions: Vec<crate::bus::window::Reaction>,
+    /// Methods plugins registered, which join the data API's table.
+    pub plugin_methods: Vec<Arc<crate::api::RegisteredMethod>>,
+    /// Calls from plugins, Ask and other clients waiting for the person to
+    /// allow or deny them, oldest first; the first is shown.
+    pub confirmations: crate::confirmations::Confirmations,
 }
 
 /// Matches of the Find box within a window of the document, for highlighting.
@@ -616,6 +621,8 @@ impl ViewerApp {
             bus: crate::bus::Bus::new(),
             bus_watch: Default::default(),
             reactions: crate::bus::window::builtin_reactions(),
+            plugin_methods: Vec::new(),
+            confirmations: Default::default(),
         };
         if launch.restore_layout {
             app.persist_layout = true;
@@ -859,7 +866,8 @@ impl ViewerApp {
     fn complete_file_action(&mut self, action: FileAction, path: &Path) {
         match action {
             FileAction::Open => self.load_path(path),
-            FileAction::SaveAs => self.save_to(path),
+            // The status bar says whether saving worked.
+            FileAction::SaveAs => drop(self.save_to(path)),
             FileAction::Extract { decompressed: true } => self.export_decompressed_to(path),
             FileAction::Extract { decompressed: false } => self.export_bytes_to(path),
             FileAction::Compare => {
@@ -881,7 +889,7 @@ impl ViewerApp {
     pub fn save(&mut self) {
         self.save_sidecar();
         match self.document.path().map(Path::to_path_buf) {
-            Some(path) => self.save_to(&path),
+            Some(path) => drop(self.save_to(&path)),
             None => self.save_as_dialog(),
         }
     }
@@ -894,7 +902,9 @@ impl ViewerApp {
         self.ask_for_file(DialogKind::Save, dialog, FileAction::SaveAs);
     }
 
-    fn save_to(&mut self, path: &Path) {
+    /// Save the document to `path` and say so in the status bar; the error
+    /// says why not.
+    pub(crate) fn save_to(&mut self, path: &Path) -> Result<(), String> {
         match self.document.save_to(path) {
             Ok(()) => {
                 let cursor = self.cursor;
@@ -906,8 +916,12 @@ impl ViewerApp {
                 self.cursor = cursor.min(self.document.len());
                 self.top_row = top_row;
                 self.status = format!("Saved {}", path.display());
+                Ok(())
             }
-            Err(error) => self.status = format!("Save failed: {error:#}"),
+            Err(error) => {
+                self.status = format!("Save failed: {error:#}");
+                Err(format!("could not save {}: {error:#}", path.display()))
+            }
         }
     }
 
@@ -1394,16 +1408,18 @@ impl ViewerApp {
     }
 
     pub fn undo(&mut self) {
+        let label = self.document.undo_label().map(str::to_string);
         if let Some(position) = self.document.undo() {
             self.after_edit(position);
-            self.status = "Undid the last edit".to_string();
+            self.status = label.map_or_else(|| "Undid the last edit".to_string(), |label| format!("Undid {label}"));
         }
     }
 
     pub fn redo(&mut self) {
+        let label = self.document.redo_label().map(str::to_string);
         if let Some(position) = self.document.redo() {
             self.after_edit(position);
-            self.status = "Redid the edit".to_string();
+            self.status = label.map_or_else(|| "Redid the edit".to_string(), |label| format!("Redid {label}"));
         }
     }
 
@@ -1938,6 +1954,11 @@ impl ViewerApp {
             .into_iter()
             .map(|action| PluginAction { id: action.id, title: format!("{} ({})", action.title, action.plugin) })
             .collect()
+    }
+
+    /// The plugins that declared they edit, by file name.
+    pub fn editing_plugins(&self) -> Vec<String> {
+        Vec::new()
     }
 
     pub fn run_plugin_action(&mut self, id: &str) {
@@ -2997,8 +3018,8 @@ impl ViewerApp {
                 if ui.button("Extract decompressed contents to file…").clicked() { self.export_dialog(true); ui.close(); }
             });
             ui.menu_button("Edit", |ui| {
-                if ui.add_enabled(self.document.can_undo(), egui::Button::new("Undo   Cmd+Z")).clicked() { self.undo(); ui.close(); }
-                if ui.add_enabled(self.document.can_redo(), egui::Button::new("Redo   Shift+Cmd+Z")).clicked() { self.redo(); ui.close(); }
+                if ui.add_enabled(self.document.can_undo(), egui::Button::new(history_item("Undo", self.document.undo_label(), "Cmd+Z"))).clicked() { self.undo(); ui.close(); }
+                if ui.add_enabled(self.document.can_redo(), egui::Button::new(history_item("Redo", self.document.redo_label(), "Shift+Cmd+Z"))).clicked() { self.redo(); ui.close(); }
                 ui.separator();
                 if ui.button("Cut   Cmd+X").clicked() { let ctx = ui.ctx().clone(); self.cut(&ctx); ui.close(); }
                 if ui.button("Copy   Cmd+C").clicked() { let ctx = ui.ctx().clone(); self.copy(&ctx); ui.close(); }
@@ -3409,12 +3430,12 @@ impl ViewerApp {
                 self.toggle_edit_mode();
             }
             ui.add_enabled_ui(self.document.can_undo(), |ui| {
-                if ui.button("Undo").on_hover_text("Cmd+Z").clicked() {
+                if ui.button("Undo").on_hover_text(history_item("Undo", self.document.undo_label(), "Cmd+Z")).clicked() {
                     self.undo();
                 }
             });
             ui.add_enabled_ui(self.document.can_redo(), |ui| {
-                if ui.button("Redo").on_hover_text("Shift+Cmd+Z").clicked() {
+                if ui.button("Redo").on_hover_text(history_item("Redo", self.document.redo_label(), "Shift+Cmd+Z")).clicked() {
                     self.redo();
                 }
             });
@@ -3766,6 +3787,7 @@ impl eframe::App for ViewerApp {
         self.media.show(&ctx);
         self.show_plot_window(&ctx);
         self.show_settings_window(&ctx);
+        self.show_confirmation_window(&ctx);
         self.show_bookmark_prompt(&ctx);
         crate::selection_menu::show_insert_dialog(self, &ctx);
         commands::show_palette(self, &ctx);
@@ -3795,6 +3817,15 @@ pub fn human_size(bytes: usize) -> String {
         format!("{bytes} B")
     } else {
         format!("{value:.1} {} ({bytes} B)", UNITS[unit])
+    }
+}
+
+/// An Edit menu item for undo or redo, naming the step when it was named:
+/// "Undo XOR by mcp:claude-code   Cmd+Z".
+pub fn history_item(verb: &str, label: Option<&str>, shortcut: &str) -> String {
+    match label {
+        Some(label) => format!("{verb} {label}   {shortcut}"),
+        None => format!("{verb}   {shortcut}"),
     }
 }
 

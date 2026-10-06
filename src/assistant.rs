@@ -197,7 +197,7 @@ impl ToolCall {
     /// Run the call against `workspace`: the method's JSON result, or its
     /// error as JSON.
     pub fn run(&self, workspace: &mut dyn api::Workspace) -> Result<String, String> {
-        api::call(workspace, self.method, self.params.clone()).map(|result| result.to_string()).map_err(|error| error.to_json().to_string())
+        api::call(workspace, &api::Caller::Ask, self.method, self.params.clone()).map(|result| result.to_string()).map_err(|error| error.to_json().to_string())
     }
 }
 

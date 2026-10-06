@@ -97,7 +97,8 @@ mod tests {
     use serde_json::json;
 
     use crate::api::test_support::workspace_with;
-    use crate::api::{ErrorCode, call};
+    use crate::api::ErrorCode;
+    use crate::api::test_support::call;
 
     #[test]
     fn bytes_read_as_every_width_and_order_that_fits() {

@@ -29,10 +29,12 @@ pub mod analysis;
 pub mod bytes;
 pub mod codecs;
 pub mod documents;
+pub mod edits;
 pub mod events;
 pub mod findings;
 pub mod numbers;
 pub mod packets;
+pub mod permissions;
 pub mod reference;
 pub mod search;
 pub mod selection;
@@ -41,12 +43,14 @@ pub mod values;
 pub mod workspace;
 
 use std::fmt;
+use std::sync::Arc;
 
 use schemars::{JsonSchema, Schema};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+pub use permissions::{Caller, Decision, HeldCall, Policy};
 pub use workspace::{HeadlessWorkspace, Workspace};
 
 /// The API version, which `api.version` returns. Within a major version
@@ -92,14 +96,113 @@ pub struct Method {
     pub params: fn() -> Schema,
     /// JSON Schema of the result.
     pub result: fn() -> Schema,
-    /// Check the JSON parameters, run the method and return its JSON result.
-    pub run: fn(&mut dyn Workspace, Value) -> Result<Value, ApiError>,
+    /// Check the JSON parameters, run the method for the caller and return
+    /// its JSON result.
+    pub run: fn(&mut dyn Workspace, &Caller, Value) -> Result<Value, ApiError>,
 }
 
 impl Method {
     /// The namespace, such as `bytes` for `bytes.read`.
     pub fn namespace(&self) -> &'static str {
-        self.name.split_once('.').map_or(self.name, |(namespace, _)| namespace)
+        namespace_of(self.name)
+    }
+}
+
+/// The namespace of a dotted method name.
+pub fn namespace_of(name: &str) -> &str {
+    name.split_once('.').map_or(name, |(namespace, _)| namespace)
+}
+
+/// What runs a method a plugin registered.
+pub type RunRegistered = dyn Fn(&mut dyn Workspace, &Caller, Value) -> Result<Value, ApiError> + Send + Sync;
+
+/// A method added at run time, by a plugin's `theviewer.register_method`.
+/// It joins the table for `api.describe`, Ask's tools and every other
+/// client, and is always experimental.
+pub struct RegisteredMethod {
+    /// Dotted name, such as `acme.decode_frame`.
+    pub name: String,
+    pub summary: String,
+    /// `read` or `edit`.
+    pub effect: Effect,
+    /// JSON Schema of the parameters.
+    pub params: Value,
+    /// JSON Schema of the result.
+    pub result: Value,
+    /// Who registered it, such as `plugin:acme.lua`.
+    pub owner: String,
+    pub run: Box<RunRegistered>,
+}
+
+impl fmt::Debug for RegisteredMethod {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.debug_struct("RegisteredMethod").field("name", &self.name).field("effect", &self.effect).field("owner", &self.owner).finish()
+    }
+}
+
+/// A method found by name: one of the table's or one a plugin registered.
+#[derive(Clone)]
+pub enum MethodRef {
+    Builtin(&'static Method),
+    Registered(Arc<RegisteredMethod>),
+}
+
+impl MethodRef {
+    pub fn name(&self) -> &str {
+        match self {
+            MethodRef::Builtin(method) => method.name,
+            MethodRef::Registered(method) => &method.name,
+        }
+    }
+
+    pub fn summary(&self) -> &str {
+        match self {
+            MethodRef::Builtin(method) => method.summary,
+            MethodRef::Registered(method) => &method.summary,
+        }
+    }
+
+    pub fn effect(&self) -> Effect {
+        match self {
+            MethodRef::Builtin(method) => method.effect,
+            MethodRef::Registered(method) => method.effect,
+        }
+    }
+
+    /// JSON Schema of the parameters.
+    pub fn params_schema(&self) -> Value {
+        match self {
+            MethodRef::Builtin(method) => (method.params)().to_value(),
+            MethodRef::Registered(method) => method.params.clone(),
+        }
+    }
+
+    fn describe(&self) -> MethodDescription {
+        match self {
+            MethodRef::Builtin(method) => MethodDescription {
+                name: method.name.to_string(),
+                summary: method.summary.to_string(),
+                effect: method.effect,
+                stability: method.stability,
+                params: (method.params)().to_value(),
+                result: (method.result)().to_value(),
+            },
+            MethodRef::Registered(method) => MethodDescription {
+                name: method.name.clone(),
+                summary: method.summary.clone(),
+                effect: method.effect,
+                stability: Stability::Experimental,
+                params: method.params.clone(),
+                result: method.result.clone(),
+            },
+        }
+    }
+
+    fn run(&self, workspace: &mut dyn Workspace, caller: &Caller, params: Value) -> Result<Value, ApiError> {
+        match self {
+            MethodRef::Builtin(method) => (method.run)(workspace, caller, params),
+            MethodRef::Registered(method) => (method.run)(workspace, caller, params),
+        }
     }
 }
 
@@ -158,6 +261,19 @@ impl ApiError {
         Self::new(ErrorCode::TooLarge, message)
     }
 
+    pub fn version_conflict(message: impl Into<String>) -> Self {
+        Self::new(ErrorCode::VersionConflict, message)
+    }
+
+    pub fn plugin_failed(message: impl Into<String>) -> Self {
+        Self::new(ErrorCode::PluginFailed, message)
+    }
+
+    /// Whether this is the error of a call that must be confirmed first.
+    pub fn needs_confirmation(&self) -> bool {
+        self.data.as_ref().is_some_and(|data| data["reason"] == permissions::NEEDS_CONFIRMATION)
+    }
+
     pub fn with_data(mut self, data: Value) -> Self {
         self.data = Some(data);
         self
@@ -185,7 +301,7 @@ fn schema_of<T: JsonSchema>() -> Schema {
 /// Run a typed method on JSON parameters: missing parameters count as `{}`,
 /// and parameters that do not fit the method's type are `invalid_params`.
 fn run_typed<P: DeserializeOwned, R: Serialize>(
-    function: fn(&mut dyn Workspace, P) -> Result<R, ApiError>,
+    function: impl FnOnce(&mut dyn Workspace, P) -> Result<R, ApiError>,
     workspace: &mut dyn Workspace,
     params: Value,
 ) -> Result<Value, ApiError> {
@@ -196,8 +312,21 @@ fn run_typed<P: DeserializeOwned, R: Serialize>(
 }
 
 /// One row of the method table: name, effect, typed function, its params
-/// and result types, and the summary.
+/// and result types, and the summary. Methods that act for their caller
+/// (edits are labelled with it, facts published as it) are written
+/// `caller fn`, and take the caller after the workspace.
 macro_rules! method {
+    ($name:literal, $effect:ident, caller $function:path, $params:ty, $result:ty, $summary:literal) => {
+        Method {
+            name: $name,
+            summary: $summary,
+            effect: Effect::$effect,
+            stability: Stability::Stable,
+            params: schema_of::<$params>,
+            result: schema_of::<$result>,
+            run: |workspace, caller, params| run_typed(|workspace, typed| $function(workspace, caller, typed), workspace, params),
+        }
+    };
     ($name:literal, $effect:ident, $function:path, $params:ty, $result:ty, $summary:literal) => {
         Method {
             name: $name,
@@ -206,7 +335,7 @@ macro_rules! method {
             stability: Stability::Stable,
             params: schema_of::<$params>,
             result: schema_of::<$result>,
-            run: |workspace, params| run_typed($function, workspace, params),
+            run: |workspace, _caller, params| run_typed($function, workspace, params),
         }
     };
 }
@@ -218,20 +347,36 @@ pub static METHODS: &[Method] = &[
     method!("documents.list", Read, documents::list, values::NoParams, documents::DocumentList, "The open documents, with their ids, names, paths, lengths and versions."),
     method!("documents.info", Read, documents::info, documents::InfoParams, workspace::DocumentInfo, "One document's id, name, path, length, version and whether it has unsaved edits."),
     method!("documents.open", View, documents::open, documents::OpenParams, workspace::DocumentInfo, "Open a file by path and make it the current document; a file already open is made current again."),
+    method!("documents.new", View, documents::new, documents::NewParams, workspace::DocumentInfo, "Open a new, empty document and make it current; the window refuses while its document has unsaved edits."),
+    method!("documents.save", Edit, documents::save, documents::SaveParams, workspace::DocumentInfo, "Save a document over its file, or to a path, with every edit made so far."),
     method!("bytes.read", Read, bytes::read, bytes::ReadParams, bytes::ReadResult, "Read a span of bytes, as hex by default, or as base64 or text."),
     method!("bytes.hexdump", Read, bytes::hexdump, bytes::HexdumpParams, bytes::HexdumpResult, "A classic hex dump of a span, 16 bytes per line with an ASCII column, at most 1 MiB."),
+    method!("bytes.write", Edit, caller edits::write, edits::WriteParams, edits::EditResult, "Overwrite bytes in place with new ones, as one undoable step; the document keeps its length."),
+    method!("bytes.insert", Edit, caller edits::insert, edits::InsertParams, edits::EditResult, "Insert bytes at an offset, as one undoable step; the bytes after it move along."),
+    method!("bytes.delete", Edit, caller edits::delete, edits::DeleteParams, edits::EditResult, "Remove a span of bytes, as one undoable step; the bytes after it move back."),
+    method!("bytes.replace", Edit, caller edits::replace, edits::ReplaceParams, edits::EditResult, "Replace a span of bytes with new bytes of any length, as one undoable step."),
     method!("bits.read", Read, bytes::read_bits, bytes::BitsParams, bytes::BitsResult, "Read a span of bits, most or least significant bit of each byte first, as a string of 0s and 1s and, up to 64 bits, as a number."),
+    method!("bits.write", Edit, caller edits::write_bits, edits::BitsWriteParams, edits::EditResult, "Overwrite bits from any bit offset, most or least significant bit of each byte first, as one undoable step; the bits around them are kept."),
+    method!("transform.apply", Edit, caller edits::apply_transform, edits::TransformParams, edits::EditResult, "Apply an operation (XOR, invert, shift bits, swap byte order, number, compress, decompress and more) to every range of a selection, as one undoable step, and select what it produced."),
+    method!("transform.preview", Read, edits::preview_transform, edits::PreviewParams, edits::PreviewResult, "What transform.apply would write into each range of a selection, without changing anything."),
+    method!("history.undo", Edit, caller edits::undo, edits::HistoryParams, edits::HistoryResult, "Undo the document's last step, whoever made it, and put the cursor where it was."),
+    method!("history.redo", Edit, caller edits::redo, edits::HistoryParams, edits::HistoryResult, "Redo the last step undone, and put the cursor where it was."),
+    method!("history.transaction", Edit, caller edits::transaction, edits::TransactionParams, edits::TransactionResult, "Run several calls on one document as one undoable step; when one fails, every change the others made is reversed."),
     method!("search.find", Read, search::find, search::FindParams, search::FindResult, "The next (or previous) occurrence of hex bytes, text, UTF-16 text or an integer from an offset."),
     method!("search.find_all", Read, search::find_all, search::FindAllParams, search::FindAllResult, "Every occurrence of hex bytes, text, UTF-16 text or an integer in the document, a page at a time."),
     method!("search.count", Read, search::count, search::CountParams, search::CountResult, "How many times hex bytes, text, UTF-16 text or an integer occur in the document, up to a cap."),
     method!("numbers.decode", Read, numbers::decode, numbers::DecodeParams, numbers::DecodeResult, "Read the bytes at an offset as integers, floats, fixed-point numbers and timestamps of each width and byte order."),
     method!("selection.get", Read, selection::get_selection, selection::DocParams, selection::SelectionResult, "What is selected in a document: one range, several ranges or a column of every record."),
     method!("cursor.get", Read, selection::get_cursor, selection::DocParams, selection::CursorResult, "The cursor's offset in a document."),
+    method!("selection.set", View, caller selection::set_selection, selection::SetSelectionParams, selection::SelectionResult, "Select one range, several ranges or a column of every record in a document, or nothing."),
+    method!("cursor.set", View, caller selection::set_cursor, selection::SetCursorParams, selection::CursorResult, "Move the cursor to an offset, selecting nothing."),
     method!("findings.query", Read, findings::query, findings::QueryParams, findings::QueryResult, "Run the detectors over a span and list what they recognise (signatures, compressed streams, counters, timestamps, text, structures), filtered by category, confidence and producer."),
+    method!("findings.publish", Read, caller findings::publish, findings::PublishParams, findings::PublishResult, "Publish findings about a document on the bus as the caller's, for the views, Findings and every other tool to show; they replace the caller's earlier ones under the same key."),
+    method!("findings.retract", Read, caller findings::retract, findings::RetractParams, findings::PublishResult, "Withdraw the findings the caller published under a key."),
     method!("structure.parse", Read, structure::parse, structure::ParseParams, structure::ParseResult, "Parse the structure starting exactly at an offset (executables, images, archives, captures, ASN.1, filesystems) into a field tree, best match first."),
     method!("structure.parsers", Read, structure::parsers, values::NoParams, structure::ParsersResult, "The structure parsers available, built in and from plugins."),
     method!("templates.list", Read, structure::list_templates, values::NoParams, structure::TemplateList, "The binary templates available: the built-in ones and the user's own."),
-    method!("templates.apply", Read, structure::apply_template, structure::ApplyParams, structure::ApplyResult, "Apply a binary template, by name or as source text, at an offset and return its field tree and records, without pinning it."),
+    method!("templates.apply", Read, structure::apply_template, structure::ApplyParams, structure::ApplyResult, "Apply a binary template, by name or as source text, at an offset and return its field tree and records; with pin, also show it as the template tool does."),
     method!("codecs.list", Read, codecs::list, values::NoParams, codecs::CodecList, "The codecs available for decoding, built in and from plugins."),
     method!("codecs.detect", Read, codecs::detect, codecs::DetectParams, codecs::CodecList, "The codecs whose header starts at an offset."),
     method!("codecs.decode", Read, codecs::decode, codecs::DecodeParams, codecs::DecodeResult, "Decode (decompress) a span with a codec and return the output."),
@@ -250,15 +395,76 @@ pub static METHODS: &[Method] = &[
     method!("events.poll", Read, events::poll, events::PollParams, events::PollResult, "The messages (facts and events) published after a cursor, oldest first, optionally of some topics only; pass back next to keep up."),
 ];
 
-/// The method called `name`.
+/// The method called `name` in the table.
 pub fn method(name: &str) -> Option<&'static Method> {
     METHODS.iter().find(|method| method.name == name)
 }
 
-/// Run the method called `name` with JSON parameters.
-pub fn call(workspace: &mut dyn Workspace, name: &str, params: Value) -> Result<Value, ApiError> {
-    let method = method(name).ok_or_else(|| ApiError::not_found(format!("there is no method '{name}'; api.describe lists them")))?;
-    (method.run)(workspace, params)
+/// The method called `name`: the table's, or one a plugin registered in
+/// `workspace`.
+pub fn find(workspace: &dyn Workspace, name: &str) -> Result<MethodRef, ApiError> {
+    if let Some(method) = method(name) {
+        return Ok(MethodRef::Builtin(method));
+    }
+    workspace
+        .registered_methods()
+        .into_iter()
+        .find(|method| method.name == name)
+        .map(MethodRef::Registered)
+        .ok_or_else(|| ApiError::not_found(format!("there is no method '{name}'; api.describe lists them")))
+}
+
+/// Every method: the table's, then those plugins registered in `workspace`.
+pub fn all_methods(workspace: &dyn Workspace) -> Vec<MethodRef> {
+    METHODS.iter().map(MethodRef::Builtin).chain(workspace.registered_methods().into_iter().map(MethodRef::Registered)).collect()
+}
+
+/// Run the method called `name` with JSON parameters for `caller`, once the
+/// workspace allows it: a method that edits or changes the view, called by
+/// anyone but the person at the keyboard, is checked against the caller's
+/// policy. A call that must be confirmed fails here with a `read_only`
+/// error for which [`ApiError::needs_confirmation`] holds; callers that can
+/// wait for the person hold it instead (see [`Workspace::hold_for_confirmation`]).
+pub fn call(workspace: &mut dyn Workspace, caller: &Caller, name: &str, params: Value) -> Result<Value, ApiError> {
+    let method = find(workspace, name)?;
+    match workspace.permission(caller, method.effect()) {
+        Decision::Allowed => method.run(workspace, caller, params),
+        Decision::Denied => Err(permissions::denied(caller, name)),
+        Decision::NeedsConfirmation => Err(permissions::needs_confirmation(caller, name)),
+    }
+}
+
+/// Run the method called `name` without checking the caller's permission:
+/// for calls the person has just allowed, calls inside a call already
+/// allowed (a transaction's), and plugin actions the person ran.
+pub fn call_permitted(workspace: &mut dyn Workspace, caller: &Caller, name: &str, params: Value) -> Result<Value, ApiError> {
+    find(workspace, name)?.run(workspace, caller, params)
+}
+
+/// Run `name` for `caller` if allowed, refuse it if denied, and otherwise
+/// hold it for the person to decide on; `reply` gets the result in every
+/// case, at once or once the person has decided. This is how callers that
+/// cannot block (Ask's tool calls, plugins' handlers, MCP requests) ask.
+pub fn call_or_hold(workspace: &mut dyn Workspace, caller: Caller, name: &str, params: Value, reply: permissions::ReplyTo) {
+    let method = match find(workspace, name) {
+        Ok(method) => method,
+        Err(error) => return reply(workspace, Err(error)),
+    };
+    match workspace.permission(&caller, method.effect()) {
+        Decision::Allowed => {
+            let result = method.run(workspace, &caller, params);
+            reply(workspace, result);
+        }
+        Decision::Denied => reply(workspace, Err(permissions::denied(&caller, name))),
+        Decision::NeedsConfirmation => {
+            let description = edits::describe_call(workspace, name, &params);
+            let held = HeldCall { caller, method: name.to_string(), params, description, reply };
+            if let Some(held) = workspace.hold_for_confirmation(held) {
+                let error = permissions::needs_confirmation(&held.caller, name);
+                (held.reply)(workspace, Err(error));
+            }
+        }
+    }
 }
 
 /// The result of `api.version`.
@@ -306,19 +512,15 @@ pub struct Description {
     pub topics: Vec<TopicDescription>,
 }
 
-/// Every method and topic with its schemas.
+/// Every method in the table and every topic, with their schemas.
 pub fn describe() -> Description {
-    let methods = METHODS
-        .iter()
-        .map(|method| MethodDescription {
-            name: method.name.to_string(),
-            summary: method.summary.to_string(),
-            effect: method.effect,
-            stability: method.stability,
-            params: (method.params)().to_value(),
-            result: (method.result)().to_value(),
-        })
-        .collect();
+    let methods: Vec<MethodRef> = METHODS.iter().map(MethodRef::Builtin).collect();
+    describe_methods(&methods)
+}
+
+/// `methods` and every topic, with their schemas.
+fn describe_methods(methods: &[MethodRef]) -> Description {
+    let methods = methods.iter().map(MethodRef::describe).collect();
     let topics = crate::bus::topics::TOPICS
         .iter()
         .map(|topic| TopicDescription { name: topic.name.to_string(), kind: topic.kind, description: topic.description.to_string(), payload: (topic.payload)().to_value() })
@@ -326,8 +528,10 @@ pub fn describe() -> Description {
     Description { version: API_VERSION.to_string(), methods, topics }
 }
 
-fn describe_method(_workspace: &mut dyn Workspace, _params: values::NoParams) -> Result<Description, ApiError> {
-    Ok(describe())
+/// What `api.describe` returns: the table and the methods plugins
+/// registered in this workspace.
+fn describe_method(workspace: &mut dyn Workspace, _params: values::NoParams) -> Result<Description, ApiError> {
+    Ok(describe_methods(&all_methods(workspace)))
 }
 
 /// The API reference, `docs/api.md`, written from the method table.
@@ -461,7 +665,9 @@ fn type_label(schema: &Value, root: &Value) -> String {
 pub(crate) mod test_support {
     use std::sync::{Arc, LazyLock};
 
-    use super::HeadlessWorkspace;
+    use serde_json::Value;
+
+    use super::{ApiError, Caller, HeadlessWorkspace, Workspace};
     use crate::document::Document;
     use crate::plugin::Registry;
 
@@ -474,13 +680,18 @@ pub(crate) mod test_support {
         workspace.add_document(name, Document::from_bytes(bytes.to_vec()));
         workspace
     }
+
+    /// Call a method as the person at the keyboard would.
+    pub fn call(workspace: &mut dyn Workspace, name: &str, params: Value) -> Result<Value, ApiError> {
+        super::call(workspace, &Caller::Panel, name, params)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use serde_json::json;
 
-    use super::test_support::workspace_with;
+    use super::test_support::{call, workspace_with};
     use super::*;
 
     #[test]
@@ -588,6 +799,7 @@ mod tests {
         bytes.extend(b"The quick brown fox jumps over the lazy dog. ".repeat(20));
         let path = std::env::temp_dir().join(format!("theviewer-api-examples-{}.bin", std::process::id()));
         std::fs::write(&path, &bytes).unwrap();
+        let saved = std::env::temp_dir().join(format!("theviewer-api-examples-saved-{}.bin", std::process::id()));
         let mut workspace = workspace_with("example.bin", &bytes);
         let examples = [
             ("api.version", json!({})),
@@ -625,6 +837,22 @@ mod tests {
             ("reference.search", json!({"query": "compression", "limit": 3})),
             ("events.facts", json!({"topic": "record_width.estimated", "span": {"start": 0, "len": 16}})),
             ("events.poll", json!({"cursor": 0, "topics": ["document.opened"], "limit": 10})),
+            ("findings.publish", json!({"findings": [{"id": "x", "source": "test", "category": "custom", "start": 0, "len": 4, "title": "", "detail": "", "confidence": 1.0, "fields": []}]})),
+            ("findings.retract", json!({})),
+            ("transform.preview", json!({"selection": {"range": [0, 4]}, "operation": {"op": "invert"}})),
+            ("bytes.write", json!({"start": 0, "data": "00"})),
+            ("bytes.insert", json!({"at": 0, "data": "00"})),
+            ("bytes.delete", json!({"start": 0, "len": 1})),
+            ("bytes.replace", json!({"start": 0, "len": 1, "data": "ffff"})),
+            ("bits.write", json!({"bit_start": 3, "bits": "101"})),
+            ("transform.apply", json!({"selection": {"range": [0, 4]}, "operation": {"op": "xor", "key": "5a"}})),
+            ("history.undo", json!({})),
+            ("history.redo", json!({})),
+            ("history.transaction", json!({"calls": [{"method": "cursor.set", "params": {"offset": 2}}, {"method": "bytes.delete", "params": {"start": 0, "len": 1}}]})),
+            ("selection.set", json!({"selection": {"range": [1, 3]}})),
+            ("cursor.set", json!({"offset": 5})),
+            ("documents.save", json!({"path": saved.display().to_string()})),
+            ("documents.new", json!({"name": "scratch"})),
         ];
         let named: std::collections::HashSet<&str> = examples.iter().map(|(name, _)| *name).collect();
         for method in METHODS {
@@ -637,6 +865,7 @@ mod tests {
             fits_schema(&(method.result)(), &result).unwrap_or_else(|problem| panic!("{name} result: {problem}"));
         }
         std::fs::remove_file(path).ok();
+        std::fs::remove_file(saved).ok();
     }
 
     #[test]

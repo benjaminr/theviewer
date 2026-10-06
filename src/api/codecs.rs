@@ -186,7 +186,8 @@ mod tests {
     use serde_json::json;
 
     use crate::api::test_support::workspace_with;
-    use crate::api::{ErrorCode, call};
+    use crate::api::ErrorCode;
+    use crate::api::test_support::call;
 
     fn zlib(data: &[u8]) -> Vec<u8> {
         let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());

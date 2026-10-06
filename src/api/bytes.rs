@@ -148,7 +148,8 @@ mod tests {
     use serde_json::json;
 
     use crate::api::test_support::workspace_with;
-    use crate::api::{ErrorCode, call};
+    use crate::api::ErrorCode;
+    use crate::api::test_support::call;
 
     #[test]
     fn bytes_are_read_as_hex_base64_or_text() {

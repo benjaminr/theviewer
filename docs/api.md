@@ -27,20 +27,36 @@ Errors are `{code, message, data}`, with these codes:
 | [`documents.list`](#documentslist) | read | The open documents, with their ids, names, paths, lengths and versions. |
 | [`documents.info`](#documentsinfo) | read | One document's id, name, path, length, version and whether it has unsaved edits. |
 | [`documents.open`](#documentsopen) | view | Open a file by path and make it the current document; a file already open is made current again. |
+| [`documents.new`](#documentsnew) | view | Open a new, empty document and make it current; the window refuses while its document has unsaved edits. |
+| [`documents.save`](#documentssave) | edit | Save a document over its file, or to a path, with every edit made so far. |
 | [`bytes.read`](#bytesread) | read | Read a span of bytes, as hex by default, or as base64 or text. |
 | [`bytes.hexdump`](#byteshexdump) | read | A classic hex dump of a span, 16 bytes per line with an ASCII column, at most 1 MiB. |
+| [`bytes.write`](#byteswrite) | edit | Overwrite bytes in place with new ones, as one undoable step; the document keeps its length. |
+| [`bytes.insert`](#bytesinsert) | edit | Insert bytes at an offset, as one undoable step; the bytes after it move along. |
+| [`bytes.delete`](#bytesdelete) | edit | Remove a span of bytes, as one undoable step; the bytes after it move back. |
+| [`bytes.replace`](#bytesreplace) | edit | Replace a span of bytes with new bytes of any length, as one undoable step. |
 | [`bits.read`](#bitsread) | read | Read a span of bits, most or least significant bit of each byte first, as a string of 0s and 1s and, up to 64 bits, as a number. |
+| [`bits.write`](#bitswrite) | edit | Overwrite bits from any bit offset, most or least significant bit of each byte first, as one undoable step; the bits around them are kept. |
+| [`transform.apply`](#transformapply) | edit | Apply an operation (XOR, invert, shift bits, swap byte order, number, compress, decompress and more) to every range of a selection, as one undoable step, and select what it produced. |
+| [`transform.preview`](#transformpreview) | read | What transform.apply would write into each range of a selection, without changing anything. |
+| [`history.undo`](#historyundo) | edit | Undo the document's last step, whoever made it, and put the cursor where it was. |
+| [`history.redo`](#historyredo) | edit | Redo the last step undone, and put the cursor where it was. |
+| [`history.transaction`](#historytransaction) | edit | Run several calls on one document as one undoable step; when one fails, every change the others made is reversed. |
 | [`search.find`](#searchfind) | read | The next (or previous) occurrence of hex bytes, text, UTF-16 text or an integer from an offset. |
 | [`search.find_all`](#searchfind_all) | read | Every occurrence of hex bytes, text, UTF-16 text or an integer in the document, a page at a time. |
 | [`search.count`](#searchcount) | read | How many times hex bytes, text, UTF-16 text or an integer occur in the document, up to a cap. |
 | [`numbers.decode`](#numbersdecode) | read | Read the bytes at an offset as integers, floats, fixed-point numbers and timestamps of each width and byte order. |
 | [`selection.get`](#selectionget) | read | What is selected in a document: one range, several ranges or a column of every record. |
 | [`cursor.get`](#cursorget) | read | The cursor's offset in a document. |
+| [`selection.set`](#selectionset) | view | Select one range, several ranges or a column of every record in a document, or nothing. |
+| [`cursor.set`](#cursorset) | view | Move the cursor to an offset, selecting nothing. |
 | [`findings.query`](#findingsquery) | read | Run the detectors over a span and list what they recognise (signatures, compressed streams, counters, timestamps, text, structures), filtered by category, confidence and producer. |
+| [`findings.publish`](#findingspublish) | read | Publish findings about a document on the bus as the caller's, for the views, Findings and every other tool to show; they replace the caller's earlier ones under the same key. |
+| [`findings.retract`](#findingsretract) | read | Withdraw the findings the caller published under a key. |
 | [`structure.parse`](#structureparse) | read | Parse the structure starting exactly at an offset (executables, images, archives, captures, ASN.1, filesystems) into a field tree, best match first. |
 | [`structure.parsers`](#structureparsers) | read | The structure parsers available, built in and from plugins. |
 | [`templates.list`](#templateslist) | read | The binary templates available: the built-in ones and the user's own. |
-| [`templates.apply`](#templatesapply) | read | Apply a binary template, by name or as source text, at an offset and return its field tree and records, without pinning it. |
+| [`templates.apply`](#templatesapply) | read | Apply a binary template, by name or as source text, at an offset and return its field tree and records; with pin, also show it as the template tool does. |
 | [`codecs.list`](#codecslist) | read | The codecs available for decoding, built in and from plugins. |
 | [`codecs.detect`](#codecsdetect) | read | The codecs whose header starts at an offset. |
 | [`codecs.decode`](#codecsdecode) | read | Decode (decompress) a span with a codec and return the output. |
@@ -128,6 +144,43 @@ Open a file by path and make it the current document; a file already open is mad
 | `path` | string | no | Path on disk, for documents opened from a file. |
 | `version` | integer | yes | Incremented on every edit. |
 
+### documents.new
+
+Open a new, empty document and make it current; the window refuses while its document has unsaved edits.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `name` | string | no | What to call the document ("untitled" by default). |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `current` | boolean | yes | Whether this is the current document. |
+| `id` | string | yes | Stable id, such as "doc-1". |
+| `len` | integer | yes | Length in bytes. |
+| `modified` | boolean | yes | Whether there are edits not saved. |
+| `name` | string | yes | File name, or the name of a derived document. |
+| `path` | string | no | Path on disk, for documents opened from a file. |
+| `version` | integer | yes | Incremented on every edit. |
+
+### documents.save
+
+Save a document over its file, or to a path, with every edit made so far.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `doc` | string | no | Document id, path or "current" (the default). |
+| `path` | string | no | Where to save; over the document's own file when omitted. |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `current` | boolean | yes | Whether this is the current document. |
+| `id` | string | yes | Stable id, such as "doc-1". |
+| `len` | integer | yes | Length in bytes. |
+| `modified` | boolean | yes | Whether there are edits not saved. |
+| `name` | string | yes | File name, or the name of a derived document. |
+| `path` | string | no | Path on disk, for documents opened from a file. |
+| `version` | integer | yes | Incremented on every edit. |
+
 ### bytes.read
 
 Read a span of bytes, as hex by default, or as base64 or text.
@@ -164,6 +217,86 @@ A classic hex dump of a span, 16 bytes per line with an ASCII column, at most 1 
 | `len` | integer | yes | Bytes shown. |
 | `start` | integer | yes | Offset of the first byte. |
 
+### bytes.write
+
+Overwrite bytes in place with new ones, as one undoable step; the document keeps its length.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `data` | string | yes | The new bytes, written as `encoding` says; they must fit inside the document. |
+| `doc` | string | no | Document id, path or "current" (the default). |
+| `encoding` | `"hex"` \| `"base64"` \| `"text"` | no | How `data` is written: hex (the default), base64 or text. |
+| `expect_version` | integer | no | Fail with version_conflict, changing nothing, unless the document is at this version. |
+| `start` | integer | yes | Offset of the first byte to overwrite. |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `doc` | string | yes | Id of the document edited. |
+| `label` | string | yes | What the step is called in the undo history, such as "XOR by mcp:claude-code". |
+| `len` | integer | yes | The document's length after the edit. |
+| `ranges` | array of pair | yes | Where the new bytes are, as [start, len]: one range per range changed. |
+| `version` | integer | yes | The document's version after the edit; pass it as expect_version to the next. |
+
+### bytes.insert
+
+Insert bytes at an offset, as one undoable step; the bytes after it move along.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `at` | integer | yes | Offset to insert at; the document's length appends. |
+| `data` | string | yes | The bytes to insert, written as `encoding` says. |
+| `doc` | string | no | Document id, path or "current" (the default). |
+| `encoding` | `"hex"` \| `"base64"` \| `"text"` | no | How `data` is written: hex (the default), base64 or text. |
+| `expect_version` | integer | no | Fail with version_conflict, changing nothing, unless the document is at this version. |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `doc` | string | yes | Id of the document edited. |
+| `label` | string | yes | What the step is called in the undo history, such as "XOR by mcp:claude-code". |
+| `len` | integer | yes | The document's length after the edit. |
+| `ranges` | array of pair | yes | Where the new bytes are, as [start, len]: one range per range changed. |
+| `version` | integer | yes | The document's version after the edit; pass it as expect_version to the next. |
+
+### bytes.delete
+
+Remove a span of bytes, as one undoable step; the bytes after it move back.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `doc` | string | no | Document id, path or "current" (the default). |
+| `expect_version` | integer | no | Fail with version_conflict, changing nothing, unless the document is at this version. |
+| `len` | integer | yes | Bytes to remove. |
+| `start` | integer | yes | Offset of the first byte to remove. |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `doc` | string | yes | Id of the document edited. |
+| `label` | string | yes | What the step is called in the undo history, such as "XOR by mcp:claude-code". |
+| `len` | integer | yes | The document's length after the edit. |
+| `ranges` | array of pair | yes | Where the new bytes are, as [start, len]: one range per range changed. |
+| `version` | integer | yes | The document's version after the edit; pass it as expect_version to the next. |
+
+### bytes.replace
+
+Replace a span of bytes with new bytes of any length, as one undoable step.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `data` | string | yes | The bytes to put in their place, written as `encoding` says. |
+| `doc` | string | no | Document id, path or "current" (the default). |
+| `encoding` | `"hex"` \| `"base64"` \| `"text"` | no | How `data` is written: hex (the default), base64 or text. |
+| `expect_version` | integer | no | Fail with version_conflict, changing nothing, unless the document is at this version. |
+| `len` | integer | yes | Bytes to take out; the new bytes may be longer or shorter. |
+| `start` | integer | yes | Offset of the first byte to replace. |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `doc` | string | yes | Id of the document edited. |
+| `label` | string | yes | What the step is called in the undo history, such as "XOR by mcp:claude-code". |
+| `len` | integer | yes | The document's length after the edit. |
+| `ranges` | array of pair | yes | Where the new bytes are, as [start, len]: one range per range changed. |
+| `version` | integer | yes | The document's version after the edit; pass it as expect_version to the next. |
+
 ### bits.read
 
 Read a span of bits, most or least significant bit of each byte first, as a string of 0s and 1s and, up to 64 bits, as a number.
@@ -183,6 +316,115 @@ Read a span of bits, most or least significant bit of each byte first, as a stri
 | `doc` | string | yes | Id of the document read. |
 | `order` | `"msb"` \| `"lsb"` | yes | Which bit of each byte came first. |
 | `value` | NumberValue | no | The bits as an unsigned integer, first bit most significant, when there are at most 64. |
+
+### bits.write
+
+Overwrite bits from any bit offset, most or least significant bit of each byte first, as one undoable step; the bits around them are kept.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `bit_start` | integer | yes | Bit offset of the first bit: byte offset × 8 plus the bit within the byte, in `order`. |
+| `bits` | string | yes | The new bits as "0" and "1", first bit first; spaces and underscores are ignored. |
+| `doc` | string | no | Document id, path or "current" (the default). |
+| `expect_version` | integer | no | Fail with version_conflict, changing nothing, unless the document is at this version. |
+| `order` | `"msb"` \| `"lsb"` | no | Which bit of each byte comes first: "msb" (the default) or "lsb". |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `doc` | string | yes | Id of the document edited. |
+| `label` | string | yes | What the step is called in the undo history, such as "XOR by mcp:claude-code". |
+| `len` | integer | yes | The document's length after the edit. |
+| `ranges` | array of pair | yes | Where the new bytes are, as [start, len]: one range per range changed. |
+| `version` | integer | yes | The document's version after the edit; pass it as expect_version to the next. |
+
+### transform.apply
+
+Apply an operation (XOR, invert, shift bits, swap byte order, number, compress, decompress and more) to every range of a selection, as one undoable step, and select what it produced.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `doc` | string | no | Document id, path or "current" (the default). |
+| `expect_version` | integer | no | Fail with version_conflict, changing nothing, unless the document is at this version. |
+| `operation` | Operation | yes | What to do to each selected range, such as {"op": "xor", "key": "5a"}. |
+| `selection` | Selection | no | What to change: a range, several ranges or a column of every record. The document's selection when omitted, or the byte at the cursor when nothing is selected. |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `doc` | string | yes | Id of the document edited. |
+| `label` | string | yes | What the step is called in the undo history, such as "XOR by mcp:claude-code". |
+| `len` | integer | yes | The document's length after the edit. |
+| `ranges` | array of pair | yes | Where the new bytes are, as [start, len]: one range per range changed. |
+| `version` | integer | yes | The document's version after the edit; pass it as expect_version to the next. |
+
+### transform.preview
+
+What transform.apply would write into each range of a selection, without changing anything.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `doc` | string | no | Document id, path or "current" (the default). |
+| `encoding` | `"hex"` \| `"base64"` \| `"text"` | no | How to write the new bytes: hex (the default), base64 or text. |
+| `operation` | Operation | yes | What to do to each selected range. |
+| `selection` | Selection | no | What to change; the document's selection, or the byte at the cursor, when omitted. |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `doc` | string | yes | Id of the document read. |
+| `encoding` | `"hex"` \| `"base64"` \| `"text"` | yes | How each range's `data` is written. |
+| `ranges` | array of PreviewRange | yes | Each selected range with its new bytes. |
+
+### history.undo
+
+Undo the document's last step, whoever made it, and put the cursor where it was.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `doc` | string | no | Document id, path or "current" (the default). |
+| `expect_version` | integer | no | Fail with version_conflict, changing nothing, unless the document is at this version. |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `at` | integer | yes | Where its earliest change was. |
+| `doc` | string | yes | Id of the document. |
+| `label` | string | no | The step undone or redone, when it was named. |
+| `len` | integer | yes | The document's length afterwards. |
+| `version` | integer | yes | The document's version afterwards. |
+
+### history.redo
+
+Redo the last step undone, and put the cursor where it was.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `doc` | string | no | Document id, path or "current" (the default). |
+| `expect_version` | integer | no | Fail with version_conflict, changing nothing, unless the document is at this version. |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `at` | integer | yes | Where its earliest change was. |
+| `doc` | string | yes | Id of the document. |
+| `label` | string | no | The step undone or redone, when it was named. |
+| `len` | integer | yes | The document's length afterwards. |
+| `version` | integer | yes | The document's version afterwards. |
+
+### history.transaction
+
+Run several calls on one document as one undoable step; when one fails, every change the others made is reversed.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `calls` | array of TransactionCall | yes | The calls, run in order: edits, selection changes and reads. |
+| `doc` | string | no | Document id, path or "current" (the default); every call must be about this document. |
+| `expect_version` | integer | no | Fail with version_conflict, changing nothing, unless the document is at this version. |
+| `label` | string | no | What the step is called in the undo history; "N changes" when omitted. |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `doc` | string | yes | Id of the document. |
+| `label` | string | yes | What the step is called in the undo history. |
+| `len` | integer | yes | The document's length afterwards. |
+| `results` | array of any | yes | Each call's result, in order. |
+| `version` | integer | yes | The document's version afterwards. |
 
 ### search.find
 
@@ -281,6 +523,36 @@ The cursor's offset in a document.
 | `doc` | string | yes | Id of the document. |
 | `offset` | integer | yes | Offset of the byte at the cursor. |
 
+### selection.set
+
+Select one range, several ranges or a column of every record in a document, or nothing.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `doc` | string | no | Document id, path or "current" (the default). |
+| `selection` | Selection | no | What to select: {"range": [start, len]}, {"ranges": [[start, len], …]} or {"columns": {…}}; null or omitted selects nothing. |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `doc` | string | yes | Id of the document. |
+| `ranges` | array of pair | yes | Every selected range as [start, len], in document order. |
+| `selection` | Selection | no | The selection as the app holds it, or nothing when no bytes are selected. |
+| `total_bytes` | integer | yes | Bytes selected in all. |
+
+### cursor.set
+
+Move the cursor to an offset, selecting nothing.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `doc` | string | no | Document id, path or "current" (the default). |
+| `offset` | integer | yes | Offset to put the cursor at; the document's length is just past the last byte. |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `doc` | string | yes | Id of the document. |
+| `offset` | integer | yes | Offset of the byte at the cursor. |
+
 ### findings.query
 
 Run the detectors over a span and list what they recognise (signatures, compressed streams, counters, timestamps, text, structures), filtered by category, confidence and producer.
@@ -300,6 +572,37 @@ Run the detectors over a span and list what they recognise (signatures, compress
 | --- | --- | --- | --- |
 | `findings` | array of Finding | yes | Findings in document order, overlaps resolved as the views show them. |
 | `next` | string | no | Pass back as `next` for more findings; absent after the last. |
+
+### findings.publish
+
+Publish findings about a document on the bus as the caller's, for the views, Findings and every other tool to show; they replace the caller's earlier ones under the same key.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `doc` | string | no | Document id, path or "current" (the default). |
+| `findings` | array of Finding | yes | The findings, in document offsets; they replace those the caller published before under the same key. |
+| `key` | string | no | Tells apart several sets of findings one caller keeps (empty by default). |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `doc` | string | yes | Id of the document. |
+| `findings` | integer | yes | Findings published (none for a retraction). |
+| `producer` | string | yes | Who the findings are published as, such as "mcp:claude-code". |
+
+### findings.retract
+
+Withdraw the findings the caller published under a key.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `doc` | string | no | Document id, path or "current" (the default). |
+| `key` | string | no | The key the findings were published under (empty by default). |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `doc` | string | yes | Id of the document. |
+| `findings` | integer | yes | Findings published (none for a retraction). |
+| `producer` | string | yes | Who the findings are published as, such as "mcp:claude-code". |
 
 ### structure.parse
 
@@ -337,7 +640,7 @@ Parameters: None.
 
 ### templates.apply
 
-Apply a binary template, by name or as source text, at an offset and return its field tree and records, without pinning it.
+Apply a binary template, by name or as source text, at an offset and return its field tree and records; with pin, also show it as the template tool does.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -346,6 +649,7 @@ Apply a binary template, by name or as source text, at an offset and return its 
 | `limit` | integer | no | Most records to return (100 by default). |
 | `name` | string | no | A template from templates.list. |
 | `next` | string | no | The `next` cursor of the previous page of records. |
+| `pin` | boolean | no | Pin the parse as the template tool does: its records are outlined in the views and its structure published, in place of the last template pinned. |
 | `source` | string | no | Template source text, as written in the template language. |
 
 | Result field | Type | Required | Description |

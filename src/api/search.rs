@@ -160,7 +160,8 @@ mod tests {
     use serde_json::json;
 
     use crate::api::test_support::workspace_with;
-    use crate::api::{ErrorCode, call};
+    use crate::api::ErrorCode;
+    use crate::api::test_support::call;
 
     #[test]
     fn the_next_and_previous_matches_are_found_from_an_offset() {

@@ -14,6 +14,7 @@ use std::time::Duration;
 
 use eframe::egui::{self, Context, RichText};
 
+use crate::api::{Caller, Policy};
 use crate::app::{MAX_WIDTH, ViewerApp, ZOOM_LEVELS};
 use crate::plugin::Category;
 use crate::preferences::Preferences;
@@ -285,6 +286,8 @@ impl ViewerApp {
                     ui.separator();
                     self.tshark_contents(ui);
                     ui.separator();
+                    self.permissions_contents(ui);
+                    ui.separator();
                     self.settings_contents(ui);
                 });
             });
@@ -405,6 +408,47 @@ impl ViewerApp {
         ui.checkbox(&mut edited.detect_frame_protocols, "Detect the protocol of split frames").on_hover_text(
             "When frames are split from the file or taken from the protocol framing, find out whether they are DNS, Modbus/TCP, MQTT or another protocol the viewer dissects, and decode them as it. Off: frames show the field guesses or a template until you pick Detect now under Decode frames as.",
         );
+        if edited != self.preferences {
+            self.set_preferences(edited);
+        }
+    }
+
+    /// The clients of the data API that may want to edit: Ask, plugins that
+    /// declared edits, and any client seen before, by id.
+    pub fn known_clients(&self) -> Vec<String> {
+        let mut clients: Vec<String> = self.preferences.permissions.keys().cloned().collect();
+        clients.push(Caller::Ask.producer());
+        clients.extend(self.editing_plugins().into_iter().map(|plugin| Caller::Plugin(plugin).producer()));
+        clients.sort();
+        clients.dedup();
+        clients
+    }
+
+    /// What each client may change without asking: always allow, always
+    /// ask or never allow. Reading is always allowed.
+    fn permissions_contents(&mut self, ui: &mut egui::Ui) {
+        ui.label(RichText::new("Permissions").heading());
+        ui.label(
+            RichText::new("What plugins, Ask and other clients may change without asking. They can always read. When set to ask, a window shows each change for you to allow or deny; you edit freely yourself.")
+                .color(theme::TEXT_DIM),
+        );
+        let mut edited = self.preferences.clone();
+        egui::Grid::new("permissions").num_columns(2).spacing([16.0, 6.0]).show(ui, |ui| {
+            for client in self.known_clients() {
+                ui.label(&client);
+                let current = edited.permissions.get(&client).copied().unwrap_or_default();
+                let mut policy = current;
+                ui.horizontal(|ui| {
+                    for option in Policy::ALL {
+                        ui.radio_value(&mut policy, option, option.label());
+                    }
+                });
+                if policy != current {
+                    edited.permissions.insert(client, policy);
+                }
+                ui.end_row();
+            }
+        });
         if edited != self.preferences {
             self.set_preferences(edited);
         }

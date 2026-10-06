@@ -1603,3 +1603,39 @@ fn a_plugin_detector_failing_in_a_background_scan_is_shown_in_the_status_bar() {
     let logged = harness.state().bus.recent().any(|message| message.topic() == theviewer::bus::Topic::PluginLog && message.producer() == "plugin:faulty.lua");
     assert!(logged, "the error is on the bus for the Workspace tab");
 }
+
+/// The result of a call made as Ask makes them, which comes back on a
+/// channel once the person has answered.
+type AskAnswer = std::sync::mpsc::Receiver<Result<serde_json::Value, theviewer::api::ApiError>>;
+
+/// Make a call as Ask's tool calls are made.
+fn request_as_ask(harness: &mut Harness<'static, ViewerApp>, method: &str, params: serde_json::Value) -> AskAnswer {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    harness.state_mut().request_api_call(theviewer::api::Caller::Ask, method, params, Box::new(move |_, result| drop(sender.send(result))));
+    steps(harness, 2);
+    receiver
+}
+
+#[test]
+fn an_edit_from_ask_is_shown_for_confirmation_and_applied_only_when_allowed() {
+    let mut harness = harness(sample_file("confirm"));
+    let original = harness.state_mut().document.read_range(0x40, 4);
+
+    let answer = request_as_ask(&mut harness, "bytes.write", serde_json::json!({"start": 0x40, "data": "deadbeef"}));
+    assert!(harness.query_by_label_contains("wants to change the document").is_some(), "the confirmation window opens");
+    assert!(harness.query_all_by_label_contains("Overwrite 4 bytes at 0x40 with DE AD BE EF").next().is_some(), "it says what will change");
+    assert!(answer.try_recv().is_err(), "the call waits for the person");
+    assert_eq!(harness.state_mut().document.read_range(0x40, 4), original);
+    harness.get_by_label("Allow once").click();
+    steps(&mut harness, 2);
+    assert!(answer.try_recv().unwrap().is_ok());
+    assert_eq!(harness.state_mut().document.read_range(0x40, 4), [0xDE, 0xAD, 0xBE, 0xEF]);
+    assert!(harness.query_by_label_contains("wants to change the document").is_none(), "the window closes once answered");
+
+    let answer = request_as_ask(&mut harness, "bytes.delete", serde_json::json!({"start": 0, "len": 16}));
+    harness.get_by_label("Deny").click();
+    steps(&mut harness, 2);
+    let refused = answer.try_recv().unwrap().unwrap_err();
+    assert!(refused.message.contains("declined"), "{}", refused.message);
+    assert_eq!(harness.state().document.len(), SAMPLE_LEN, "nothing was deleted");
+}

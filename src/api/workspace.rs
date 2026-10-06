@@ -13,13 +13,19 @@ use std::sync::Arc;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use super::ApiError;
+use super::permissions::{self, Caller, Decision, HeldCall};
+use super::{ApiError, Effect, RegisteredMethod};
 use crate::app::ViewerApp;
-use crate::bus::topics::DocumentOpened;
+use crate::bus::topics::{CursorMoved, DocumentEdited, DocumentOpened, FindingsPublished, SelectionChanged};
 use crate::bus::{Bus, Draft, Payload};
 use crate::document::Document;
-use crate::plugin::Registry;
+use crate::plugin::{Finding, Registry};
 use crate::selection::Selection;
+
+/// Who publishes edits made by hand, outside any API call.
+pub const DOCUMENT_PRODUCER: &str = "document";
+/// Who publishes the template pinned by `templates.apply`.
+pub const TEMPLATES_PRODUCER: &str = "tool:templates";
 
 /// The name that stands for the current document.
 pub const CURRENT: &str = "current";
@@ -71,6 +77,44 @@ pub trait Workspace {
     fn open_path(&mut self, path: &Path) -> Result<String, ApiError>;
     /// The workspace's bus, with every message published so far delivered.
     fn bus(&mut self) -> &mut Bus;
+    /// Publish the changes made to document `id` since they were last
+    /// published, on `document.edited` as `producer`'s.
+    fn publish_edits(&mut self, id: &str, producer: &str);
+    /// Move the cursor and set the selection in document `id` (`None`
+    /// selects nothing), and publish the change as `caller`'s.
+    fn select(&mut self, id: &str, cursor: usize, selection: Option<Selection>, caller: &Caller);
+    /// Save document `id` to `path`, or to the file it came from.
+    fn save(&mut self, id: &str, path: Option<&Path>) -> Result<(), ApiError>;
+    /// Open a new empty document called `name` and make it current,
+    /// returning its id.
+    fn new_document(&mut self, name: &str) -> Result<String, ApiError>;
+    /// Pin a template's parse over document `id`, as the template tool
+    /// does: its structure and records are published and shown.
+    fn pin_template(&mut self, id: &str, parse: Finding);
+    /// Whether `caller` may call a method with `effect` here.
+    fn permission(&self, caller: &Caller, effect: Effect) -> Decision;
+    /// Hold a call until the person allows or denies it, then reply. A
+    /// workspace that cannot ask anyone gives the call back.
+    fn hold_for_confirmation(&mut self, held: HeldCall) -> Option<HeldCall> {
+        Some(held)
+    }
+    /// The methods plugins registered here.
+    fn registered_methods(&self) -> Vec<Arc<RegisteredMethod>> {
+        Vec::new()
+    }
+}
+
+/// `document.edited` with the changes `document` made since `published`,
+/// or nothing when there were none.
+pub fn edits_since(document: &Document, published: u64) -> Option<DocumentEdited> {
+    if document.version() == published {
+        return None;
+    }
+    // When the log no longer reaches back, the edits are not listed and
+    // nothing can be carried through them.
+    let edits = document.edits_since(published);
+    let complete = edits.is_some();
+    Some(DocumentEdited { edits: edits.unwrap_or_default(), complete })
 }
 
 /// The id of the document `doc` names: an id, an open document's path, or
@@ -105,9 +149,13 @@ struct OpenDocument {
     name: String,
     document: Document,
     view: ViewState,
+    /// The version `document.edited` has been published up to.
+    published_version: u64,
 }
 
-/// Documents opened without a window, for the command line and scripts.
+/// Documents opened without a window, for the command line, scripts and
+/// a standalone MCP server. Its client opened every file in it, so every
+/// call is allowed: there is nobody else to ask.
 pub struct HeadlessWorkspace {
     documents: Vec<OpenDocument>,
     current: Option<usize>,
@@ -115,11 +163,21 @@ pub struct HeadlessWorkspace {
     /// Documents ever opened, for the next id.
     opened: usize,
     bus: Bus,
+    methods: Vec<Arc<RegisteredMethod>>,
 }
 
 impl HeadlessWorkspace {
     pub fn new(registry: Arc<Registry>) -> Self {
-        HeadlessWorkspace { documents: Vec::new(), current: None, registry, opened: 0, bus: Bus::new() }
+        HeadlessWorkspace { documents: Vec::new(), current: None, registry, opened: 0, bus: Bus::new(), methods: Vec::new() }
+    }
+
+    /// Offer the methods plugins registered.
+    pub fn set_registered_methods(&mut self, methods: Vec<Arc<RegisteredMethod>>) {
+        self.methods = methods;
+    }
+
+    fn open_document(&mut self, id: &str) -> Option<&mut OpenDocument> {
+        self.documents.iter_mut().find(|open| open.id == id)
     }
 
     /// Add a document and make it current; returns its id.
@@ -129,7 +187,8 @@ impl HeadlessWorkspace {
         let name = name.into();
         let opened = DocumentOpened { name: name.clone(), path: document.path().map(|path| path.display().to_string()), len: document.len() };
         self.bus.publish(Draft::new("workspace", Payload::DocumentOpened(opened)).about(id.clone(), document.version()));
-        self.documents.push(OpenDocument { id: id.clone(), name, document, view: ViewState::default() });
+        let published_version = document.version();
+        self.documents.push(OpenDocument { id: id.clone(), name, document, view: ViewState::default(), published_version });
         self.current = Some(self.documents.len() - 1);
         id
     }
@@ -191,6 +250,62 @@ impl Workspace for HeadlessWorkspace {
         self.bus.deliver_all();
         &mut self.bus
     }
+
+    fn publish_edits(&mut self, id: &str, producer: &str) {
+        let Some(open) = self.documents.iter_mut().find(|open| open.id == id) else { return };
+        let Some(edited) = edits_since(&open.document, open.published_version) else { return };
+        open.published_version = open.document.version();
+        let draft = Draft::new(producer, Payload::DocumentEdited(edited)).about(id, open.published_version);
+        self.bus.publish(draft);
+    }
+
+    fn select(&mut self, id: &str, cursor: usize, selection: Option<Selection>, caller: &Caller) {
+        let Some(open) = self.open_document(id) else { return };
+        let moved = open.view.cursor != cursor;
+        open.view.cursor = cursor;
+        open.view.selection = selection.clone();
+        let version = open.document.version();
+        if moved {
+            self.bus.publish(Draft::new(caller.producer(), Payload::CursorMoved(CursorMoved { offset: cursor })).about(id, version));
+        }
+        self.bus.publish(Draft::new(caller.producer(), Payload::SelectionChanged(SelectionChanged { cursor, selection })).about(id, version));
+    }
+
+    fn save(&mut self, id: &str, path: Option<&Path>) -> Result<(), ApiError> {
+        let open = self.open_document(id).ok_or_else(|| ApiError::not_found(format!("document '{id}' has closed")))?;
+        let path = path.or(open.document.path()).map(Path::to_path_buf).ok_or_else(|| ApiError::invalid_params("this document has no file yet; give a path to save it to"))?;
+        open.document.save_to(&path).map_err(|error| ApiError::new(super::ErrorCode::Unavailable, format!("could not save {}: {error:#}", path.display())))?;
+        // Reopen, so the saved file is what the document reads and the
+        // edits are no longer counted as unsaved.
+        let reopened = Document::open(&path).map_err(|error| ApiError::not_found(format!("saved {}, but could not open it again: {error:#}", path.display())))?;
+        open.document = reopened;
+        open.published_version = open.document.version();
+        open.name = path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_else(|| open.name.clone());
+        let opened = DocumentOpened { name: open.name.clone(), path: Some(path.display().to_string()), len: open.document.len() };
+        let draft = Draft::new("workspace", Payload::DocumentOpened(opened)).about(id, open.published_version);
+        self.bus.publish(draft);
+        Ok(())
+    }
+
+    fn new_document(&mut self, name: &str) -> Result<String, ApiError> {
+        Ok(self.add_document(name, Document::default()))
+    }
+
+    fn pin_template(&mut self, id: &str, parse: Finding) {
+        let Some(version) = self.open_document(id).map(|open| open.document.version()) else { return };
+        let structure = crate::app::structure_of(&parse);
+        let (start, len) = (parse.start, parse.len);
+        self.bus.publish(Draft::new(TEMPLATES_PRODUCER, Payload::StructureIdentified(structure)).about(id, version).span(start, len));
+        self.bus.publish(Draft::new(TEMPLATES_PRODUCER, Payload::FindingsPublished(FindingsPublished { findings: vec![parse] })).about(id, version).span(start, len));
+    }
+
+    fn permission(&self, _caller: &Caller, _effect: Effect) -> Decision {
+        Decision::Allowed
+    }
+
+    fn registered_methods(&self) -> Vec<Arc<RegisteredMethod>> {
+        self.methods.clone()
+    }
 }
 
 /// The window shows one document at a time, which the API calls `doc-1`.
@@ -233,6 +348,65 @@ impl Workspace for ViewerApp {
     /// Messages are delivered once per frame, before the API is called.
     fn bus(&mut self) -> &mut Bus {
         &mut self.bus
+    }
+
+    fn publish_edits(&mut self, id: &str, producer: &str) {
+        if id != WINDOW_DOCUMENT_ID {
+            return;
+        }
+        self.publish_edits_as(producer);
+        // An edit made through the API may have shortened the document
+        // under the cursor.
+        let len = self.document.len();
+        self.cursor = self.cursor.min(len);
+        self.anchor = self.anchor.map(|anchor| anchor.min(len));
+        self.clamp_top_row();
+    }
+
+    fn select(&mut self, id: &str, cursor: usize, selection: Option<Selection>, caller: &Caller) {
+        if id != WINDOW_DOCUMENT_ID {
+            return;
+        }
+        self.set_selection(cursor, selection);
+        self.clamp_top_row();
+        self.reveal_cursor_in_hex(true);
+        self.publish_selection(&caller.producer());
+    }
+
+    fn save(&mut self, id: &str, path: Option<&Path>) -> Result<(), ApiError> {
+        if id != WINDOW_DOCUMENT_ID {
+            return Err(ApiError::not_found(format!("document '{id}' has closed")));
+        }
+        let path = path.or(self.document.path()).map(Path::to_path_buf).ok_or_else(|| ApiError::invalid_params("this document has no file yet; give a path to save it to"))?;
+        self.save_sidecar();
+        self.save_to(&path).map_err(|message| ApiError::new(super::ErrorCode::Unavailable, message))
+    }
+
+    fn new_document(&mut self, _name: &str) -> Result<String, ApiError> {
+        if self.document.is_modified() {
+            return Err(ApiError::new(super::ErrorCode::ReadOnly, "the open document has unsaved edits; save it (documents.save) or undo them first"));
+        }
+        ViewerApp::new_document(self);
+        Ok(WINDOW_DOCUMENT_ID.to_string())
+    }
+
+    fn pin_template(&mut self, id: &str, parse: Finding) {
+        if id == WINDOW_DOCUMENT_ID {
+            self.pin_template_parse(parse);
+        }
+    }
+
+    fn permission(&self, caller: &Caller, effect: Effect) -> Decision {
+        permissions::decide(caller, effect, &self.preferences.permissions)
+    }
+
+    fn hold_for_confirmation(&mut self, held: HeldCall) -> Option<HeldCall> {
+        self.hold_call(held);
+        None
+    }
+
+    fn registered_methods(&self) -> Vec<Arc<RegisteredMethod>> {
+        self.plugin_methods.clone()
     }
 }
 

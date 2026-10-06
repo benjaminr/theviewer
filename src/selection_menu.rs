@@ -13,6 +13,7 @@ use eframe::egui::{self, Color32, Frame, Id, Order, Pos2, Rect, RichText, Ui, ve
 
 use crate::app::{DialogKind, FileAction, ViewerApp};
 use crate::compress::{self, Codec};
+use crate::document::Document;
 use crate::ops;
 use crate::selection::Selection;
 use crate::selection_ops::{self, CopyFormat, Operation};
@@ -96,52 +97,90 @@ impl ViewerApp {
     /// Write `operation`'s result over `ranges` as one undo step. Returns
     /// where each range's new bytes are.
     fn rewrite_ranges(&mut self, ranges: &[(usize, usize)], operation: &Operation) -> Result<Vec<(usize, usize)>, String> {
-        let start = ranges[0].0;
-        let end = ranges.last().map_or(start, |&(range_start, len)| range_start + len);
-        if end - start <= SINGLE_EDIT_LIMIT {
-            let span = self.document.read_range(start, end - start);
-            let (rebuilt, changed) = selection_ops::rebuild_span(&span, start, ranges, operation)?;
-            if rebuilt != span {
-                self.document.replace(start, span.len(), &rebuilt);
-            }
-            return Ok(changed);
-        }
-        // Too wide to rewrite in one piece: work out every range first, so a
-        // failure changes nothing, then write them from the last back.
-        let mut replacements = Vec::with_capacity(ranges.len());
-        for (index, &(range_start, len)) in ranges.iter().enumerate() {
-            let bytes = self.document.read_range(range_start, len);
-            replacements.push(selection_ops::transform_range(operation, &bytes, index)?);
-        }
-        let mut changed = Vec::with_capacity(ranges.len());
-        let mut shift: isize = 0;
-        for (&(range_start, len), replacement) in ranges.iter().zip(&replacements) {
-            changed.push(((range_start as isize + shift) as usize, replacement.len()));
-            shift += replacement.len() as isize - len as isize;
-        }
-        self.document.grouped(|document| {
-            for (&(range_start, len), replacement) in ranges.iter().zip(&replacements).rev() {
-                document.replace(range_start, len, replacement);
-            }
-        });
-        Ok(changed)
+        rewrite_ranges(&mut self.document, ranges, operation)
     }
 
     /// Select what an operation produced: the same column, the changed
     /// ranges, or just the cursor after a delete.
     fn select_after_operation(&mut self, selected: Option<Selection>, operation: &Operation, changed: &[(usize, usize)]) {
-        let kept: Vec<(usize, usize)> = changed.iter().copied().filter(|&(_, len)| len > 0).collect();
-        match selected {
-            Some(Selection::Columns(column)) if operation.keeps_length() => self.select_column(column),
-            Some(_) if kept.len() > 1 => self.select_ranges(kept, None),
-            Some(_) if kept.len() == 1 => self.restore_selection(kept[0].0, kept[0].1),
-            _ => {
-                let at = changed.first().map_or(self.cursor, |&(start, _)| start);
-                self.restore_selection(at.min(self.document.len()), 1);
-            }
-        }
+        let (cursor, selection) = selection_after_operation(selected, operation, changed, self.cursor, self.document.len());
+        self.set_selection(cursor, selection);
         self.clamp_top_row();
     }
+
+    /// Put the cursor at `cursor` and select `selection`, of any kind;
+    /// `None` selects nothing.
+    pub fn set_selection(&mut self, cursor: usize, selection: Option<Selection>) {
+        match selection {
+            Some(Selection::Range(start, len)) => self.restore_selection(start, len),
+            Some(Selection::Ranges(ranges)) => self.select_ranges(ranges, None),
+            Some(Selection::Columns(column)) => self.select_column(column),
+            None => self.set_cursor(cursor, false),
+        }
+    }
+}
+
+/// Write `operation`'s result over `ranges` (sorted, not overlapping) of
+/// `document` as one undo step, or change nothing when it fails. Returns
+/// where each range's new bytes are.
+pub fn rewrite_ranges(document: &mut Document, ranges: &[(usize, usize)], operation: &Operation) -> Result<Vec<(usize, usize)>, String> {
+    let Some(&(start, _)) = ranges.first() else { return Ok(Vec::new()) };
+    let end = ranges.last().map_or(start, |&(range_start, len)| range_start + len);
+    if end - start <= SINGLE_EDIT_LIMIT {
+        let span = document.read_range(start, end - start);
+        let (rebuilt, changed) = selection_ops::rebuild_span(&span, start, ranges, operation)?;
+        if rebuilt != span {
+            document.replace(start, span.len(), &rebuilt);
+        }
+        return Ok(changed);
+    }
+    // Too wide to rewrite in one piece: work out every range first, so a
+    // failure changes nothing, then write them from the last back.
+    let mut replacements = Vec::with_capacity(ranges.len());
+    for (index, &(range_start, len)) in ranges.iter().enumerate() {
+        let bytes = document.read_range(range_start, len);
+        replacements.push(selection_ops::transform_range(operation, &bytes, index)?);
+    }
+    let mut changed = Vec::with_capacity(ranges.len());
+    let mut shift: isize = 0;
+    for (&(range_start, len), replacement) in ranges.iter().zip(&replacements) {
+        changed.push(((range_start as isize + shift) as usize, replacement.len()));
+        shift += replacement.len() as isize - len as isize;
+    }
+    document.grouped(|document| {
+        for (&(range_start, len), replacement) in ranges.iter().zip(&replacements).rev() {
+            document.replace(range_start, len, replacement);
+        }
+    });
+    Ok(changed)
+}
+
+/// What is selected after `operation` changed `changed` (where each
+/// range's new bytes are), when `selected` was selected before: the same
+/// column, the changed ranges, or just the cursor (after a delete, say).
+/// Returns the cursor and the selection, in a document of `document_len`
+/// bytes.
+pub fn selection_after_operation(selected: Option<Selection>, operation: &Operation, changed: &[(usize, usize)], cursor: usize, document_len: usize) -> (usize, Option<Selection>) {
+    let kept: Vec<(usize, usize)> = changed.iter().copied().filter(|&(_, len)| len > 0).collect();
+    match selected {
+        Some(Selection::Columns(column)) if operation.keeps_length() => {
+            let (start, len) = column.span();
+            ((start + len).min(document_len), Some(Selection::Columns(column)))
+        }
+        Some(_) if kept.len() > 1 => {
+            let end = kept.last().map_or(cursor, |&(start, len)| start + len);
+            (end, Some(Selection::Ranges(kept)))
+        }
+        Some(_) if kept.len() == 1 && kept[0].1 > 1 => (kept[0].0 + kept[0].1, Some(Selection::Range(kept[0].0, kept[0].1))),
+        Some(_) if kept.len() == 1 => (kept[0].0, None),
+        _ => {
+            let at = changed.first().map_or(cursor, |&(start, _)| start);
+            (at.min(document_len), None)
+        }
+    }
+}
+
+impl ViewerApp {
 
     /// Every selected range's bytes, one after another.
     pub fn selected_bytes(&mut self) -> Vec<u8> {

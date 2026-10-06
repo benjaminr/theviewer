@@ -172,7 +172,8 @@ mod tests {
 
     use crate::api::test_support::workspace_with;
     use crate::api::workspace::Workspace;
-    use crate::api::{ErrorCode, call};
+    use crate::api::ErrorCode;
+    use crate::api::test_support::call;
     use crate::bus::topics::{DocumentEdited, FramesDefined, RecordWidthEstimated};
     use crate::bus::{Draft, Payload};
     use crate::document::Edit;

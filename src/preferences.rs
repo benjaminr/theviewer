@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::api::permissions::Policies;
 use crate::config;
 use crate::plugin::Category;
 use crate::raster::{Palette, PixelFormat};
@@ -54,6 +55,10 @@ pub struct Preferences {
     /// unless a decoding was chosen for the set. When off, frames show the
     /// field guesses or a template until detection is asked for.
     pub detect_frame_protocols: bool,
+    /// What each client of the data API (a plugin, Ask, an MCP client) may
+    /// do without asking, by its id ("plugin:sync_word.lua", "ask",
+    /// "mcp:claude-code"). A client not listed is asked about.
+    pub permissions: Policies,
 }
 
 impl Default for Preferences {
@@ -73,6 +78,7 @@ impl Default for Preferences {
             use_tshark: false,
             tshark_path: String::new(),
             detect_frame_protocols: true,
+            permissions: Policies::new(),
         }
     }
 }

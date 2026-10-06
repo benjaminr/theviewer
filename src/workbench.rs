@@ -641,12 +641,17 @@ impl ViewerApp {
     fn apply_template_at(&mut self, template: &Template, origin: usize) -> Applied {
         let bytes = self.document.read_range(origin, TEMPLATE_READ);
         let applied = template.apply(&bytes, origin);
-        self.bench.pinned.retain(|f| !f.id.starts_with("template:"));
-        self.bench.pinned.push(applied.finding.clone());
-        self.note_tool_result(DockTab::Template);
-        let finding = &applied.finding;
-        self.bus.publish(self.draft(TEMPLATES, Payload::StructureIdentified(crate::app::structure_of(finding))).span(finding.start, finding.len));
+        self.pin_template_parse(applied.finding.clone());
         applied
+    }
+
+    /// Pin a template's parse in place of the last: its records are
+    /// outlined and listed, and its structure published.
+    pub fn pin_template_parse(&mut self, finding: Finding) {
+        self.bench.pinned.retain(|f| !f.id.starts_with("template:"));
+        self.note_tool_result(DockTab::Template);
+        self.bus.publish(self.draft(TEMPLATES, Payload::StructureIdentified(crate::app::structure_of(&finding))).span(finding.start, finding.len));
+        self.bench.pinned.push(finding);
     }
 
     /// Decode the applied template again where it was applied, after an

@@ -153,7 +153,7 @@ fn call_headless(method: &str, params: &str, file: Option<&Path>) -> Result<serd
     if let Some(file) = file {
         workspace.open_path(file)?;
     }
-    api::call(&mut workspace, method, params)
+    api::call(&mut workspace, &api::Caller::Cli, method, params)
 }
 
 /// Print the report for `path` and return the process exit code.
