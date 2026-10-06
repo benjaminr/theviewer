@@ -247,7 +247,49 @@ to it. The notes are written for this project and built into the app (in
 that section of the RFC from the RFC Editor, only when you click it, and
 keeps the text in `~/.cache/theviewer/rfc` so it is read from there next
 time. *Ask* is sent the notes on the formats at the cursor too, and can look
-up any other format's notes.
+up any other format's notes, by name or by port (`udp/67`, or just `502`).
+
+When a packet's payload is not dissected, the tab still names what it
+probably is, from the port (or the EtherType, or the IP protocol number)
+the notes list for each protocol: an SSH packet's encrypted payload on TCP
+port 22 shows as *SSH banner?*, with the reason on hover. The question mark
+marks it as a guess: there is no field table, only the notes on what that
+port usually carries, and when several protocols share the port the others
+are offered beside it.
+
+*Browse all…* lists every note under its group (Link layer, Transport,
+Images, Archives and so on), with a search box that matches names, keys and
+summaries, or ports: `udp/67` or `502` finds what runs there.
+
+**Your own notes.** Put TOML files in `~/.config/theviewer/reference/`, in
+the same form as the built-in ones; they are read at startup, and *Reload
+your notes* in the *Browse all* list reads them again. An entry with the
+`id` of a built-in one replaces it; any other is added. A file that cannot
+be read is skipped, and the list says which and why. A minimal entry:
+
+```toml
+[[format]]
+id = "telemetry"
+name = "Lab telemetry"
+keys = ["Telemetry"]
+group = "Industrial control"
+ports = ["udp/9999"]
+summary = "Readings from the bench rig."
+organisation = "A 2-byte sensor id, then a 4-byte big-endian reading."
+
+[[format.specs]]
+document = "Rig manual 2.1"
+title = "Bench rig telemetry"
+url = "https://example.com/rig-manual.pdf"
+```
+
+**Checking the citations.** `cargo run --bin check_reference` checks every
+built-in note against its sources: each cited RFC exists, has the title
+given and is not obsoleted (a warning), each cited section is found in the
+RFC's text, each port is registered with the IANA to something like the
+protocol (a warning), and every link is https. The RFC Editor's index, the
+IANA registry and RFC text are kept in `~/.cache/theviewer/rfc`;
+`-- --offline` uses only what is kept there. Errors make it exit non-zero.
 
 Also in the menus: *Plot selection* draws bytes as a time series, histogram,
 scatter or frequency spectrum, and *Play selection as audio* plays any bytes
