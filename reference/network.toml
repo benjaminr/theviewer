@@ -22,6 +22,7 @@ keys = [
   "capture/pcap-be-ns",
   "application/vnd.tcpdump.pcap",
 ]
+wireshark = "file-pcap"
 summary = "The original libpcap/tcpdump capture file: a short file header followed by one record per captured packet, all sharing a single link-layer type."
 organisation = """
 A 24-byte file header comes first: a 4-byte magic number, a 2-byte major and minor version (2.4), two reserved 4-byte words that writers set to zero (once the time-zone offset and timestamp accuracy), the snapshot length, and the link-layer type. The magic is written in the byte order of the machine that made the file, so reading it as 0xA1B2C3D4 or 0xD4C3B2A1 tells you whether every later field is big- or little-endian; 0xA1B23C4D marks nanosecond rather than microsecond timestamps.
@@ -51,11 +52,13 @@ url = "https://www.tcpdump.org/manpages/pcap-savefile.5.html"
 
 [[format.fields]]
 name = "file header"
+wireshark = "pcap.header"
 meaning = "The 24 bytes before the first packet record: magic, version, reserved words, snapshot length and link type."
 section = "4"
 
 [[format.fields]]
 name = "magic"
+wireshark = "pcap.header.magic_number"
 meaning = "0xA1B2C3D4 (microsecond timestamps) or 0xA1B23C4D (nanosecond timestamps), in the writer's byte order; byte-swapped values mean the file is big-endian when read on a little-endian machine, or the reverse."
 section = "4.1"
 
@@ -66,21 +69,25 @@ section = "4"
 
 [[format.fields]]
 name = "time zone"
+wireshark = "pcap.header.this_zone"
 meaning = "Once the offset of the timestamps from UTC, in seconds; now reserved and written as zero, since timestamps are always UTC."
 section = "4"
 
 [[format.fields]]
 name = "timestamp accuracy"
+wireshark = "pcap.header.sigfigs"
 meaning = "Once the accuracy of the timestamps; now reserved and written as zero."
 section = "4"
 
 [[format.fields]]
 name = "snaplen"
+wireshark = "pcap.header.snapshot_length"
 meaning = "The snapshot length: the most bytes of any packet that were kept. Longer packets are cut short, so their captured length is less than their original length."
 section = "4"
 
 [[format.fields]]
 name = "link type"
+wireshark = "pcap.header.link_type"
 meaning = "The link-layer header type of every packet in the file (1 Ethernet, 101 raw IP, 113 Linux cooked and so on), from the tcpdump.org registry."
 section = "4"
 
@@ -91,6 +98,7 @@ section = "5"
 
 [[format.fields]]
 name = "packet *"
+wireshark = "pcap.packet"
 meaning = "One packet record: timestamp seconds and fraction, captured length, original length, then the captured bytes of the packet."
 section = "5"
 
@@ -104,6 +112,7 @@ keys = [
   "capture/pcapng-be",
   "application/vnd.tcpdump.pcapng",
 ]
+wireshark = "file-pcapng"
 summary = "The extensible successor to pcap: a sequence of typed blocks that can describe several interfaces with different link types, carry comments and name tables, and append statistics."
 organisation = """
 Everything is a block. Each block starts with a 4-byte block type and a 4-byte total length, then a body, and ends with the total length repeated, so a reader can walk forwards or backwards. Bodies are padded to a multiple of four bytes, and most blocks end with options: type-length-value entries (2-byte code, 2-byte length, padded value) closed by an end-of-options code of zero.
@@ -153,6 +162,7 @@ section = "4.6"
 
 [[format.fields]]
 name = "block"
+wireshark = "pcapng.block"
 meaning = "A block of another type, such as a Decryption Secrets Block or a custom block. Its total length still lets a reader step over it."
 section = "3.1"
 
@@ -164,6 +174,7 @@ section = "3.1"
 id = "ethernet"
 name = "Ethernet II"
 keys = ["Ethernet II", "Ethernet", "eth", "Ethernet frame"]
+wireshark = "eth"
 summary = "The framing used on almost every wired local network and in most packet captures: a 14-byte header naming the destination and source stations and the type of what follows."
 organisation = """
 The header is three fields: a 6-byte destination MAC address, a 6-byte source MAC address and a 2-byte big-endian EtherType. The payload starts at byte 14. Captures normally leave out the preamble and start-of-frame delimiter, and often the 4-byte frame check sequence at the end as well.
@@ -193,20 +204,24 @@ url = "https://www.iana.org/assignments/ieee-802-numbers/ieee-802-numbers.xhtml"
 
 [[format.fields]]
 name = "Destination"
+wireshark = "eth.dst"
 meaning = "The receiving station's MAC address. If the lowest bit of the first byte is set it is a group (multicast) address; ff:ff:ff:ff:ff:ff is broadcast to every station."
 
 [[format.fields]]
 name = "Source"
+wireshark = "eth.src"
 meaning = "The sending station's MAC address. The first three bytes are usually the manufacturer's identifier (OUI); the second-lowest bit of the first byte marks a locally administered address, as used by virtual machines and randomised Wi-Fi addresses."
 
 [[format.fields]]
 name = "Type"
+wireshark = "eth.type"
 meaning = "The EtherType: what the payload is (0x0800 IPv4, 0x86DD IPv6, 0x0806 ARP, 0x8100 VLAN tag). Values of 1500 or less are an IEEE 802.3 length instead."
 
 [[format]]
 id = "vlan"
 name = "IEEE 802.1Q VLAN tag"
 keys = ["802.1Q VLAN", "802.1Q", "VLAN", "802.1ad QinQ", "802.1ad"]
+wireshark = "vlan"
 summary = "A four-byte tag inserted into an Ethernet frame to place it on a virtual LAN and give it a priority, so that one physical network can carry several separate ones."
 organisation = """
 The tag sits where the EtherType would be: a 2-byte tag protocol identifier (0x8100, shown as the Type of the layer before), then a 2-byte tag control word, then the frame's real EtherType. The dissector shows the control word and the following EtherType as this layer, so it is four bytes long.
@@ -226,20 +241,24 @@ url = "https://standards.ieee.org/ieee/802.1Q/10323/"
 
 [[format.fields]]
 name = "Priority"
+wireshark = "vlan.priority"
 meaning = "The priority code point, the top three bits of the tag: 0 (best effort) to 7 (highest), used by switches to choose a queue."
 
 [[format.fields]]
 name = "VLAN ID"
+wireshark = "vlan.id"
 meaning = "The 12-bit virtual LAN the frame belongs to, 1 to 4094. Zero means the tag only carries a priority."
 
 [[format.fields]]
 name = "Type"
+wireshark = "vlan.etype"
 meaning = "The EtherType of what follows the tag: another tag, or the payload (0x0800 IPv4, 0x86DD IPv6, 0x0806 ARP)."
 
 [[format]]
 id = "arp"
 name = "Address Resolution Protocol"
 keys = ["Address Resolution Protocol", "ARP"]
+wireshark = "arp"
 summary = "How a host on a local network finds the hardware (MAC) address that belongs to an IPv4 address: it broadcasts a request and the owner replies."
 organisation = """
 ARP travels directly in an Ethernet frame with EtherType 0x0806. An 8-byte fixed part gives the hardware type, the protocol type, the lengths of a hardware address and of a protocol address, and the operation (1 request, 2 reply). Four addresses follow: sender hardware, sender protocol, target hardware, target protocol, whose sizes come from the two length bytes.
@@ -265,38 +284,47 @@ url = "https://www.iana.org/assignments/arp-parameters/arp-parameters.xhtml"
 
 [[format.fields]]
 name = "Hardware type"
+wireshark = "arp.hw.type"
 meaning = "The kind of link the hardware addresses belong to; 1 is Ethernet."
 
 [[format.fields]]
 name = "Protocol type"
+wireshark = "arp.proto.type"
 meaning = "The network protocol being resolved, as an EtherType; 0x0800 is IPv4."
 
 [[format.fields]]
 name = "Hardware size"
+wireshark = "arp.hw.size"
 meaning = "Bytes in each hardware address: 6 for Ethernet MAC addresses."
 
 [[format.fields]]
 name = "Protocol size"
+wireshark = "arp.proto.size"
 meaning = "Bytes in each protocol address: 4 for IPv4."
 
 [[format.fields]]
 name = "Opcode"
+wireshark = "arp.opcode"
 meaning = "The operation: 1 request, 2 reply (3 and 4 are the reverse-ARP request and reply)."
 
 [[format.fields]]
 name = "Sender hardware address"
+wireshark = "arp.src.hw_mac"
 meaning = "The MAC address of the station sending this packet. Receivers may cache it against the sender protocol address."
 
 [[format.fields]]
 name = "Sender protocol address"
+wireshark = "arp.src.proto_ipv4"
 meaning = "The IPv4 address of the sender."
 
 [[format.fields]]
 name = "Target hardware address"
+wireshark = "arp.dst.hw_mac"
 meaning = "In a reply, the MAC address of the station being answered. In a request it is unknown and usually all zeros."
 
 [[format.fields]]
 name = "Target protocol address"
+wireshark = "arp.dst.proto_ipv4"
 meaning = "The IPv4 address being asked about (in a request) or the asker's address (in a reply)."
 
 # ---------------------------------------------------------------------------
@@ -307,6 +335,7 @@ meaning = "The IPv4 address being asked about (in a request) or the asker's addr
 id = "ipv4"
 name = "Internet Protocol version 4"
 keys = ["Internet Protocol version 4", "IPv4", "IP version 4"]
+wireshark = "ip"
 summary = "Carries datagrams between hosts across interconnected networks, addressing each end with a 32-bit address and fragmenting packets that are too big for a link."
 organisation = """
 The header is at least 20 bytes, all fields big-endian. The first byte holds the version (4) in its top four bits and the header length in 32-bit words (5 to 15, so 20 to 60 bytes) in its bottom four; anything past byte 20 is options. The transport header therefore starts at header length × 4.
@@ -352,14 +381,17 @@ meaning = "One byte: the version (4) in the top four bits and the header length 
 
 [[format.fields]]
 name = "Differentiated services"
+wireshark = "ip.dsfield"
 meaning = "Formerly the type of service. The top six bits are the DSCP, a traffic class for queueing (RFC 2474); the bottom two are the ECN bits, which routers can set to signal congestion instead of dropping the packet (RFC 3168)."
 
 [[format.fields]]
 name = "Total length"
+wireshark = "ip.len"
 meaning = "Bytes in the whole packet, header and data, up to 65,535. Bytes beyond this in the frame are padding."
 
 [[format.fields]]
 name = "Identification"
+wireshark = "ip.id"
 meaning = "A value chosen by the sender so that the fragments of one packet can be put back together; all fragments of a packet share it."
 
 [[format.fields]]
@@ -368,22 +400,27 @@ meaning = "Three flag bits (reserved, don't fragment, more fragments) and a 13-b
 
 [[format.fields]]
 name = "Time to live"
+wireshark = "ip.ttl"
 meaning = "Decremented by each router; the packet is discarded at zero and an ICMP time exceeded message is sent back. Common starting values are 64, 128 and 255, which hints at the sender's operating system."
 
 [[format.fields]]
 name = "Protocol"
+wireshark = "ip.proto"
 meaning = "What the data is: 1 ICMP, 6 TCP, 17 UDP, 47 GRE, 50 ESP and others in the IANA registry."
 
 [[format.fields]]
 name = "Header checksum"
+wireshark = "ip.checksum"
 meaning = "Ones' complement of the ones' complement sum of the header's 16-bit words, covering the header only. Recomputed by every router because the time to live changes."
 
 [[format.fields]]
 name = "Source address"
+wireshark = "ip.src"
 meaning = "The 32-bit address of the sender."
 
 [[format.fields]]
 name = "Destination address"
+wireshark = "ip.dst"
 meaning = "The 32-bit address of the receiver; may be a broadcast or a multicast (224.0.0.0/4) address."
 
 [[format.fields]]
@@ -394,6 +431,7 @@ meaning = "Rarely used extras between byte 20 and the end of the header, such as
 id = "ipv6"
 name = "Internet Protocol version 6"
 keys = ["Internet Protocol version 6", "IPv6", "IP version 6"]
+wireshark = "ipv6"
 summary = "The successor to IPv4, with 128-bit addresses, a fixed 40-byte header and optional extension headers chained after it."
 organisation = """
 The fixed header is always 40 bytes, big-endian: 4 bits of version (6), 8 bits of traffic class, a 20-bit flow label, the payload length, the next header, the hop limit and two 16-byte addresses. There is no header checksum, and routers never fragment; only the sender does, using a fragment header.
@@ -433,22 +471,27 @@ meaning = "The first four bytes: version 6 (4 bits), the traffic class (8 bits, 
 
 [[format.fields]]
 name = "Payload length"
+wireshark = "ipv6.plen"
 meaning = "Bytes after the 40-byte fixed header, including any extension headers. Zero is used with the jumbo payload option for packets over 65,535 bytes."
 
 [[format.fields]]
 name = "Next header"
+wireshark = "ipv6.nxt"
 meaning = "What follows the fixed header: an extension header (0, 43, 44, 60) or the upper-layer protocol (6 TCP, 17 UDP, 58 ICMPv6); 59 means nothing."
 
 [[format.fields]]
 name = "Hop limit"
+wireshark = "ipv6.hlim"
 meaning = "IPv6's time to live: decremented by each router, and the packet is discarded at zero."
 
 [[format.fields]]
 name = "Source address"
+wireshark = "ipv6.src"
 meaning = "The sender's 128-bit address. fe80::/10 addresses are link-local and never routed."
 
 [[format.fields]]
 name = "Destination address"
+wireshark = "ipv6.dst"
 meaning = "The receiver's 128-bit address; ff00::/8 addresses are multicast (IPv6 has no broadcast)."
 
 [[format]]
@@ -490,6 +533,7 @@ meaning = "The size of this extension header in bytes. On the wire it is stored 
 id = "ipv6-fragment"
 name = "IPv6 fragment header"
 keys = ["IPv6 fragment header", "IPv6 fragment"]
+wireshark = "ipv6.fraghdr"
 summary = "The eight-byte extension header a sender adds when it splits an IPv6 packet too large for the path into fragments."
 organisation = """
 The header is a fixed 8 bytes: next header, a reserved byte, a 16-bit word holding the fragment offset (13 bits, in 8-byte units), two reserved bits and the "more fragments" flag, then a 32-bit identification shared by all fragments of one packet.
@@ -509,12 +553,14 @@ section = "4.5"
 
 [[format.fields]]
 name = "Fragment offset"
+wireshark = "ipv6.fraghdr.offset"
 meaning = "Where this fragment's data belongs in the original packet, shown in bytes; stored as a 13-bit count of 8-byte units."
 
 [[format]]
 id = "icmp"
 name = "Internet Control Message Protocol"
 keys = ["Internet Control Message Protocol", "ICMP", "ICMPv4"]
+wireshark = "icmp"
 summary = "IPv4's companion for error reports and diagnostics: routers and hosts use it to say a destination is unreachable or a packet's time ran out, and ping uses its echo messages."
 organisation = """
 ICMP travels inside IPv4 with protocol number 1. Every message starts with a 1-byte type, a 1-byte code refining it, and a 2-byte checksum over the whole ICMP message. The next four bytes depend on the type: an identifier and sequence number for echo request (8) and reply (0), a gateway address for redirects, the next-hop MTU for "fragmentation needed", or unused.
@@ -538,22 +584,27 @@ url = "https://www.iana.org/assignments/icmp-parameters/icmp-parameters.xhtml"
 
 [[format.fields]]
 name = "Type"
+wireshark = "icmp.type"
 meaning = "The kind of message: 0 echo reply, 3 destination unreachable, 5 redirect, 8 echo request, 11 time exceeded, among others."
 
 [[format.fields]]
 name = "Code"
+wireshark = "icmp.code"
 meaning = "Refines the type; for destination unreachable, 0 network, 1 host, 3 port unreachable, 4 fragmentation needed."
 
 [[format.fields]]
 name = "Checksum"
+wireshark = "icmp.checksum"
 meaning = "Ones' complement checksum over the ICMP message (header and data); unlike ICMPv6 it does not cover the IP addresses."
 
 [[format.fields]]
 name = "Identifier"
+wireshark = "icmp.ident"
 meaning = "Chosen by the sender of an echo request, often the process ID, so replies can be matched to the program that sent them."
 
 [[format.fields]]
 name = "Sequence number"
+wireshark = "icmp.seq"
 meaning = "Counts the echo requests in a series; the reply copies it so lost and reordered replies can be seen."
 
 [[format.fields]]
@@ -564,6 +615,7 @@ meaning = "Four bytes whose meaning depends on the type: unused (zero), a gatewa
 id = "icmpv6"
 name = "Internet Control Message Protocol for IPv6"
 keys = ["Internet Control Message Protocol v6", "ICMPv6", "Internet Control Message Protocol for IPv6"]
+wireshark = "icmpv6"
 summary = "IPv6's control protocol: it reports errors and runs ping like ICMP, and also carries neighbour discovery, which replaces ARP, and router advertisements."
 organisation = """
 ICMPv6 follows the IPv6 header (or its extension headers) with next header 58. Like ICMP it starts with a type, a code and a checksum, but the checksum also covers an IPv6 pseudo-header of the addresses, length and next header, so it is never optional.
@@ -595,24 +647,29 @@ url = "https://www.iana.org/assignments/icmpv6-parameters/icmpv6-parameters.xhtm
 
 [[format.fields]]
 name = "Type"
+wireshark = "icmpv6.type"
 meaning = "The kind of message: below 128 an error (1 unreachable, 2 packet too big, 3 time exceeded), from 128 informational (128/129 echo, 133 to 137 neighbour discovery)."
 
 [[format.fields]]
 name = "Code"
+wireshark = "icmpv6.code"
 meaning = "Refines the type; for destination unreachable, 0 no route, 1 administratively prohibited, 3 address unreachable, 4 port unreachable."
 
 [[format.fields]]
 name = "Checksum"
+wireshark = "icmpv6.checksum"
 meaning = "Ones' complement checksum over an IPv6 pseudo-header (addresses, length, next header 58) and the whole ICMPv6 message."
 section = "2.3"
 
 [[format.fields]]
 name = "Identifier"
+wireshark = "icmpv6.echo.identifier"
 meaning = "Chosen by the sender of an echo request so replies can be matched to it."
 section = "4.1"
 
 [[format.fields]]
 name = "Sequence number"
+wireshark = "icmpv6.echo.sequence_number"
 meaning = "Counts echo requests in a series; the reply copies it."
 section = "4.1"
 
@@ -628,6 +685,7 @@ meaning = "Four bytes that depend on the type: the MTU for packet too big, a poi
 id = "tcp"
 name = "Transmission Control Protocol"
 keys = ["Transmission Control Protocol", "TCP"]
+wireshark = "tcp"
 summary = "A reliable, ordered byte stream between two ports: segments are numbered by byte, acknowledged and retransmitted, and the flow is paced by the receiver's window."
 organisation = """
 The header is at least 20 bytes, big-endian: source and destination ports, a 32-bit sequence number, a 32-bit acknowledgement number, a 4-bit data offset (the header length in 32-bit words), the flag bits, the window, the checksum and the urgent pointer. Options fill the rest of the header up to the data offset, which can make it as long as 60 bytes. The payload starts at the data offset and runs to the end of the IP packet; TCP has no length field of its own.
@@ -656,44 +714,54 @@ section = "6.1"
 
 [[format.fields]]
 name = "Source port"
+wireshark = "tcp.srcport"
 meaning = "The sending application's port; a client usually picks a temporary (ephemeral) port above 1023."
 
 [[format.fields]]
 name = "Destination port"
+wireshark = "tcp.dstport"
 meaning = "The receiving application's port; for a client's segments this is the service, such as 80 for HTTP or 443 for HTTPS."
 
 [[format.fields]]
 name = "Sequence number"
+wireshark = "tcp.seq"
 meaning = "The stream position of this segment's first data byte. In a SYN it is the initial sequence number, and the first data byte is that number plus one."
 section = "3.4"
 
 [[format.fields]]
 name = "Acknowledgement number"
+wireshark = "tcp.ack"
 meaning = "When the ACK flag is set, the next sequence number the sender expects from the other side: every byte before it has arrived."
 
 [[format.fields]]
 name = "Header length"
+wireshark = "tcp.hdr_len"
 meaning = "The data offset: header length in 32-bit words (5 to 15, so 20 to 60 bytes). The payload starts this many bytes into the segment."
 
 [[format.fields]]
 name = "Flags"
+wireshark = "tcp.flags"
 meaning = "Control bits: SYN opens a connection, ACK marks the acknowledgement number valid, FIN closes one direction, RST aborts, PSH asks for prompt delivery, URG marks urgent data, and ECE and CWR carry congestion signals (RFC 3168)."
 
 [[format.fields]]
 name = "Window"
+wireshark = "tcp.window_size_value"
 meaning = "How many more bytes the sender of this segment is ready to receive. It is multiplied by 2 to the power of the window scale option negotiated in the SYNs."
 
 [[format.fields]]
 name = "Checksum"
+wireshark = "tcp.checksum"
 meaning = "Ones' complement checksum over a pseudo-header (IP addresses, protocol, TCP length), the header and the data. Captures taken on the sending host often show it as wrong because the network card fills it in later."
 
 [[format.fields]]
 name = "Urgent pointer"
+wireshark = "tcp.urgent_pointer"
 meaning = "With the URG flag, the offset from the sequence number to the end of urgent data. Almost never used."
 section = "3.8.5"
 
 [[format.fields]]
 name = "Options"
+wireshark = "tcp.options"
 meaning = "Kind-length-value entries such as maximum segment size, window scale, selective acknowledgement permitted and timestamps, mostly exchanged in the SYN segments."
 section = "3.2"
 
@@ -701,6 +769,7 @@ section = "3.2"
 id = "udp"
 name = "User Datagram Protocol"
 keys = ["UDP", "User Datagram Protocol"]
+wireshark = "udp"
 summary = "A minimal transport: each datagram travels on its own between two ports, with no connection, ordering or retransmission."
 organisation = """
 An eight-byte header of four 16-bit big-endian fields (source port, destination port, length and checksum) followed directly by the payload.
@@ -721,18 +790,22 @@ rfc = 768
 
 [[format.fields]]
 name = "Source port"
+wireshark = "udp.srcport"
 meaning = "The sender's port; replies are addressed to it. Zero when no reply is expected."
 
 [[format.fields]]
 name = "Destination port"
+wireshark = "udp.dstport"
 meaning = "The receiving application's port. Well-known ports below 1024 often name the protocol inside (53 for DNS, 123 for NTP)."
 
 [[format.fields]]
 name = "Length"
+wireshark = "udp.length"
 meaning = "Bytes in the header and payload together; at least 8."
 
 [[format.fields]]
 name = "Checksum"
+wireshark = "udp.checksum"
 meaning = "Ones' complement sum over a pseudo-header (addresses, protocol, length), the header and the payload. Zero over IPv4 means no checksum."
 
 # ---------------------------------------------------------------------------
@@ -743,6 +816,7 @@ meaning = "Ones' complement sum over a pseudo-header (addresses, protocol, lengt
 id = "dns"
 name = "Domain Name System message"
 keys = ["DNS", "Domain Name System", "application/dns-message"]
+wireshark = "dns"
 summary = "The query and response format used to look up names: a client asks for records of a given type for a name, and a server answers with resource records."
 organisation = """
 A message starts with a 12-byte header: a transaction ID that pairs the response with the query, a 16-bit flags word (query or response, opcode, authoritative answer, truncated, recursion desired and available, response code), and four 16-bit counts for the sections that follow. All numbers are big-endian.
@@ -783,36 +857,43 @@ url = "https://www.iana.org/assignments/dns-parameters/dns-parameters.xhtml"
 
 [[format.fields]]
 name = "Length"
+wireshark = "dns.length"
 meaning = "Over TCP only: the length of the DNS message that follows, in bytes, since a stream has no datagram boundaries."
 section = "4.2.2"
 
 [[format.fields]]
 name = "Transaction ID"
+wireshark = "dns.id"
 meaning = "Chosen by the client and copied into the response so the two can be matched. Randomising it makes forged responses harder."
 section = "4.1.1"
 
 [[format.fields]]
 name = "Flags"
+wireshark = "dns.flags"
 meaning = "QR (0 query, 1 response), a 4-bit opcode (0 standard query), AA authoritative answer, TC truncated, RD recursion desired, RA recursion available, and a 4-bit response code (0 no error, 2 server failure, 3 name does not exist)."
 section = "4.1.1"
 
 [[format.fields]]
 name = "Questions"
+wireshark = "dns.count.queries"
 meaning = "The number of entries in the question section; almost always 1."
 section = "4.1.1"
 
 [[format.fields]]
 name = "Answer records"
+wireshark = "dns.count.answers"
 meaning = "The number of resource records in the answer section."
 section = "4.1.1"
 
 [[format.fields]]
 name = "Authority records"
+wireshark = "dns.count.auth_rr"
 meaning = "The number of resource records in the authority section, which names the servers responsible for the zone."
 section = "4.1.1"
 
 [[format.fields]]
 name = "Additional records"
+wireshark = "dns.count.add_rr"
 meaning = "The number of resource records in the additional section, such as addresses of named servers, or the EDNS(0) OPT pseudo-record."
 section = "4.1.1"
 
@@ -859,11 +940,13 @@ section = "3.2.4"
 
 [[format.fields]]
 name = "Time to live"
+wireshark = "dns.resp.ttl"
 meaning = "How many seconds the record may be cached before it must be looked up again."
 section = "4.1.3"
 
 [[format.fields]]
 name = "Data length"
+wireshark = "dns.resp.len"
 meaning = "Bytes in the record's data (RDLENGTH)."
 section = "4.1.3"
 
@@ -876,6 +959,7 @@ section = "4.1.3"
 id = "http"
 name = "Hypertext Transfer Protocol (HTTP/1.x)"
 keys = ["HTTP", "HTTP/1.1", "Hypertext Transfer Protocol", "protocol/http-request", "protocol/http-response"]
+wireshark = "http"
 summary = "The text-based request and response protocol of the web: a client sends a method and a target, and the server answers with a status code, each followed by header fields and an optional body."
 organisation = """
 Every message begins with a start line ending in CR LF. A request line is method, target and version separated by single spaces ("GET /index.html HTTP/1.1"); a status line is version, three-digit status code and reason ("HTTP/1.1 200 OK").
@@ -903,11 +987,13 @@ rfc = 9110
 
 [[format.fields]]
 name = "Request line"
+wireshark = "http.request.line"
 meaning = "The method (GET, POST, PUT, DELETE, HEAD and so on), the request target (usually a path and query) and the protocol version."
 section = "3"
 
 [[format.fields]]
 name = "Status line"
+wireshark = "http.response.line"
 meaning = "The protocol version, a three-digit status code (2xx success, 3xx redirection, 4xx client error, 5xx server error) and a reason phrase that carries no meaning of its own."
 section = "4"
 
@@ -928,39 +1014,47 @@ section = "6"
 
 [[format.fields]]
 name = "Host"
+wireshark = "http.host"
 meaning = "The host name (and port) the request is for, required in HTTP/1.1 so that one server address can serve many sites."
 
 [[format.fields]]
 name = "Content-Length"
+wireshark = "http.content_length"
 meaning = "The body's length in decimal bytes, when chunked transfer coding is not used."
 section = "6.2"
 
 [[format.fields]]
 name = "Transfer-Encoding"
+wireshark = "http.transfer_encoding"
 meaning = "Codings applied to the body for transport; \"chunked\" sends it as length-prefixed chunks so it can be streamed without knowing its size in advance."
 section = "6.1"
 
 [[format.fields]]
 name = "Content-Type"
+wireshark = "http.content_type"
 meaning = "The media type of the body, such as text/html; charset=utf-8 or application/json."
 
 [[format.fields]]
 name = "Connection"
+wireshark = "http.connection"
 meaning = "Options for this connection only, such as \"close\" to end it after the response or \"keep-alive\"."
 section = "9.6"
 
 [[format.fields]]
 name = "User-Agent"
+wireshark = "http.user_agent"
 meaning = "The client software making the request."
 
 [[format.fields]]
 name = "Server"
+wireshark = "http.server"
 meaning = "The server software that produced the response."
 
 [[format]]
 id = "tls-record"
 name = "Transport Layer Security record"
 keys = ["tls-record", "TLS", "TLS record", "Transport Layer Security", "protocol/tls-record", "protocol/tls-client-hello"]
+wireshark = "tls"
 summary = "The framing of TLS, the encryption layer under HTTPS and many other protocols: every handshake message, alert and piece of application data travels in records with a five-byte header."
 organisation = """
 A record header is 5 bytes: a content type (20 change cipher spec, 21 alert, 22 handshake, 23 application data), a 2-byte protocol version, and a 2-byte big-endian length of the fragment that follows (at most 16,384 bytes of plaintext, a little more once encrypted). The next record starts right after the fragment, so a run of records can be walked by their lengths.
@@ -1014,6 +1108,7 @@ section = "4.4.1"
 
 [[format.fields]]
 name = "Certificate"
+wireshark = "tls.handshake.certificates"
 meaning = "The sender's certificate chain, starting with its own certificate. Readable in TLS 1.2, encrypted in TLS 1.3."
 section = "4.5.1"
 
@@ -1046,20 +1141,24 @@ meaning = "TLS 1.2 and earlier: the client's key exchange value (its ephemeral p
 
 [[format.fields]]
 name = "ChangeCipherSpec"
+wireshark = "tls.change_cipher_spec"
 meaning = "A one-byte record (content type 20) announcing that the sender switches to the negotiated keys. TLS 1.3 sends it only for compatibility with middleboxes."
 
 [[format.fields]]
 name = "Alert"
+wireshark = "tls.alert_message"
 meaning = "A record of content type 21: a severity (warning or fatal) and a description, such as close_notify at the end of a connection. Encrypted once keys are in use."
 section = "6"
 
 [[format.fields]]
 name = "ApplicationData"
+wireshark = "tls.app_data"
 meaning = "A record of content type 23: encrypted data. In TLS 1.3 it also hides encrypted handshake messages and alerts."
 section = "5.2"
 
 [[format.fields]]
 name = "handshake"
+wireshark = "tls.handshake"
 meaning = "A handshake record of a type not listed by name; its body starts with a 1-byte message type and a 3-byte length."
 section = "4"
 
@@ -1067,6 +1166,7 @@ section = "4"
 id = "ssh-banner"
 name = "SSH protocol version exchange"
 keys = ["ssh-banner", "SSH banner", "SSH protocol banner", "protocol/ssh-banner"]
+wireshark = "ssh"
 summary = "The line of text each side of an SSH connection sends first, announcing the protocol version and the software in use, before the binary key exchange begins."
 organisation = """
 The identification line has the form "SSH-protoversion-softwareversion", optionally followed by a space and comments, and ends with CR LF; it is at most 255 characters including the line ending. The protocol version is "2.0", or "1.99" from a server that also accepts the old version 1 protocol. The software version, such as "OpenSSH_9.6", is free text without spaces or hyphens.
@@ -1088,6 +1188,7 @@ section = "4.2"
 id = "ntp"
 name = "Network Time Protocol"
 keys = ["NTP", "Network Time Protocol"]
+wireshark = "ntp"
 summary = "Synchronises clocks over the network: a client and server exchange timestamps, from which the client works out its clock offset and the round-trip delay."
 organisation = """
 NTP runs over UDP port 123. The basic packet is 48 bytes, big-endian: a byte of leap indicator (2 bits), version (3 bits) and mode (3 bits); the stratum; the poll interval and precision as signed powers of two in seconds; root delay and root dispersion as 16.16 fixed-point seconds; a 4-byte reference ID; and four 8-byte timestamps. Extension fields and a message authentication code may follow.
@@ -1109,52 +1210,64 @@ section = "7.3"
 
 [[format.fields]]
 name = "Flags"
+wireshark = "ntp.flags"
 meaning = "Leap indicator (0 none, 1 or 2 a leap second at the end of the day, 3 clock unsynchronised), version (usually 3 or 4) and mode (3 client, 4 server, 5 broadcast, 1 and 2 symmetric peers, 6 control)."
 
 [[format.fields]]
 name = "Stratum"
+wireshark = "ntp.stratum"
 meaning = "Distance from a reference clock: 1 is attached directly to one (GPS, atomic clock), 2 synchronises from a stratum 1 server and so on; 0 marks a kiss-o'-death packet or an unset value, 16 unsynchronised."
 
 [[format.fields]]
 name = "Poll interval"
+wireshark = "ntp.ppoll"
 meaning = "The longest interval between successive messages, as a power of two in seconds (6 means 64 s)."
 
 [[format.fields]]
 name = "Precision"
+wireshark = "ntp.precision"
 meaning = "The precision of the sender's clock, as a power of two in seconds (-20 is about a microsecond)."
 
 [[format.fields]]
 name = "Root delay"
+wireshark = "ntp.rootdelay"
 meaning = "The total round-trip delay to the reference clock, in seconds."
 
 [[format.fields]]
 name = "Root dispersion"
+wireshark = "ntp.rootdispersion"
 meaning = "The total error the sender could have relative to the reference clock, in seconds."
 
 [[format.fields]]
 name = "Reference ID"
+wireshark = "ntp.refid"
 meaning = "For stratum 1, four ASCII characters naming the reference source (such as GPS or PPS); for stratum 0, a kiss code such as RATE or DENY; above that, the IPv4 address of the upstream server, or a hash of its IPv6 address."
 
 [[format.fields]]
 name = "Reference timestamp"
+wireshark = "ntp.reftime"
 meaning = "When the sender's clock was last set or corrected."
 
 [[format.fields]]
 name = "Origin timestamp"
+wireshark = "ntp.org"
 meaning = "In a reply, the client's transmit time copied from the request, so the client can match the reply and compute the round trip."
 
 [[format.fields]]
 name = "Receive timestamp"
+wireshark = "ntp.rec"
 meaning = "When the request arrived at the server."
 
 [[format.fields]]
 name = "Transmit timestamp"
+wireshark = "ntp.xmt"
 meaning = "When this packet left the sender."
 
 [[format]]
 id = "mqtt"
 name = "MQTT"
 keys = ["MQTT", "Message Queuing Telemetry Transport"]
+wireshark = "mqtt"
 summary = "A lightweight publish/subscribe messaging protocol for devices and sensors: clients connect to a broker, subscribe to topics and publish messages to them."
 organisation = """
 MQTT runs over TCP, on port 1883 (8883 with TLS). Every control packet starts with a fixed header: one byte whose top four bits are the packet type (1 CONNECT, 3 PUBLISH, 8 SUBSCRIBE, 12 PINGREQ, 14 DISCONNECT and so on) and whose bottom four are flags, then the remaining length.
@@ -1181,36 +1294,43 @@ section = "2"
 
 [[format.fields]]
 name = "Header flags"
+wireshark = "mqtt.hdrflags"
 meaning = "The first byte: packet type in the top four bits and type-specific flags in the bottom four (for PUBLISH, DUP, two QoS bits and RETAIN)."
 section = "2.2"
 
 [[format.fields]]
 name = "Remaining length"
+wireshark = "mqtt.len"
 meaning = "Bytes in the rest of the packet, as a 1 to 4 byte variable-length integer, 7 bits per byte, low-order first."
 section = "2.2.3"
 
 [[format.fields]]
 name = "Topic"
+wireshark = "mqtt.topic"
 meaning = "The topic the message is published to, a UTF-8 string such as home/kitchen/temperature, with a 2-byte length prefix. Levels are separated by slashes."
 section = "3.3.2.1"
 
 [[format.fields]]
 name = "Message identifier"
+wireshark = "mqtt.msgid"
 meaning = "The packet identifier, present only for QoS 1 and 2, used to match the acknowledgements to this publish."
 section = "3.3.2.2"
 
 [[format.fields]]
 name = "Message"
+wireshark = "mqtt.msg"
 meaning = "The application payload of a publish, in any format the clients agree on; in MQTT 5.0 it is preceded by the properties."
 section = "3.3.3"
 
 [[format.fields]]
 name = "Protocol name"
+wireshark = "mqtt.protoname"
 meaning = "In a CONNECT, \"MQTT\" (or \"MQIsdp\" for the older 3.1), with a 2-byte length prefix."
 section = "3.1.2.1"
 
 [[format.fields]]
 name = "Protocol level"
+wireshark = "mqtt.ver"
 meaning = "In a CONNECT, the protocol revision: 3 for 3.1, 4 for 3.1.1, 5 for 5.0."
 section = "3.1.2.2"
 
@@ -1222,6 +1342,7 @@ meaning = "The variable header and payload of other packet types, shown as bytes
 id = "modbus"
 name = "Modbus/TCP"
 keys = ["Modbus/TCP", "Modbus", "Modbus TCP"]
+wireshark = "mbtcp"
 summary = "The industrial request/response protocol for reading and writing coils and registers in controllers, carried over TCP with a small header in front of the classic Modbus message."
 organisation = """
 Each message (an application data unit) starts with the 7-byte MBAP header, big-endian: a transaction ID that the server copies into its response, a protocol ID that is always 0, a length counting the bytes that follow it (unit ID, function code and data), and a 1-byte unit ID. The next message on the stream starts at 6 + length.
@@ -1246,30 +1367,37 @@ url = "https://www.modbus.org/file/secure/messagingimplementationguide.pdf"
 
 [[format.fields]]
 name = "Transaction ID"
+wireshark = "mbtcp.trans_id"
 meaning = "Chosen by the client and copied into the response, so that several outstanding requests can be matched with their answers."
 
 [[format.fields]]
 name = "Protocol ID"
+wireshark = "mbtcp.prot_id"
 meaning = "Always 0 for Modbus."
 
 [[format.fields]]
 name = "Length"
+wireshark = "mbtcp.len"
 meaning = "Bytes that follow this field: the unit ID, the function code and the data."
 
 [[format.fields]]
 name = "Unit ID"
+wireshark = "mbtcp.unit_id"
 meaning = "The station address of a serial device behind a gateway; devices addressed directly over TCP usually ignore it (0 or 255)."
 
 [[format.fields]]
 name = "Function code"
+wireshark = "modbus.func_code"
 meaning = "The operation: 1 read coils, 2 read discrete inputs, 3 read holding registers, 4 read input registers, 5 and 6 write a single coil or register, 15 and 16 write several. 0x80 is added in an exception response."
 
 [[format.fields]]
 name = "Exception code"
+wireshark = "modbus.exception_code"
 meaning = "Why a request failed: 1 illegal function, 2 illegal data address, 3 illegal data value, 4 server device failure, 6 server busy, 11 gateway target failed to respond."
 
 [[format.fields]]
 name = "Reference number"
+wireshark = "modbus.reference_num"
 meaning = "The zero-based address of the first coil or register to read. Documentation often numbers registers from 1 (holding register 40001 is address 0)."
 
 [[format.fields]]
@@ -1278,4 +1406,5 @@ meaning = "How many coils or registers to read, starting at the reference number
 
 [[format.fields]]
 name = "Data"
+wireshark = "modbus.data"
 meaning = "The rest of the PDU: in a response, a byte count and the values read; in a write request, the address and values."

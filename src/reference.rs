@@ -1025,6 +1025,26 @@ meaning = "Rare extras."
         assert!(text.contains("- Options: Rare extras."), "{text}");
     }
 
+    /// Fields of an entry that have a Wireshark name, and all its fields.
+    fn wireshark_coverage(entry: &FormatReference) -> (usize, usize) {
+        (entry.fields.iter().filter(|note| note.wireshark.is_some()).count(), entry.fields.len())
+    }
+
+    #[test]
+    fn the_main_network_notes_carry_wireshark_names() {
+        let library = embedded_library().unwrap();
+        for id in ["ethernet", "ipv4", "ipv6", "tcp", "udp", "dns", "http", "tls-record", "dhcp", "arp", "icmp"] {
+            let entry = library.by_id(id).unwrap_or_else(|| panic!("no entry {id}"));
+            let name = entry.wireshark.as_deref().unwrap_or_else(|| panic!("{id} has no Wireshark name"));
+            assert_eq!(library.by_wireshark(name).unwrap().id, id);
+        }
+        for id in ["ipv4", "tcp", "udp"] {
+            let (named, all) = wireshark_coverage(library.by_id(id).unwrap());
+            assert!(named * 3 >= all * 2, "{id}: only {named} of {all} fields have Wireshark names");
+        }
+        assert_eq!(library.by_id("ipv4").unwrap().field("Time to live").unwrap().wireshark.as_deref(), Some("ip.ttl"));
+    }
+
     const RFC_TEXT: &str = "\
 3.  SPECIFICATION
 

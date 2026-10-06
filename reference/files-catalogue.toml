@@ -1525,6 +1525,7 @@ meaning = "Kind of block: 0 BLOCKINFO, 8 MODULE, 13 IDENTIFICATION, 23 STRTAB, 2
 id = "java-serialisation"
 name = "Java object serialisation stream"
 keys = ["Java serialization", "Java serialisation", "Java serialized object", "serial/java-serialized"]
+wireshark = "serialization"
 summary = "The binary stream Java's ObjectOutputStream writes: class descriptors and object field values, with back-references; deserialising untrusted streams is a well-known route to code execution."
 organisation = """
 A stream starts with the magic AC ED and version 5, both 16-bit big-endian. The rest is a sequence of type codes, each followed by its content: 0x70 null, 0x71 back-reference to an earlier object by handle, 0x72 class descriptor, 0x73 new object, 0x74 string, 0x75 array, 0x76 class, 0x77 and 0x7A block data (short and long), 0x78 end of block data, 0x79 reset, 0x7B exception, 0x7C long string, 0x7D proxy class descriptor and 0x7E enum.
@@ -2039,6 +2040,7 @@ section = "5.5.4"
 id = "pkcs12"
 name = "PKCS #12 (PFX) key store"
 keys = ["PKCS #12", "PKCS12", "PFX", ".p12", "application/x-pkcs12"]
+wireshark = "pkcs12"
 summary = "The password-protected bundle of private keys and certificates used by Windows (.pfx), browsers and Java (.p12): nested ASN.1 'bags' with a MAC over the contents."
 organisation = """
 A PFX is a DER (sometimes BER) SEQUENCE of a version (3), authSafe and optional macData. authSafe is a PKCS #7 ContentInfo, usually of type data, whose octet string contents are an AuthenticatedSafe: a SEQUENCE of further ContentInfos, each either plain data or encryptedData encrypted under a password-based scheme.
@@ -2059,21 +2061,25 @@ section = "4"
 
 [[format.fields]]
 name = "version"
+wireshark = "pkcs12.version"
 meaning = "Always 3."
 section = "4"
 
 [[format.fields]]
 name = "authSafe"
+wireshark = "pkcs12.authSafe_element"
 meaning = "ContentInfo holding the AuthenticatedSafe, the sequence of (possibly encrypted) SafeContents."
 section = "4.1"
 
 [[format.fields]]
 name = "macData"
+wireshark = "pkcs12.macData_element"
 meaning = "MAC over the authSafe with its digest algorithm, salt and iteration count, for password integrity mode."
 section = "4"
 
 [[format.fields]]
 name = "SafeBag"
+wireshark = "pkcs12.SafeBag_element"
 aliases = ["bagId"]
 meaning = "One item: a key, shrouded key, certificate, CRL, secret or nested SafeContents, with attributes."
 section = "4.2"
@@ -2088,6 +2094,7 @@ section = "4.2"
 id = "cms"
 name = "CMS / PKCS #7 signed or enveloped data"
 keys = ["CMS", "PKCS #7", "PKCS7", "Cryptographic Message Syntax", "application/pkcs7-mime", "application/pkcs7-signature"]
+wireshark = "cms"
 summary = "The ASN.1 container for signed and encrypted messages used by S/MIME, Authenticode code signatures, .p7b certificate bundles and many firmware signing schemes."
 organisation = """
 Every CMS object is a ContentInfo: a SEQUENCE of a content type OID and the content in an explicit [0] tag. The OIDs under 1.2.840.113549.1.7 name the types: data (.1), signedData (.2), envelopedData (.3), digestedData (.5) and encryptedData (.6); authenticatedData and others live under 1.2.840.113549.1.9.16.1. Objects are DER or BER, and BER's indefinite lengths (30 80) are common in streamed S/MIME.
@@ -2108,26 +2115,31 @@ section = "3"
 
 [[format.fields]]
 name = "contentType"
+wireshark = "cms.contentType"
 meaning = "OID naming the content: data, signedData, envelopedData, digestedData, encryptedData or authenticatedData."
 section = "3"
 
 [[format.fields]]
 name = "SignedData"
+wireshark = "cms.SignedData_element"
 meaning = "Version, digest algorithms, encapsulated content, certificates, CRLs and signer infos."
 section = "5.1"
 
 [[format.fields]]
 name = "encapContentInfo"
+wireshark = "cms.encapContentInfo_element"
 meaning = "The signed content's type and, unless the signature is detached, the content itself."
 section = "5.2"
 
 [[format.fields]]
 name = "SignerInfo"
+wireshark = "cms.SignerInfo_element"
 meaning = "One signature: signer identifier, digest algorithm, signed attributes, signature algorithm and value."
 section = "5.3"
 
 [[format.fields]]
 name = "EnvelopedData"
+wireshark = "cms.EnvelopedData_element"
 meaning = "Encrypted content plus, for each recipient, the content-encryption key wrapped for them."
 section = "6.1"
 
@@ -2588,6 +2600,7 @@ meaning = "Metadata, manifest, spine and navigation of the publication."
 id = "tiff"
 name = "Tagged Image File Format (TIFF)"
 keys = ["TIFF", "TIFF image", "TIFF image (LE) signature", "TIFF image (BE) signature", "image/tiff"]
+wireshark = "tiff"
 summary = "A flexible raster image container built from image file directories (IFDs) of tagged fields; also the structure underneath Exif metadata, DNG and most camera raw formats."
 organisation = """
 The 8-byte header gives the byte order ('II' for little-endian, 'MM' for big-endian), the number 42 in that order, and the offset of the first IFD. BigTIFF uses 43 instead, then an offset size of 8 and 64-bit offsets throughout.
@@ -2610,6 +2623,7 @@ meaning = "'II' (little-endian) or 'MM' (big-endian)."
 
 [[format.fields]]
 name = "magic"
+wireshark = "tiff.magic"
 aliases = ["version"]
 meaning = "42 for TIFF, 43 for BigTIFF."
 
@@ -2629,6 +2643,7 @@ meaning = "Tag 258: bits per component."
 
 [[format.fields]]
 name = "Compression"
+wireshark = "tiff.compression"
 meaning = "Tag 259: 1 none, 2 CCITT Group 3 1-D, 5 LZW, 6 old JPEG, 7 JPEG, 8 Deflate, 32773 PackBits."
 
 [[format.fields]]
@@ -2870,6 +2885,7 @@ meaning = "Item properties (decoder configuration, size, colour, rotation) and w
 id = "riff"
 name = "RIFF container"
 keys = ["RIFF", "RIFF container", "RIFF container (WAV, AVI, WebP) signature", "Resource Interchange File Format", "media/riff"]
+wireshark = "riff"
 summary = "Microsoft and IBM's generic chunked container: a tree of four-character-coded chunks, the basis of WAV, AVI, WebP, animated cursors and more."
 organisation = """
 A RIFF file is one chunk: 'RIFF', a 32-bit little-endian size (everything after the size field, so the file length minus 8), and a four-character form type such as 'WAVE', 'AVI ', 'WEBP', 'ACON' (animated cursor), 'RMID' (MIDI) or 'CDXA' (Video CD). The rest of the file is a sequence of chunks.
@@ -2894,16 +2910,19 @@ rfc = 2361
 
 [[format.fields]]
 name = "chunk id"
+wireshark = "riff.chunk.id"
 aliases = ["ckID", "FourCC"]
 meaning = "Four ASCII characters naming the chunk."
 
 [[format.fields]]
 name = "chunk size"
+wireshark = "riff.chunk.size"
 aliases = ["ckSize", "size"]
 meaning = "Size of the chunk data in bytes, little-endian, excluding the id, this field and any pad byte."
 
 [[format.fields]]
 name = "form type"
+wireshark = "riff.file.type"
 aliases = ["RIFF type"]
 meaning = "Four characters after the RIFF size naming the file type: WAVE, AVI , WEBP, ACON."
 
@@ -3232,6 +3251,7 @@ section = "9.1"
 id = "id3v2"
 name = "ID3v2 tag"
 keys = ["ID3", "ID3v2", "ID3v2 tag", "media/id3v2"]
+wireshark = "id3v2"
 summary = "The metadata tag at the start of most MP3 files (and some AIFF, WAV and AAC files): a header and a series of frames for title, artist, album art, comments and more."
 organisation = """
 The 10-byte header is 'ID3', the major version (2, 3 or 4) and revision bytes, a flags byte (0x80 unsynchronisation, 0x40 extended header, 0x20 experimental, 0x10 footer present in v2.4) and the tag size as a 28-bit 'syncsafe' integer: four bytes with the top bit of each clear, so the size never looks like an MPEG sync. The size excludes the header (and footer), so the audio starts at 10 + size.
@@ -3250,19 +3270,23 @@ url = "https://id3.org/id3v2.4.0-structure"
 
 [[format.fields]]
 name = "version"
+wireshark = "id3v2.version"
 meaning = "Major version and revision: 03 00 for ID3v2.3, 04 00 for ID3v2.4."
 
 [[format.fields]]
 name = "flags"
+wireshark = "id3v2.flags"
 meaning = "0x80 unsynchronisation, 0x40 extended header, 0x20 experimental, 0x10 footer present."
 
 [[format.fields]]
 name = "size"
+wireshark = "id3v2.size"
 aliases = ["tag size"]
 meaning = "Tag size excluding the 10-byte header, as four 7-bit bytes (syncsafe integer)."
 
 [[format.fields]]
 name = "frame id"
+wireshark = "id3v2.frame.id"
 meaning = "Four-character frame identifier such as TIT2, TPE1, APIC or COMM."
 
 [[format.fields]]
@@ -3325,6 +3349,7 @@ meaning = "Legacy index: chunk id, flags (0x10 key frame), offset from 'movi' an
 id = "isobmff"
 name = "ISO base media file (MP4, MOV, 3GP)"
 keys = ["MP4", "ISO base media file", "ISOBMFF", "QuickTime", "MOV", "M4A", "3GP", "media/mp4", "media/m4a", "media/quicktime", "video/mp4", "audio/mp4", "video/quicktime", "video/x-m4v", "video/3gpp", "video/3gpp2"]
+wireshark = "mp4"
 summary = "The box-structured container of MP4, M4A, MOV, 3GP and many others: a tree of length-prefixed boxes ('atoms' in QuickTime) with movie metadata in 'moov' and media in 'mdat'."
 organisation = """
 Everything is a box: a 32-bit big-endian size, a four-character type and the content. A size of 1 means a 64-bit size follows the type, and 0 means the box runs to the end of the file; type 'uuid' adds a 16-byte extended type. Many boxes are 'full boxes' with a version byte and 24 bits of flags first, where version 1 usually widens times and durations to 64 bits. Times count seconds since 1 January 1904 UTC.
@@ -3348,11 +3373,13 @@ url = "https://developer.apple.com/documentation/quicktime-file-format"
 
 [[format.fields]]
 name = "size"
+wireshark = "mp4.box.size"
 aliases = ["box size", "largesize"]
 meaning = "Box length including the header; 1 means a 64-bit size follows, 0 means to the end of the file."
 
 [[format.fields]]
 name = "type"
+wireshark = "mp4.box.type_str"
 aliases = ["box type"]
 meaning = "Four-character box type such as ftyp, moov, trak, mdat."
 
@@ -3464,6 +3491,7 @@ section = "5.1.4"
 id = "mpeg-ts"
 name = "MPEG transport stream"
 keys = ["MPEG-TS", "MPEG transport stream", "M2TS", "media/mpeg-ts"]
+wireshark = "mp2t"
 summary = "The broadcast and streaming container of DVB, ATSC, IPTV, HLS and Blu-ray: fixed 188-byte packets carrying multiplexed elementary streams and program tables."
 organisation = """
 The stream is a run of 188-byte packets, each starting with the sync byte 0x47 (Blu-ray M2TS files prefix every packet with a 4-byte timestamp, giving 192-byte units). The 4-byte header holds the transport error indicator, payload unit start indicator, priority, a 13-bit packet identifier (PID), 2 bits of scrambling control, 2 bits of adaptation field control and a 4-bit continuity counter. An adaptation field, when present, carries flags, the 42-bit program clock reference (PCR) and stuffing.
@@ -3482,32 +3510,39 @@ url = "https://www.itu.int/rec/T-REC-H.222.0"
 
 [[format.fields]]
 name = "sync_byte"
+wireshark = "mp2t.sync_byte"
 aliases = ["sync byte"]
 meaning = "0x47 at the start of every packet."
 
 [[format.fields]]
 name = "payload_unit_start_indicator"
+wireshark = "mp2t.pusi"
 aliases = ["PUSI"]
 meaning = "Set when a PES packet or a table section starts in this packet."
 
 [[format.fields]]
 name = "PID"
+wireshark = "mp2t.pid"
 meaning = "13-bit packet identifier: 0 PAT, 1 CAT, 0x1FFF null, others as assigned by the PMT."
 
 [[format.fields]]
 name = "transport_scrambling_control"
+wireshark = "mp2t.tsc"
 meaning = "00 not scrambled; other values mean the payload is encrypted."
 
 [[format.fields]]
 name = "adaptation_field_control"
+wireshark = "mp2t.afc"
 meaning = "01 payload only, 10 adaptation field only, 11 both."
 
 [[format.fields]]
 name = "continuity_counter"
+wireshark = "mp2t.cc"
 meaning = "4-bit counter per PID, incremented with each payload-carrying packet; gaps reveal lost packets."
 
 [[format.fields]]
 name = "PCR"
+wireshark = "mp2t.af.pcr"
 aliases = ["program_clock_reference"]
 meaning = "Program clock reference: 33 bits at 90 kHz plus a 9-bit 27 MHz extension."
 

@@ -15,6 +15,7 @@
 id = "png"
 name = "Portable Network Graphics"
 keys = ["PNG", "PNG image", "image/png", "media/png"]
+wireshark = "png"
 summary = "A lossless raster image format: filtered rows of pixels compressed with deflate, wrapped in checksummed chunks."
 organisation = """
 An eight-byte signature (89 50 4E 47 0D 0A 1A 0A) is followed by a chain of chunks. Each chunk is a 4-byte big-endian data length, a 4-byte ASCII type, the data, and a CRC-32 over the type and data. The length counts the data only, so the next chunk starts 12 + length bytes on.
@@ -40,6 +41,7 @@ url = "https://www.w3.org/TR/png-3/"
 
 [[format.fields]]
 name = "signature"
+wireshark = "png.signature"
 meaning = "The fixed eight bytes 89 'PNG' CR LF 1A LF. The high-bit byte and the line endings catch transfers that strip the eighth bit or translate newlines."
 section = "3"
 
@@ -75,6 +77,7 @@ section = "4"
 
 [[format.fields]]
 name = "gAMA"
+wireshark = "png.gama.gamma"
 meaning = "Image gamma, stored as gamma times 100000."
 section = "4"
 
@@ -85,6 +88,7 @@ section = "4"
 
 [[format.fields]]
 name = "sRGB"
+wireshark = "png.srgb.intent"
 meaning = "Declares the image to be in the sRGB colour space, with a rendering intent byte."
 
 [[format.fields]]
@@ -123,27 +127,32 @@ meaning = "Animated PNG chunks: animation control (frame and loop count), per-fr
 
 [[format.fields]]
 name = "width"
+wireshark = "png.ihdr.width"
 meaning = "Image width in pixels, a 4-byte big-endian value from 1 to 2^31 − 1."
 section = "4"
 
 [[format.fields]]
 name = "height"
+wireshark = "png.ihdr.height"
 meaning = "Image height in pixels, a 4-byte big-endian value from 1 to 2^31 − 1."
 section = "4"
 
 [[format.fields]]
 name = "bit depth"
+wireshark = "png.ihdr.bitdepth"
 meaning = "Bits per sample (or per palette index): 1, 2, 4, 8 or 16, restricted by colour type."
 section = "4"
 
 [[format.fields]]
 name = "colour type"
+wireshark = "png.ihdr.colour_type"
 aliases = ["color type"]
 meaning = "Sum of flags: 1 palette used, 2 colour, 4 alpha channel. Valid values are 0 greyscale, 2 RGB, 3 indexed, 4 greyscale with alpha and 6 RGBA."
 section = "4"
 
 [[format.fields]]
 name = "interlace"
+wireshark = "png.ihdr.interlace_method"
 meaning = "0 for rows in order, 1 for Adam7: seven passes over the image that fill in progressively finer detail."
 section = "4"
 
@@ -151,6 +160,7 @@ section = "4"
 id = "jpeg"
 name = "JPEG image"
 keys = ["JPEG", "JPEG image", "image/jpeg", "JFIF"]
+wireshark = "image-jfif"
 summary = "The common lossy photographic image format: blocks of DCT coefficients, quantised and entropy coded, in a stream of marker segments."
 organisation = """
 A JPEG file is a sequence of markers, each a 0xFF byte followed by a code. Start of image (FF D8) and end of image (FF D9) stand alone; most other markers begin a segment whose next two bytes are a big-endian length that counts itself but not the marker.
@@ -187,6 +197,7 @@ meaning = "End of image, FF D9. Data after it is not part of the image (often an
 
 [[format.fields]]
 name = "SOF*"
+wireshark = "image-jfif.sof"
 meaning = "Start of frame. The number gives the coding process: 0 baseline, 1 extended sequential, 2 progressive, 3 lossless; 5 to 7 and 9 to 15 are hierarchical or arithmetic-coded variants. Holds precision, image size and the component list."
 
 [[format.fields]]
@@ -219,18 +230,22 @@ meaning = "Application segment. Its first bytes name its contents: 'JFIF' (APP0)
 
 [[format.fields]]
 name = "precision"
+wireshark = "image-jfif.sof.precision"
 meaning = "Bits per sample: 8 for baseline, 12 for some extended and medical images, 2 to 16 for lossless."
 
 [[format.fields]]
 name = "height"
+wireshark = "image-jfif.sof.lines"
 meaning = "Number of lines. Zero means the height is given later by a DNL marker after the first scan."
 
 [[format.fields]]
 name = "width"
+wireshark = "image-jfif.sof.samples_per_line"
 meaning = "Samples per line, in pixels."
 
 [[format.fields]]
 name = "components"
+wireshark = "image-jfif.sof.nf"
 meaning = "Number of colour components: 1 greyscale, 3 YCbCr or RGB, 4 CMYK or YCCK."
 
 [[format.fields]]
@@ -241,6 +256,7 @@ meaning = "A marker this parser does not name, shown by its code byte."
 id = "gif"
 name = "Graphics Interchange Format"
 keys = ["GIF", "GIF image", "image/gif"]
+wireshark = "image-gif"
 summary = "A palette-based image format of up to 256 colours per frame, compressed with LZW, that also supports simple animation."
 organisation = """
 A six-byte header ('GIF87a' or 'GIF89a') is followed by the logical screen descriptor: canvas width and height as 16-bit little-endian values, a packed flags byte, a background colour index and an aspect ratio. If the flags say so, a global colour table of 2^(n+1) RGB triples comes next.
@@ -267,10 +283,12 @@ meaning = "The logical screen descriptor: canvas size, colour table flags, backg
 
 [[format.fields]]
 name = "width"
+wireshark = "image-gif.screen.width"
 meaning = "Canvas width in pixels, 16-bit little-endian."
 
 [[format.fields]]
 name = "height"
+wireshark = "image-gif.screen.height"
 meaning = "Canvas height in pixels, 16-bit little-endian."
 
 [[format.fields]]
@@ -279,19 +297,23 @@ meaning = "Packed byte: bit 7 global colour table present, bits 6-4 colour resol
 
 [[format.fields]]
 name = "global colour table"
+wireshark = "image-gif.global.color_map"
 aliases = ["global color table"]
 meaning = "RGB triples shared by every image that has no local table."
 
 [[format.fields]]
 name = "extension *"
+wireshark = "image-gif.extension"
 meaning = "An extension block, named by its label: 0xF9 graphic control (delay, transparent index, disposal), 0xFE comment, 0x01 plain text, 0xFF application (such as the animation loop count)."
 
 [[format.fields]]
 name = "image *"
+wireshark = "image-gif.image"
 meaning = "One image (frame): descriptor with position and size, optional local colour table, LZW code size and the compressed pixel sub-blocks."
 
 [[format.fields]]
 name = "trailer"
+wireshark = "image-gif.end"
 meaning = "The single byte 0x3B that ends the GIF. Anything after it is extra data."
 
 [[format]]
@@ -504,6 +526,7 @@ meaning = "The empty entry that marks the end of a cpio archive."
 id = "elf"
 name = "Executable and Linkable Format"
 keys = ["ELF", "ELF executable", "executable/elf32", "executable/elf64", "application/x-elf", "application/x-executable", "application/x-sharedlib", "application/x-object", "application/x-coredump"]
+wireshark = "elf"
 summary = "The object file format of Linux, the BSDs and most embedded toolchains, used for executables, shared libraries, relocatable objects and core dumps."
 organisation = """
 The file starts with e_ident: 7F 'ELF', a class byte (1 for 32-bit, 2 for 64-bit), a data byte (1 little-endian, 2 big-endian), a version and the OS ABI. Every later multi-byte value uses that byte order, and addresses and offsets are 4 or 8 bytes wide according to the class. The rest of the 52- or 64-byte header gives the file type, machine, entry point, and the offsets, entry sizes and counts of two tables.
@@ -540,10 +563,12 @@ meaning = "Sixteen identification bytes: 7F 'ELF', class (32/64-bit), byte order
 
 [[format.fields]]
 name = "e_type"
+wireshark = "elf.type"
 meaning = "Object file type: 1 relocatable (.o), 2 executable, 3 shared object (also position-independent executables), 4 core dump."
 
 [[format.fields]]
 name = "e_machine"
+wireshark = "elf.machine"
 meaning = "Target architecture, such as 3 x86, 40 ARM, 62 x86-64, 183 AArch64, 243 RISC-V."
 
 [[format.fields]]
@@ -560,10 +585,12 @@ meaning = "File offset of the section header table, or zero if there is none."
 
 [[format.fields]]
 name = "e_phnum"
+wireshark = "elf.phnum"
 meaning = "Number of program header entries (segments)."
 
 [[format.fields]]
 name = "e_shnum"
+wireshark = "elf.shnum"
 meaning = "Number of section header entries. Zero with a non-zero e_shoff means the real count is in the first section header's size field."
 
 [[format.fields]]
@@ -1323,6 +1350,7 @@ meaning = "External interrupt handler, numbered by the device's interrupt line; 
 id = "protobuf"
 name = "Protocol Buffers wire format"
 keys = ["Protocol Buffers", "protobuf message"]
+wireshark = "protobuf"
 summary = "Google's compact binary serialisation: a message is a run of numbered fields whose meaning comes from a separate schema."
 organisation = """
 A message is a sequence of records with no header or overall length. Each record starts with a tag, a varint holding the field number shifted left three bits plus a three-bit wire type. Varints store 7 bits per byte, least significant group first, with the top bit set on every byte but the last.
@@ -1347,6 +1375,7 @@ meaning = "One record: field number from the tag, the wire type in brackets, and
 id = "msgpack"
 name = "MessagePack"
 keys = ["MessagePack", "MessagePack value"]
+wireshark = "msgpack"
 summary = "A binary serialisation with JSON's data model (maps, arrays, strings, numbers), plus raw bytes and extension types."
 organisation = """
 Every value starts with a type byte, and small values fit inside it: 0x00 to 0x7F are positive integers, 0xE0 to 0xFF negative integers, 0x80 to 0x8F maps of up to 15 pairs, 0x90 to 0x9F arrays of up to 15 items, 0xA0 to 0xBF strings of up to 31 bytes. 0xC0 is nil, 0xC2 false and 0xC3 true.
@@ -1377,6 +1406,7 @@ meaning = "A UTF-8 string: fixstr (length in the type byte) or str 8/16/32 with 
 
 [[format.fields]]
 name = "bin"
+wireshark = "msgpack.bin"
 meaning = "Raw bytes with an 8-, 16- or 32-bit length prefix."
 
 [[format.fields]]
@@ -1396,12 +1426,14 @@ meaning = "Single-byte values: 0xC0 nil, 0xC2 false, 0xC3 true."
 
 [[format.fields]]
 name = "ext"
+wireshark = "msgpack.ext"
 meaning = "An extension value: a signed type number and opaque data. Type -1 is a timestamp."
 
 [[format]]
 id = "cbor"
 name = "Concise Binary Object Representation"
 keys = ["CBOR", "CBOR value", "application/cbor", "serial/cbor"]
+wireshark = "cbor"
 summary = "An IETF binary data format with JSON's data model plus byte strings and tags, used in COSE, CWT and WebAuthn."
 organisation = """
 Every item starts with an initial byte: the top three bits are the major type and the low five bits are additional information. Values below 24 are used directly; 24, 25, 26 and 27 mean the argument follows in 1, 2, 4 or 8 big-endian bytes; 31 means indefinite length.
@@ -1438,11 +1470,13 @@ section = "3.1"
 
 [[format.fields]]
 name = "array"
+wireshark = "cbor.item.array"
 meaning = "Major type 4: the argument is the number of items that follow."
 section = "3.1"
 
 [[format.fields]]
 name = "map"
+wireshark = "cbor.item.map"
 meaning = "Major type 5: the argument is the number of key–value pairs; each child is shown as 'key = type'."
 section = "3.1"
 
@@ -1467,6 +1501,7 @@ section = "3.3"
 id = "json"
 name = "JSON"
 keys = ["JSON document"]
+wireshark = "json"
 summary = "JavaScript Object Notation: a text format for objects, arrays, strings, numbers, booleans and null."
 organisation = """
 JSON is plain text, which must be UTF-8 when exchanged between systems. A document is one value: an object in braces of comma-separated "name": value pairs, an array in brackets, a double-quoted string with backslash escapes, a number in decimal (with optional fraction and exponent), true, false or null.
@@ -1489,6 +1524,7 @@ section = "2"
 id = "xml"
 name = "XML"
 keys = ["XML document", "application/xml", "serial/xml-utf16le"]
+wireshark = "xml"
 summary = "The Extensible Markup Language: nested, named elements with attributes and text, used for documents, configuration and data exchange."
 organisation = """
 A document may begin with a declaration such as <?xml version="1.0" encoding="UTF-8"?>, possibly preceded by a byte order mark, and an optional document type declaration. It then has exactly one root element, which can contain other elements, text, comments, processing instructions and CDATA sections.
@@ -1531,6 +1567,7 @@ section = "3"
 id = "der"
 name = "ASN.1 DER"
 keys = ["ASN.1 DER", "ASN.1 DER structure", "DER"]
+wireshark = "ber"
 summary = "The Distinguished Encoding Rules for ASN.1: a canonical tag-length-value encoding used by certificates, keys and cryptographic messages."
 organisation = """
 Every value is a TLV: an identifier octet, a length, then the contents. The identifier's top two bits give the class (universal, application, context-specific, private), bit 5 says whether the contents are primitive or constructed from further TLVs, and the low five bits give the tag number (31 means the number continues in following bytes).
@@ -1605,6 +1642,7 @@ meaning = "An application-class tag, defined by the protocol that uses it (LDAP 
 id = "x509"
 name = "X.509 certificate"
 keys = ["X.509 certificate", "crypto/der-certificate", "application/x-x509-cert;format=der"]
+wireshark = "x509af"
 summary = "A public key certificate: a signed DER structure binding a subject's name and public key, used by TLS, code signing and S/MIME."
 organisation = """
 A certificate is a DER SEQUENCE of three parts: the to-be-signed certificate (tbsCertificate), the signature algorithm, and the signature value as a BIT STRING. The signature is computed over the exact DER bytes of tbsCertificate.
@@ -1635,11 +1673,13 @@ section = "4.1"
 
 [[format.fields]]
 name = "version"
+wireshark = "x509af.version"
 meaning = "Certificate version: v3 (encoded as 2) whenever extensions are present, which is nearly always."
 section = "4.1.2.1"
 
 [[format.fields]]
 name = "serial"
+wireshark = "x509af.serialNumber"
 meaning = "Serial number, unique per issuer; up to 20 bytes, and today mostly random."
 section = "4.1.2.2"
 
@@ -1650,11 +1690,13 @@ section = "4.1.1"
 
 [[format.fields]]
 name = "issuer"
+wireshark = "x509af.issuer"
 meaning = "Distinguished name of the authority that signed the certificate; equal to the subject for self-signed certificates."
 section = "4.1.2.4"
 
 [[format.fields]]
 name = "subject"
+wireshark = "x509af.subject"
 meaning = "Distinguished name of the entity the certificate is for. For TLS, the host names are in the subject alternative names instead."
 section = "4.1.2.6"
 
@@ -1859,6 +1901,7 @@ url = "https://github.com/lz4/lz4/blob/dev/doc/lz4_Block_format.md"
 id = "mpeg-audio"
 name = "MPEG audio (MP3, MP2, MP1)"
 keys = ["media:mpeg-audio", "MPEG audio", "audio/mpeg", "media/mp3-frame"]
+wireshark = "mpeg-audio"
 summary = "MPEG-1 and MPEG-2 audio layers I to III, of which layer III is MP3: a run of self-contained frames, each with a 4-byte header."
 organisation = """
 Each frame starts with an 11-bit sync of ones, then the version (MPEG-1, MPEG-2, or the unofficial MPEG-2.5), the layer, a protection bit (clear when a 16-bit CRC follows the header), the bitrate and sampling rate indices, a padding bit, a private bit, the channel mode and mode extension, and copyright, original and emphasis bits.
@@ -1872,38 +1915,47 @@ group = "Media streams"
 
 [[format.fields]]
 name = "First frame header"
+wireshark = "mpeg-audio.header"
 meaning = "The 4-byte header of the first frame in the run, decoded."
 
 [[format.fields]]
 name = "Sync"
+wireshark = "mpeg-audio.sync"
 meaning = "Eleven set bits that start every frame."
 
 [[format.fields]]
 name = "Version"
+wireshark = "mpeg-audio.version"
 meaning = "MPEG-1, MPEG-2 (lower sampling rates) or MPEG-2.5 (an unofficial extension to even lower rates)."
 
 [[format.fields]]
 name = "Layer"
+wireshark = "mpeg-audio.layer"
 meaning = "Coding layer: I, II or III (MP3)."
 
 [[format.fields]]
 name = "CRC protected"
+wireshark = "mpeg-audio.protection"
 meaning = "Whether a 16-bit CRC follows the header (the protection bit is 0 when it does)."
 
 [[format.fields]]
 name = "Bitrate"
+wireshark = "mpeg-audio.bitrate"
 meaning = "Bit rate from the index in the header; varies frame to frame in VBR files."
 
 [[format.fields]]
 name = "Sample rate"
+wireshark = "mpeg-audio.frequency"
 meaning = "Sampling frequency, which with the bitrate sets the frame length."
 
 [[format.fields]]
 name = "Padding"
+wireshark = "mpeg-audio.padding"
 meaning = "Whether this frame has one extra byte (one extra slot) to keep the average bitrate exact."
 
 [[format.fields]]
 name = "Channel mode"
+wireshark = "mpeg-audio.channel_mode"
 meaning = "Stereo, joint stereo, dual channel or mono."
 
 [[format.fields]]
@@ -1961,6 +2013,7 @@ meaning = "Bytes in the frame including the header (13 bits)."
 id = "h264"
 name = "H.264 / AVC video"
 keys = ["media:h264", "H.264 video", "H.264", "AVC"]
+wireshark = "h264"
 summary = "The widely used Advanced Video Coding standard, found here as an Annex B byte stream of NAL units."
 organisation = """
 In the Annex B byte stream each NAL unit is preceded by a start code, 00 00 01 or 00 00 00 01. Inside a unit, any 00 00 that would be followed by 00 to 03 has an emulation prevention byte 03 inserted, so start codes cannot appear by accident.
@@ -1987,6 +2040,7 @@ meaning = "One byte: forbidden zero bit, nal_ref_idc (whether other pictures ref
 
 [[format.fields]]
 name = "profile_idc"
+wireshark = "h264.profile_idc"
 meaning = "Coding profile: 66 Baseline, 77 Main, 88 Extended, 100 High, 110 High 10, 122 High 4:2:2, 244 High 4:4:4."
 
 [[format.fields]]
@@ -1995,12 +2049,14 @@ meaning = "constraint_set0 to 5 flags, which mark the stream as also conforming 
 
 [[format.fields]]
 name = "level_idc"
+wireshark = "h264.level_id"
 meaning = "Level times ten (for example 40 is level 4.0), bounding resolution, frame rate and bit rate."
 
 [[format]]
 id = "h265"
 name = "H.265 / HEVC video"
 keys = ["media:h265", "H.265 video", "H.265", "HEVC"]
+wireshark = "h265"
 summary = "High Efficiency Video Coding, the successor to H.264, here as an Annex B byte stream of NAL units."
 organisation = """
 The byte stream uses the same start codes and emulation prevention as H.264. The NAL unit header is two bytes: a forbidden zero bit, a 6-bit unit type, a 6-bit layer id and a 3-bit temporal id plus one.
@@ -2027,6 +2083,7 @@ meaning = "Two bytes: forbidden zero bit, 6-bit unit type, 6-bit layer id and 3-
 
 [[format.fields]]
 name = "general_profile_idc"
+wireshark = "h265.general_profile_idc"
 meaning = "Coding profile: 1 Main, 2 Main 10, 3 Main Still Picture, 4 range extensions."
 
 [[format]]

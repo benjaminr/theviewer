@@ -17,6 +17,7 @@
 id = "linux-sll"
 name = "Linux cooked capture (SLL)"
 keys = ["Linux cooked capture", "Linux cooked capture v1", "SLL", "LINKTYPE_LINUX_SLL", "DLT_LINUX_SLL", "Linux cooked-mode capture"]
+wireshark = "sll"
 summary = "The pseudo link-layer header Linux writes when capturing on the \"any\" device or on interfaces without a usable link header: a fixed 16-byte record of direction, device type, sender address and protocol."
 group = "Link layer"
 organisation = """
@@ -40,15 +41,18 @@ url = "https://www.tcpdump.org/linktypes.html"
 
 [[format.fields]]
 name = "Packet type"
+wireshark = "sll.pkttype"
 meaning = "Direction and addressing of the packet as seen by the capturing host: 0 unicast to us, 1 broadcast, 2 multicast, 3 unicast to another host (seen in promiscuous mode), 4 sent by us."
 
 [[format.fields]]
 name = "ARPHRD type"
+wireshark = "sll.hatype"
 aliases = ["ARPHRD_ type", "Device type"]
 meaning = "The Linux device type of the interface (1 Ethernet, 772 loopback, 776 IPv6-in-IPv4 tunnel, 778 GRE, 803 802.11 with radiotap, 824 netlink, 65534 no header, among others). It decides how the protocol type is read."
 
 [[format.fields]]
 name = "Link-layer address length"
+wireshark = "sll.halen"
 aliases = ["Address length"]
 meaning = "How many bytes of the 8-byte address field hold the sender's address; 6 for Ethernet, 0 for devices without addresses such as tunnels."
 
@@ -59,6 +63,7 @@ meaning = "The sender's link-layer address, padded or truncated to eight bytes."
 
 [[format.fields]]
 name = "Protocol"
+wireshark = "sll.etype"
 aliases = ["Protocol type"]
 meaning = "Normally the EtherType of the payload; small values below 0x0600 name special payloads such as an 802.2 LLC header (0x0004) or CAN frames."
 
@@ -87,28 +92,34 @@ url = "https://www.tcpdump.org/linktypes.html"
 
 [[format.fields]]
 name = "Protocol"
+wireshark = "sll.etype"
 aliases = ["Protocol type"]
 meaning = "Normally the EtherType of the payload; for some device types a special value or a GRE protocol type."
 
 [[format.fields]]
 name = "Reserved"
+wireshark = "sll.reserved"
 meaning = "Two bytes written as zero."
 
 [[format.fields]]
 name = "Interface index"
+wireshark = "sll.ifindex"
 meaning = "The capturing machine's index for the interface the packet was sent or received on; meaningful only on that machine."
 
 [[format.fields]]
 name = "ARPHRD type"
+wireshark = "sll.hatype"
 aliases = ["ARPHRD_ type", "Device type"]
 meaning = "The Linux device type of that interface, such as 1 for Ethernet or 772 for loopback."
 
 [[format.fields]]
 name = "Packet type"
+wireshark = "sll.pkttype"
 meaning = "0 unicast to us, 1 broadcast, 2 multicast, 3 unicast to another host, 4 sent by us."
 
 [[format.fields]]
 name = "Link-layer address length"
+wireshark = "sll.halen"
 aliases = ["Address length"]
 meaning = "How many bytes of the following 8-byte field are the sender's address."
 
@@ -121,6 +132,7 @@ meaning = "The sender's link-layer address, padded or cut to eight bytes."
 id = "bsd-loopback"
 name = "BSD loopback encapsulation"
 keys = ["BSD loopback", "Null/Loopback", "Loopback", "LINKTYPE_NULL", "LINKTYPE_LOOP", "DLT_NULL", "DLT_LOOP", "BSD null"]
+wireshark = "null"
 summary = "The four-byte header captures from BSD and macOS loopback (lo0) and some tunnel interfaces use instead of an Ethernet header: just the address family of the packet."
 group = "Link layer"
 organisation = """
@@ -144,6 +156,7 @@ url = "https://www.tcpdump.org/linktypes/LINKTYPE_LOOP.html"
 
 [[format.fields]]
 name = "Family"
+wireshark = "null.family"
 aliases = ["Protocol family", "Address family", "Protocol type"]
 meaning = "4 bytes: 2 IPv4; 24, 28 or 30 IPv6. Host byte order for link type 0, big-endian for link type 108."
 
@@ -151,6 +164,7 @@ meaning = "4 bytes: 2 IPv4; 24, 28 or 30 IPv6. Host byte order for link type 0, 
 id = "ieee80211"
 name = "IEEE 802.11 wireless LAN frame"
 keys = ["IEEE 802.11", "802.11", "802.11 frame", "Wi-Fi", "WLAN", "IEEE 802.11 wireless LAN", "LINKTYPE_IEEE802_11", "DLT_IEEE802_11"]
+wireshark = "wlan"
 summary = "The MAC frame of Wi-Fi networks, seen in monitor-mode captures (pcap link type 105, or after a radiotap header with link type 127): management frames that build the network, control frames that pace the air, and data frames that carry traffic."
 group = "Link layer"
 organisation = """
@@ -175,21 +189,25 @@ url = "https://www.tcpdump.org/linktypes.html"
 
 [[format.fields]]
 name = "Frame Control"
+wireshark = "wlan.fc"
 aliases = ["Frame control field"]
 meaning = "2 bytes: protocol version (always 0), type (0 management, 1 control, 2 data, 3 extension), subtype, and the flags To DS, From DS, More Fragments, Retry, Power Management, More Data, Protected and +HTC/Order."
 
 [[format.fields]]
 name = "Duration/ID"
+wireshark = "wlan.duration"
 aliases = ["Duration"]
 meaning = "Normally how long, in microseconds, the medium will stay busy for this exchange, which other stations use to defer; in PS-Poll frames an association ID instead."
 
 [[format.fields]]
 name = "Address 1"
+wireshark = "wlan.ra"
 aliases = ["Receiver address", "RA"]
 meaning = "The station that should receive the frame over the air."
 
 [[format.fields]]
 name = "Address 2"
+wireshark = "wlan.ta"
 aliases = ["Transmitter address", "TA"]
 meaning = "The station that transmitted the frame over the air; absent in ACK and CTS frames."
 
@@ -208,6 +226,7 @@ meaning = "Present only when To DS and From DS are both set, as on wireless brid
 
 [[format.fields]]
 name = "QoS Control"
+wireshark = "wlan.qos"
 meaning = "In QoS data frames: the traffic identifier (priority), the acknowledgement policy and related bits."
 
 [[format.fields]]
@@ -217,6 +236,7 @@ meaning = "In management frame bodies: a 1-byte element ID, a 1-byte length and 
 
 [[format.fields]]
 name = "FCS"
+wireshark = "wlan.fcs"
 aliases = ["Frame check sequence"]
 meaning = "A CRC-32 over the whole frame, present at the end only when the capture kept it (radiotap's Flags field says so)."
 
@@ -224,6 +244,7 @@ meaning = "A CRC-32 over the whole frame, present at the end only when the captu
 id = "radiotap"
 name = "Radiotap header"
 keys = ["Radiotap", "radiotap header", "LINKTYPE_IEEE802_11_RADIOTAP", "DLT_IEEE802_11_RADIO", "802.11 plus radiotap"]
+wireshark = "radiotap"
 summary = "A self-describing header that wireless drivers put in front of each captured 802.11 frame to record how it was received: signal strength, channel, data rate, timestamps and more."
 group = "Link layer"
 organisation = """
@@ -247,25 +268,30 @@ url = "https://www.tcpdump.org/linktypes.html"
 
 [[format.fields]]
 name = "Header revision"
+wireshark = "radiotap.version"
 aliases = ["Version"]
 meaning = "Always 0."
 
 [[format.fields]]
 name = "Header length"
+wireshark = "radiotap.length"
 aliases = ["Length"]
 meaning = "Little-endian length of the whole radiotap header including fields and padding; the 802.11 frame begins here."
 
 [[format.fields]]
 name = "Present flags"
+wireshark = "radiotap.present"
 aliases = ["Present", "it_present"]
 meaning = "32-bit little-endian bitmask of the fields that follow, in bit order. Bit 31 means another present word follows; bits 29 and 30 switch to the radiotap or a vendor namespace."
 
 [[format.fields]]
 name = "Flags"
+wireshark = "radiotap.flags"
 meaning = "1 byte: short preamble, WEP, fragmentation, frame includes FCS (0x10), data padding, bad FCS (0x40), short guard interval."
 
 [[format.fields]]
 name = "Rate"
+wireshark = "radiotap.datarate"
 aliases = ["Data rate"]
 meaning = "Legacy transmit rate in units of 500 kbit/s; higher-throughput frames use the MCS, VHT or HE fields instead."
 
@@ -275,11 +301,13 @@ meaning = "2-byte centre frequency in MHz and 2 bytes of channel flags (band, mo
 
 [[format.fields]]
 name = "Antenna signal"
+wireshark = "radiotap.dbm_antsignal"
 aliases = ["dBm antenna signal", "Signal"]
 meaning = "Received signal power in dBm as a signed byte, such as -45 (strong) or -85 (weak)."
 
 [[format.fields]]
 name = "TSFT"
+wireshark = "radiotap.mactime"
 meaning = "8-byte value of the receiver's 802.11 timing synchronisation function timer, in microseconds, when the first bit of the frame arrived."
 
 # ---------------------------------------------------------------------------
@@ -290,6 +318,7 @@ meaning = "8-byte value of the receiver's 802.11 timing synchronisation function
 id = "llc-snap"
 name = "IEEE 802.2 LLC and SNAP"
 keys = ["LLC", "IEEE 802.2 LLC", "802.2 LLC", "Logical Link Control", "SNAP", "Subnetwork Access Protocol", "LLC/SNAP", "802.3 LLC"]
+wireshark = "llc"
 summary = "The small header that names the payload when a frame carries a length rather than an EtherType (IEEE 802.3 frames) and on 802.11 data frames; SNAP extends it with an organisation code and a protocol number."
 group = "Link layer"
 organisation = """
@@ -319,26 +348,31 @@ url = "https://standards.ieee.org/standard/802-2014.html"
 
 [[format.fields]]
 name = "DSAP"
+wireshark = "llc.dsap"
 aliases = ["Destination service access point"]
 meaning = "Which protocol at the receiver the frame is for: 0x42 spanning tree, 0xAA SNAP, 0xFE OSI (IS-IS), 0xE0 IPX, 0xF0 NetBIOS. The low bit marks a group SAP."
 
 [[format.fields]]
 name = "SSAP"
+wireshark = "llc.ssap"
 aliases = ["Source service access point"]
 meaning = "The sending protocol's SAP, usually equal to the DSAP; the low bit marks a response."
 
 [[format.fields]]
 name = "Control"
+wireshark = "llc.control"
 aliases = ["Control field"]
 meaning = "Frame kind: 0x03 is an unnumbered information (UI) frame, the connectionless service almost all protocols use; I and S frames have a 2-byte control field with sequence numbers."
 
 [[format.fields]]
 name = "OUI"
+wireshark = "llc.oui"
 aliases = ["Organization code", "Organisation code"]
 meaning = "SNAP only: 3-byte organisation identifier. 00-00-00 means the protocol ID is an EtherType; 00-00-0C is Cisco."
 
 [[format.fields]]
 name = "PID"
+wireshark = "llc.pid"
 aliases = ["Protocol ID", "Type"]
 meaning = "SNAP only: 2-byte protocol number under that OUI, an EtherType when the OUI is zero."
 
@@ -346,6 +380,7 @@ meaning = "SNAP only: 2-byte protocol number under that OUI, an EtherType when t
 id = "lldp"
 name = "Link Layer Discovery Protocol"
 keys = ["LLDP", "Link Layer Discovery Protocol", "802.1AB", "IEEE 802.1AB"]
+wireshark = "lldp"
 summary = "A one-way advertisement each port sends to its immediate neighbour, naming the device, the port and its capabilities, so that management systems can map physical topology."
 group = "Link layer"
 ethertypes = [0x88cc]
@@ -370,23 +405,28 @@ url = "https://www.iana.org/assignments/ieee-802-numbers/ieee-802-numbers.xhtml"
 
 [[format.fields]]
 name = "Chassis ID"
+wireshark = "lldp.chassis.id"
 meaning = "TLV type 1: a subtype byte (4 MAC address, 5 network address, 7 locally assigned, and others) and the identifier of the sending device."
 
 [[format.fields]]
 name = "Port ID"
+wireshark = "lldp.port.id"
 meaning = "TLV type 2: a subtype byte (3 MAC address, 5 interface name, 7 locally assigned, and others) and the identifier of the sending port."
 
 [[format.fields]]
 name = "Time To Live"
+wireshark = "lldp.time_to_live"
 aliases = ["TTL"]
 meaning = "TLV type 3: seconds the receiver should keep this information; 0 means forget it now (sent when a port shuts down)."
 
 [[format.fields]]
 name = "System name"
+wireshark = "lldp.tlv.system.name"
 meaning = "TLV type 5: the device's administratively assigned name, usually its host name."
 
 [[format.fields]]
 name = "System capabilities"
+wireshark = "lldp.tlv.system_cap"
 meaning = "TLV type 7: two bitmaps, what the device can be (bridge, router, telephone, access point, station) and what is enabled."
 
 [[format.fields]]
@@ -406,6 +446,7 @@ meaning = "TLV type 0 with length 0; nothing after it is part of the advertiseme
 id = "cdp"
 name = "Cisco Discovery Protocol"
 keys = ["CDP", "Cisco Discovery Protocol"]
+wireshark = "cdp"
 summary = "Cisco's own neighbour advertisement, older than LLDP and still on by default on most Cisco equipment: each device tells its directly connected neighbours its name, software, platform, addresses and port."
 group = "Link layer"
 organisation = """
@@ -424,19 +465,23 @@ url = "https://www.cisco.com/c/en/us/td/docs/ios-xml/ios/cdp/configuration/15-mt
 
 [[format.fields]]
 name = "Version"
+wireshark = "cdp.version"
 meaning = "CDP version, 1 or 2; version 2 adds TLVs such as native VLAN and duplex."
 
 [[format.fields]]
 name = "TTL"
+wireshark = "cdp.ttl"
 aliases = ["Time to live", "Holdtime"]
 meaning = "Seconds a neighbour should keep this information, 180 by default."
 
 [[format.fields]]
 name = "Checksum"
+wireshark = "cdp.checksum"
 meaning = "Ones' complement checksum over the CDP message, as for IP."
 
 [[format.fields]]
 name = "Device ID"
+wireshark = "cdp.deviceid"
 meaning = "TLV 1: the sender's host name (or serial number)."
 
 [[format.fields]]
@@ -445,21 +490,25 @@ meaning = "TLV 2: a count and a list of the sender's network-layer addresses, us
 
 [[format.fields]]
 name = "Port ID"
+wireshark = "cdp.portid"
 meaning = "TLV 3: the name of the sending interface, such as GigabitEthernet1/0/24."
 
 [[format.fields]]
 name = "Software Version"
+wireshark = "cdp.software_version"
 aliases = ["Software version"]
 meaning = "TLV 5: the device's software version banner, free text."
 
 [[format.fields]]
 name = "Platform"
+wireshark = "cdp.platform"
 meaning = "TLV 6: the hardware model, such as cisco WS-C3850-48P."
 
 [[format]]
 id = "stp"
 name = "Spanning Tree Protocol"
 keys = ["STP", "Spanning Tree Protocol", "RSTP", "Rapid Spanning Tree Protocol", "MSTP", "Multiple Spanning Tree Protocol", "BPDU", "Bridge Protocol Data Unit", "Spanning Tree"]
+wireshark = "stp"
 summary = "The protocol switches use to agree on a loop-free tree of active links in a bridged network by exchanging Bridge Protocol Data Units; RSTP and MSTP are its faster and per-VLAN-group successors."
 group = "Link layer"
 organisation = """
@@ -483,21 +532,25 @@ url = "https://standards.ieee.org/ieee/802.1D/3387/"
 
 [[format.fields]]
 name = "Protocol Identifier"
+wireshark = "stp.protocol"
 aliases = ["Protocol ID"]
 meaning = "Always 0x0000 for spanning tree BPDUs."
 
 [[format.fields]]
 name = "Protocol Version Identifier"
+wireshark = "stp.version"
 aliases = ["Version"]
 meaning = "0 for classic STP, 2 for RSTP, 3 for MSTP."
 
 [[format.fields]]
 name = "BPDU Type"
+wireshark = "stp.type"
 aliases = ["Type"]
 meaning = "0x00 configuration BPDU, 0x80 topology change notification, 0x02 RST or MST BPDU."
 
 [[format.fields]]
 name = "BPDU flags"
+wireshark = "stp.flags"
 aliases = ["Flags"]
 meaning = "Topology change and topology change acknowledgement bits; RSTP adds proposal, port role (2 bits), learning, forwarding and agreement."
 
@@ -508,6 +561,7 @@ meaning = "8 bytes: priority (with the VLAN or instance in its low 12 bits) and 
 
 [[format.fields]]
 name = "Root Path Cost"
+wireshark = "stp.root.cost"
 meaning = "4 bytes: the sender's total path cost to the root; 0 when the sender is the root."
 
 [[format.fields]]
@@ -517,29 +571,35 @@ meaning = "8 bytes: priority and MAC address of the bridge sending the BPDU."
 
 [[format.fields]]
 name = "Port Identifier"
+wireshark = "stp.port"
 aliases = ["Port ID"]
 meaning = "2 bytes: the sending port's priority (top 4 bits) and number."
 
 [[format.fields]]
 name = "Message Age"
+wireshark = "stp.msg_age"
 meaning = "How long ago, in 1/256 s units, the root generated the information; each bridge adds to it."
 
 [[format.fields]]
 name = "Max Age"
+wireshark = "stp.max_age"
 meaning = "Age at which stored BPDU information is discarded, 20 seconds by default (in 1/256 s units)."
 
 [[format.fields]]
 name = "Hello Time"
+wireshark = "stp.hello"
 meaning = "Interval between configuration BPDUs from the root, 2 seconds by default (in 1/256 s units)."
 
 [[format.fields]]
 name = "Forward Delay"
+wireshark = "stp.forward"
 meaning = "Time spent in each of the listening and learning states before forwarding, 15 seconds by default (in 1/256 s units)."
 
 [[format]]
 id = "lacp"
 name = "Link Aggregation Control Protocol"
 keys = ["LACP", "Link Aggregation Control Protocol", "Slow Protocols", "802.3ad", "IEEE 802.1AX", "Link aggregation"]
+wireshark = "lacp"
 summary = "The negotiation two devices run over each member of a bundled set of Ethernet links (a port channel or bond) to agree which links form one logical link."
 group = "Link layer"
 ethertypes = [0x8809]
@@ -564,25 +624,30 @@ url = "https://standards.ieee.org/ieee/802.3/10422/"
 
 [[format.fields]]
 name = "Subtype"
+wireshark = "slow.subtype"
 aliases = ["Slow protocols subtype"]
 meaning = "Which slow protocol this is: 1 LACP, 2 Marker, 3 OAM, 10 ESMC."
 
 [[format.fields]]
 name = "Version"
+wireshark = "lacp.version"
 meaning = "LACP version, 1 (2 for the 2014 and later extensions)."
 
 [[format.fields]]
 name = "Actor System Priority"
+wireshark = "lacp.actor.sys_priority"
 aliases = ["System priority"]
 meaning = "Priority of the sending system; with the system MAC address it forms the system ID, and the lower ID controls which links are aggregated."
 
 [[format.fields]]
 name = "Actor System"
+wireshark = "lacp.actor.sysid"
 aliases = ["System", "System ID"]
 meaning = "MAC address identifying the sending system."
 
 [[format.fields]]
 name = "Actor Key"
+wireshark = "lacp.actor.key"
 aliases = ["Key"]
 meaning = "Operational key; ports with the same key on the same system can be aggregated together."
 
@@ -593,6 +658,7 @@ meaning = "Port priority and port number of the sending port."
 
 [[format.fields]]
 name = "Actor State"
+wireshark = "lacp.actor.state"
 aliases = ["State", "Partner State"]
 meaning = "Eight bits: LACP activity (active), timeout (short), aggregation, synchronisation, collecting, distributing, defaulted and expired."
 
@@ -602,12 +668,14 @@ meaning = "What the sender has learned about the other end: the same system, key
 
 [[format.fields]]
 name = "Collector Max Delay"
+wireshark = "lacp.collector.max_delay"
 meaning = "Tens of microseconds the receiving side may delay frames when collecting them."
 
 [[format]]
 id = "eapol"
 name = "EAP over LAN (IEEE 802.1X)"
 keys = ["EAPOL", "EAP over LAN", "802.1X", "IEEE 802.1X", "EAP", "Extensible Authentication Protocol", "WPA handshake", "EAPOL-Key"]
+wireshark = "eapol"
 summary = "The framing for port-based network access control: a switch or Wi-Fi access point lets a device on only after it authenticates with EAP, and on Wi-Fi the same frames carry the four-way key handshake."
 group = "Link layer"
 ethertypes = [0x888e]
@@ -634,60 +702,72 @@ section = "4"
 
 [[format.fields]]
 name = "Protocol version"
+wireshark = "eapol.version"
 aliases = ["Version"]
 meaning = "EAPOL version: 1 (802.1X-2001), 2 (2004) or 3 (2010 and later)."
 
 [[format.fields]]
 name = "Packet type"
+wireshark = "eapol.type"
 aliases = ["Type"]
 meaning = "0 EAP packet, 1 EAPOL-Start, 2 EAPOL-Logoff, 3 EAPOL-Key, 4 encapsulated ASF alert, 5 MKA."
 
 [[format.fields]]
 name = "Packet body length"
+wireshark = "eapol.len"
 aliases = ["Length", "Body length"]
 meaning = "Bytes in the body after this 4-byte header."
 
 [[format.fields]]
 name = "Code"
+wireshark = "eap.code"
 aliases = ["EAP code"]
 meaning = "EAP packet kind: 1 Request, 2 Response, 3 Success, 4 Failure."
 
 [[format.fields]]
 name = "Identifier"
+wireshark = "eap.id"
 meaning = "Matches each EAP response to its request."
 
 [[format.fields]]
 name = "EAP type"
+wireshark = "eap.type"
 aliases = ["Method"]
 meaning = "Authentication method in requests and responses: 1 Identity, 3 Nak, 4 MD5-Challenge, 13 EAP-TLS, 21 EAP-TTLS, 25 PEAP, 43 EAP-FAST."
 
 [[format.fields]]
 name = "Key Information"
+wireshark = "wlan_rsna_eapol.keydes.key_info"
 aliases = ["Key info"]
 meaning = "EAPOL-Key flags: descriptor version, pairwise or group key, install, ACK, MIC present, secure, error, request, encrypted key data. Which bits are set tells the four handshake messages apart."
 
 [[format.fields]]
 name = "Replay Counter"
+wireshark = "eapol.keydes.replay_counter"
 meaning = "8-byte counter that increases with each EAPOL-Key message from the authenticator, so old messages cannot be replayed."
 
 [[format.fields]]
 name = "Key Nonce"
+wireshark = "wlan_rsna_eapol.keydes.nonce"
 aliases = ["Nonce", "ANonce", "SNonce"]
 meaning = "32 random bytes; messages 1 and 2 carry the access point's and station's nonces, from which the session keys are derived."
 
 [[format.fields]]
 name = "Key MIC"
+wireshark = "wlan_rsna_eapol.keydes.mic"
 aliases = ["MIC"]
 meaning = "Message integrity code over the EAPOL frame, keyed with the key-confirmation key; zero in message 1."
 
 [[format.fields]]
 name = "Key Data"
+wireshark = "wlan_rsna_eapol.keydes.data"
 meaning = "Length-prefixed data such as the RSN information element (message 2) or the encrypted group key (message 3)."
 
 [[format]]
 id = "mpls"
 name = "MPLS label stack"
 keys = ["MPLS", "Multiprotocol Label Switching", "MPLS label stack", "MPLS label", "MPLS-in-IP", "IP protocol 137", "MPLS-in-UDP"]
+wireshark = "mpls"
 summary = "Short fixed-size labels pushed in front of a packet so that routers in a provider network forward it by label rather than by IP address; the basis of MPLS VPNs and traffic engineering."
 group = "Link layer"
 ethertypes = [0x8847, 0x8848]
@@ -730,23 +810,27 @@ rfc = 7510
 
 [[format.fields]]
 name = "Label"
+wireshark = "mpls.label"
 meaning = "20 bits: the forwarding label, meaningful only to the router that receives it. 0 to 15 are reserved (0 IPv4 explicit null, 2 IPv6 explicit null, 1 router alert, 13 GAL)."
 section = "2.1"
 
 [[format.fields]]
 name = "Traffic Class"
+wireshark = "mpls.exp"
 aliases = ["TC", "EXP", "Experimental"]
 meaning = "3 bits used for quality of service and congestion marking."
 section = "2.1"
 
 [[format.fields]]
 name = "Bottom of Stack"
+wireshark = "mpls.bottom"
 aliases = ["S", "Bottom of stack"]
 meaning = "1 on the last label entry; the payload starts right after it."
 section = "2.1"
 
 [[format.fields]]
 name = "TTL"
+wireshark = "mpls.ttl"
 aliases = ["Time to live"]
 meaning = "Decremented at each label-switching hop like the IP time to live, and usually copied from or to it at the edges of the MPLS network."
 section = "2.1"
@@ -755,6 +839,7 @@ section = "2.1"
 id = "ppp"
 name = "Point-to-Point Protocol"
 keys = ["PPP", "Point-to-Point Protocol", "LINKTYPE_PPP", "LINKTYPE_PPP_HDLC", "PPP in HDLC-like framing", "LCP", "Link Control Protocol", "IPCP"]
+wireshark = "ppp"
 summary = "A link protocol for carrying IP and other network protocols over a point-to-point link: serial lines, DSL (inside PPPoE), L2TP and PPTP tunnels and mobile data, with its own negotiation of link options, authentication and addresses."
 group = "Link layer"
 organisation = """
@@ -782,29 +867,35 @@ section = "3.1"
 
 [[format.fields]]
 name = "Protocol"
+wireshark = "ppp.protocol"
 meaning = "What the information is: 0x0021 IPv4, 0x0057 IPv6, 0xC021 LCP, 0x8021 IPCP, 0x8057 IPV6CP, 0xC023 PAP, 0xC223 CHAP."
 section = "2"
 
 [[format.fields]]
 name = "Address"
+wireshark = "ppp.address"
 meaning = "HDLC-like framing only: always 0xFF (all stations); may be left out when address and control field compression is agreed."
 
 [[format.fields]]
 name = "Control"
+wireshark = "ppp.control"
 meaning = "HDLC-like framing only: always 0x03, an unnumbered information frame."
 
 [[format.fields]]
 name = "Code"
+wireshark = "ppp.code"
 meaning = "In LCP and NCP packets: 1 Configure-Request, 2 Configure-Ack, 3 Configure-Nak, 4 Configure-Reject, 5 Terminate-Request, 6 Terminate-Ack, 7 Code-Reject, 8 Protocol-Reject, 9 Echo-Request, 10 Echo-Reply, 11 Discard-Request."
 section = "5"
 
 [[format.fields]]
 name = "Identifier"
+wireshark = "ppp.identifier"
 meaning = "Matches replies to requests in LCP and NCP packets."
 section = "5"
 
 [[format.fields]]
 name = "Length"
+wireshark = "ppp.length"
 meaning = "Bytes in the LCP or NCP packet including code, identifier and length."
 section = "5"
 
@@ -812,6 +903,7 @@ section = "5"
 id = "pppoe"
 name = "PPP over Ethernet"
 keys = ["PPPoE", "PPP over Ethernet", "PPPoE Discovery", "PPPoE Session"]
+wireshark = "pppoe"
 summary = "How DSL and many fibre broadband services run PPP sessions over Ethernet: a discovery exchange to find an access concentrator and get a session ID, then PPP frames tagged with that ID."
 group = "Link layer"
 ethertypes = [0x8863, 0x8864]
@@ -839,22 +931,26 @@ section = "4"
 
 [[format.fields]]
 name = "Code"
+wireshark = "pppoe.code"
 meaning = "0x09 PADI, 0x07 PADO, 0x19 PADR, 0x65 PADS, 0xA7 PADT in discovery; 0x00 for session data."
 section = "4"
 
 [[format.fields]]
 name = "Session ID"
+wireshark = "pppoe.session_id"
 meaning = "Identifies the PPP session together with the two MAC addresses; zero until PADS assigns it."
 section = "4"
 
 [[format.fields]]
 name = "Length"
+wireshark = "pppoe.payload_length"
 aliases = ["Payload length"]
 meaning = "Bytes of payload after the 6-byte header; bytes beyond it in the frame are Ethernet padding."
 section = "4"
 
 [[format.fields]]
 name = "Tag *"
+wireshark = "pppoed.tag"
 aliases = ["Service-Name", "AC-Name", "Host-Uniq", "AC-Cookie"]
 meaning = "Discovery tags: 2-byte type, 2-byte length and value. Service-Name (0x0101) and AC-Name (0x0102) are text; Host-Uniq (0x0103) and AC-Cookie (0x0104) are opaque values echoed back."
 section = "5"
@@ -863,6 +959,7 @@ section = "5"
 id = "wake-on-lan"
 name = "Wake-on-LAN magic packet"
 keys = ["Wake-on-LAN", "WoL", "Wake on LAN", "Magic Packet"]
+wireshark = "wol"
 summary = "A frame that tells a sleeping computer's network card to power the machine on: the target's MAC address repeated sixteen times after a run of 0xFF bytes."
 group = "Link layer"
 ethertypes = [0x0842]
@@ -886,16 +983,19 @@ url = "https://standards-oui.ieee.org/ethertype/eth.txt"
 
 [[format.fields]]
 name = "Synchronisation stream"
+wireshark = "wol.sync"
 aliases = ["Sync stream", "Synchronization stream"]
 meaning = "Six bytes of 0xFF that mark the start of the pattern."
 
 [[format.fields]]
 name = "Target MAC"
+wireshark = "wol.mac"
 aliases = ["MAC address", "Target"]
 meaning = "The MAC address of the machine to wake, repeated sixteen times."
 
 [[format.fields]]
 name = "Password"
+wireshark = "wol.passwd"
 aliases = ["SecureOn password"]
 meaning = "Optional 4 or 6 bytes after the repetitions, checked by cards that support SecureOn."
 
@@ -903,6 +1003,7 @@ meaning = "Optional 4 or 6 bytes after the repetitions, checked by cards that su
 id = "ptp"
 name = "Precision Time Protocol"
 keys = ["PTP", "Precision Time Protocol", "IEEE 1588", "PTPv2", "gPTP"]
+wireshark = "ptp"
 summary = "Synchronises clocks across a network to well under a microsecond by exchanging timestamped messages, using hardware timestamps where possible; used in telecoms, finance, broadcast and industrial networks."
 group = "Time"
 ethertypes = [0x88f7]
@@ -929,26 +1030,31 @@ url = "https://www.iana.org/assignments/ieee-802-numbers/ieee-802-numbers.xhtml"
 
 [[format.fields]]
 name = "messageType"
+wireshark = "ptp.v2.messagetype"
 aliases = ["Message type"]
 meaning = "Low 4 bits of byte 0: 0 Sync, 1 Delay_Req, 2 Pdelay_Req, 3 Pdelay_Resp, 8 Follow_Up, 9 Delay_Resp, 0xA Pdelay_Resp_Follow_Up, 0xB Announce, 0xC Signaling, 0xD Management. The high 4 bits are the majorSdoId (transportSpecific)."
 
 [[format.fields]]
 name = "versionPTP"
+wireshark = "ptp.v2.versionptp"
 aliases = ["Version"]
 meaning = "PTP version in the low 4 bits, 2 for IEEE 1588-2008 and 2019; the high bits hold the minor version."
 
 [[format.fields]]
 name = "messageLength"
+wireshark = "ptp.v2.messagelength"
 aliases = ["Message length"]
 meaning = "Bytes in the whole PTP message including the 34-byte header."
 
 [[format.fields]]
 name = "domainNumber"
+wireshark = "ptp.v2.domainnumber"
 aliases = ["Domain"]
 meaning = "Which PTP domain, an independent set of synchronised clocks, the message belongs to; 0 by default."
 
 [[format.fields]]
 name = "flagField"
+wireshark = "ptp.v2.flags"
 aliases = ["Flags"]
 meaning = "Two bytes of flags such as two-step, unicast, alternate master, leap second pending, UTC offset valid and PTP timescale."
 
@@ -964,11 +1070,13 @@ meaning = "10 bytes: the sender's 8-byte clock identity (often derived from its 
 
 [[format.fields]]
 name = "sequenceId"
+wireshark = "ptp.v2.sequenceid"
 aliases = ["Sequence ID"]
 meaning = "Counts messages of each type, pairing Sync with Follow_Up and Delay_Req with Delay_Resp."
 
 [[format.fields]]
 name = "logMessageInterval"
+wireshark = "ptp.v2.logmessageinterval"
 aliases = ["Log message interval"]
 meaning = "Base-2 logarithm of the interval between messages of this type, in seconds; -3 means eight per second."
 
@@ -985,6 +1093,7 @@ meaning = "10-byte timestamp: 48-bit seconds and 32-bit nanoseconds."
 id = "gre"
 name = "Generic Routing Encapsulation"
 keys = ["GRE", "Generic Routing Encapsulation", "Enhanced GRE", "NVGRE", "IP protocol 47"]
+wireshark = "gre"
 summary = "A simple tunnel header that wraps one network packet inside another IP packet, naming the inner protocol with an EtherType; used for site-to-site tunnels, PPTP VPNs, ERSPAN mirroring and NVGRE overlays."
 group = "Tunnels and VPNs"
 ip_protocols = [47]
@@ -1026,27 +1135,32 @@ rfc = 7637
 
 [[format.fields]]
 name = "Flags and version"
+wireshark = "gre.flags_and_version"
 aliases = ["Flags", "Version"]
 meaning = "Bit 0 checksum present (C), bit 2 key present (K), bit 3 sequence number present (S); version in the low 3 bits, 0 for GRE and 1 for PPTP's enhanced GRE."
 section = "2.1"
 
 [[format.fields]]
 name = "Protocol Type"
+wireshark = "gre.proto"
 aliases = ["Protocol type", "Type"]
 meaning = "EtherType of the payload: 0x0800 IPv4, 0x86DD IPv6, 0x6558 Ethernet frame, 0x8847 MPLS, 0x88BE ERSPAN II, 0x22EB ERSPAN III, 0x880B PPP."
 section = "2.4"
 
 [[format.fields]]
 name = "Checksum"
+wireshark = "gre.checksum"
 meaning = "Present when the C bit is set: ones' complement checksum over the GRE header and payload, followed by 2 reserved bytes."
 section = "2.5"
 
 [[format.fields]]
 name = "Key"
+wireshark = "gre.key"
 meaning = "Present when the K bit is set: 4 bytes that distinguish flows or tunnels between the same endpoints; NVGRE puts a 24-bit virtual subnet ID here, PPTP a payload length and call ID."
 
 [[format.fields]]
 name = "Sequence Number"
+wireshark = "gre.sequence_number"
 aliases = ["Sequence number"]
 meaning = "Present when the S bit is set: increases with each packet so the receiver can detect loss and reordering."
 
@@ -1054,6 +1168,7 @@ meaning = "Present when the S bit is set: increases with each packet so the rece
 id = "esp"
 name = "IP Encapsulating Security Payload"
 keys = ["ESP", "Encapsulating Security Payload", "IPsec ESP", "IP Encapsulating Security Payload", "UDP-encapsulated ESP", "IP protocol 50"]
+wireshark = "esp"
 summary = "The IPsec protocol that encrypts and authenticates packets; almost all IPsec VPN traffic is ESP, and everything after its 8-byte header is ciphertext."
 group = "Tunnels and VPNs"
 ip_protocols = [50]
@@ -1083,34 +1198,40 @@ section = "2.1"
 
 [[format.fields]]
 name = "SPI"
+wireshark = "esp.spi"
 aliases = ["Security Parameters Index"]
 meaning = "4 bytes chosen by the receiver to identify the security association (keys and algorithms) the packet belongs to. Each direction of a tunnel has its own SPI."
 section = "2.1"
 
 [[format.fields]]
 name = "Sequence Number"
+wireshark = "esp.sequence"
 aliases = ["Sequence number"]
 meaning = "Counts packets on the security association from 1, letting the receiver reject replays; gaps show loss."
 section = "2.2"
 
 [[format.fields]]
 name = "Payload Data"
+wireshark = "esp.encrypted_data"
 aliases = ["Encrypted data", "Data"]
 meaning = "The encrypted inner packet, usually preceded by an initialisation vector."
 section = "2.3"
 
 [[format.fields]]
 name = "Pad Length"
+wireshark = "esp.pad_len"
 meaning = "Encrypted: how many padding bytes precede it."
 section = "2.5"
 
 [[format.fields]]
 name = "Next Header"
+wireshark = "esp.protocol"
 meaning = "Encrypted: the protocol of the inner packet, 4 for IPv4 in tunnel mode, 41 for IPv6, 6 or 17 in transport mode."
 section = "2.6"
 
 [[format.fields]]
 name = "ICV"
+wireshark = "esp.icv"
 aliases = ["Integrity Check Value"]
 meaning = "The authentication tag at the end of the packet, covering the ESP header and encrypted data."
 section = "2.8"
@@ -1119,6 +1240,7 @@ section = "2.8"
 id = "ah"
 name = "IP Authentication Header"
 keys = ["AH", "Authentication Header", "IP Authentication Header", "IPsec AH", "IP protocol 51"]
+wireshark = "ah"
 summary = "The IPsec protocol that authenticates packets, including most of the outer IP header, without encrypting them; far rarer than ESP and incompatible with NAT."
 group = "Tunnels and VPNs"
 ip_protocols = [51]
@@ -1140,29 +1262,34 @@ section = "2"
 
 [[format.fields]]
 name = "Next Header"
+wireshark = "ah.next_header"
 meaning = "IP protocol number of the payload after AH: 6 TCP, 17 UDP, 4 IPv4 (tunnel mode), 41 IPv6."
 section = "2.1"
 
 [[format.fields]]
 name = "Payload Len"
+wireshark = "ah.length"
 aliases = ["Payload length", "Length"]
 meaning = "Length of AH in 4-byte words minus 2; the next header begins (value + 2) × 4 bytes after the start of AH."
 section = "2.2"
 
 [[format.fields]]
 name = "SPI"
+wireshark = "ah.spi"
 aliases = ["Security Parameters Index"]
 meaning = "Identifies the security association with the destination address."
 section = "2.4"
 
 [[format.fields]]
 name = "Sequence Number"
+wireshark = "ah.sequence"
 aliases = ["Sequence number"]
 meaning = "Increases with each packet on the association, for replay protection."
 section = "2.5"
 
 [[format.fields]]
 name = "ICV"
+wireshark = "ah.icv"
 aliases = ["Integrity Check Value", "Authentication data"]
 meaning = "Variable-length authentication tag over the immutable IP header fields, AH itself (with the ICV zeroed) and the payload."
 section = "2.6"
@@ -1171,6 +1298,7 @@ section = "2.6"
 id = "ikev2"
 name = "Internet Key Exchange version 2"
 keys = ["IKEv2", "IKE", "Internet Key Exchange", "ISAKMP", "IKEv1"]
+wireshark = "isakmp"
 summary = "The negotiation that sets up IPsec: the peers agree algorithms, exchange Diffie-Hellman values, authenticate each other and create the ESP security associations."
 group = "Tunnels and VPNs"
 ports = ["udp/500", "udp/4500"]
@@ -1199,46 +1327,54 @@ section = "2.2"
 
 [[format.fields]]
 name = "Initiator SPI"
+wireshark = "isakmp.ispi"
 aliases = ["Initiator cookie"]
 meaning = "8 bytes chosen by the initiator to identify the IKE SA."
 section = "3.1"
 
 [[format.fields]]
 name = "Responder SPI"
+wireshark = "isakmp.rspi"
 aliases = ["Responder cookie"]
 meaning = "8 bytes chosen by the responder; zero in the first message of IKE_SA_INIT."
 section = "3.1"
 
 [[format.fields]]
 name = "Next Payload"
+wireshark = "isakmp.nextpayload"
 aliases = ["Next payload"]
 meaning = "Type of the first payload: 33 SA, 34 KE, 35 IDi, 36 IDr, 37 CERT, 39 AUTH, 40 Nonce, 41 Notify, 46 Encrypted and Authenticated, 0 none."
 section = "3.1"
 
 [[format.fields]]
 name = "Version"
+wireshark = "isakmp.version"
 aliases = ["Major version", "Minor version"]
 meaning = "Major version in the high 4 bits (2 for IKEv2, 1 for IKEv1) and minor in the low 4 bits."
 section = "3.1"
 
 [[format.fields]]
 name = "Exchange Type"
+wireshark = "isakmp.exchangetype"
 aliases = ["Exchange type"]
 meaning = "34 IKE_SA_INIT, 35 IKE_AUTH, 36 CREATE_CHILD_SA, 37 INFORMATIONAL; IKEv1 uses 2 Main Mode, 4 Aggressive Mode, 32 Quick Mode."
 section = "3.1"
 
 [[format.fields]]
 name = "Flags"
+wireshark = "isakmp.flags"
 meaning = "I (sent by the original initiator), V (higher version supported) and R (this is a response)."
 section = "3.1"
 
 [[format.fields]]
 name = "Message ID"
+wireshark = "isakmp.messageid"
 meaning = "Pairs each response with its request and orders exchanges; 0 for IKE_SA_INIT."
 section = "3.1"
 
 [[format.fields]]
 name = "Length"
+wireshark = "isakmp.length"
 meaning = "Bytes in the whole IKE message, header and payloads."
 section = "3.1"
 
@@ -1300,6 +1436,7 @@ url = "https://www.iana.org/assignments/protocol-numbers/protocol-numbers.xhtml"
 id = "teredo"
 name = "Teredo"
 keys = ["Teredo", "Teredo tunnelling", "Teredo tunneling"]
+wireshark = "teredo"
 summary = "Tunnels IPv6 inside UDP over IPv4 so that hosts behind NATs can reach the IPv6 internet; once enabled by default on Windows, so it still turns up in captures."
 group = "Tunnels and VPNs"
 ports = ["udp/3544"]
@@ -1321,10 +1458,12 @@ section = "5.1.1"
 
 [[format.fields]]
 name = "Origin indication"
+wireshark = "teredo.orig"
 meaning = "8 bytes starting 0x0000: the client's NAT-mapped port and public IPv4 address, each with all bits inverted."
 
 [[format.fields]]
 name = "Authentication indicator"
+wireshark = "teredo.auth"
 aliases = ["Authentication"]
 meaning = "Starts 0x0001: client identifier length, authentication value length, those values, an 8-byte nonce and a confirmation byte."
 
@@ -1332,6 +1471,7 @@ meaning = "Starts 0x0001: client identifier length, authentication value length,
 id = "vxlan"
 name = "Virtual eXtensible Local Area Network"
 keys = ["VXLAN", "Virtual eXtensible Local Area Network", "Virtual Extensible LAN", "VXLAN-GPE"]
+wireshark = "vxlan"
 summary = "Carries Ethernet frames inside UDP so that virtual machines and containers on different hosts can share a layer-2 segment; the common overlay in data centres and cloud networks."
 group = "Tunnels and VPNs"
 ports = ["udp/4789"]
@@ -1353,11 +1493,13 @@ section = "5"
 
 [[format.fields]]
 name = "Flags"
+wireshark = "vxlan.flags"
 meaning = "Byte 0: the I flag (0x08) must be set to say the VNI is valid; the other bits are reserved."
 section = "5"
 
 [[format.fields]]
 name = "VNI"
+wireshark = "vxlan.vni"
 aliases = ["VXLAN Network Identifier", "VXLAN network identifier"]
 meaning = "24 bits naming the virtual layer-2 segment the inner frame belongs to."
 section = "5"
@@ -1371,6 +1513,7 @@ section = "5"
 id = "geneve"
 name = "Generic Network Virtualization Encapsulation"
 keys = ["Geneve", "GENEVE", "Generic Network Virtualization Encapsulation"]
+wireshark = "geneve"
 summary = "A data-centre overlay like VXLAN but with extensible options and a protocol type for the inner packet; used by Open vSwitch/OVN, VMware NSX and AWS Gateway Load Balancer."
 group = "Tunnels and VPNs"
 ports = ["udp/6081"]
@@ -1392,6 +1535,7 @@ section = "3.4"
 
 [[format.fields]]
 name = "Ver"
+wireshark = "geneve.version"
 aliases = ["Version"]
 meaning = "2-bit version, currently 0."
 
@@ -1402,26 +1546,31 @@ meaning = "6 bits: length of the options in 4-byte words; the payload starts aft
 
 [[format.fields]]
 name = "O"
+wireshark = "geneve.flags.oam"
 aliases = ["OAM flag", "Control flag"]
 meaning = "Set on control packets meant for the tunnel endpoint rather than a virtual machine."
 
 [[format.fields]]
 name = "C"
+wireshark = "geneve.flags.critical"
 aliases = ["Critical options present"]
 meaning = "Set when at least one option is critical, so endpoints that do not understand it must drop the packet."
 
 [[format.fields]]
 name = "Protocol Type"
+wireshark = "geneve.proto_type"
 aliases = ["Protocol type"]
 meaning = "EtherType of the inner packet, normally 0x6558 for an Ethernet frame."
 
 [[format.fields]]
 name = "Virtual Network Identifier"
+wireshark = "geneve.vni"
 aliases = ["VNI"]
 meaning = "24 bits naming the virtual network."
 
 [[format.fields]]
 name = "Option *"
+wireshark = "geneve.option"
 aliases = ["Variable-Length Options"]
 meaning = "Option class (2 bytes), type (1 byte, top bit critical), reserved bits and a 5-bit length in 4-byte words, then data."
 section = "3.5"
@@ -1430,6 +1579,7 @@ section = "3.5"
 id = "gtp-u"
 name = "GPRS Tunnelling Protocol, user plane"
 keys = ["GTP-U", "GTPv1-U", "GPRS Tunnelling Protocol", "GPRS Tunneling Protocol User Plane", "GTP"]
+wireshark = "gtp"
 summary = "Carries subscribers' IP packets between the radio network and the packet core of 3G, 4G and 5G mobile networks, each tunnel identified by a tunnel endpoint ID."
 group = "Tunnels and VPNs"
 ports = ["udp/2152"]
@@ -1450,35 +1600,41 @@ section = "5.1"
 
 [[format.fields]]
 name = "Flags"
+wireshark = "gtp.flags"
 aliases = ["Version", "Protocol type"]
 meaning = "Version (1) in the top 3 bits, PT (1 for GTP, 0 for GTP'), a spare bit, then E (extension header), S (sequence number) and PN (N-PDU number) flags."
 section = "5.1"
 
 [[format.fields]]
 name = "Message Type"
+wireshark = "gtp.message"
 aliases = ["Message type"]
 meaning = "255 G-PDU (user data), 1 echo request, 2 echo response, 26 error indication, 254 end marker."
 section = "5.1"
 
 [[format.fields]]
 name = "Length"
+wireshark = "gtp.length"
 meaning = "Bytes after the first 8, including the optional fields and extension headers."
 section = "5.1"
 
 [[format.fields]]
 name = "TEID"
+wireshark = "gtp.teid"
 aliases = ["Tunnel Endpoint Identifier"]
 meaning = "4 bytes chosen by the receiving node to identify the tunnel, and so the subscriber's bearer or PDU session."
 section = "5.1"
 
 [[format.fields]]
 name = "Sequence Number"
+wireshark = "gtp.seq_number"
 aliases = ["Sequence number"]
 meaning = "Optional 2-byte sequence number, present when E, S or PN is set."
 section = "5.1"
 
 [[format.fields]]
 name = "Next Extension Header Type"
+wireshark = "gtp.ext_hdr.next"
 aliases = ["Next extension header type"]
 meaning = "Type of the first extension header, such as 0x85 for the PDU session container; 0 for none."
 section = "5.2"
@@ -1487,6 +1643,7 @@ section = "5.2"
 id = "gtp-c"
 name = "GPRS Tunnelling Protocol, control plane"
 keys = ["GTP-C", "GTPv2-C", "GTPv2", "GTPv1-C", "GPRS Tunnelling Protocol Control Plane"]
+wireshark = "gtpv2"
 summary = "The signalling mobile core nodes use to create, modify and delete subscribers' sessions and the GTP-U tunnels that carry their data; GTPv2-C in 4G, GTPv1-C in 3G."
 group = "Tunnels and VPNs"
 ports = ["udp/2123"]
@@ -1507,30 +1664,35 @@ section = "5.1"
 
 [[format.fields]]
 name = "Flags"
+wireshark = "gtpv2.flags"
 aliases = ["Version"]
 meaning = "Version (2) in the top 3 bits, P (piggybacking), T (TEID present) and MP (message priority present)."
 section = "5.1"
 
 [[format.fields]]
 name = "Message Type"
+wireshark = "gtpv2.message_type"
 aliases = ["Message type"]
 meaning = "1 echo request, 2 echo response, 32/33 Create Session request/response, 34/35 Modify Bearer, 36/37 Delete Session, among others."
 section = "6.1"
 
 [[format.fields]]
 name = "Message Length"
+wireshark = "gtpv2.msg_length"
 aliases = ["Length"]
 meaning = "Bytes after the first 4 bytes of the header."
 section = "5.1"
 
 [[format.fields]]
 name = "TEID"
+wireshark = "gtpv2.teid"
 aliases = ["Tunnel Endpoint Identifier"]
 meaning = "Present when T is set: identifies the receiving node's control-plane tunnel for this subscriber; zero in the first request."
 section = "5.1"
 
 [[format.fields]]
 name = "Sequence Number"
+wireshark = "gtpv2.seq"
 aliases = ["Sequence number"]
 meaning = "3 bytes pairing each response with its request."
 section = "5.1"
@@ -1545,6 +1707,7 @@ section = "8"
 id = "l2tp"
 name = "Layer Two Tunnelling Protocol"
 keys = ["L2TP", "Layer Two Tunneling Protocol", "Layer Two Tunnelling Protocol", "L2TPv2", "L2TPv3", "IP protocol 115"]
+wireshark = "l2tp"
 summary = "Tunnels PPP sessions (L2TPv2) or other layer-2 frames (L2TPv3) between an access concentrator and a network server; best known as the transport of L2TP/IPsec VPNs and in ISP broadband wholesale."
 group = "Tunnels and VPNs"
 ports = ["udp/1701"]
@@ -1574,32 +1737,38 @@ section = "3.2"
 
 [[format.fields]]
 name = "Flags and version"
+wireshark = "l2tp.flags"
 aliases = ["Flags", "Version"]
 meaning = "T (control message), L (length present), S (Ns and Nr present), O (offset present), P (priority), and the version in the low 4 bits: 2 or 3."
 section = "3.1"
 
 [[format.fields]]
 name = "Length"
+wireshark = "l2tp.length"
 meaning = "Present when L is set: total length of the L2TP message in bytes."
 section = "3.1"
 
 [[format.fields]]
 name = "Tunnel ID"
+wireshark = "l2tp.tunnel"
 meaning = "The receiver's identifier for the control connection; 0 until one has been assigned."
 section = "3.1"
 
 [[format.fields]]
 name = "Session ID"
+wireshark = "l2tp.session"
 meaning = "The receiver's identifier for the session within the tunnel; 0 for tunnel-wide control messages."
 section = "3.1"
 
 [[format.fields]]
 name = "Ns"
+wireshark = "l2tp.Ns"
 meaning = "Sequence number of this message, present when S is set."
 section = "3.1"
 
 [[format.fields]]
 name = "Nr"
+wireshark = "l2tp.Nr"
 meaning = "Sequence number of the next control message expected, acknowledging those before it."
 section = "3.1"
 
@@ -1613,6 +1782,7 @@ section = "4.1"
 id = "wireguard"
 name = "WireGuard"
 keys = ["WireGuard", "WireGuard VPN"]
+wireshark = "wg"
 summary = "A compact VPN protocol built on the Noise framework: a one-round-trip handshake and then encrypted transport packets, all over UDP."
 group = "Tunnels and VPNs"
 ports = ["udp/51820"]
@@ -1637,35 +1807,42 @@ url = "https://www.wireguard.com/papers/wireguard.pdf"
 
 [[format.fields]]
 name = "Type"
+wireshark = "wg.type"
 aliases = ["Message type"]
 meaning = "1 handshake initiation, 2 handshake response, 3 cookie reply, 4 transport data; followed by 3 zero bytes."
 
 [[format.fields]]
 name = "Sender index"
+wireshark = "wg.sender"
 aliases = ["Sender"]
 meaning = "A random 32-bit value the sender picked to identify this session; the peer puts it in the receiver field of later messages."
 
 [[format.fields]]
 name = "Receiver index"
+wireshark = "wg.receiver"
 aliases = ["Receiver"]
 meaning = "The other side's sender index, identifying which session a packet belongs to."
 
 [[format.fields]]
 name = "Unencrypted ephemeral"
+wireshark = "wg.ephemeral"
 aliases = ["Ephemeral"]
 meaning = "32-byte Curve25519 ephemeral public key for this handshake."
 
 [[format.fields]]
 name = "Counter"
+wireshark = "wg.counter"
 meaning = "8-byte little-endian packet counter in transport messages, used as the nonce and for replay protection."
 
 [[format.fields]]
 name = "mac1"
+wireshark = "wg.mac1"
 aliases = ["MAC1", "mac2", "MAC2"]
 meaning = "16-byte MACs on handshake messages: mac1 proves knowledge of the responder's public key; mac2 is non-zero only after a cookie reply."
 
 [[format.fields]]
 name = "Encrypted packet"
+wireshark = "wg.encrypted_packet"
 aliases = ["Encrypted encapsulated packet", "Data"]
 meaning = "The ChaCha20-Poly1305-encrypted inner IP packet with its 16-byte tag; empty inside for keep-alives."
 
@@ -1673,6 +1850,7 @@ meaning = "The ChaCha20-Poly1305-encrypted inner IP packet with its 16-byte tag;
 id = "openvpn"
 name = "OpenVPN"
 keys = ["OpenVPN", "OpenVPN protocol"]
+wireshark = "openvpn"
 summary = "A widely used TLS-based VPN: a reliable control channel carries a TLS session that derives keys, and a data channel carries the encrypted tunnel packets, over UDP or TCP."
 group = "Tunnels and VPNs"
 ports = ["udp/1194", "tcp/1194"]
@@ -1692,28 +1870,34 @@ url = "https://openvpn.net/community-resources/openvpn-protocol/"
 
 [[format.fields]]
 name = "Packet length"
+wireshark = "openvpn.plen"
 aliases = ["Length"]
 meaning = "TCP only: 2-byte length of the packet that follows."
 
 [[format.fields]]
 name = "Opcode"
+wireshark = "openvpn.opcode"
 meaning = "Top 5 bits of the first byte: 7/8 hard reset from client/server (v2), 4 control (TLS data), 5 acknowledgement, 6 data v1, 9 data v2."
 
 [[format.fields]]
 name = "Key ID"
+wireshark = "openvpn.keyid"
 meaning = "Low 3 bits of the first byte: which of the negotiated key sets is in use, changing at each renegotiation."
 
 [[format.fields]]
 name = "Session ID"
+wireshark = "openvpn.sessionid"
 meaning = "8 random bytes identifying the sender's side of the control channel."
 
 [[format.fields]]
 name = "Packet ID"
+wireshark = "openvpn.mpid"
 aliases = ["Message packet ID"]
 meaning = "Sequence number of a control packet in the reliability layer; acknowledgements list these."
 
 [[format.fields]]
 name = "Peer ID"
+wireshark = "openvpn.peerid"
 meaning = "P_DATA_V2 only: 3 bytes identifying the client to the server, so sessions survive address changes."
 
 # ---------------------------------------------------------------------------
@@ -1724,6 +1908,7 @@ meaning = "P_DATA_V2 only: 3 bytes identifying the client to the server, so sess
 id = "sctp"
 name = "Stream Control Transmission Protocol"
 keys = ["SCTP", "Stream Control Transmission Protocol", "IP protocol 132"]
+wireshark = "sctp"
 summary = "A reliable, message-oriented transport with multiple streams per association and multi-homing; the carrier of telecoms signalling (SIGTRAN, Diameter, S1AP, NGAP) and of WebRTC data channels."
 group = "Transport"
 ip_protocols = [132]
@@ -1745,57 +1930,67 @@ section = "3"
 
 [[format.fields]]
 name = "Source Port"
+wireshark = "sctp.srcport"
 aliases = ["Source port"]
 meaning = "The sender's SCTP port."
 section = "3.1"
 
 [[format.fields]]
 name = "Destination Port"
+wireshark = "sctp.dstport"
 aliases = ["Destination port"]
 meaning = "The receiving endpoint's port, naming the application."
 section = "3.1"
 
 [[format.fields]]
 name = "Verification Tag"
+wireshark = "sctp.verification_tag"
 aliases = ["Verification tag"]
 meaning = "4 bytes the receiver chose during setup and the sender must echo, protecting against stray or blind-injected packets; 0 only in INIT."
 section = "3.1"
 
 [[format.fields]]
 name = "Checksum"
+wireshark = "sctp.checksum"
 meaning = "CRC32c over the whole SCTP packet with this field zeroed."
 section = "3.1"
 
 [[format.fields]]
 name = "Chunk Type"
+wireshark = "sctp.chunk_type"
 aliases = ["Chunk type"]
 meaning = "0 DATA, 1 INIT, 2 INIT ACK, 3 SACK, 4 HEARTBEAT, 5 HEARTBEAT ACK, 6 ABORT, 7 SHUTDOWN, 8 SHUTDOWN ACK, 9 ERROR, 10 COOKIE ECHO, 11 COOKIE ACK, 14 SHUTDOWN COMPLETE. The top two bits say what to do with an unknown type."
 section = "3.2"
 
 [[format.fields]]
 name = "Chunk Flags"
+wireshark = "sctp.chunk_flags"
 aliases = ["Chunk flags"]
 meaning = "Type-specific bits; for DATA: unordered (U), beginning (B) and end (E) of a fragmented user message, and immediate SACK (I)."
 section = "3.2"
 
 [[format.fields]]
 name = "Chunk Length"
+wireshark = "sctp.chunk_length"
 aliases = ["Chunk length"]
 meaning = "Bytes in the chunk including its 4-byte header but excluding padding to a 4-byte boundary."
 section = "3.2"
 
 [[format.fields]]
 name = "TSN"
+wireshark = "sctp.data_tsn"
 aliases = ["Transmission Sequence Number"]
 meaning = "DATA chunks: sequence number of this chunk across the whole association, acknowledged by SACK."
 
 [[format.fields]]
 name = "Stream Identifier"
+wireshark = "sctp.data_sid"
 aliases = ["Stream identifier", "Stream ID"]
 meaning = "DATA chunks: which of the association's streams the message belongs to."
 
 [[format.fields]]
 name = "Payload Protocol Identifier"
+wireshark = "sctp.data_payload_proto_id"
 aliases = ["PPID"]
 meaning = "DATA chunks: the application protocol of the payload, such as 3 M3UA, 18 S1AP, 46 Diameter, 60 NGAP, 50/51/53 WebRTC string, binary or empty messages."
 
@@ -1803,6 +1998,7 @@ meaning = "DATA chunks: the application protocol of the payload, such as 3 M3UA,
 id = "quic"
 name = "QUIC"
 keys = ["QUIC", "QUIC transport", "HTTP/3 transport", "IETF QUIC"]
+wireshark = "quic"
 summary = "An encrypted, multiplexed transport over UDP that combines the jobs of TCP and TLS 1.3; it carries HTTP/3 and most traffic to large web services."
 group = "Transport"
 ports = ["udp/443"]
@@ -1843,45 +2039,53 @@ rfc = 9369
 
 [[format.fields]]
 name = "Header Form"
+wireshark = "quic.header_form"
 aliases = ["Header form"]
 meaning = "Top bit of the first byte: 1 for a long header (handshake packets), 0 for a short header (application data)."
 section = "17.2"
 
 [[format.fields]]
 name = "Long Packet Type"
+wireshark = "quic.long.packet_type"
 aliases = ["Packet type"]
 meaning = "Two bits in a long header: 0 Initial, 1 0-RTT, 2 Handshake, 3 Retry (version 1; version 2 permutes them)."
 section = "17.2"
 
 [[format.fields]]
 name = "Version"
+wireshark = "quic.version"
 meaning = "4 bytes: 0x00000001 QUIC version 1, 0x6B3343CF version 2, 0 a version negotiation packet; values of the form 0x?a?a?a?a are reserved to exercise negotiation."
 section = "17.2"
 
 [[format.fields]]
 name = "Destination Connection ID"
+wireshark = "quic.dcid"
 aliases = ["DCID", "Destination connection ID"]
 meaning = "Up to 20 bytes chosen by the receiver to route the packet to the right connection; preceded by a length byte in long headers."
 section = "17.2"
 
 [[format.fields]]
 name = "Source Connection ID"
+wireshark = "quic.scid"
 aliases = ["SCID", "Source connection ID"]
 meaning = "Long headers only: the connection ID the sender wants its peer to use."
 section = "17.2"
 
 [[format.fields]]
 name = "Token"
+wireshark = "quic.token"
 meaning = "Initial packets only: an address-validation token from an earlier Retry or NEW_TOKEN frame, usually empty."
 section = "17.2.2"
 
 [[format.fields]]
 name = "Length"
+wireshark = "quic.length"
 meaning = "Variable-length integer: bytes in the packet number and payload, so the next coalesced packet can be found."
 section = "17.2"
 
 [[format.fields]]
 name = "Packet Number"
+wireshark = "quic.packet_number"
 aliases = ["Packet number"]
 meaning = "1-4 bytes, hidden by header protection; strictly increasing within each packet number space."
 section = "17.1"
@@ -1894,6 +2098,7 @@ section = "17.1"
 id = "igmp"
 name = "Internet Group Management Protocol"
 keys = ["IGMP", "Internet Group Management Protocol", "IGMPv2", "IGMPv3", "IP protocol 2"]
+wireshark = "igmp"
 summary = "How IPv4 hosts tell their local routers (and snooping switches) which multicast groups they want to receive; the IPv6 equivalent, MLD, is part of ICMPv6."
 group = "Routing"
 ip_protocols = [2]
@@ -1922,40 +2127,47 @@ section = "2"
 
 [[format.fields]]
 name = "Type"
+wireshark = "igmp.type"
 meaning = "0x11 membership query, 0x12 v1 report, 0x16 v2 report, 0x17 leave group, 0x22 v3 report."
 section = "4"
 
 [[format.fields]]
 name = "Max Resp Code"
+wireshark = "igmp.max_resp"
 aliases = ["Max response time", "Max Resp Time"]
 meaning = "In queries: the longest a host may wait before replying, in tenths of a second (values of 128 and above are a floating-point encoding in IGMPv3); zero in v1 queries and in reports."
 section = "4.1"
 
 [[format.fields]]
 name = "Checksum"
+wireshark = "igmp.checksum"
 meaning = "Ones' complement checksum over the whole IGMP message."
 section = "4.1"
 
 [[format.fields]]
 name = "Group Address"
+wireshark = "igmp.maddr"
 aliases = ["Multicast address", "Group"]
 meaning = "The multicast group concerned; 0.0.0.0 in a general query."
 section = "4.1"
 
 [[format.fields]]
 name = "QRV"
+wireshark = "igmp.qrv"
 aliases = ["Querier's Robustness Variable"]
 meaning = "IGMPv3 queries: how many times messages are repeated to cope with loss."
 section = "4.1"
 
 [[format.fields]]
 name = "QQIC"
+wireshark = "igmp.qqic"
 aliases = ["Querier's Query Interval Code"]
 meaning = "IGMPv3 queries: the querier's interval between general queries, in seconds (with the same floating-point encoding above 127)."
 section = "4.1"
 
 [[format.fields]]
 name = "Number of Sources"
+wireshark = "igmp.num_src"
 aliases = ["Number of sources"]
 meaning = "Count of source addresses that follow in a query or group record."
 section = "4.1"
@@ -1970,6 +2182,7 @@ section = "4.2"
 id = "ospf"
 name = "Open Shortest Path First"
 keys = ["OSPF", "Open Shortest Path First", "OSPFv2", "OSPFv3", "OSPFIGP"]
+wireshark = "ospf"
 summary = "The most widely deployed interior routing protocol: routers flood descriptions of their links to every router in an area and each computes shortest paths from the resulting map."
 group = "Routing"
 ip_protocols = [89]
@@ -1998,33 +2211,40 @@ section = "A.3.1"
 
 [[format.fields]]
 name = "Version"
+wireshark = "ospf.version"
 meaning = "2 for OSPF over IPv4, 3 for OSPFv3."
 
 [[format.fields]]
 name = "Type"
+wireshark = "ospf.msg"
 aliases = ["Message type", "Packet type"]
 meaning = "1 Hello, 2 Database Description, 3 Link State Request, 4 Link State Update, 5 Link State Acknowledgement."
 
 [[format.fields]]
 name = "Packet length"
+wireshark = "ospf.packet_length"
 aliases = ["Length"]
 meaning = "Bytes in the OSPF packet including its header."
 
 [[format.fields]]
 name = "Router ID"
+wireshark = "ospf.srcrouter"
 aliases = ["Source OSPF Router"]
 meaning = "32-bit identifier of the sending router, written like an IPv4 address and often one of its addresses."
 
 [[format.fields]]
 name = "Area ID"
+wireshark = "ospf.area_id"
 meaning = "32-bit identifier of the area the packet belongs to; 0.0.0.0 is the backbone."
 
 [[format.fields]]
 name = "Checksum"
+wireshark = "ospf.checksum"
 meaning = "Ones' complement checksum over the packet, excluding the authentication field in OSPFv2."
 
 [[format.fields]]
 name = "AuType"
+wireshark = "ospf.auth.type"
 aliases = ["Auth type", "Authentication type"]
 meaning = "OSPFv2: 0 none, 1 simple password (sent in clear), 2 cryptographic (a key ID and sequence number here, with a digest appended to the packet)."
 
@@ -2035,12 +2255,14 @@ meaning = "OSPFv2: 8 bytes, a clear-text password for type 1 or key ID, digest l
 
 [[format.fields]]
 name = "Instance ID"
+wireshark = "ospf.instance_id"
 meaning = "OSPFv3: lets several OSPF instances share one link."
 
 [[format]]
 id = "rip"
 name = "Routing Information Protocol"
 keys = ["RIP", "Routing Information Protocol", "RIPv1", "RIPv2", "RIP version 2"]
+wireshark = "rip"
 summary = "An old and simple distance-vector routing protocol: routers broadcast or multicast their whole routing table every 30 seconds, with hop counts up to 15."
 group = "Routing"
 ports = ["udp/520"]
@@ -2062,46 +2284,54 @@ section = "3.6"
 
 [[format.fields]]
 name = "Command"
+wireshark = "rip.command"
 meaning = "1 request, 2 response (periodic and triggered updates are both responses)."
 section = "3.6"
 
 [[format.fields]]
 name = "Version"
+wireshark = "rip.version"
 meaning = "1 or 2."
 section = "3.6"
 
 [[format.fields]]
 name = "Address Family Identifier"
+wireshark = "rip.family"
 aliases = ["Address family", "AFI"]
 meaning = "2 for IPv4 routes; 0xFFFF marks an authentication entry."
 section = "3.6"
 
 [[format.fields]]
 name = "Route Tag"
+wireshark = "rip.route_tag"
 aliases = ["Route tag"]
 meaning = "RIPv2: an attribute kept with the route, often used to mark routes learned from another protocol."
 section = "4.2"
 
 [[format.fields]]
 name = "IP Address"
+wireshark = "rip.ip"
 aliases = ["Destination", "Address"]
 meaning = "Destination network or host."
 section = "3.6"
 
 [[format.fields]]
 name = "Subnet Mask"
+wireshark = "rip.netmask"
 aliases = ["Netmask", "Mask"]
 meaning = "RIPv2: the destination's mask; zero in RIPv1."
 section = "4.3"
 
 [[format.fields]]
 name = "Next Hop"
+wireshark = "rip.next_hop"
 aliases = ["Next hop"]
 meaning = "RIPv2: where to send traffic for this route; 0.0.0.0 means via the router that sent the message."
 section = "4.4"
 
 [[format.fields]]
 name = "Metric"
+wireshark = "rip.metric"
 meaning = "Hop count from 1 to 15; 16 means unreachable (infinity)."
 section = "3.6"
 
@@ -2109,6 +2339,7 @@ section = "3.6"
 id = "ripng"
 name = "RIPng for IPv6"
 keys = ["RIPng", "RIP next generation", "RIPng for IPv6"]
+wireshark = "ripng"
 summary = "The IPv6 version of RIP: the same distance-vector exchange over UDP port 521, with IPv6 prefixes and multicast to FF02::9."
 group = "Routing"
 ports = ["udp/521"]
@@ -2130,33 +2361,39 @@ section = "2.1"
 
 [[format.fields]]
 name = "Command"
+wireshark = "ripng.cmd"
 meaning = "1 request, 2 response."
 section = "2.1"
 
 [[format.fields]]
 name = "Version"
+wireshark = "ripng.version"
 meaning = "1."
 section = "2.1"
 
 [[format.fields]]
 name = "IPv6 prefix"
+wireshark = "ripng.rte.ipv6_prefix"
 aliases = ["Prefix"]
 meaning = "The destination prefix, 16 bytes."
 section = "2.1"
 
 [[format.fields]]
 name = "Route tag"
+wireshark = "ripng.rte.route_tag"
 meaning = "An attribute kept with the route, such as a marker for routes learned elsewhere."
 section = "2.1"
 
 [[format.fields]]
 name = "Prefix len"
+wireshark = "ripng.rte.prefix_length"
 aliases = ["Prefix length"]
 meaning = "Number of significant bits in the prefix, 0 to 128."
 section = "2.1"
 
 [[format.fields]]
 name = "Metric"
+wireshark = "ripng.rte.metric"
 meaning = "Hop count 1 to 15, 16 unreachable; 0xFF marks a next-hop entry rather than a route."
 section = "2.1"
 
@@ -2164,6 +2401,7 @@ section = "2.1"
 id = "bgp"
 name = "Border Gateway Protocol"
 keys = ["BGP", "BGP-4", "Border Gateway Protocol"]
+wireshark = "bgp"
 summary = "The routing protocol of the internet: autonomous systems exchange reachability for address prefixes, with path attributes that drive routing policy, over long-lived TCP sessions."
 group = "Routing"
 ports = ["tcp/179"]
@@ -2185,57 +2423,67 @@ section = "4.1"
 
 [[format.fields]]
 name = "Marker"
+wireshark = "bgp.marker"
 meaning = "16 bytes of 0xFF, kept for compatibility; a quick way to find message boundaries in the stream."
 section = "4.1"
 
 [[format.fields]]
 name = "Length"
+wireshark = "bgp.length"
 meaning = "Bytes in the whole message including the 19-byte header."
 section = "4.1"
 
 [[format.fields]]
 name = "Type"
+wireshark = "bgp.type"
 meaning = "1 OPEN, 2 UPDATE, 3 NOTIFICATION, 4 KEEPALIVE, 5 ROUTE-REFRESH."
 section = "4.1"
 
 [[format.fields]]
 name = "My Autonomous System"
+wireshark = "bgp.open.myas"
 aliases = ["My AS", "AS number"]
 meaning = "OPEN: the sender's 2-byte AS number, or 23456 when its real 4-byte AS is carried in a capability."
 section = "4.2"
 
 [[format.fields]]
 name = "Hold Time"
+wireshark = "bgp.open.holdtime"
 aliases = ["Hold time"]
 meaning = "OPEN: seconds without a message before the session is declared dead; the lower of the two values is used, and keepalives are sent at a third of it."
 section = "4.2"
 
 [[format.fields]]
 name = "BGP Identifier"
+wireshark = "bgp.open.identifier"
 aliases = ["BGP identifier", "Router ID"]
 meaning = "OPEN: the sender's 32-bit router ID."
 section = "4.2"
 
 [[format.fields]]
 name = "Withdrawn Routes"
+wireshark = "bgp.update.withdrawn_routes"
 aliases = ["Withdrawn routes"]
 meaning = "UPDATE: IPv4 prefixes no longer reachable, each a 1-byte prefix length and the significant bytes of the prefix."
 section = "4.3"
 
 [[format.fields]]
 name = "Path Attributes"
+wireshark = "bgp.update.path_attributes"
 aliases = ["Path attributes"]
 meaning = "UPDATE: attributes of the announced routes, such as ORIGIN, AS_PATH, NEXT_HOP, LOCAL_PREF and COMMUNITIES."
 section = "4.3"
 
 [[format.fields]]
 name = "Network Layer Reachability Information"
+wireshark = "bgp.update.nlri"
 aliases = ["NLRI"]
 meaning = "UPDATE: the IPv4 prefixes being announced with these attributes."
 section = "4.3"
 
 [[format.fields]]
 name = "Error code"
+wireshark = "bgp.notify.major_error"
 aliases = ["Error subcode"]
 meaning = "NOTIFICATION: 1 message header error, 2 OPEN error, 3 UPDATE error, 4 hold timer expired, 5 finite state machine error, 6 cease; the subcode narrows it down."
 section = "4.5"
@@ -2244,6 +2492,7 @@ section = "4.5"
 id = "vrrp"
 name = "Virtual Router Redundancy Protocol"
 keys = ["VRRP", "Virtual Router Redundancy Protocol", "VRRPv3", "VRRPv2", "IP protocol 112"]
+wireshark = "vrrp"
 summary = "Lets several routers share a virtual gateway address: the active router multicasts advertisements and a backup takes over the address when they stop."
 group = "Routing"
 ip_protocols = [112]
@@ -2265,27 +2514,32 @@ section = "5.1"
 
 [[format.fields]]
 name = "Version"
+wireshark = "vrrp.version"
 meaning = "High 4 bits of the first byte: 3 for VRRPv3, 2 for VRRPv2."
 section = "5.2.1"
 
 [[format.fields]]
 name = "Type"
+wireshark = "vrrp.type"
 meaning = "Low 4 bits of the first byte: 1, advertisement, is the only type."
 section = "5.2.2"
 
 [[format.fields]]
 name = "Virtual Rtr ID"
+wireshark = "vrrp.virt_rtr_id"
 aliases = ["VRID", "Virtual router ID"]
 meaning = "Which virtual router (1 to 255) the advertisement is for; also the last byte of the virtual MAC address."
 section = "5.2.3"
 
 [[format.fields]]
 name = "Priority"
+wireshark = "vrrp.prio"
 meaning = "Higher wins: 255 for the router that owns the address, 100 by default for backups, 0 when the active router is giving up the role."
 section = "5.2.4"
 
 [[format.fields]]
 name = "IPvX Addr Count"
+wireshark = "vrrp.addr_count"
 aliases = ["Count IP addresses", "Address count"]
 meaning = "Number of virtual addresses listed after the header."
 section = "5.2.5"
@@ -2298,6 +2552,7 @@ section = "5.2.7"
 
 [[format.fields]]
 name = "Checksum"
+wireshark = "vrrp.checksum"
 meaning = "Ones' complement checksum over the VRRP message and an IP pseudo-header."
 section = "5.2.8"
 
@@ -2311,6 +2566,7 @@ section = "5.2.9"
 id = "hsrp"
 name = "Hot Standby Router Protocol"
 keys = ["HSRP", "Hot Standby Router Protocol", "HSRPv2"]
+wireshark = "hsrp"
 summary = "Cisco's first-hop redundancy protocol, the forerunner of VRRP: routers in a standby group elect an active router that answers for a shared virtual IP and MAC address."
 group = "Routing"
 ports = ["udp/1985", "udp/2029"]
@@ -2332,50 +2588,59 @@ section = "5.1"
 
 [[format.fields]]
 name = "Version"
+wireshark = "hsrp.version"
 meaning = "0 for the format in RFC 2281; version 2 uses a different, TLV-based layout."
 section = "5.1"
 
 [[format.fields]]
 name = "Op Code"
+wireshark = "hsrp.opcode"
 aliases = ["Opcode"]
 meaning = "0 hello, 1 coup, 2 resign."
 section = "5.1"
 
 [[format.fields]]
 name = "State"
+wireshark = "hsrp.state"
 meaning = "0 initial, 1 learn, 2 listen, 4 speak, 8 standby, 16 active."
 section = "5.1"
 
 [[format.fields]]
 name = "Hellotime"
+wireshark = "hsrp.hellotime"
 aliases = ["Hello time"]
 meaning = "Seconds between hellos, 3 by default."
 section = "5.1"
 
 [[format.fields]]
 name = "Holdtime"
+wireshark = "hsrp.holdtime"
 aliases = ["Hold time"]
 meaning = "Seconds a hello stays valid, 10 by default."
 section = "5.1"
 
 [[format.fields]]
 name = "Priority"
+wireshark = "hsrp.priority"
 meaning = "Higher wins the active role, with the higher IP address breaking ties; 100 by default."
 section = "5.1"
 
 [[format.fields]]
 name = "Group"
+wireshark = "hsrp.group"
 meaning = "Standby group number, also the last byte of the virtual MAC address."
 section = "5.1"
 
 [[format.fields]]
 name = "Authentication Data"
+wireshark = "hsrp.auth_data"
 aliases = ["Authentication"]
 meaning = "8 bytes of clear-text password, \"cisco\" padded with zeros unless configured."
 section = "5.1"
 
 [[format.fields]]
 name = "Virtual IP Address"
+wireshark = "hsrp.virt_ip"
 aliases = ["Virtual IP"]
 meaning = "The shared gateway address the group answers for."
 section = "5.1"
@@ -2384,6 +2649,7 @@ section = "5.1"
 id = "bfd"
 name = "Bidirectional Forwarding Detection"
 keys = ["BFD", "Bidirectional Forwarding Detection", "BFD Control", "BFD Echo"]
+wireshark = "bfd"
 summary = "A lightweight hello protocol that detects a failed forwarding path between two routers within milliseconds, so that routing protocols such as BGP and OSPF can react quickly."
 group = "Routing"
 ports = ["udp/3784", "udp/3785", "udp/4784"]
@@ -2418,55 +2684,65 @@ rfc = 5883
 
 [[format.fields]]
 name = "Version"
+wireshark = "bfd.version"
 aliases = ["Vers"]
 meaning = "3 bits, currently 1."
 section = "4.1"
 
 [[format.fields]]
 name = "Diagnostic"
+wireshark = "bfd.diag"
 aliases = ["Diag"]
 meaning = "Why the session last changed state: 0 none, 1 detection time expired, 2 echo failed, 3 neighbour signalled down, 5 path down, 7 administratively down."
 section = "4.1"
 
 [[format.fields]]
 name = "State"
+wireshark = "bfd.sta"
 aliases = ["Sta"]
 meaning = "The sender's view of the session: 0 AdminDown, 1 Down, 2 Init, 3 Up."
 section = "4.1"
 
 [[format.fields]]
 name = "Flags"
+wireshark = "bfd.flags"
 meaning = "P poll, F final, C control plane independent, A authentication present, D demand mode, M multipoint (reserved)."
 section = "4.1"
 
 [[format.fields]]
 name = "Detect Mult"
+wireshark = "bfd.detect_time_multiplier"
 aliases = ["Detect multiplier"]
 meaning = "How many intervals without a packet before the session is declared down."
 section = "4.1"
 
 [[format.fields]]
 name = "My Discriminator"
+wireshark = "bfd.my_discriminator"
 meaning = "Non-zero value the sender uses to identify this session."
 section = "4.1"
 
 [[format.fields]]
 name = "Your Discriminator"
+wireshark = "bfd.your_discriminator"
 meaning = "The peer's discriminator as last received; zero if not yet known."
 section = "4.1"
 
 [[format.fields]]
 name = "Desired Min TX Interval"
+wireshark = "bfd.desired_min_tx_interval"
 meaning = "Fastest interval, in microseconds, at which the sender would like to transmit."
 section = "4.1"
 
 [[format.fields]]
 name = "Required Min RX Interval"
+wireshark = "bfd.required_min_rx_interval"
 meaning = "Fastest interval, in microseconds, at which the sender can accept packets."
 section = "4.1"
 
 [[format.fields]]
 name = "Required Min Echo RX Interval"
+wireshark = "bfd.required_min_echo_interval"
 meaning = "Fastest echo interval the sender can loop back, in microseconds; zero means no echo function."
 section = "4.1"
 
@@ -2474,6 +2750,7 @@ section = "4.1"
 id = "pim"
 name = "Protocol Independent Multicast"
 keys = ["PIM", "Protocol Independent Multicast", "PIM-SM", "PIMv2", "IP protocol 103"]
+wireshark = "pim"
 summary = "The protocol routers use to build multicast distribution trees between them, joining towards a rendezvous point or directly towards a source as receivers appear."
 group = "Routing"
 ip_protocols = [103]
@@ -2495,17 +2772,20 @@ section = "4.9"
 
 [[format.fields]]
 name = "PIM Ver"
+wireshark = "pim.version"
 aliases = ["Version"]
 meaning = "4 bits, 2."
 section = "4.9"
 
 [[format.fields]]
 name = "Type"
+wireshark = "pim.type"
 meaning = "0 Hello, 1 Register, 2 Register-Stop, 3 Join/Prune, 4 Bootstrap, 5 Assert, 6 Graft, 7 Graft-Ack, 8 Candidate-RP-Advertisement."
 section = "4.9"
 
 [[format.fields]]
 name = "Checksum"
+wireshark = "pim.cksum"
 meaning = "Ones' complement checksum over the PIM message (for Register, only the header); for IPv6 it also covers a pseudo-header."
 section = "4.9"
 
@@ -2525,6 +2805,7 @@ section = "4.9.1"
 id = "eigrp"
 name = "Enhanced Interior Gateway Routing Protocol"
 keys = ["EIGRP", "Enhanced Interior Gateway Routing Protocol", "IP protocol 88"]
+wireshark = "eigrp"
 summary = "Cisco's advanced distance-vector routing protocol, published as an informational RFC: neighbours exchange routes with composite metrics and use the DUAL algorithm to stay loop-free."
 group = "Routing"
 ip_protocols = [88]
@@ -2546,44 +2827,52 @@ section = "6.5"
 
 [[format.fields]]
 name = "Header Version"
+wireshark = "eigrp.version"
 aliases = ["Version"]
 meaning = "2."
 section = "6.5"
 
 [[format.fields]]
 name = "Opcode"
+wireshark = "eigrp.opcode"
 meaning = "1 update, 3 query, 4 reply, 5 hello (or acknowledgement), 10 SIA-query, 11 SIA-reply."
 section = "6.5"
 
 [[format.fields]]
 name = "Checksum"
+wireshark = "eigrp.checksum"
 meaning = "Ones' complement checksum over the whole EIGRP packet."
 section = "6.5"
 
 [[format.fields]]
 name = "Flags"
+wireshark = "eigrp.flags"
 meaning = "0x01 init (first update to a new neighbour), 0x02 conditional receive, 0x04 restart, 0x08 end of table."
 section = "6.5"
 
 [[format.fields]]
 name = "Sequence Number"
+wireshark = "eigrp.seq"
 aliases = ["Sequence"]
 meaning = "Sequence number of reliably delivered packets; 0 for hellos."
 section = "6.5"
 
 [[format.fields]]
 name = "Acknowledgment Number"
+wireshark = "eigrp.ack"
 aliases = ["Acknowledgement number", "Ack"]
 meaning = "The last sequence number received from this neighbour; a hello carrying one is an acknowledgement."
 section = "6.5"
 
 [[format.fields]]
 name = "Virtual Router ID"
+wireshark = "eigrp.vrid"
 meaning = "0 for unicast routing, 1 for multicast topologies."
 section = "6.5"
 
 [[format.fields]]
 name = "Autonomous System Number"
+wireshark = "eigrp.as"
 aliases = ["AS", "Autonomous system"]
 meaning = "The EIGRP process number; neighbours must agree on it."
 section = "6.5"
@@ -2592,6 +2881,7 @@ section = "6.5"
 id = "isis"
 name = "Intermediate System to Intermediate System"
 keys = ["IS-IS", "ISIS", "Intermediate System to Intermediate System", "Integrated IS-IS"]
+wireshark = "isis"
 summary = "A link-state interior routing protocol from the OSI world, favoured by large service providers; it runs directly over the link layer rather than over IP."
 group = "Routing"
 organisation = """
@@ -2618,38 +2908,46 @@ section = "5"
 
 [[format.fields]]
 name = "Intradomain Routing Protocol Discriminator"
+wireshark = "isis.irpd"
 aliases = ["NLPID", "Discriminator"]
 meaning = "Always 0x83 for IS-IS."
 
 [[format.fields]]
 name = "Length Indicator"
+wireshark = "isis.len"
 aliases = ["Header length"]
 meaning = "Bytes in the common and PDU-specific fixed header, before the TLVs."
 
 [[format.fields]]
 name = "ID Length"
+wireshark = "isis.sysid_len"
 aliases = ["System ID length"]
 meaning = "Length of system IDs; 0 means the usual 6 bytes."
 
 [[format.fields]]
 name = "PDU Type"
+wireshark = "isis.type"
 aliases = ["PDU type"]
 meaning = "15/16 level 1/2 LAN hello, 17 point-to-point hello, 18/20 level 1/2 LSP, 24/25 level 1/2 CSNP, 26/27 level 1/2 PSNP."
 
 [[format.fields]]
 name = "Maximum Area Addresses"
+wireshark = "isis.max_area_adr"
 meaning = "How many area addresses the router supports; 0 means 3."
 
 [[format.fields]]
 name = "LSP ID"
+wireshark = "isis.lsp.lsp_id"
 meaning = "System ID, pseudonode number and fragment number identifying a link state PDU."
 
 [[format.fields]]
 name = "Sequence Number"
+wireshark = "isis.lsp.sequence_number"
 meaning = "LSPs: increases with each new version of the LSP, so the newest wins."
 
 [[format.fields]]
 name = "Remaining Lifetime"
+wireshark = "isis.lsp.remaining_life"
 meaning = "LSPs: seconds before the LSP expires; a purge sets it to zero."
 
 [[format.fields]]
@@ -2664,6 +2962,7 @@ meaning = "1-byte type, 1-byte length, value: 1 area addresses, 22 extended IS r
 id = "dhcp"
 name = "Dynamic Host Configuration Protocol"
 keys = ["DHCP", "Dynamic Host Configuration Protocol", "DHCPv4", "BOOTP", "Bootstrap Protocol"]
+wireshark = "dhcp"
 summary = "How IPv4 hosts get an address, gateway, DNS servers and other settings when they join a network; an extension of the older BOOTP format."
 group = "Addressing and naming"
 ports = ["udp/67", "udp/68"]
@@ -2699,95 +2998,111 @@ section = "3"
 
 [[format.fields]]
 name = "op"
+wireshark = "dhcp.type"
 aliases = ["Message type", "Op"]
 meaning = "1 BOOTREQUEST (client to server), 2 BOOTREPLY (server to client)."
 section = "2"
 
 [[format.fields]]
 name = "htype"
+wireshark = "dhcp.hw.type"
 aliases = ["Hardware type"]
 meaning = "Hardware address type from the ARP registry: 1 for Ethernet."
 section = "2"
 
 [[format.fields]]
 name = "hlen"
+wireshark = "dhcp.hw.len"
 aliases = ["Hardware address length"]
 meaning = "Length of the hardware address, 6 for Ethernet."
 section = "2"
 
 [[format.fields]]
 name = "hops"
+wireshark = "dhcp.hops"
 aliases = ["Hops"]
 meaning = "Set to zero by the client and increased by each relay agent."
 section = "2"
 
 [[format.fields]]
 name = "xid"
+wireshark = "dhcp.id"
 aliases = ["Transaction ID"]
 meaning = "Random number chosen by the client to match replies to its requests."
 section = "2"
 
 [[format.fields]]
 name = "secs"
+wireshark = "dhcp.secs"
 aliases = ["Seconds elapsed"]
 meaning = "Seconds since the client began acquiring or renewing an address."
 section = "2"
 
 [[format.fields]]
 name = "flags"
+wireshark = "dhcp.flags"
 aliases = ["Flags", "Bootp flags"]
 meaning = "The top bit is the broadcast flag: the client cannot receive unicast before it is configured, so the reply must be broadcast."
 section = "2"
 
 [[format.fields]]
 name = "ciaddr"
+wireshark = "dhcp.ip.client"
 aliases = ["Client IP address"]
 meaning = "The client's current address, filled in only when it already has one (renewing, rebinding, INFORM)."
 section = "2"
 
 [[format.fields]]
 name = "yiaddr"
+wireshark = "dhcp.ip.your"
 aliases = ["Your (client) IP address", "Your IP address"]
 meaning = "The address the server is offering or assigning to the client."
 section = "2"
 
 [[format.fields]]
 name = "siaddr"
+wireshark = "dhcp.ip.server"
 aliases = ["Next server IP address", "Server IP address"]
 meaning = "The server to use in the next step of booting, such as a TFTP server for network boot."
 section = "2"
 
 [[format.fields]]
 name = "giaddr"
+wireshark = "dhcp.ip.relay"
 aliases = ["Relay agent IP address", "Gateway IP address"]
 meaning = "The relay agent's address when the message was relayed; servers use it to choose the subnet to assign from."
 section = "2"
 
 [[format.fields]]
 name = "chaddr"
+wireshark = "dhcp.hw.addr"
 aliases = ["Client hardware address", "Client MAC address"]
 meaning = "16 bytes holding the client's hardware address (the first hlen bytes count)."
 section = "2"
 
 [[format.fields]]
 name = "sname"
+wireshark = "dhcp.server"
 aliases = ["Server host name"]
 meaning = "64 bytes: optional server host name, or overflow options."
 section = "2"
 
 [[format.fields]]
 name = "file"
+wireshark = "dhcp.file"
 aliases = ["Boot file name"]
 meaning = "128 bytes: boot file name for network booting, or overflow options."
 section = "2"
 
 [[format.fields]]
 name = "Magic cookie"
+wireshark = "dhcp.cookie"
 meaning = "0x63825363 at byte 236; marks the start of the options."
 section = "3"
 
 [[format.fields]]
 name = "Option *"
+wireshark = "dhcp.option.type"
 aliases = ["options"]
 meaning = "1-byte code, 1-byte length, value: 53 message type, 1 subnet mask, 3 router, 6 DNS servers, 12 host name, 50 requested address, 51 lease time, 54 server identifier, 55 parameter request list, 61 client identifier, 82 relay agent information; 0 pad and 255 end are single bytes."
 
@@ -2795,6 +3110,7 @@ meaning = "1-byte code, 1-byte length, value: 53 message type, 1 subnet mask, 3 
 id = "dhcpv6"
 name = "Dynamic Host Configuration Protocol for IPv6"
 keys = ["DHCPv6", "DHCP for IPv6", "Dynamic Host Configuration Protocol for IPv6"]
+wireshark = "dhcpv6"
 summary = "Assigns IPv6 addresses, delegated prefixes and configuration such as DNS servers to hosts and routers; it works alongside router advertisements rather than replacing them."
 group = "Addressing and naming"
 ports = ["udp/546", "udp/547"]
@@ -2816,36 +3132,42 @@ section = "8"
 
 [[format.fields]]
 name = "msg-type"
+wireshark = "dhcpv6.msgtype"
 aliases = ["Message type"]
 meaning = "1 SOLICIT, 2 ADVERTISE, 3 REQUEST, 4 CONFIRM, 5 RENEW, 6 REBIND, 7 REPLY, 8 RELEASE, 9 DECLINE, 10 RECONFIGURE, 11 INFORMATION-REQUEST, 12 RELAY-FORW, 13 RELAY-REPL."
 section = "7.3"
 
 [[format.fields]]
 name = "transaction-id"
+wireshark = "dhcpv6.xid"
 aliases = ["Transaction ID"]
 meaning = "3 bytes chosen by the client to match replies to its requests."
 section = "8"
 
 [[format.fields]]
 name = "hop-count"
+wireshark = "dhcpv6.hopcount"
 aliases = ["Hop count"]
 meaning = "Relay messages: how many relays have handled the message."
 section = "9"
 
 [[format.fields]]
 name = "link-address"
+wireshark = "dhcpv6.linkaddr"
 aliases = ["Link address"]
 meaning = "Relay messages: an address on the link the client is on, telling the server which prefix to assign from."
 section = "9"
 
 [[format.fields]]
 name = "peer-address"
+wireshark = "dhcpv6.peeraddr"
 aliases = ["Peer address"]
 meaning = "Relay messages: the address of the client or relay the message came from."
 section = "9"
 
 [[format.fields]]
 name = "Option *"
+wireshark = "dhcpv6.option.type"
 aliases = ["options"]
 meaning = "2-byte code, 2-byte length, value: 1 client ID, 2 server ID, 3 IA_NA, 5 IA address, 6 option request, 8 elapsed time, 9 relay message, 13 status code, 14 rapid commit, 23 DNS servers, 25 IA_PD, 26 IA prefix."
 section = "21.1"
@@ -2854,6 +3176,7 @@ section = "21.1"
 id = "llmnr"
 name = "Link-Local Multicast Name Resolution"
 keys = ["LLMNR", "Link-Local Multicast Name Resolution", "Link-local Multicast Name Resolution"]
+wireshark = "llmnr"
 summary = "A DNS-like protocol Windows uses to resolve single-label names on the local link when DNS cannot; a frequent target of name-poisoning attacks, and so worth noticing in a capture."
 group = "Addressing and naming"
 ports = ["udp/5355", "tcp/5355"]
@@ -2875,41 +3198,48 @@ section = "2.1.1"
 
 [[format.fields]]
 name = "ID"
+wireshark = "dns.id"
 aliases = ["Transaction ID"]
 meaning = "Chosen by the sender and copied into the response."
 section = "2.1.1"
 
 [[format.fields]]
 name = "QR"
+wireshark = "dns.flags.response"
 meaning = "0 query, 1 response."
 section = "2.1.1"
 
 [[format.fields]]
 name = "C"
+wireshark = "dns.flags.conflict"
 aliases = ["Conflict"]
 meaning = "Conflict bit: in a query, the sender has had more than one response to an earlier query for the name; in a response, the name is not considered unique."
 section = "2.1.1"
 
 [[format.fields]]
 name = "TC"
+wireshark = "dns.flags.truncated"
 aliases = ["Truncated"]
 meaning = "The response did not fit in UDP; repeat the query over TCP."
 section = "2.1.1"
 
 [[format.fields]]
 name = "T"
+wireshark = "dns.flags.tentative"
 aliases = ["Tentative"]
 meaning = "The responder has not yet confirmed that the name is unique."
 section = "2.1.1"
 
 [[format.fields]]
 name = "QDCOUNT"
+wireshark = "dns.count.queries"
 aliases = ["Questions"]
 meaning = "Number of questions, 1 in queries."
 section = "2.1.1"
 
 [[format.fields]]
 name = "ANCOUNT"
+wireshark = "dns.count.answers"
 aliases = ["Answers"]
 meaning = "Number of answer records."
 section = "2.1.1"
@@ -2918,6 +3248,7 @@ section = "2.1.1"
 id = "nbns"
 name = "NetBIOS Name Service"
 keys = ["NBNS", "NetBIOS Name Service", "NetBIOS-NS", "WINS", "NetBIOS name service"]
+wireshark = "nbns"
 summary = "The name registration and lookup service of NetBIOS over TCP/IP: Windows hosts broadcast or ask a WINS server to map 16-byte NetBIOS names to IPv4 addresses."
 group = "Addressing and naming"
 ports = ["udp/137", "tcp/137"]
@@ -2945,12 +3276,14 @@ rfc = 1001
 
 [[format.fields]]
 name = "NAME_TRN_ID"
+wireshark = "nbns.id"
 aliases = ["Transaction ID"]
 meaning = "Chosen by the requester and copied into the response."
 section = "4.2.1.1"
 
 [[format.fields]]
 name = "OPCODE"
+wireshark = "nbns.flags.opcode"
 aliases = ["Opcode"]
 meaning = "Response bit, then 0 query, 5 registration, 6 release, 7 WACK, 8 refresh."
 section = "4.2.1.1"
@@ -2963,24 +3296,28 @@ section = "4.2.1.1"
 
 [[format.fields]]
 name = "RCODE"
+wireshark = "nbns.flags.rcode"
 aliases = ["Result code"]
 meaning = "0 success; errors such as 3 name not found, 6 name active (already registered by someone else) and 7 name in conflict."
 section = "4.2.1.1"
 
 [[format.fields]]
 name = "QUESTION_NAME"
+wireshark = "nbns.name"
 aliases = ["Name"]
 meaning = "The 16-byte NetBIOS name encoded as 32 letters A to P, with its suffix byte last."
 section = "4.2.1.2"
 
 [[format.fields]]
 name = "QUESTION_TYPE"
+wireshark = "nbns.type"
 aliases = ["Type"]
 meaning = "0x20 NB (name to address), 0x21 NBSTAT (node status)."
 section = "4.2.1.2"
 
 [[format.fields]]
 name = "NB_FLAGS"
+wireshark = "nbns.nb_flags"
 meaning = "In NB records: group or unique name and the node type (B, P, M or H node), followed by the IPv4 address."
 section = "4.2.2"
 
@@ -2988,6 +3325,7 @@ section = "4.2.2"
 id = "nbds"
 name = "NetBIOS Datagram Service"
 keys = ["NBDS", "NetBIOS Datagram Service", "NetBIOS-DGM", "NetBIOS datagram"]
+wireshark = "nbdgm"
 summary = "Connectionless NetBIOS messages over UDP port 138; in practice the carrier of Windows browser announcements and other mailslot messages broadcast on a subnet."
 group = "Addressing and naming"
 ports = ["udp/138"]
@@ -3009,42 +3347,49 @@ section = "4.4.1"
 
 [[format.fields]]
 name = "MSG_TYPE"
+wireshark = "nbdgm.type"
 aliases = ["Message type"]
 meaning = "0x10 direct unique, 0x11 direct group, 0x12 broadcast, 0x13 error, 0x14 query request, 0x15 positive and 0x16 negative query response."
 section = "4.4.1"
 
 [[format.fields]]
 name = "FLAGS"
+wireshark = "nbdgm.flags"
 aliases = ["Flags"]
 meaning = "Source node type (B, P or M) and the F (first) and M (more) fragment bits."
 section = "4.4.1"
 
 [[format.fields]]
 name = "DGM_ID"
+wireshark = "nbdgm.dgram_id"
 aliases = ["Datagram ID"]
 meaning = "Identifies the datagram so that its fragments can be matched."
 section = "4.4.1"
 
 [[format.fields]]
 name = "SOURCE_IP"
+wireshark = "nbdgm.src.ip"
 aliases = ["Source IP"]
 meaning = "IPv4 address of the original sender, which may differ from the IP source when a server forwarded it."
 section = "4.4.1"
 
 [[format.fields]]
 name = "SOURCE_PORT"
+wireshark = "nbdgm.src.port"
 aliases = ["Source port"]
 meaning = "UDP port of the original sender, normally 138."
 section = "4.4.1"
 
 [[format.fields]]
 name = "DGM_LENGTH"
+wireshark = "nbdgm.dgram_len"
 aliases = ["Datagram length"]
 meaning = "Bytes after the header: the names and user data."
 section = "4.4.2"
 
 [[format.fields]]
 name = "PACKET_OFFSET"
+wireshark = "nbdgm.pkt_offset"
 aliases = ["Packet offset"]
 meaning = "Where this fragment's user data belongs in the whole datagram."
 section = "4.4.2"
@@ -3053,6 +3398,7 @@ section = "4.4.2"
 id = "ssdp"
 name = "Simple Service Discovery Protocol"
 keys = ["SSDP", "Simple Service Discovery Protocol", "UPnP discovery"]
+wireshark = "ssdp"
 summary = "UPnP's discovery protocol: devices announce themselves and answer searches with HTTP-style text messages multicast over UDP, pointing to an XML description of the device."
 group = "Addressing and naming"
 ports = ["udp/1900"]
@@ -3078,6 +3424,7 @@ meaning = "M-SEARCH * HTTP/1.1, NOTIFY * HTTP/1.1, or a HTTP/1.1 200 OK status l
 
 [[format.fields]]
 name = "HOST"
+wireshark = "http.host"
 meaning = "239.255.255.250:1900 (or the IPv6 multicast address) for multicast messages."
 
 [[format.fields]]
@@ -3110,16 +3457,19 @@ meaning = "Identifies the device or service, normally uuid:<device UUID> followe
 
 [[format.fields]]
 name = "LOCATION"
+wireshark = "http.location"
 aliases = ["Location"]
 meaning = "URL of the device description XML, which names the manufacturer, model and services."
 
 [[format.fields]]
 name = "SERVER"
+wireshark = "http.server"
 aliases = ["Server"]
 meaning = "Operating system, UPnP version and product, such as \"Linux/5.10 UPnP/2.0 product/1.0\"."
 
 [[format.fields]]
 name = "CACHE-CONTROL"
+wireshark = "http.cache_control"
 aliases = ["Cache-Control"]
 meaning = "max-age: seconds the announcement stays valid."
 
@@ -3131,6 +3481,7 @@ meaning = "max-age: seconds the announcement stays valid."
 id = "snmp"
 name = "Simple Network Management Protocol"
 keys = ["SNMP", "Simple Network Management Protocol", "SNMPv1", "SNMPv2c", "SNMPv3", "SNMP trap"]
+wireshark = "snmp"
 summary = "How management stations read and set counters and settings on routers, switches, printers and servers, and how devices send traps and notifications about events."
 group = "Network management"
 ports = ["udp/161", "udp/162"]
@@ -3172,51 +3523,60 @@ rfc = 1157
 
 [[format.fields]]
 name = "version"
+wireshark = "snmp.version"
 aliases = ["Version"]
 meaning = "0 SNMPv1, 1 SNMPv2c, 3 SNMPv3."
 
 [[format.fields]]
 name = "community"
+wireshark = "snmp.community"
 aliases = ["Community"]
 meaning = "v1 and v2c: an OCTET STRING that serves as a clear-text password; often \"public\" for read access."
 
 [[format.fields]]
 name = "PDU type"
+wireshark = "snmp.data"
 aliases = ["data", "PDU"]
 meaning = "0xA0 GetRequest, 0xA1 GetNextRequest, 0xA2 Response, 0xA3 SetRequest, 0xA4 v1 Trap, 0xA5 GetBulkRequest, 0xA6 InformRequest, 0xA7 SNMPv2-Trap, 0xA8 Report."
 section = "3"
 
 [[format.fields]]
 name = "request-id"
+wireshark = "snmp.request_id"
 aliases = ["Request ID"]
 meaning = "Pairs a response with its request."
 section = "3"
 
 [[format.fields]]
 name = "error-status"
+wireshark = "snmp.error_status"
 aliases = ["Error status"]
 meaning = "0 noError; otherwise why the request failed, such as 2 noSuchName (v1), 6 noAccess or 17 notWritable."
 section = "3"
 
 [[format.fields]]
 name = "error-index"
+wireshark = "snmp.error_index"
 aliases = ["Error index"]
 meaning = "Which variable binding, counted from 1, caused the error."
 section = "3"
 
 [[format.fields]]
 name = "variable-bindings"
+wireshark = "snmp.variable_bindings"
 aliases = ["Variable bindings", "varbind *"]
 meaning = "A list of (object identifier, value) pairs; in requests the values are NULL, and the special values noSuchObject, noSuchInstance and endOfMibView mark missing data."
 section = "3"
 
 [[format.fields]]
 name = "msgGlobalData"
+wireshark = "snmp.msgGlobalData_element"
 aliases = ["msgID", "msgFlags", "msgSecurityModel"]
 meaning = "SNMPv3 header: message ID, maximum message size, flags (auth, priv, reportable) and security model (3 for USM)."
 
 [[format.fields]]
 name = "msgSecurityParameters"
+wireshark = "snmp.msgSecurityParameters"
 aliases = ["Security parameters"]
 meaning = "SNMPv3: for USM, the authoritative engine ID, boots and time, user name and the authentication and privacy parameters."
 
@@ -3224,6 +3584,7 @@ meaning = "SNMPv3: for USM, the authoritative engine ID, boots and time, user na
 id = "syslog"
 name = "Syslog"
 keys = ["Syslog", "syslog protocol", "BSD syslog"]
+wireshark = "syslog"
 summary = "The plain-text log transport of Unix systems and network devices: each message carries a facility and severity, a timestamp, the host, the application and free text."
 group = "Network management"
 ports = ["udp/514", "tcp/6514", "udp/6514"]
@@ -3271,48 +3632,56 @@ section = "6.2.1"
 
 [[format.fields]]
 name = "VERSION"
+wireshark = "syslog.version"
 aliases = ["Version"]
 meaning = "1 for the RFC 5424 format; absent in BSD-style messages."
 section = "6.2.2"
 
 [[format.fields]]
 name = "TIMESTAMP"
+wireshark = "syslog.timestamp"
 aliases = ["Timestamp"]
 meaning = "ISO 8601 date and time with optional fraction and time zone; BSD messages use \"Mmm dd hh:mm:ss\" with no year or zone."
 section = "6.2.3"
 
 [[format.fields]]
 name = "HOSTNAME"
+wireshark = "syslog.hostname"
 aliases = ["Host name", "Hostname"]
 meaning = "The machine that produced the message: a fully qualified name, a host name or an IP address."
 section = "6.2.4"
 
 [[format.fields]]
 name = "APP-NAME"
+wireshark = "syslog.appname"
 aliases = ["App name", "Tag"]
 meaning = "The program that logged the message, such as sshd."
 section = "6.2.5"
 
 [[format.fields]]
 name = "PROCID"
+wireshark = "syslog.procid"
 aliases = ["Process ID"]
 meaning = "Usually the process ID of the logging program."
 section = "6.2.6"
 
 [[format.fields]]
 name = "MSGID"
+wireshark = "syslog.msgid"
 aliases = ["Message ID"]
 meaning = "A type for the message, chosen by the application."
 section = "6.2.7"
 
 [[format.fields]]
 name = "STRUCTURED-DATA"
+wireshark = "syslog.sd"
 aliases = ["Structured data"]
 meaning = "Zero or more [id name=\"value\" ...] elements, or \"-\"."
 section = "6.3"
 
 [[format.fields]]
 name = "MSG"
+wireshark = "syslog.msg"
 aliases = ["Message"]
 meaning = "The free-text message, UTF-8 when it starts with a byte order mark."
 section = "6.4"
@@ -3321,6 +3690,7 @@ section = "6.4"
 id = "tftp"
 name = "Trivial File Transfer Protocol"
 keys = ["TFTP", "Trivial File Transfer Protocol"]
+wireshark = "tftp"
 summary = "A minimal file transfer protocol over UDP with no authentication, used for network booting (PXE), loading firmware and backing up device configurations."
 group = "Network management"
 ports = ["udp/69"]
@@ -3348,6 +3718,7 @@ rfc = 2347
 
 [[format.fields]]
 name = "Opcode"
+wireshark = "tftp.opcode"
 meaning = "1 RRQ, 2 WRQ, 3 DATA, 4 ACK, 5 ERROR, 6 OACK."
 section = "5"
 
@@ -3359,28 +3730,33 @@ section = "5"
 
 [[format.fields]]
 name = "Mode"
+wireshark = "tftp.type"
 meaning = "Requests: \"netascii\" (text with CR LF line endings), \"octet\" (binary) or the obsolete \"mail\", zero-terminated."
 section = "5"
 
 [[format.fields]]
 name = "Block #"
+wireshark = "tftp.block"
 aliases = ["Block number", "Block"]
 meaning = "DATA and ACK: the block number, starting at 1 and wrapping at 65535 on large transfers."
 section = "5"
 
 [[format.fields]]
 name = "Data"
+wireshark = "tftp.data"
 meaning = "Up to 512 bytes (or the negotiated blksize); a shorter block is the last."
 section = "5"
 
 [[format.fields]]
 name = "ErrorCode"
+wireshark = "tftp.error.code"
 aliases = ["Error code"]
 meaning = "0 not defined, 1 file not found, 2 access violation, 3 disk full, 4 illegal operation, 5 unknown transfer ID, 6 file already exists, 7 no such user, 8 option negotiation refused."
 section = "5"
 
 [[format.fields]]
 name = "ErrMsg"
+wireshark = "tftp.error.message"
 aliases = ["Error message"]
 meaning = "Human-readable error text, zero-terminated."
 section = "5"
@@ -3389,6 +3765,7 @@ section = "5"
 id = "stun"
 name = "Session Traversal Utilities for NAT"
 keys = ["STUN", "Session Traversal Utilities for NAT", "TURN", "Traversal Using Relays around NAT", "STUN/TURN"]
+wireshark = "stun"
 summary = "Lets a host behind NAT learn its public address and keep NAT bindings open, and (with TURN) relay media through a server; the connectivity machinery of WebRTC, VoIP and video calling."
 group = "Addressing and naming"
 ports = ["udp/3478", "tcp/3478", "udp/5349", "tcp/5349"]
@@ -3417,24 +3794,28 @@ section = "12.4"
 
 [[format.fields]]
 name = "Message Type"
+wireshark = "stun.type"
 aliases = ["Message type"]
 meaning = "Method and class: 0x0001 Binding request, 0x0101 Binding success, 0x0111 Binding error; TURN 0x0003 Allocate request, 0x0103 Allocate success, 0x0016 Send indication, 0x0017 Data indication."
 section = "5"
 
 [[format.fields]]
 name = "Message Length"
+wireshark = "stun.length"
 aliases = ["Message length", "Length"]
 meaning = "Bytes of attributes after the 20-byte header; always a multiple of four."
 section = "5"
 
 [[format.fields]]
 name = "Magic Cookie"
+wireshark = "stun.cookie"
 aliases = ["Magic cookie"]
 meaning = "Always 0x2112A442; distinguishes STUN from other traffic on the same port."
 section = "5"
 
 [[format.fields]]
 name = "Transaction ID"
+wireshark = "stun.id"
 meaning = "12 random bytes chosen by the client, matching responses to requests."
 section = "5"
 
@@ -3445,15 +3826,18 @@ section = "14.2"
 
 [[format.fields]]
 name = "MESSAGE-INTEGRITY"
+wireshark = "stun.att.hmac"
 meaning = "HMAC-SHA1 over the message up to this attribute, keyed with the short- or long-term credential."
 section = "14.5"
 
 [[format.fields]]
 name = "FINGERPRINT"
+wireshark = "stun.att.crc32"
 meaning = "CRC-32 of the message XORed with 0x5354554E, helping receivers tell STUN apart from other protocols on the port."
 section = "14.7"
 
 [[format.fields]]
 name = "Channel Number"
+wireshark = "stun.channel"
 aliases = ["ChannelData"]
 meaning = "TURN ChannelData: a channel number 0x4000 to 0x4FFF bound with ChannelBind, then a 2-byte length and the relayed data."

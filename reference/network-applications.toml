@@ -19,6 +19,7 @@
 id = "smtp"
 name = "Simple Mail Transfer Protocol"
 keys = ["SMTP", "Simple Mail Transfer Protocol", "ESMTP", "Extended SMTP", "SMTP submission"]
+wireshark = "smtp"
 summary = "The text protocol that moves email between mail servers and from mail clients to their outgoing server: the client names the sender and recipients, then sends the message itself."
 group = "Mail"
 ports = ["tcp/25", "tcp/587", "tcp/465"]
@@ -53,11 +54,13 @@ rfc = 8314
 
 [[format.fields]]
 name = "Command"
+wireshark = "smtp.req.command"
 meaning = "A verb such as EHLO, MAIL, RCPT, DATA, RSET, NOOP, QUIT, STARTTLS or AUTH, followed by its arguments. Verbs are case-insensitive."
 section = "4.1"
 
 [[format.fields]]
 name = "Reply code"
+wireshark = "smtp.response.code"
 aliases = ["Response code"]
 meaning = "Three digits: 220 service ready, 250 completed, 354 start message input, 421 closing, 450 or 451 try later, 530 authentication required, 550 mailbox unavailable, 554 transaction failed."
 section = "4.2"
@@ -89,6 +92,7 @@ section = "4.1.1.1"
 id = "pop3"
 name = "Post Office Protocol version 3"
 keys = ["POP3", "POP", "Post Office Protocol", "Post Office Protocol version 3", "Post Office Protocol - Version 3"]
+wireshark = "pop"
 summary = "A simple text protocol for downloading mail from a mailbox: the client logs in, lists the messages, fetches the ones it wants and usually deletes them from the server."
 group = "Mail"
 ports = ["tcp/110", "tcp/995"]
@@ -115,11 +119,13 @@ rfc = 8314
 
 [[format.fields]]
 name = "Command"
+wireshark = "pop.request.command"
 meaning = "USER, PASS, APOP, STAT, LIST, RETR, DELE, NOOP, RSET, TOP, UIDL, CAPA, STLS or QUIT, with arguments separated by spaces."
 section = "9"
 
 [[format.fields]]
 name = "Status indicator"
+wireshark = "pop.response.indicator"
 aliases = ["Response"]
 meaning = "\"+OK\" when the command succeeded, \"-ERR\" when it did not; the rest of the line is human-readable."
 section = "3"
@@ -138,6 +144,7 @@ section = "5"
 id = "imap"
 name = "Internet Message Access Protocol"
 keys = ["IMAP", "IMAP4", "IMAP4rev1", "IMAP4rev2", "Internet Message Access Protocol"]
+wireshark = "imap"
 summary = "The text protocol for working with mail kept on a server: clients open mailboxes, search, fetch parts of messages and set flags, with many commands in flight at once."
 group = "Mail"
 ports = ["tcp/143", "tcp/993"]
@@ -166,11 +173,13 @@ rfc = 8314
 
 [[format.fields]]
 name = "Tag"
+wireshark = "imap.tag"
 meaning = "A short alphanumeric prefix the client puts on each command; the server's tagged completion carries the same tag."
 section = "2.2.1"
 
 [[format.fields]]
 name = "Command"
+wireshark = "imap.request.command"
 meaning = "CAPABILITY, LOGIN, AUTHENTICATE, STARTTLS, SELECT, EXAMINE, LIST, FETCH, STORE, SEARCH, COPY, MOVE, EXPUNGE, IDLE, LOGOUT and others; UID in front makes message numbers unique identifiers."
 section = "6"
 
@@ -181,6 +190,7 @@ section = "7"
 
 [[format.fields]]
 name = "Status response"
+wireshark = "imap.response.status"
 aliases = ["Completion"]
 meaning = "OK, NO or BAD after the tag, optionally with a response code in square brackets such as [READ-WRITE] or [AUTHENTICATIONFAILED]."
 section = "7.1"
@@ -198,6 +208,7 @@ section = "4.3"
 id = "ftp"
 name = "File Transfer Protocol (control connection)"
 keys = ["FTP", "File Transfer Protocol", "FTP control", "FTPS"]
+wireshark = "ftp"
 summary = "The original internet file transfer protocol: commands and replies travel as text on a control connection, while each file or directory listing goes over a separate data connection."
 group = "File sharing and remote access"
 ports = ["tcp/21", "tcp/990"]
@@ -233,11 +244,13 @@ rfc = 4217
 
 [[format.fields]]
 name = "Command"
+wireshark = "ftp.request.command"
 meaning = "USER, PASS, ACCT, CWD, PWD, TYPE, MODE, PORT, PASV, EPRT, EPSV, RETR, STOR, LIST, NLST, DELE, MKD, RNFR, RNTO, SIZE, FEAT, AUTH, QUIT and others, case-insensitive."
 section = "4.1"
 
 [[format.fields]]
 name = "Reply code"
+wireshark = "ftp.response.code"
 aliases = ["Response code"]
 meaning = "Three digits: 150 opening data connection, 200 OK, 220 ready, 226 transfer complete, 227 entering passive mode, 230 logged in, 331 password needed, 425 cannot open data connection, 530 not logged in, 550 file unavailable."
 section = "4.2"
@@ -257,6 +270,7 @@ section = "3.1.1"
 id = "ftp-data"
 name = "FTP data connection"
 keys = ["FTP-DATA", "FTP data", "FTP data connection"]
+wireshark = "ftp-data"
 summary = "The separate TCP connection over which FTP sends one file or directory listing, with no framing of its own."
 group = "File sharing and remote access"
 ports = ["tcp/20", "tcp/989"]
@@ -279,6 +293,7 @@ section = "3"
 id = "telnet"
 name = "Telnet"
 keys = ["Telnet", "TELNET", "Telnet Protocol"]
+wireshark = "telnet"
 summary = "A bidirectional terminal session over TCP: keystrokes go one way and screen output the other, with in-band commands to negotiate terminal options."
 group = "File sharing and remote access"
 ports = ["tcp/23"]
@@ -313,6 +328,7 @@ meaning = "The byte 0xFF, which marks the next byte as a command rather than dat
 
 [[format.fields]]
 name = "Command"
+wireshark = "telnet.cmd"
 meaning = "The byte after IAC: 240 SE, 241 NOP, 243 break, 244 interrupt process, 246 are you there, 250 SB, 251 WILL, 252 WON'T, 253 DO, 254 DON'T."
 
 [[format.fields]]
@@ -323,6 +339,7 @@ meaning = "The option a WILL, WON'T, DO, DON'T or SB refers to, such as 1 echo, 
 id = "smb"
 name = "Server Message Block version 1 (CIFS)"
 keys = ["SMB", "SMB1", "SMBv1", "CIFS", "Common Internet File System", "Server Message Block version 1"]
+wireshark = "smb"
 summary = "The original Windows file and printer sharing protocol, also used to carry named pipes for remote procedure calls; deprecated and disabled in current Windows, but still met on older and embedded systems."
 group = "File sharing and remote access"
 ports = ["tcp/445", "tcp/139"]
@@ -351,34 +368,40 @@ rfc = 1002
 
 [[format.fields]]
 name = "Protocol"
+wireshark = "smb.server_component"
 aliases = ["Signature"]
 meaning = "The four bytes 0xFF 'S' 'M' 'B' that open every SMB1 message."
 section = "2.2.3.1"
 
 [[format.fields]]
 name = "Command"
+wireshark = "smb.cmd"
 meaning = "The operation: 0x72 negotiate, 0x73 session setup AndX, 0x75 tree connect AndX, 0xA2 NT create AndX, 0x2E read AndX, 0x2F write AndX, 0x04 close, 0x25 transaction, 0x32 transaction2, 0x71 tree disconnect."
 section = "2.2.3.1"
 
 [[format.fields]]
 name = "Status"
+wireshark = "smb.nt_status"
 meaning = "A 32-bit NTSTATUS in responses: 0 success, 0xC0000022 access denied, 0xC0000034 object name not found, 0xC000006D logon failure, 0xC0000016 more processing required (during authentication)."
 section = "2.2.3.1"
 
 [[format.fields]]
 name = "Tree ID"
+wireshark = "smb.tid"
 aliases = ["TID"]
 meaning = "Identifies the connected share, as returned by tree connect."
 section = "2.2.3.1"
 
 [[format.fields]]
 name = "User ID"
+wireshark = "smb.uid"
 aliases = ["UID"]
 meaning = "Identifies the authenticated session, as returned by session setup."
 section = "2.2.3.1"
 
 [[format.fields]]
 name = "Multiplex ID"
+wireshark = "smb.mid"
 aliases = ["MID"]
 meaning = "Chosen by the client for each request and copied into the response, so several requests can be outstanding."
 section = "2.2.3.1"
@@ -387,6 +410,7 @@ section = "2.2.3.1"
 id = "smb2"
 name = "Server Message Block versions 2 and 3"
 keys = ["SMB2", "SMB3", "SMB 2", "SMB 3", "SMBv2", "SMBv3", "Server Message Block version 2", "Server Message Block version 3", "Server Message Block 2", "Server Message Block 3"]
+wireshark = "smb2"
 summary = "The Windows file sharing protocol in use today (also spoken by Samba and most NAS devices): opening, reading and writing files on shares, plus named pipes for remote procedure calls, with signing and, from SMB 3, encryption."
 group = "File sharing and remote access"
 ports = ["tcp/445", "tcp/139"]
@@ -409,28 +433,33 @@ section = "2.2.1"
 
 [[format.fields]]
 name = "Protocol ID"
+wireshark = "smb2.protocol_id"
 aliases = ["Signature"]
 meaning = "0xFE 'S' 'M' 'B' for a normal SMB2 header, 0xFD 'S' 'M' 'B' for an encrypted transform header, 0xFC 'S' 'M' 'B' for a compression transform header."
 section = "2.2.1"
 
 [[format.fields]]
 name = "Command"
+wireshark = "smb2.cmd"
 meaning = "The operation: 0 negotiate, 1 session setup, 2 logoff, 3 tree connect, 4 tree disconnect, 5 create (open), 6 close, 7 flush, 8 read, 9 write, 10 lock, 11 ioctl, 12 cancel, 13 echo, 14 query directory, 15 change notify, 16 query info, 17 set info, 18 oplock break."
 section = "2.2.1"
 
 [[format.fields]]
 name = "Status"
+wireshark = "smb2.nt_status"
 aliases = ["NT Status"]
 meaning = "In responses, an NTSTATUS code: 0 success, 0x00000103 pending, 0xC0000016 more processing required, 0xC0000022 access denied, 0xC0000034 name not found, 0xC000006D logon failure."
 section = "2.2.1"
 
 [[format.fields]]
 name = "Flags"
+wireshark = "smb2.flags"
 meaning = "Bit 0 server to client (a response), bit 1 asynchronous, bit 2 related operations in a compound, bit 3 signed, bit 28 DFS operation."
 section = "2.2.1"
 
 [[format.fields]]
 name = "Message ID"
+wireshark = "smb2.msg_id"
 meaning = "A 64-bit number the client gives each request; the response carries the same value."
 section = "2.2.1"
 
@@ -442,16 +471,19 @@ section = "2.2.1"
 
 [[format.fields]]
 name = "Tree ID"
+wireshark = "smb2.tid"
 meaning = "Identifies the share connected by tree connect, such as \\\\server\\share or the IPC$ share used for named pipes."
 section = "2.2.1"
 
 [[format.fields]]
 name = "Session ID"
+wireshark = "smb2.sesid"
 meaning = "Identifies the authenticated session established by session setup."
 section = "2.2.1"
 
 [[format.fields]]
 name = "Signature"
+wireshark = "smb2.signature"
 meaning = "16 bytes: a keyed hash of the message when the signed flag is set, otherwise zero."
 section = "2.2.1"
 
@@ -459,6 +491,7 @@ section = "2.2.1"
 id = "onc-rpc"
 name = "ONC Remote Procedure Call"
 keys = ["ONC RPC", "ONC-RPC", "Sun RPC", "SunRPC", "ONC Remote Procedure Call", "RPCBIND", "Portmapper", "Portmap"]
+wireshark = "rpc"
 summary = "Sun's remote procedure call protocol, used by NFS and its helpers: a client calls a numbered procedure of a numbered program, with arguments and results encoded in XDR."
 group = "File sharing and remote access"
 ports = ["tcp/111", "udp/111"]
@@ -500,22 +533,26 @@ section = "11"
 
 [[format.fields]]
 name = "XID"
+wireshark = "rpc.xid"
 aliases = ["Transaction ID"]
 meaning = "Chosen by the caller and returned in the reply; the only link between a reply and its call."
 section = "9"
 
 [[format.fields]]
 name = "Message type"
+wireshark = "rpc.msgtyp"
 meaning = "0 for a call, 1 for a reply."
 section = "9"
 
 [[format.fields]]
 name = "Program"
+wireshark = "rpc.program"
 meaning = "The service being called: 100000 rpcbind, 100003 NFS, 100005 mount, 100021 network lock manager, 100024 status monitor."
 section = "9"
 
 [[format.fields]]
 name = "Procedure"
+wireshark = "rpc.procedure"
 meaning = "The numbered operation within the program and version; procedure 0 is conventionally a no-op used to ping a service."
 section = "9"
 
@@ -527,6 +564,7 @@ section = "8.2"
 
 [[format.fields]]
 name = "Accept status"
+wireshark = "rpc.state_accept"
 aliases = ["Reply status"]
 meaning = "In an accepted reply: 0 success, 1 program unavailable, 2 program version mismatch, 3 procedure unavailable, 4 garbage arguments, 5 system error."
 section = "9"
@@ -535,6 +573,7 @@ section = "9"
 id = "nfs"
 name = "Network File System"
 keys = ["NFS", "NFSv3", "NFSv4", "Network File System"]
+wireshark = "nfs"
 summary = "The Unix network file system: a client reads and writes files on a server's exported directories by calling ONC RPC procedures of program 100003."
 group = "File sharing and remote access"
 ports = ["tcp/2049", "udp/2049"]
@@ -573,16 +612,19 @@ section = "15"
 
 [[format.fields]]
 name = "Tag"
+wireshark = "nfs.tag"
 meaning = "A string the client puts on a COMPOUND, returned unchanged in the reply; often empty."
 section = "15.2"
 
 [[format.fields]]
 name = "Minor version"
+wireshark = "nfs.minorversion"
 meaning = "0 for NFS 4.0, 1 for 4.1, 2 for 4.2."
 section = "15.2"
 
 [[format.fields]]
 name = "Operation"
+wireshark = "nfs.opcode"
 aliases = ["Operations"]
 meaning = "One operation in a COMPOUND, by number: 9 GETATTR, 10 GETFH, 15 LOOKUP, 18 OPEN, 22 PUTFH, 24 PUTROOTFH, 25 READ, 26 READDIR, 38 WRITE, 4 CLOSE, 53 SEQUENCE (4.1)."
 section = "15.2"
@@ -601,6 +643,7 @@ section = "15.2"
 id = "dcerpc"
 name = "DCE/RPC and Microsoft RPC"
 keys = ["DCE/RPC", "DCERPC", "MSRPC", "MS-RPC", "MS-RPCE", "Microsoft RPC", "DCE RPC", "DCE Remote Procedure Call"]
+wireshark = "dcerpc"
 summary = "The remote procedure call protocol behind most Windows management interfaces (service control, registry, directory replication, scheduled tasks), carried over TCP or over SMB named pipes."
 group = "File sharing and remote access"
 ports = ["tcp/135", "udp/135"]
@@ -625,39 +668,46 @@ url = "https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rpce/290
 
 [[format.fields]]
 name = "Packet type"
+wireshark = "dcerpc.pkt_type"
 aliases = ["PTYPE"]
 meaning = "0 request, 2 response, 3 fault, 11 bind, 12 bind ack, 13 bind nak, 14 alter context, 15 alter context response, 16 auth3, 17 shutdown, 18 cancel, 19 orphaned."
 section = "12.6.3.1"
 
 [[format.fields]]
 name = "Packet flags"
+wireshark = "dcerpc.cn_flags"
 aliases = ["Flags"]
 meaning = "0x01 first fragment, 0x02 last fragment, 0x04 pending cancel, 0x20 did not execute, 0x40 maybe semantics, 0x80 an object UUID follows the header."
 section = "12.6.3.1"
 
 [[format.fields]]
 name = "Data representation"
+wireshark = "dcerpc.drep"
 aliases = ["DREP"]
 meaning = "Four bytes describing the encoding: integer byte order in the first byte (0x10 little-endian), then character set and floating-point format."
 section = "12.6.3.1"
 
 [[format.fields]]
 name = "Fragment length"
+wireshark = "dcerpc.cn_frag_len"
 meaning = "The length of this PDU, header included."
 section = "12.6.3.1"
 
 [[format.fields]]
 name = "Call ID"
+wireshark = "dcerpc.cn_call_id"
 meaning = "Identifies a call; every fragment of the request and response carries the same value."
 section = "12.6.3.1"
 
 [[format.fields]]
 name = "Opnum"
+wireshark = "dcerpc.opnum"
 meaning = "The operation number within the bound interface, which selects the method being called."
 section = "12.6.4.9"
 
 [[format.fields]]
 name = "Interface UUID"
+wireshark = "dcerpc.cn_bind_to_uuid"
 aliases = ["Abstract syntax"]
 meaning = "In a bind, names the interface: for example 367abb81-9844-35f1-ad32-98f038001003 service control (svcctl), 12345778-1234-abcd-ef00-0123456789ac SAMR, e3514235-4b06-11d1-ab04-00c04fc2dcd2 directory replication (DRSUAPI)."
 section = "12.6.4.3"
@@ -666,6 +716,7 @@ section = "12.6.4.3"
 id = "rdp"
 name = "Remote Desktop Protocol"
 keys = ["RDP", "Remote Desktop Protocol", "MS-RDPBCGR", "Terminal Services", "MS WBT Server"]
+wireshark = "rdp"
 summary = "Microsoft's remote desktop protocol: screen updates flow from server to client and keyboard and mouse input the other way, almost always inside TLS once the first exchange is done."
 group = "File sharing and remote access"
 ports = ["tcp/3389", "udp/3389"]
@@ -697,18 +748,21 @@ section = "2.2.1.1"
 
 [[format.fields]]
 name = "Cookie"
+wireshark = "rdp.rt_cookie"
 aliases = ["routingToken", "mstshash"]
 meaning = "Optional text in the connection request, \"Cookie: mstshash=\" and a user name ending in CR LF, used by load balancers; a quick way to see who is connecting."
 section = "2.2.1.1"
 
 [[format.fields]]
 name = "Requested protocols"
+wireshark = "rdp.negReq.requestedProtocols"
 aliases = ["requestedProtocols"]
 meaning = "Flags in the client's negotiation request: 0x1 TLS, 0x2 CredSSP, 0x4 RDSTLS, 0x8 CredSSP with early user authorisation; 0 means standard RDP security only."
 section = "2.2.1.1.1"
 
 [[format.fields]]
 name = "Selected protocol"
+wireshark = "rdp.negReq.selectedProtocol"
 aliases = ["selectedProtocol"]
 meaning = "In the server's negotiation response, the one security protocol chosen from the client's list."
 section = "2.2.1.2.1"
@@ -717,6 +771,7 @@ section = "2.2.1.2.1"
 id = "rfb"
 name = "Remote Framebuffer Protocol (VNC)"
 keys = ["RFB", "VNC", "Remote Framebuffer", "Remote Framebuffer Protocol", "Virtual Network Computing"]
+wireshark = "vnc"
 summary = "The protocol of VNC remote desktops: the server sends rectangles of screen pixels and the client sends key and pointer events."
 group = "File sharing and remote access"
 ports = ["tcp/5900"]
@@ -774,6 +829,7 @@ section = "7.6.1"
 id = "ldap"
 name = "Lightweight Directory Access Protocol"
 keys = ["LDAP", "LDAPS", "CLDAP", "Lightweight Directory Access Protocol", "Connectionless LDAP"]
+wireshark = "ldap"
 summary = "The protocol for querying and updating directories such as Active Directory and OpenLDAP: binding (logging in), searching for entries and modifying their attributes."
 group = "Directory and authentication"
 ports = ["tcp/389", "udp/389", "tcp/636", "tcp/3268", "tcp/3269"]
@@ -794,35 +850,41 @@ section = "4.1.1"
 
 [[format.fields]]
 name = "Message ID"
+wireshark = "ldap.messageID"
 aliases = ["messageID"]
 meaning = "A number the client gives each request; every response to that request carries it."
 section = "4.1.1.1"
 
 [[format.fields]]
 name = "Protocol op"
+wireshark = "ldap.protocolOp"
 aliases = ["protocolOp", "Operation"]
 meaning = "The operation, by APPLICATION tag number: 0 bind request, 1 bind response, 2 unbind, 3 search request, 4 search entry, 5 search done, 6 modify, 8 add, 10 delete, 12 modify DN, 14 compare, 16 abandon, 19 search reference, 23 extended request, 24 extended response."
 section = "4.2"
 
 [[format.fields]]
 name = "Result code"
+wireshark = "ldap.resultCode"
 aliases = ["resultCode"]
 meaning = "The outcome of an operation: 0 success, 1 operations error, 32 no such object, 49 invalid credentials, 50 insufficient access rights, 53 unwilling to perform."
 section = "4.1.9"
 
 [[format.fields]]
 name = "Base object"
+wireshark = "ldap.baseObject"
 aliases = ["baseObject", "DN"]
 meaning = "The distinguished name a search starts from, such as dc=example,dc=com."
 section = "4.5.1"
 
 [[format.fields]]
 name = "Filter"
+wireshark = "ldap.filter"
 meaning = "A search filter tree such as (&(objectClass=user)(sAMAccountName=alice)), encoded in BER rather than as text."
 section = "4.5.1.7"
 
 [[format.fields]]
 name = "Controls"
+wireshark = "ldap.controls"
 meaning = "Optional extensions to an operation, each an OID, a criticality flag and a value, such as paged results (1.2.840.113556.1.4.319)."
 section = "4.1.11"
 
@@ -830,6 +892,7 @@ section = "4.1.11"
 id = "kerberos"
 name = "Kerberos version 5"
 keys = ["Kerberos", "Kerberos 5", "Kerberos V5", "KRB5", "Kerberos version 5"]
+wireshark = "kerberos"
 summary = "The ticket-based authentication protocol of Active Directory and many Unix realms: a client proves its identity to a key distribution centre once and receives tickets that admit it to individual services."
 group = "Directory and authentication"
 ports = ["tcp/88", "udp/88", "tcp/464", "udp/464"]
@@ -852,12 +915,14 @@ section = "5"
 
 [[format.fields]]
 name = "Message type"
+wireshark = "kerberos.msg_type"
 aliases = ["msg-type"]
 meaning = "10 AS-REQ, 11 AS-REP, 12 TGS-REQ, 13 TGS-REP, 14 AP-REQ, 15 AP-REP, 20 KRB-SAFE, 21 KRB-PRIV, 22 KRB-CRED, 30 KRB-ERROR."
 section = "7.5.7"
 
 [[format.fields]]
 name = "Record mark"
+wireshark = "kerberos.rm.length"
 aliases = ["Length"]
 meaning = "Over TCP only: a 4-byte big-endian length in front of each message; the top bit is reserved and must be zero."
 section = "7.2.2"
@@ -870,24 +935,28 @@ section = "5.2.7"
 
 [[format.fields]]
 name = "cname"
+wireshark = "kerberos.cname_element"
 aliases = ["Client name"]
 meaning = "The client principal, such as alice in the realm EXAMPLE.COM."
 section = "5.4.1"
 
 [[format.fields]]
 name = "sname"
+wireshark = "kerberos.sname_element"
 aliases = ["Server name", "Service name"]
 meaning = "The service principal the ticket is for, such as krbtgt/EXAMPLE.COM or cifs/fileserver.example.com."
 section = "5.4.1"
 
 [[format.fields]]
 name = "etype"
+wireshark = "kerberos.etype"
 aliases = ["Encryption type"]
 meaning = "Encryption types: 17 AES128-CTS-HMAC-SHA1-96, 18 AES256-CTS-HMAC-SHA1-96, 23 RC4-HMAC, 3 DES-CBC-MD5 (obsolete)."
 section = "5.4.1"
 
 [[format.fields]]
 name = "Error code"
+wireshark = "kerberos.error_code"
 aliases = ["error-code"]
 meaning = "In KRB-ERROR: 6 client unknown, 7 server unknown, 18 client credentials revoked, 24 pre-authentication failed, 25 pre-authentication required, 32 ticket expired, 37 clock skew too great, 68 wrong realm."
 section = "7.5.9"
@@ -896,6 +965,7 @@ section = "7.5.9"
 id = "radius"
 name = "Remote Authentication Dial In User Service"
 keys = ["RADIUS", "Remote Authentication Dial In User Service", "RADIUS Accounting"]
+wireshark = "radius"
 summary = "The protocol network equipment (VPN concentrators, Wi-Fi controllers, switches) uses to ask a central server whether a user may connect, and to report sessions for accounting."
 group = "Directory and authentication"
 ports = ["udp/1812", "udp/1813"]
@@ -924,26 +994,31 @@ rfc = 2866
 
 [[format.fields]]
 name = "Code"
+wireshark = "radius.code"
 meaning = "1 Access-Request, 2 Access-Accept, 3 Access-Reject, 4 Accounting-Request, 5 Accounting-Response, 11 Access-Challenge, 12 Status-Server."
 section = "3"
 
 [[format.fields]]
 name = "Identifier"
+wireshark = "radius.id"
 meaning = "Matches a reply to its request; a client changes it for each new request."
 section = "3"
 
 [[format.fields]]
 name = "Length"
+wireshark = "radius.length"
 meaning = "The whole packet's length in bytes, header included; bytes beyond it are padding to be ignored."
 section = "3"
 
 [[format.fields]]
 name = "Authenticator"
+wireshark = "radius.authenticator"
 meaning = "16 bytes: random in an Access-Request, an MD5-based check in replies and accounting requests."
 section = "3"
 
 [[format.fields]]
 name = "Attribute"
+wireshark = "radius.avp"
 aliases = ["Attributes", "AVP"]
 meaning = "Type, length and value: 1 User-Name, 2 User-Password, 4 NAS-IP-Address, 5 NAS-Port, 8 Framed-IP-Address, 26 Vendor-Specific, 31 Calling-Station-Id, 79 EAP-Message, 80 Message-Authenticator."
 section = "5"
@@ -952,6 +1027,7 @@ section = "5"
 id = "tacacs-plus"
 name = "TACACS+"
 keys = ["TACACS+", "TACACS Plus", "Terminal Access Controller Access-Control System Plus"]
+wireshark = "tacplus"
 summary = "The protocol network devices use to authenticate administrators against a central server, authorise each command they type and record what they did."
 group = "Directory and authentication"
 ports = ["tcp/49"]
@@ -977,27 +1053,32 @@ section = "4.1"
 
 [[format.fields]]
 name = "Type"
+wireshark = "tacplus.type"
 meaning = "1 authentication, 2 authorisation, 3 accounting."
 section = "4.1"
 
 [[format.fields]]
 name = "Sequence number"
+wireshark = "tacplus.seqno"
 aliases = ["seq_no"]
 meaning = "1 for the first packet of a session, increasing by one per packet; odd from the client, even from the server."
 section = "4.1"
 
 [[format.fields]]
 name = "Flags"
+wireshark = "tacplus.flags"
 meaning = "0x01 body not obfuscated, 0x04 single connection mode."
 section = "4.1"
 
 [[format.fields]]
 name = "Session ID"
+wireshark = "tacplus.session_id"
 meaning = "A random 4-byte value identifying one authentication, authorisation or accounting exchange."
 section = "4.1"
 
 [[format.fields]]
 name = "Length"
+wireshark = "tacplus.packet_len"
 meaning = "The length of the body after the header, in bytes."
 section = "4.1"
 
@@ -1009,6 +1090,7 @@ section = "4.1"
 id = "http2"
 name = "HTTP/2"
 keys = ["HTTP/2", "HTTP2", "h2", "h2c", "HTTP version 2"]
+wireshark = "http2"
 summary = "The binary framing of HTTP that runs many requests and responses at once over one TCP connection, as interleaved frames on numbered streams with compressed headers."
 group = "Web"
 carries = ["grpc"]
@@ -1035,22 +1117,26 @@ rfc = 7541
 
 [[format.fields]]
 name = "Length"
+wireshark = "http2.length"
 meaning = "The frame payload's length in bytes, not counting the 9-byte header; at most 16,384 unless SETTINGS allows more."
 section = "4.1"
 
 [[format.fields]]
 name = "Type"
+wireshark = "http2.type"
 aliases = ["Frame type"]
 meaning = "0 DATA, 1 HEADERS, 2 PRIORITY, 3 RST_STREAM, 4 SETTINGS, 5 PUSH_PROMISE, 6 PING, 7 GOAWAY, 8 WINDOW_UPDATE, 9 CONTINUATION."
 section = "6"
 
 [[format.fields]]
 name = "Flags"
+wireshark = "http2.flags"
 meaning = "Meaning depends on the type: 0x1 END_STREAM (DATA, HEADERS) or ACK (SETTINGS, PING), 0x4 END_HEADERS, 0x8 PADDED, 0x20 PRIORITY."
 section = "4.1"
 
 [[format.fields]]
 name = "Stream identifier"
+wireshark = "http2.streamid"
 aliases = ["Stream ID"]
 meaning = "Which stream the frame belongs to; 0 for frames about the whole connection. Clients open odd-numbered streams."
 section = "4.1"
@@ -1064,6 +1150,7 @@ section = "7"
 id = "http3"
 name = "HTTP/3"
 keys = ["HTTP/3", "HTTP3", "h3", "HTTP version 3"]
+wireshark = "http3"
 summary = "HTTP mapped onto QUIC: each request and response travels on its own QUIC stream as a sequence of small frames, with headers compressed by QPACK."
 group = "Web"
 organisation = """
@@ -1089,17 +1176,20 @@ rfc = 9204
 
 [[format.fields]]
 name = "Type"
+wireshark = "http3.frame_type"
 aliases = ["Frame type"]
 meaning = "0x00 DATA, 0x01 HEADERS, 0x03 CANCEL_PUSH, 0x04 SETTINGS, 0x05 PUSH_PROMISE, 0x07 GOAWAY, 0x0D MAX_PUSH_ID, as a variable-length integer."
 section = "7.2"
 
 [[format.fields]]
 name = "Length"
+wireshark = "http3.frame_length"
 meaning = "The payload's length in bytes, as a variable-length integer."
 section = "7.1"
 
 [[format.fields]]
 name = "Stream type"
+wireshark = "http3.stream_uni_type"
 meaning = "The first value on a unidirectional stream: 0x00 control, 0x01 push, 0x02 QPACK encoder, 0x03 QPACK decoder."
 section = "6.2"
 
@@ -1107,6 +1197,7 @@ section = "6.2"
 id = "websocket"
 name = "WebSocket"
 keys = ["WebSocket", "WebSockets", "WebSocket Protocol", "ws", "wss"]
+wireshark = "websocket"
 summary = "A two-way message channel between a browser and a server, set up with an HTTP request and then carried as small binary frames on the same TCP connection."
 group = "Web"
 organisation = """
@@ -1126,32 +1217,38 @@ section = "5.2"
 
 [[format.fields]]
 name = "FIN"
+wireshark = "websocket.fin"
 meaning = "Set on the last frame of a message."
 section = "5.2"
 
 [[format.fields]]
 name = "Opcode"
+wireshark = "websocket.opcode"
 meaning = "0 continuation, 1 text (UTF-8), 2 binary, 8 close, 9 ping, 10 pong."
 section = "5.2"
 
 [[format.fields]]
 name = "Mask"
+wireshark = "websocket.mask"
 aliases = ["Masked"]
 meaning = "Set when a masking key follows; always set from client to server."
 section = "5.2"
 
 [[format.fields]]
 name = "Payload length"
+wireshark = "websocket.payload_length"
 meaning = "0 to 125 directly, or 126 followed by a 16-bit length, or 127 followed by a 64-bit length."
 section = "5.2"
 
 [[format.fields]]
 name = "Masking key"
+wireshark = "websocket.masking_key"
 meaning = "Four bytes XORed in turn over the payload; unmasking is the same operation."
 section = "5.3"
 
 [[format.fields]]
 name = "Close code"
+wireshark = "websocket.payload.close.status_code"
 aliases = ["Status code"]
 meaning = "The first two bytes of a close frame's payload: 1000 normal, 1001 going away, 1002 protocol error, 1006 closed without a close frame (never sent), 1008 policy violation, 1011 server error."
 section = "7.4"
@@ -1160,6 +1257,7 @@ section = "7.4"
 id = "grpc"
 name = "gRPC"
 keys = ["gRPC", "gRPC over HTTP/2", "application/grpc"]
+wireshark = "grpc"
 summary = "A remote procedure call framework that sends Protocol Buffers messages as HTTP/2 requests and responses, used widely between microservices."
 group = "Web"
 organisation = """
@@ -1182,10 +1280,12 @@ url = "https://github.com/grpc/grpc/blob/master/doc/statuscodes.md"
 
 [[format.fields]]
 name = "Compressed flag"
+wireshark = "grpc.compressed_flag"
 meaning = "1 when the message is compressed with the algorithm named in grpc-encoding, otherwise 0."
 
 [[format.fields]]
 name = "Message length"
+wireshark = "grpc.message_length"
 meaning = "The length of the message that follows, as a 4-byte big-endian number."
 
 [[format.fields]]
@@ -1206,6 +1306,7 @@ meaning = "The service and method being called, as /package.Service/Method."
 id = "sip"
 name = "Session Initiation Protocol"
 keys = ["SIP", "SIPS", "Session Initiation Protocol"]
+wireshark = "sip"
 summary = "The signalling protocol of internet telephony: it registers phones, sets up and tears down calls and negotiates their media, which then flows separately over RTP."
 group = "Voice and video"
 ports = ["udp/5060", "tcp/5060", "tcp/5061"]
@@ -1229,37 +1330,44 @@ section = "7"
 
 [[format.fields]]
 name = "Method"
+wireshark = "sip.Method"
 meaning = "INVITE, ACK, BYE, CANCEL, REGISTER and OPTIONS from the core specification; SUBSCRIBE, NOTIFY, REFER, MESSAGE, INFO, UPDATE and PRACK from extensions."
 section = "7.1"
 
 [[format.fields]]
 name = "Status code"
+wireshark = "sip.Status-Code"
 meaning = "1xx provisional, 2xx success, 3xx redirection, 4xx client error, 5xx server error, 6xx global failure."
 section = "7.2"
 
 [[format.fields]]
 name = "Call-ID"
+wireshark = "sip.Call-ID"
 meaning = "A globally unique identifier for the call or registration; every message of the dialog carries it."
 section = "20.8"
 
 [[format.fields]]
 name = "CSeq"
+wireshark = "sip.CSeq"
 meaning = "A sequence number and the request method; the response repeats it, so it pairs responses with requests."
 section = "20.16"
 
 [[format.fields]]
 name = "Via"
+wireshark = "sip.Via"
 meaning = "One per hop, with the transport, the sender's address and a branch parameter that identifies the transaction."
 section = "20.42"
 
 [[format.fields]]
 name = "From"
+wireshark = "sip.From"
 aliases = ["To"]
 meaning = "The caller and callee as SIP URIs with display names; the tag parameters on From and To identify the dialog."
 section = "20.20"
 
 [[format.fields]]
 name = "Contact"
+wireshark = "sip.Contact"
 meaning = "Where the sender can be reached directly for later requests in the dialog, or the address being registered."
 section = "20.10"
 
@@ -1267,6 +1375,7 @@ section = "20.10"
 id = "sdp"
 name = "Session Description Protocol"
 keys = ["SDP", "Session Description Protocol", "application/sdp"]
+wireshark = "sdp"
 summary = "A text format describing a multimedia session: which media streams there are, the addresses and ports to send them to and the codecs on offer. It travels inside SIP, RTSP and WebRTC signalling."
 group = "Voice and video"
 organisation = """
@@ -1286,24 +1395,28 @@ section = "5"
 
 [[format.fields]]
 name = "v="
+wireshark = "sdp.version"
 aliases = ["Version"]
 meaning = "Protocol version; always 0."
 section = "5.1"
 
 [[format.fields]]
 name = "o="
+wireshark = "sdp.owner"
 aliases = ["Origin"]
 meaning = "User name, session ID, session version, network type, address type and the originator's address."
 section = "5.2"
 
 [[format.fields]]
 name = "c="
+wireshark = "sdp.connection_info"
 aliases = ["Connection information", "Connection"]
 meaning = "Network type, address type and the address media should be sent to, such as \"IN IP4 192.0.2.10\"."
 section = "5.7"
 
 [[format.fields]]
 name = "m="
+wireshark = "sdp.media"
 aliases = ["Media description", "Media"]
 meaning = "Media type (audio, video, application), port, protocol (RTP/AVP, RTP/SAVPF, UDP/TLS/RTP/SAVPF) and the payload format numbers."
 section = "5.14"
@@ -1318,6 +1431,7 @@ section = "5.13"
 id = "rtp"
 name = "Real-time Transport Protocol"
 keys = ["RTP", "Real-time Transport Protocol", "RTP media"]
+wireshark = "rtp"
 summary = "The packet format that carries audio and video in calls and streams: each packet holds a slice of encoded media with a sequence number and timestamp so the receiver can reorder it and play it out at the right time."
 group = "Voice and video"
 ports = ["udp/5004"]
@@ -1351,37 +1465,44 @@ rfc = 8285
 
 [[format.fields]]
 name = "Version"
+wireshark = "rtp.version"
 meaning = "Two bits, always 2."
 section = "5.1"
 
 [[format.fields]]
 name = "Marker"
+wireshark = "rtp.marker"
 meaning = "Defined by the profile; for video usually the last packet of a frame, for voice the first packet after silence."
 section = "5.1"
 
 [[format.fields]]
 name = "Payload type"
+wireshark = "rtp.p_type"
 meaning = "The media format: 0 PCMU, 3 GSM, 8 PCMA, 9 G.722, 18 G.729, 26 JPEG, 34 H.263; 96 to 127 are dynamic, defined by an a=rtpmap line in SDP."
 section = "5.1"
 
 [[format.fields]]
 name = "Sequence number"
+wireshark = "rtp.seq"
 meaning = "Increases by one per packet from a random start; used to detect loss and restore order."
 section = "5.1"
 
 [[format.fields]]
 name = "Timestamp"
+wireshark = "rtp.timestamp"
 meaning = "The sampling instant of the payload in units of the media clock, from a random start."
 section = "5.1"
 
 [[format.fields]]
 name = "SSRC"
+wireshark = "rtp.ssrc"
 aliases = ["Synchronization source", "Synchronisation source"]
 meaning = "A random 32-bit identifier for the stream's source, unique within the session."
 section = "5.1"
 
 [[format.fields]]
 name = "CSRC"
+wireshark = "rtp.csrc.item"
 aliases = ["Contributing source"]
 meaning = "The SSRCs of the streams a mixer combined into this one, up to 15."
 section = "5.1"
@@ -1390,6 +1511,7 @@ section = "5.1"
 id = "rtcp"
 name = "RTP Control Protocol"
 keys = ["RTCP", "RTP Control Protocol", "RTP control"]
+wireshark = "rtcp"
 summary = "RTP's companion: periodic reports from senders and receivers on packets sent, loss and jitter, plus names for the streams, used to monitor and adapt call quality."
 group = "Voice and video"
 ports = ["udp/5005"]
@@ -1422,32 +1544,38 @@ rfc = 5761
 
 [[format.fields]]
 name = "Packet type"
+wireshark = "rtcp.pt"
 meaning = "200 sender report, 201 receiver report, 202 source description, 203 goodbye, 204 application-defined, 205 transport feedback, 206 payload-specific feedback."
 section = "6.4.1"
 
 [[format.fields]]
 name = "Reception report count"
+wireshark = "rtcp.rc"
 aliases = ["Count"]
 meaning = "The number of report blocks in a sender or receiver report, or of items in SDES and BYE."
 section = "6.4.1"
 
 [[format.fields]]
 name = "Length"
+wireshark = "rtcp.length"
 meaning = "The packet's length in 32-bit words, minus one, header included."
 section = "6.4.1"
 
 [[format.fields]]
 name = "NTP timestamp"
+wireshark = "rtcp.timestamp.ntp"
 meaning = "In a sender report, the wall-clock time the report was sent, as 32 bits of seconds since 1900 and 32 bits of fraction."
 section = "6.4.1"
 
 [[format.fields]]
 name = "Fraction lost"
+wireshark = "rtcp.ssrc.fraction"
 meaning = "The share of packets lost since the previous report, as a fixed-point number with the binary point at the left (divide by 256)."
 section = "6.4.1"
 
 [[format.fields]]
 name = "Interarrival jitter"
+wireshark = "rtcp.ssrc.jitter"
 aliases = ["Jitter"]
 meaning = "A smoothed estimate of the variation in packet transit time, in RTP timestamp units."
 section = "6.4.1"
@@ -1456,6 +1584,7 @@ section = "6.4.1"
 id = "rtsp"
 name = "Real-Time Streaming Protocol"
 keys = ["RTSP", "RTSPS", "Real-Time Streaming Protocol", "Real Time Streaming Protocol"]
+wireshark = "rtsp"
 summary = "The control protocol for streaming media servers and IP cameras: a client describes, sets up, plays and pauses streams whose media then flows over RTP."
 group = "Voice and video"
 ports = ["tcp/554", "udp/554", "tcp/322"]
@@ -1477,26 +1606,31 @@ section = "5"
 
 [[format.fields]]
 name = "Method"
+wireshark = "rtsp.method"
 meaning = "OPTIONS, DESCRIBE, SETUP, PLAY, PAUSE, TEARDOWN, GET_PARAMETER, SET_PARAMETER, REDIRECT and PLAY_NOTIFY; version 1.0 also has ANNOUNCE and RECORD."
 section = "13"
 
 [[format.fields]]
 name = "CSeq"
+wireshark = "rtsp.cseq"
 meaning = "A sequence number on every request, repeated in its response."
 section = "18.20"
 
 [[format.fields]]
 name = "Session"
+wireshark = "rtsp.session"
 meaning = "The session identifier the server assigned in its SETUP response, with an optional timeout."
 section = "18.49"
 
 [[format.fields]]
 name = "Transport"
+wireshark = "rtsp.transport"
 meaning = "How media is delivered, such as RTP/AVP;unicast;client_port=5000-5001 or RTP/AVP/TCP;interleaved=0-1."
 section = "18.54"
 
 [[format.fields]]
 name = "Channel"
+wireshark = "rtsp.channel"
 aliases = ["Interleaved channel"]
 meaning = "In interleaved data, the channel number that says which stream the packet belongs to, as agreed in the Transport header."
 section = "14"
@@ -1509,6 +1643,7 @@ section = "14"
 id = "xmpp"
 name = "Extensible Messaging and Presence Protocol"
 keys = ["XMPP", "Jabber", "Extensible Messaging and Presence Protocol"]
+wireshark = "xmpp"
 summary = "An instant messaging and presence protocol in which clients and servers exchange a long-lived stream of XML elements."
 group = "Messaging"
 ports = ["tcp/5222", "tcp/5269"]
@@ -1529,6 +1664,7 @@ section = "4"
 
 [[format.fields]]
 name = "Stream header"
+wireshark = "xmpp.stream"
 aliases = ["stream:stream"]
 meaning = "The opening element of each direction's stream, with to, from, id, version and the default namespace."
 section = "4.7"
@@ -1548,6 +1684,7 @@ section = "4.9"
 id = "irc"
 name = "Internet Relay Chat"
 keys = ["IRC", "Internet Relay Chat"]
+wireshark = "irc"
 summary = "The long-standing text chat protocol: clients join channels on a network of servers and send messages as single lines of text. Also used by some botnets for command and control."
 group = "Messaging"
 ports = ["tcp/194", "tcp/6665", "tcp/6666", "tcp/6667", "tcp/6668", "tcp/6669", "tcp/6697"]
@@ -1621,23 +1758,27 @@ section = "4.2.2"
 
 [[format.fields]]
 name = "Frame type"
+wireshark = "amqp.type"
 aliases = ["Type"]
 meaning = "1 method, 2 content header, 3 content body, 8 heartbeat."
 section = "4.2.3"
 
 [[format.fields]]
 name = "Channel"
+wireshark = "amqp.channel"
 meaning = "The channel the frame belongs to; 0 for connection-level methods and heartbeats."
 section = "4.2.3"
 
 [[format.fields]]
 name = "Size"
+wireshark = "amqp.length"
 aliases = ["Payload size"]
 meaning = "The payload's length in bytes, not counting the 7-byte header or the frame-end byte."
 section = "4.2.3"
 
 [[format.fields]]
 name = "Class ID"
+wireshark = "amqp.method.class"
 aliases = ["Method"]
 meaning = "With the method ID, names the method: 10 connection, 20 channel, 40 exchange, 50 queue, 60 basic, 85 confirm, 90 tx."
 section = "4.2.4"
@@ -1651,6 +1792,7 @@ section = "4.2.3"
 id = "amqp-1-0"
 name = "AMQP 1.0"
 keys = ["AMQP 1.0", "AMQP", "Advanced Message Queuing Protocol", "Advanced Message Queuing Protocol 1.0"]
+wireshark = "amqp"
 summary = "The OASIS and ISO standard messaging protocol used by Azure Service Bus, ActiveMQ Artemis, Qpid and others: links between nodes carry messages with settled or unsettled delivery."
 group = "Messaging"
 ports = ["tcp/5672", "tcp/5671"]
@@ -1680,27 +1822,32 @@ section = "2.2"
 
 [[format.fields]]
 name = "Size"
+wireshark = "amqp.length"
 meaning = "The frame's total length in bytes, header included."
 section = "2.3.1"
 
 [[format.fields]]
 name = "DOFF"
+wireshark = "amqp.doff"
 aliases = ["Data offset"]
 meaning = "Where the body starts, in 4-byte words from the start of the frame; 2 when there is no extended header."
 section = "2.3.1"
 
 [[format.fields]]
 name = "Type"
+wireshark = "amqp.type"
 meaning = "0 for an AMQP frame, 1 for a SASL frame."
 section = "2.3.1"
 
 [[format.fields]]
 name = "Channel"
+wireshark = "amqp.channel"
 meaning = "In AMQP frames, the session channel the frame belongs to."
 section = "2.3.2"
 
 [[format.fields]]
 name = "Performative"
+wireshark = "amqp.performative"
 meaning = "The frame's operation: open, begin, attach, flow, transfer, disposition, detach, end or close, identified by descriptor 0x10 to 0x18."
 section = "2.7"
 
@@ -1708,6 +1855,7 @@ section = "2.7"
 id = "kafka"
 name = "Apache Kafka protocol"
 keys = ["Kafka", "Apache Kafka", "Kafka protocol", "Kafka wire protocol"]
+wireshark = "kafka"
 summary = "The binary request and response protocol between Kafka clients and brokers, for producing records to topic partitions, fetching them and coordinating consumer groups."
 group = "Messaging"
 ports = ["tcp/9092"]
@@ -1728,31 +1876,37 @@ url = "https://kafka.apache.org/protocol"
 
 [[format.fields]]
 name = "Size"
+wireshark = "kafka.len"
 aliases = ["Length"]
 meaning = "The length of the request or response that follows, not counting these four bytes."
 
 [[format.fields]]
 name = "API key"
+wireshark = "kafka.request_key"
 aliases = ["request_api_key"]
 meaning = "The operation: 0 Produce, 1 Fetch, 2 ListOffsets, 3 Metadata, 8 OffsetCommit, 9 OffsetFetch, 10 FindCoordinator, 11 JoinGroup, 12 Heartbeat, 14 SyncGroup, 17 SaslHandshake, 18 ApiVersions, 36 SaslAuthenticate."
 
 [[format.fields]]
 name = "API version"
+wireshark = "kafka.request.version"
 aliases = ["request_api_version"]
 meaning = "The version of the request layout the client used; the response uses the matching version."
 
 [[format.fields]]
 name = "Correlation ID"
+wireshark = "kafka.correlation_id"
 aliases = ["correlation_id"]
 meaning = "Chosen by the client and returned in the response."
 
 [[format.fields]]
 name = "Client ID"
+wireshark = "kafka.client_id"
 aliases = ["client_id"]
 meaning = "A free-form name for the client application, useful in broker logs."
 
 [[format.fields]]
 name = "Error code"
+wireshark = "kafka.error"
 meaning = "A 2-byte code in responses: 0 none, 3 unknown topic or partition, 6 not leader or follower, 16 not coordinator, 25 unknown member ID, 27 rebalance in progress, 35 unsupported version, 58 SASL authentication failed."
 
 [[format]]
@@ -1805,6 +1959,7 @@ meaning = "The number of payload bytes after the command line."
 id = "zmtp"
 name = "ZeroMQ Message Transport Protocol"
 keys = ["ZMTP", "ZeroMQ", "ZMQ", "0MQ", "ZeroMQ Message Transport Protocol"]
+wireshark = "zmtp"
 summary = "The wire protocol of ZeroMQ sockets: a fixed greeting, a security handshake and then a stream of length-prefixed frames making up multipart messages."
 group = "Messaging"
 organisation = """
@@ -1827,18 +1982,22 @@ url = "https://rfc.zeromq.org/spec/23/"
 
 [[format.fields]]
 name = "Signature"
+wireshark = "zmtp.signature"
 meaning = "Ten bytes: 0xFF, eight bytes of padding and 0x7F."
 
 [[format.fields]]
 name = "Mechanism"
+wireshark = "zmtp.mechanism"
 meaning = "The security mechanism name, NULL, PLAIN or CURVE, padded with zeros to 20 bytes."
 
 [[format.fields]]
 name = "Flags"
+wireshark = "zmtp.flags"
 meaning = "Bit 0 MORE (another frame of the same message follows), bit 1 LONG (8-byte size), bit 2 COMMAND."
 
 [[format.fields]]
 name = "Size"
+wireshark = "zmtp.length"
 meaning = "The frame body's length: one byte, or eight big-endian bytes when the LONG flag is set."
 
 # ---------------------------------------------------------------------------
@@ -1849,6 +2008,7 @@ meaning = "The frame body's length: one byte, or eight big-endian bytes when the
 id = "mysql"
 name = "MySQL client/server protocol"
 keys = ["MySQL", "MariaDB", "MySQL protocol", "MySQL client/server protocol"]
+wireshark = "mysql"
 summary = "The protocol between MySQL or MariaDB clients and servers: a handshake and login, then text SQL queries or prepared statements and their result sets."
 group = "Databases"
 ports = ["tcp/3306"]
@@ -1867,24 +2027,29 @@ url = "https://dev.mysql.com/doc/dev/mysql-server/latest/PAGE_PROTOCOL.html"
 
 [[format.fields]]
 name = "Payload length"
+wireshark = "mysql.packet_length"
 aliases = ["Length", "Packet length"]
 meaning = "The payload's size in bytes, three bytes little-endian, not counting the 4-byte header."
 
 [[format.fields]]
 name = "Sequence ID"
+wireshark = "mysql.packet_number"
 aliases = ["Packet number"]
 meaning = "Restarts at 0 with each command and increases by one for each packet that follows, in either direction."
 
 [[format.fields]]
 name = "Command"
+wireshark = "mysql.command"
 meaning = "The first byte of a command packet: 0x01 quit, 0x02 init DB, 0x03 query, 0x0E ping, 0x16 statement prepare, 0x17 statement execute, 0x19 statement close."
 
 [[format.fields]]
 name = "Error code"
+wireshark = "mysql.error_code"
 meaning = "In an error packet (0xFF), a 2-byte little-endian code such as 1045 access denied, 1064 SQL syntax error or 1146 table does not exist."
 
 [[format.fields]]
 name = "SQL state"
+wireshark = "mysql.sqlstate"
 aliases = ["SQLSTATE"]
 meaning = "Five characters after a '#' in an error packet, a standard SQL error class such as 28000 or 42S02."
 
@@ -1897,6 +2062,7 @@ meaning = "Bits each side sets for features it supports, such as 0x200 protocol 
 id = "postgresql"
 name = "PostgreSQL frontend/backend protocol"
 keys = ["PostgreSQL", "Postgres", "PGSQL", "PostgreSQL protocol", "PostgreSQL wire protocol"]
+wireshark = "pgsql"
 summary = "The protocol between PostgreSQL clients and servers (and many compatible databases): start-up and authentication, then simple queries or the extended parse, bind and execute cycle, with results as row messages."
 group = "Databases"
 ports = ["tcp/5432"]
@@ -1920,11 +2086,13 @@ url = "https://www.postgresql.org/docs/current/protocol-flow.html"
 
 [[format.fields]]
 name = "Type"
+wireshark = "pgsql.type"
 aliases = ["Message type"]
 meaning = "One ASCII character naming the message; the same letter can mean different things in each direction (S is Sync from the client, ParameterStatus from the server)."
 
 [[format.fields]]
 name = "Length"
+wireshark = "pgsql.length"
 meaning = "The message length in bytes, including these four bytes but not the type byte."
 
 [[format.fields]]
@@ -1934,10 +2102,12 @@ meaning = "In the first message: 196608 for 3.0, 196610 for 3.2, or a special re
 
 [[format.fields]]
 name = "Query"
+wireshark = "pgsql.query"
 meaning = "The SQL text of a simple query (Q), null-terminated; may hold several statements separated by semicolons."
 
 [[format.fields]]
 name = "Authentication type"
+wireshark = "pgsql.authtype"
 meaning = "In an R message: 0 OK, 3 clear-text password, 5 MD5 password with a 4-byte salt, 7 GSSAPI, 10 SASL (SCRAM-SHA-256), 11 SASL continue, 12 SASL final."
 
 [[format.fields]]
@@ -1949,6 +2119,7 @@ meaning = "An E or N message is a list of fields, each a code byte and a null-te
 id = "tds"
 name = "Tabular Data Stream"
 keys = ["TDS", "Tabular Data Stream", "MS-TDS", "Microsoft SQL Server protocol", "MSSQL"]
+wireshark = "tds"
 summary = "The protocol between clients and Microsoft SQL Server (and Sybase ASE): login, SQL batches and remote procedure calls in one direction, tabular results as token streams in the other."
 group = "Databases"
 ports = ["tcp/1433", "udp/1434"]
@@ -1968,28 +2139,33 @@ section = "2.2.3.1"
 
 [[format.fields]]
 name = "Type"
+wireshark = "tds.type"
 aliases = ["Packet type"]
 meaning = "1 SQL batch, 2 pre-TDS7 login, 3 RPC, 4 tabular result, 6 attention, 7 bulk load, 8 federated authentication token, 14 transaction manager request, 16 TDS7 login, 17 SSPI, 18 pre-login."
 section = "2.2.3.1.1"
 
 [[format.fields]]
 name = "Status"
+wireshark = "tds.status"
 meaning = "Bit 0x01 end of message; 0x02 ignore this event; 0x08 and 0x10 reset the connection before the request."
 section = "2.2.3.1.2"
 
 [[format.fields]]
 name = "Length"
+wireshark = "tds.length"
 meaning = "The packet's length including the 8-byte header, big-endian."
 section = "2.2.3.1.3"
 
 [[format.fields]]
 name = "SPID"
+wireshark = "tds.channel"
 aliases = ["Server process ID"]
 meaning = "The server's session ID for the connection, filled in by the server in responses."
 section = "2.2.3.1.4"
 
 [[format.fields]]
 name = "PacketID"
+wireshark = "tds.packet_number"
 aliases = ["Packet ID"]
 meaning = "Counts packets within a message, wrapping at 255."
 section = "2.2.3.1.5"
@@ -2004,6 +2180,7 @@ section = "2.2.7"
 id = "mongodb"
 name = "MongoDB wire protocol"
 keys = ["MongoDB", "Mongo", "MongoDB wire protocol", "OP_MSG"]
+wireshark = "mongo"
 summary = "The protocol between MongoDB drivers and servers: commands and their replies as BSON documents inside a small binary message header."
 group = "Databases"
 ports = ["tcp/27017"]
@@ -2027,31 +2204,37 @@ url = "https://bsonspec.org/spec.html"
 
 [[format.fields]]
 name = "Message length"
+wireshark = "mongo.message_length"
 aliases = ["messageLength"]
 meaning = "The total size of the message in bytes, including the header."
 
 [[format.fields]]
 name = "Request ID"
+wireshark = "mongo.request_id"
 aliases = ["requestID"]
 meaning = "An identifier the sender chooses for this message."
 
 [[format.fields]]
 name = "Response to"
+wireshark = "mongo.response_to"
 aliases = ["responseTo"]
 meaning = "In a reply, the request ID of the message being answered; 0 otherwise."
 
 [[format.fields]]
 name = "Opcode"
+wireshark = "mongo.opcode"
 aliases = ["opCode"]
 meaning = "2013 OP_MSG, 2012 OP_COMPRESSED; legacy 1 OP_REPLY, 2004 OP_QUERY and others removed in recent servers."
 
 [[format.fields]]
 name = "Flag bits"
+wireshark = "mongo.msg.flags"
 aliases = ["flagBits"]
 meaning = "In OP_MSG: bit 0 a CRC-32C checksum ends the message, bit 1 no reply will follow (more to come), bit 16 the client accepts several replies."
 
 [[format.fields]]
 name = "Section kind"
+wireshark = "mongo.msg.sections.section.kind"
 aliases = ["Kind"]
 meaning = "0 a single BSON body document, 1 a named sequence of documents."
 
@@ -2059,6 +2242,7 @@ meaning = "0 a single BSON body document, 1 a named sequence of documents."
 id = "redis"
 name = "Redis serialisation protocol"
 keys = ["Redis", "RESP", "RESP2", "RESP3", "Redis serialization protocol", "Redis serialisation protocol", "Valkey"]
+wireshark = "resp"
 summary = "The simple text-framed protocol of Redis and compatible stores such as Valkey: commands go as arrays of strings and replies as typed values."
 group = "Databases"
 ports = ["tcp/6379"]
@@ -2093,6 +2277,7 @@ meaning = "The first element of a request array: GET, SET, HGETALL, AUTH, CONFIG
 id = "memcached"
 name = "Memcached protocol"
 keys = ["Memcached", "Memcache", "Memcached protocol", "Memcached binary protocol"]
+wireshark = "memcache"
 summary = "The protocol of the memcached cache: clients store and fetch values by key, using a text protocol (or an older binary one) over TCP or UDP."
 group = "Databases"
 ports = ["tcp/11211", "udp/11211"]
@@ -2111,14 +2296,17 @@ url = "https://github.com/memcached/memcached/blob/master/doc/protocol.txt"
 
 [[format.fields]]
 name = "Command"
+wireshark = "memcache.command"
 meaning = "get, gets, gat, set, add, replace, append, prepend, cas, delete, incr, decr, touch, stats, flush_all, version, or the meta commands mg, ms, md, ma, mn."
 
 [[format.fields]]
 name = "Key"
+wireshark = "memcache.key"
 meaning = "Up to 250 bytes of text without spaces or control characters."
 
 [[format.fields]]
 name = "Flags"
+wireshark = "memcache.flags"
 meaning = "A 32-bit number the client stores with the value and gets back unchanged; libraries use it to record how the value was serialised."
 
 [[format.fields]]
@@ -2128,6 +2316,7 @@ meaning = "The length of the data block that follows the command or VALUE line."
 
 [[format.fields]]
 name = "Magic"
+wireshark = "memcache.magic"
 meaning = "In the binary protocol, 0x80 for a request and 0x81 for a response."
 
 # ---------------------------------------------------------------------------
@@ -2138,6 +2327,7 @@ meaning = "In the binary protocol, 0x80 for a request and 0x81 for a response."
 id = "coap"
 name = "Constrained Application Protocol"
 keys = ["CoAP", "CoAPS", "Constrained Application Protocol"]
+wireshark = "coap"
 summary = "A compact binary counterpart of HTTP for small devices: GET, POST, PUT and DELETE on resources, normally over UDP, with optional reliability and observation of changing values."
 group = "Internet of things"
 ports = ["udp/5683", "udp/5684", "tcp/5683", "tcp/5684"]
@@ -2164,27 +2354,32 @@ rfc = 8323
 
 [[format.fields]]
 name = "Type"
+wireshark = "coap.type"
 meaning = "0 confirmable, 1 non-confirmable, 2 acknowledgement, 3 reset."
 section = "3"
 
 [[format.fields]]
 name = "Token length"
+wireshark = "coap.token_len"
 aliases = ["TKL"]
 meaning = "The number of token bytes after the header, 0 to 8."
 section = "3"
 
 [[format.fields]]
 name = "Code"
+wireshark = "coap.code"
 meaning = "Class and detail, written c.dd: 0.00 empty, 0.01 GET, 0.02 POST, 0.03 PUT, 0.04 DELETE, 2.01 Created, 2.04 Changed, 2.05 Content, 4.00 Bad Request, 4.01 Unauthorized, 4.04 Not Found, 5.00 Internal Server Error."
 section = "3"
 
 [[format.fields]]
 name = "Message ID"
+wireshark = "coap.mid"
 meaning = "Matches acknowledgements and resets to confirmable messages and detects duplicates."
 section = "3"
 
 [[format.fields]]
 name = "Token"
+wireshark = "coap.token"
 meaning = "Chosen by the client and echoed in the response; links a response to its request independently of the message ID."
 section = "5.3.1"
 
@@ -2198,6 +2393,7 @@ section = "3.1"
 id = "mqtt-sn"
 name = "MQTT for Sensor Networks"
 keys = ["MQTT-SN", "MQTT-S", "MQTT for Sensor Networks"]
+wireshark = "mqttsn"
 summary = "A variant of MQTT for small battery-powered devices on datagram networks such as UDP, Zigbee or LoRa: topic names are replaced by short numeric IDs and a gateway connects the devices to an ordinary MQTT broker."
 group = "Internet of things"
 organisation = """
@@ -2218,34 +2414,40 @@ section = "5.2"
 
 [[format.fields]]
 name = "Length"
+wireshark = "mqttsn.msg.len"
 meaning = "The message length in bytes, including itself: one byte, or 0x01 followed by two bytes for messages of 256 bytes or more."
 section = "5.2.1"
 
 [[format.fields]]
 name = "MsgType"
+wireshark = "mqttsn.msg.type"
 aliases = ["Message type"]
 meaning = "The kind of message, from 0x00 ADVERTISE to 0x1D WILLMSGRESP; 0xFE wraps a message passed on by a forwarder."
 section = "5.2.2"
 
 [[format.fields]]
 name = "Flags"
+wireshark = "mqttsn.flags"
 meaning = "DUP, QoS (two bits), Retain, Will, CleanSession and TopicIdType (two bits)."
 section = "5.3.4"
 
 [[format.fields]]
 name = "TopicId"
+wireshark = "mqttsn.topic.id"
 aliases = ["Topic ID"]
 meaning = "A 2-byte number standing for a topic name, assigned by REGACK or agreed in advance, or two characters of a short topic name."
 section = "5.3.11"
 
 [[format.fields]]
 name = "MsgId"
+wireshark = "mqttsn.msg.id"
 aliases = ["Message ID"]
 meaning = "Matches an acknowledgement (REGACK, PUBACK, SUBACK) to the message it answers."
 section = "5.3.7"
 
 [[format.fields]]
 name = "ReturnCode"
+wireshark = "mqttsn.return.code"
 aliases = ["Return code"]
 meaning = "0x00 accepted, 0x01 rejected because of congestion, 0x02 rejected because of an invalid topic ID, 0x03 rejected as not supported."
 section = "5.3.10"
@@ -2254,6 +2456,7 @@ section = "5.3.10"
 id = "knxnet-ip"
 name = "KNXnet/IP"
 keys = ["KNXnet/IP", "KNXnetIP", "KNX/IP", "KNX IP", "EIBnet/IP"]
+wireshark = "kip"
 summary = "The way KNX building automation (lighting, blinds, heating) is carried over IP: tunnelling connects a tool or gateway to a KNX line, and routing multicasts KNX telegrams between IP-connected lines."
 group = "Industrial control"
 ports = ["udp/3671", "tcp/3671"]
@@ -2272,36 +2475,44 @@ url = "https://www.knx.org/knx-en/for-professionals/Standards/KNX-Standard/"
 
 [[format.fields]]
 name = "Header length"
+wireshark = "knxip.headerlength"
 meaning = "Always 0x06."
 
 [[format.fields]]
 name = "Protocol version"
+wireshark = "knxip.version"
 meaning = "0x10 for KNXnet/IP 1.0."
 
 [[format.fields]]
 name = "Service type"
+wireshark = "knxip.service"
 aliases = ["Service type identifier"]
 meaning = "Which request or response this is, such as 0x0205 connect request, 0x0420 tunnelling request or 0x0530 routing indication."
 
 [[format.fields]]
 name = "Total length"
+wireshark = "knxip.totallength"
 meaning = "The whole frame's length including the 6-byte header."
 
 [[format.fields]]
 name = "Channel ID"
+wireshark = "knxip.channel"
 aliases = ["Communication channel ID"]
 meaning = "The tunnelling connection, assigned by the server in its connect response."
 
 [[format.fields]]
 name = "Sequence counter"
+wireshark = "knxip.seqctr"
 meaning = "Counts tunnelling requests on a channel; the acknowledgement repeats it."
 
 [[format.fields]]
 name = "Message code"
+wireshark = "cemi.mc"
 meaning = "In the cEMI payload: 0x11 L_Data.req, 0x29 L_Data.ind, 0x2E L_Data.con."
 
 [[format.fields]]
 name = "Destination address"
+wireshark = "cemi.da"
 aliases = ["Group address"]
 meaning = "The KNX group address a telegram is sent to, written main/middle/sub such as 1/2/3, or an individual address area.line.device."
 
@@ -2313,6 +2524,7 @@ meaning = "The KNX group address a telegram is sent to, written main/middle/sub 
 id = "dnp3"
 name = "Distributed Network Protocol 3"
 keys = ["DNP3", "DNP 3", "DNP", "Distributed Network Protocol", "IEEE 1815"]
+wireshark = "dnp3"
 summary = "The SCADA protocol of North American electricity and water utilities: a control station polls outstations for measurements and events and sends them commands."
 group = "Industrial control"
 ports = ["tcp/20000", "udp/20000"]
@@ -2331,38 +2543,46 @@ url = "https://standards.ieee.org/ieee/1815/5414/"
 
 [[format.fields]]
 name = "Start"
+wireshark = "dnp3.start"
 aliases = ["Start bytes"]
 meaning = "The two bytes 0x05 0x64 that begin every link-layer frame."
 
 [[format.fields]]
 name = "Length"
+wireshark = "dnp3.len"
 meaning = "Bytes of control, destination, source and user data in the frame, not counting the start bytes, the length itself or the CRCs; 5 to 255."
 
 [[format.fields]]
 name = "Control"
+wireshark = "dnp3.ctl"
 aliases = ["Link control"]
 meaning = "Direction bit, primary bit, frame count bits and a link function code (for example 4 unconfirmed user data, 9 request link status)."
 
 [[format.fields]]
 name = "Destination"
+wireshark = "dnp3.dst"
 aliases = ["Source"]
 meaning = "16-bit station addresses, little-endian; 0xFFFD to 0xFFFF are broadcast."
 
 [[format.fields]]
 name = "Transport header"
+wireshark = "dnp3.tr.ctl"
 aliases = ["Transport control"]
 meaning = "FIN (last segment), FIR (first segment) and a 6-bit sequence number."
 
 [[format.fields]]
 name = "Application control"
+wireshark = "dnp3.al.ctl"
 meaning = "FIR, FIN, CON (confirmation wanted), UNS (unsolicited) and a 4-bit application sequence number."
 
 [[format.fields]]
 name = "Function code"
+wireshark = "dnp3.al.func"
 meaning = "0 confirm, 1 read, 2 write, 3 select, 4 operate, 5 direct operate, 13 cold restart, 14 warm restart, 20 enable unsolicited, 21 disable unsolicited, 129 response, 130 unsolicited response."
 
 [[format.fields]]
 name = "Internal indications"
+wireshark = "dnp3.al.iin"
 aliases = ["IIN"]
 meaning = "Two bytes of flags in every response: device restart, time synchronisation needed, events of class 1 to 3 available, function not supported, object unknown, parameter error and others."
 
@@ -2375,6 +2595,7 @@ meaning = "The data type as group and variation numbers, then a qualifier saying
 id = "iec-104"
 name = "IEC 60870-5-104"
 keys = ["IEC 60870-5-104", "IEC 104", "IEC-104", "IEC104", "IEC 60870-5-104 APCI"]
+wireshark = "iec60870_104"
 summary = "The telecontrol protocol used by European and many other power grids to exchange measurements, status changes and commands between control centres and substations over TCP."
 group = "Industrial control"
 ports = ["tcp/2404"]
@@ -2402,6 +2623,7 @@ meaning = "The byte 0x68 that begins every APDU."
 
 [[format.fields]]
 name = "APDU length"
+wireshark = "iec60870_104.apdulen"
 aliases = ["Length"]
 meaning = "Bytes after the length byte: the four control bytes and the ASDU, at most 253."
 
@@ -2412,21 +2634,25 @@ meaning = "Four bytes; bit 0 clear is I-format (send and receive sequence number
 
 [[format.fields]]
 name = "Type identification"
+wireshark = "iec60870_asdu.typeid"
 aliases = ["Type ID", "TypeID"]
 meaning = "The ASDU's data type, such as 1 M_SP_NA_1 single point, 13 M_ME_NC_1 short float measurement, 30 M_SP_TB_1 single point with time, 45 C_SC_NA_1 single command, 100 C_IC_NA_1 interrogation, 103 C_CS_NA_1 clock synchronisation."
 
 [[format.fields]]
 name = "Cause of transmission"
+wireshark = "iec60870_asdu.causetx"
 aliases = ["COT"]
 meaning = "Why the ASDU was sent: 1 periodic, 3 spontaneous, 6 activation, 7 activation confirmation, 10 activation termination, 20 response to station interrogation, 44 to 47 unknown type, cause, common address or object address. Includes the P/N and test bits and an originator address."
 
 [[format.fields]]
 name = "Common address"
+wireshark = "iec60870_asdu.addr"
 aliases = ["ASDU address", "Station address"]
 meaning = "The 2-byte address of the station or logical device the ASDU concerns; 65535 is broadcast."
 
 [[format.fields]]
 name = "Information object address"
+wireshark = "iec60870_asdu.ioa"
 aliases = ["IOA"]
 meaning = "A 3-byte address of one data point within the station."
 
@@ -2434,6 +2660,7 @@ meaning = "A 3-byte address of one data point within the station."
 id = "bacnet"
 name = "BACnet/IP"
 keys = ["BACnet", "BACnet/IP", "BVLC", "BACnet Virtual Link Control", "Building Automation and Control Networks"]
+wireshark = "bvlc"
 summary = "The building automation protocol for heating, ventilation, access control and lighting systems, here carried over UDP: devices discover each other and read and write the properties of objects such as sensors and set points."
 group = "Industrial control"
 ports = ["udp/47808"]
@@ -2453,36 +2680,42 @@ section = "Annex J"
 
 [[format.fields]]
 name = "BVLC type"
+wireshark = "bvlc.type"
 aliases = ["Type"]
 meaning = "0x81 for BACnet/IP (0x82 for BACnet/IPv6)."
 section = "J.2"
 
 [[format.fields]]
 name = "BVLC function"
+wireshark = "bvlc.function"
 aliases = ["Function"]
 meaning = "0x00 result, 0x04 forwarded NPDU, 0x05 register foreign device, 0x0A original unicast NPDU, 0x0B original broadcast NPDU, 0x0C secure BVLL."
 section = "J.2"
 
 [[format.fields]]
 name = "BVLC length"
+wireshark = "bvlc.length"
 aliases = ["Length"]
 meaning = "The datagram's total length including the 4-byte BVLC header."
 section = "J.2"
 
 [[format.fields]]
 name = "NPDU control"
+wireshark = "bacnet.control"
 aliases = ["Control"]
 meaning = "Bit 7 network layer message, bit 5 destination specified, bit 3 source specified, bit 2 reply expected, bits 0 and 1 priority."
 section = "6.2.2"
 
 [[format.fields]]
 name = "PDU type"
+wireshark = "bacapp.type"
 aliases = ["APDU type"]
 meaning = "Top four bits of the APDU: 0 confirmed request, 1 unconfirmed request, 2 simple ack, 3 complex ack, 4 segment ack, 5 error, 6 reject, 7 abort."
 section = "20.1"
 
 [[format.fields]]
 name = "Invoke ID"
+wireshark = "bacapp.invoke_id"
 meaning = "Chosen by the requester of a confirmed service and repeated in the reply."
 section = "20.1"
 
@@ -2495,6 +2728,7 @@ section = "21"
 id = "opc-ua"
 name = "OPC UA binary protocol"
 keys = ["OPC UA", "OPC-UA", "OPCUA", "OPC Unified Architecture", "UA TCP", "UACP", "OPC UA Connection Protocol"]
+wireshark = "opcua"
 summary = "The industrial interoperability protocol: clients browse a server's address space of nodes, read and write variables, call methods and subscribe to changes, over a secure channel on TCP."
 group = "Industrial control"
 ports = ["tcp/4840", "tcp/4843", "udp/4840"]
@@ -2520,47 +2754,55 @@ section = "6.7"
 
 [[format.fields]]
 name = "Message type"
+wireshark = "opcua.transport.type"
 aliases = ["MessageType"]
 meaning = "Three ASCII characters: HEL, ACK, ERR, RHE, OPN, MSG or CLO."
 section = "7.1.2"
 
 [[format.fields]]
 name = "Chunk type"
+wireshark = "opcua.transport.chunk"
 aliases = ["IsFinal", "Reserved"]
 meaning = "'F' final chunk, 'C' intermediate chunk, 'A' final chunk of an aborted message."
 section = "7.1.2"
 
 [[format.fields]]
 name = "Message size"
+wireshark = "opcua.transport.size"
 aliases = ["MessageSize"]
 meaning = "The chunk's length in bytes, header included."
 section = "7.1.2"
 
 [[format.fields]]
 name = "Secure channel ID"
+wireshark = "opcua.transport.scid"
 aliases = ["SecureChannelId"]
 meaning = "Identifies the secure channel, assigned by the server in its OpenSecureChannel response."
 section = "6.7.2"
 
 [[format.fields]]
 name = "Security policy URI"
+wireshark = "opcua.security.spu"
 aliases = ["SecurityPolicyUri"]
 meaning = "In OPN messages, the algorithms in use; http://opcfoundation.org/UA/SecurityPolicy#None means no signing or encryption."
 section = "6.7.2"
 
 [[format.fields]]
 name = "Sequence number"
+wireshark = "opcua.sequence.seq"
 meaning = "Increases by one for every chunk sent on the channel."
 section = "6.7.2"
 
 [[format.fields]]
 name = "Request ID"
+wireshark = "opcua.sequence.rqid"
 aliases = ["RequestId"]
 meaning = "Identifies a request; every chunk of the request and of its response carries it."
 section = "6.7.2"
 
 [[format.fields]]
 name = "Endpoint URL"
+wireshark = "opcua.transport.endpoint"
 aliases = ["EndpointUrl"]
 meaning = "In HEL, the URL the client is connecting to, such as opc.tcp://plc.example:4840/."
 section = "7.1.2"
@@ -2569,6 +2811,7 @@ section = "7.1.2"
 id = "tpkt-cotp"
 name = "ISO transport over TCP (TPKT and COTP)"
 keys = ["TPKT", "COTP", "ISO-TSAP", "ISO on TCP", "RFC 1006", "ISO 8073", "X.224", "Connection-Oriented Transport Protocol"]
+wireshark = "tpkt"
 summary = "The small framing layers that carry OSI protocols over TCP: TPKT gives each packet a length, and the ISO transport protocol (COTP) connects to a named transport service access point. Used by Siemens S7, IEC 61850 MMS, ICCP and the start of RDP."
 group = "Industrial control"
 ports = ["tcp/102"]
@@ -2601,33 +2844,39 @@ url = "https://www.itu.int/rec/T-REC-X.224"
 
 [[format.fields]]
 name = "Version"
+wireshark = "tpkt.version"
 aliases = ["TPKT version"]
 meaning = "Always 3."
 section = "6"
 
 [[format.fields]]
 name = "Length"
+wireshark = "tpkt.length"
 aliases = ["TPKT length"]
 meaning = "The whole TPKT packet's length including its 4-byte header, big-endian; at most 65,535."
 section = "6"
 
 [[format.fields]]
 name = "Length indicator"
+wireshark = "cotp.li"
 aliases = ["LI"]
 meaning = "The COTP header's length in bytes, not counting this byte."
 
 [[format.fields]]
 name = "PDU type"
+wireshark = "cotp.type"
 aliases = ["TPDU code", "Code"]
 meaning = "0xE0 connection request, 0xD0 connection confirm, 0x80 disconnect request, 0xC0 disconnect confirm, 0xF0 data, 0x70 TPDU error."
 
 [[format.fields]]
 name = "Called TSAP"
+wireshark = "cotp.dst-tsap"
 aliases = ["Destination TSAP", "Calling TSAP", "Source TSAP"]
 meaning = "Transport service access points naming the two ends of the connection; for S7 the called TSAP's second byte encodes rack and slot."
 
 [[format.fields]]
 name = "EOT"
+wireshark = "cotp.eot"
 aliases = ["Last data unit"]
 meaning = "Top bit of the byte after 0xF0 in a data TPDU: set on the last TPDU of a user message."
 
@@ -2635,6 +2884,7 @@ meaning = "Top bit of the byte after 0xF0 in a data TPDU: set on the last TPDU o
 id = "s7comm"
 name = "Siemens S7 communication (S7comm)"
 keys = ["S7comm", "S7", "S7 Communication", "Siemens S7", "S7comm-plus", "S7CommPlus"]
+wireshark = "s7comm"
 summary = "Siemens' proprietary protocol for programming and reading or writing data in SIMATIC S7 controllers, carried over ISO transport on TCP port 102. No official specification is published; what is known comes from reverse engineering."
 group = "Industrial control"
 ports = ["tcp/102"]
@@ -2661,33 +2911,40 @@ url = "https://www.itu.int/rec/T-REC-X.224"
 
 [[format.fields]]
 name = "Protocol ID"
+wireshark = "s7comm.header.protid"
 meaning = "0x32 for S7comm; 0x72 for S7comm-plus."
 
 [[format.fields]]
 name = "ROSCTR"
+wireshark = "s7comm.header.rosctr"
 aliases = ["Message type"]
 meaning = "1 job (request), 2 acknowledgement without data, 3 acknowledgement with data, 7 user data."
 
 [[format.fields]]
 name = "PDU reference"
+wireshark = "s7comm.header.pduref"
 meaning = "Chosen by the requester and repeated in the reply."
 
 [[format.fields]]
 name = "Parameter length"
+wireshark = "s7comm.header.parlg"
 aliases = ["Data length"]
 meaning = "Sizes of the parameter and data blocks that follow the header."
 
 [[format.fields]]
 name = "Error class"
+wireshark = "s7comm.header.errcls"
 aliases = ["Error code"]
 meaning = "In acknowledgements: 0 no error, 0x81 application relationship error, 0x82 object definition error, 0x83 no resources, 0x84 service processing error, 0x85 error on supplies, 0x87 access error."
 
 [[format.fields]]
 name = "Function"
+wireshark = "s7comm.param.func"
 meaning = "0xF0 setup communication, 0x04 read variable, 0x05 write variable, 0x1A request download, 0x1D start upload, 0x28 PLC control, 0x29 PLC stop."
 
 [[format.fields]]
 name = "Area"
+wireshark = "s7comm.param.item.area"
 aliases = ["Memory area"]
 meaning = "Which memory a read or write item addresses: 0x81 process inputs, 0x82 process outputs, 0x83 flags (markers), 0x84 data blocks, 0x1C counters, 0x1D timers."
 
@@ -2695,6 +2952,7 @@ meaning = "Which memory a read or write item addresses: 0x81 process inputs, 0x8
 id = "enip-cip"
 name = "EtherNet/IP and CIP"
 keys = ["EtherNet/IP", "ENIP", "EtherNet-IP", "CIP", "Common Industrial Protocol"]
+wireshark = "enip"
 summary = "The industrial Ethernet protocol of Rockwell (Allen-Bradley) and other controllers: an encapsulation layer on TCP and UDP carrying the Common Industrial Protocol, used for explicit request and response messaging and cyclic I/O."
 group = "Industrial control"
 ports = ["tcp/44818", "udp/44818", "udp/2222"]
@@ -2719,31 +2977,38 @@ url = "https://www.odva.org/technology-standards/key-technologies/common-industr
 
 [[format.fields]]
 name = "Command"
+wireshark = "enip.command"
 meaning = "0x0004 ListServices, 0x0063 ListIdentity, 0x0064 ListInterfaces, 0x0065 RegisterSession, 0x0066 UnRegisterSession, 0x006F SendRRData, 0x0070 SendUnitData."
 
 [[format.fields]]
 name = "Length"
+wireshark = "enip.length"
 meaning = "The number of bytes after the 24-byte encapsulation header."
 
 [[format.fields]]
 name = "Session handle"
+wireshark = "enip.session"
 meaning = "Returned by RegisterSession and carried in every later message of the session."
 
 [[format.fields]]
 name = "Status"
+wireshark = "enip.status"
 meaning = "0 success; non-zero values report encapsulation errors such as 0x0001 invalid command or 0x0064 invalid session handle."
 
 [[format.fields]]
 name = "Sender context"
+wireshark = "enip.context"
 meaning = "Eight bytes the sender chooses and the receiver copies into its reply."
 
 [[format.fields]]
 name = "Item type"
+wireshark = "enip.cpf.typeid"
 aliases = ["Type ID"]
 meaning = "In the common packet format: 0x0000 null address, 0x000C ListIdentity response, 0x00A1 connected address, 0x00B1 connected data, 0x00B2 unconnected data, 0x8002 sequenced address."
 
 [[format.fields]]
 name = "Service"
+wireshark = "cip.service"
 aliases = ["Service code"]
 meaning = "The CIP service: 0x01 Get_Attributes_All, 0x0E Get_Attribute_Single, 0x10 Set_Attribute_Single, 0x4C Read Tag, 0x4D Write Tag, 0x4E Forward_Close, 0x52 Unconnected_Send, 0x54 Forward_Open; replies add 0x80."
 
@@ -2754,12 +3019,14 @@ meaning = "Segments naming what the service acts on: 0x20 class, 0x24 instance, 
 
 [[format.fields]]
 name = "General status"
+wireshark = "cip.genstat"
 meaning = "In a reply: 0x00 success, 0x01 connection failure, 0x04 path segment error, 0x05 path destination unknown, 0x08 service not supported, 0x0F privilege violation."
 
 [[format]]
 id = "profinet"
 name = "PROFINET"
 keys = ["PROFINET", "PROFINET IO", "PROFINET RT", "PROFINET DCP", "PN-DCP", "PROFINET Real-Time"]
+wireshark = "pn_rt"
 summary = "The industrial Ethernet standard of PROFIBUS and PROFINET International, used with Siemens and many other controllers: cyclic I/O data straight on Ethernet, device discovery and naming with DCP, and connection set-up over DCE/RPC on UDP."
 group = "Industrial control"
 ethertypes = [0x8892]
@@ -2787,27 +3054,33 @@ url = "https://www.profibus.com/technologies/profinet"
 
 [[format.fields]]
 name = "FrameID"
+wireshark = "pn_rt.frame_id"
 aliases = ["Frame ID"]
 meaning = "The first two bytes after the EtherType: 0x8000 to 0xFBFF cyclic real-time data, 0xFC01 high priority alarm, 0xFE01 low priority alarm, 0xFEFC DCP hello, 0xFEFD DCP get and set, 0xFEFE DCP identify request, 0xFEFF DCP identify response."
 
 [[format.fields]]
 name = "Cycle counter"
+wireshark = "pn_rt.cycle_counter"
 meaning = "Counts in units of 31.25 microseconds in cyclic frames, so gaps and jitter can be measured."
 
 [[format.fields]]
 name = "Data status"
+wireshark = "pn_rt.ds"
 meaning = "Flags at the end of a cyclic frame: primary or backup, data valid, provider running or stopped, station problem."
 
 [[format.fields]]
 name = "Service ID"
+wireshark = "pn_dcp.service_id"
 meaning = "In DCP: 1 get, 2 set, 3 identify, 4 hello."
 
 [[format.fields]]
 name = "Xid"
+wireshark = "pn_dcp.xid"
 aliases = ["Transaction ID"]
 meaning = "In DCP, matches responses to the request."
 
 [[format.fields]]
 name = "Option"
+wireshark = "pn_dcp.option"
 aliases = ["Suboption", "Block"]
 meaning = "DCP blocks: option 1 IP (address, mask, gateway), 2 device properties (vendor, station name, device ID, role), 5 control, 255 all selector."
