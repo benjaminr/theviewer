@@ -3004,6 +3004,12 @@ meaning = "The whole TPKT packet's length including its 4-byte header, big-endia
 section = "6"
 
 [[format.fields]]
+name = "Reserved"
+wireshark = "tpkt.reserved"
+meaning = "The byte after the version, always 0."
+section = "6"
+
+[[format.fields]]
 name = "Length indicator"
 wireshark = "cotp.li"
 aliases = ["LI"]
@@ -3014,6 +3020,44 @@ name = "PDU type"
 wireshark = "cotp.type"
 aliases = ["TPDU code", "Code"]
 meaning = "0xE0 connection request, 0xD0 connection confirm, 0x80 disconnect request, 0xC0 disconnect confirm, 0xF0 data, 0x70 TPDU error."
+
+[[format.fields]]
+name = "Destination reference"
+wireshark = "cotp.destref"
+aliases = ["DST-REF"]
+meaning = "The reference the receiving side chose for this connection; zero in a connection request, since the responder has not chosen one yet."
+
+[[format.fields]]
+name = "Source reference"
+wireshark = "cotp.srcref"
+aliases = ["SRC-REF"]
+meaning = "The reference the sending side chose to tell this connection apart from its others; the peer returns it as the destination reference."
+
+[[format.fields]]
+name = "Class"
+wireshark = "cotp.class"
+aliases = ["Class option"]
+meaning = "Connection request and confirm: the transport class in the top four bits, 0 over TCP since TCP already recovers errors, and option bits below, such as extended formats and no explicit flow control."
+
+[[format.fields]]
+name = "Reason"
+meaning = "Disconnect request: why the connection is refused or closed, such as 0x00 not specified, 0x01 congestion, 0x02 session entity not attached to the TSAP, 0x80 normal disconnect, 0x81 remote congestion, 0x85 protocol error."
+
+[[format.fields]]
+name = "TPDU size"
+wireshark = "cotp.tpdu_size"
+meaning = "Parameter 0xC0: the largest TPDU, as a power of two from 0x07 (128 bytes) to 0x0D (8192 bytes); the responder may lower what the requester proposed. S7 controllers commonly agree on 1024."
+
+[[format.fields]]
+name = "Parameter *"
+wireshark = "cotp.parameter_code"
+meaning = "Another parameter of a connection TPDU, by its code, such as 0xC4 version, 0xC6 additional option selection or 0xF0 preferred maximum TPDU size; each is a code, a length and a value."
+
+[[format.fields]]
+name = "TPDU number"
+wireshark = "cotp.tpdu-number"
+aliases = ["TPDU-NR"]
+meaning = "Data TPDU: the 7-bit sequence number below the EOT bit; class 0 has no flow control and leaves it zero."
 
 [[format.fields]]
 name = "Called TSAP"
@@ -3074,6 +3118,12 @@ aliases = ["Message type"]
 meaning = "1 job (request), 2 acknowledgement without data, 3 acknowledgement with data, 7 user data."
 
 [[format.fields]]
+name = "Redundancy identification"
+wireshark = "s7comm.header.redid"
+aliases = ["Reserved"]
+meaning = "Two bytes after the message type, always zero in practice; tools describe them as reserved for redundant setups."
+
+[[format.fields]]
 name = "PDU reference"
 wireshark = "s7comm.header.pduref"
 meaning = "Chosen by the requester and repeated in the reply."
@@ -3081,14 +3131,34 @@ meaning = "Chosen by the requester and repeated in the reply."
 [[format.fields]]
 name = "Parameter length"
 wireshark = "s7comm.header.parlg"
-aliases = ["Data length"]
-meaning = "Sizes of the parameter and data blocks that follow the header."
+meaning = "The size of the parameter block that follows the header, in bytes."
+
+[[format.fields]]
+name = "Data length"
+wireshark = "s7comm.header.datlg"
+meaning = "The size of the data block after the parameter block, in bytes; zero when the message carries no data."
 
 [[format.fields]]
 name = "Error class"
 wireshark = "s7comm.header.errcls"
-aliases = ["Error code"]
 meaning = "In acknowledgements: 0 no error, 0x81 application relationship error, 0x82 object definition error, 0x83 no resources, 0x84 service processing error, 0x85 error on supplies, 0x87 access error."
+
+[[format.fields]]
+name = "Error code"
+wireshark = "s7comm.header.errcod"
+meaning = "In acknowledgements: the particular error within its class; together the two bytes form one code, such as 0x8104 for a function the controller does not support."
+
+[[format.fields]]
+name = "Parameter"
+wireshark = "s7comm.param"
+aliases = ["Parameter block"]
+meaning = "The parameter block: the function and what it asks for, such as the items to read; in user data, the method, function group and subfunction."
+
+[[format.fields]]
+name = "Data"
+wireshark = "s7comm.data"
+aliases = ["Data block"]
+meaning = "The data block after the parameters: values written in a write request, values read in a reply, or the payload of a user data function."
 
 [[format.fields]]
 name = "Function"
@@ -3096,10 +3166,65 @@ wireshark = "s7comm.param.func"
 meaning = "0xF0 setup communication, 0x04 read variable, 0x05 write variable, 0x1A request download, 0x1D start upload, 0x28 PLC control, 0x29 PLC stop."
 
 [[format.fields]]
+name = "Max AmQ (parallel jobs with ack) calling"
+wireshark = "s7comm.param.maxamq_calling"
+meaning = "Setup communication: how many jobs the client may have outstanding with the controller at once."
+
+[[format.fields]]
+name = "Max AmQ (parallel jobs with ack) called"
+wireshark = "s7comm.param.maxamq_called"
+meaning = "Setup communication: how many jobs the controller may have outstanding with the client at once."
+
+[[format.fields]]
+name = "PDU length"
+wireshark = "s7comm.param.pdu_length"
+meaning = "Setup communication: the largest S7 message, in bytes; the client proposes one and the controller replies with what it accepts, often 240 or 480."
+
+[[format.fields]]
+name = "Item count"
+wireshark = "s7comm.param.itemcount"
+meaning = "Read and write variable: how many items the request addresses."
+
+[[format.fields]]
+name = "Item *"
+wireshark = "s7comm.param.item"
+meaning = "One item of a read or write request: a variable specification giving the data type, the number of elements, the DB number, the memory area and the start address."
+
+[[format.fields]]
 name = "Area"
 wireshark = "s7comm.param.item.area"
 aliases = ["Memory area"]
 meaning = "Which memory a read or write item addresses: 0x81 process inputs, 0x82 process outputs, 0x83 flags (markers), 0x84 data blocks, 0x1C counters, 0x1D timers."
+
+[[format.fields]]
+name = "DB number"
+wireshark = "s7comm.param.item.db"
+meaning = "The data block an item addresses when its area is 0x84, such as 1 for DB1; zero for other areas."
+
+[[format.fields]]
+name = "Address"
+wireshark = "s7comm.param.item.address"
+meaning = "Where in the area the item starts, as a 24-bit bit address: the byte offset times eight plus the bit number."
+
+[[format.fields]]
+name = "Type"
+wireshark = "s7comm.param.userdata.type"
+meaning = "User data: the method in the top four bits, 0x0 push, 0x4 request, 0x8 response."
+
+[[format.fields]]
+name = "Function group"
+wireshark = "s7comm.param.userdata.funcgroup"
+meaning = "User data: the group of functions, such as 0x1 programmer commands, 0x2 cyclic data, 0x3 block functions, 0x4 CPU functions (including reading the system status list), 0x5 security and 0x7 time functions."
+
+[[format.fields]]
+name = "Subfunction"
+wireshark = "s7comm.param.userdata.subfunc"
+meaning = "User data: the function within its group, such as 0x01 read system status list in the CPU functions or 0x01 read clock in the time functions."
+
+[[format.fields]]
+name = "Sequence number"
+wireshark = "s7comm.param.userdata.seq_num"
+meaning = "User data: ties together the parts of a reply too long for one message; zero when it is not used."
 
 [[format]]
 id = "enip-cip"
