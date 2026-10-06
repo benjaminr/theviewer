@@ -31,6 +31,7 @@ Packet records follow back to back with no padding. Each starts with a 16-byte h
 The link type says what the first byte of every packet is: 1 is Ethernet, 101, 228 and 229 are raw IP (no link header), 113 and 276 are Linux cooked captures, 0 is BSD loopback. Its upper bits can also record whether frames end in a frame check sequence.
 """
 carries = ["ethernet", "ipv4", "ipv6"]
+group = "Capture files"
 
 [[format.specs]]
 document = "draft-ietf-opsawg-pcap-09"
@@ -112,6 +113,7 @@ A file is one or more sections, each opened by a Section Header Block of type 0x
 Interface Description Blocks (type 1) follow, one per capture interface, numbered from zero in order of appearance; each gives a link type, snapshot length and options such as the timestamp resolution. Enhanced Packet Blocks (type 6) then name their interface by that number and carry a 64-bit timestamp, captured and original lengths and the packet data. Simple Packet Blocks (type 3), Name Resolution Blocks (type 4), Interface Statistics Blocks (type 5) and Decryption Secrets Blocks (type 10) may also appear.
 """
 carries = ["ethernet", "ipv4", "ipv6"]
+group = "Capture files"
 
 [[format.specs]]
 document = "draft-ietf-opsawg-pcapng-06"
@@ -171,6 +173,7 @@ The EtherType names the payload: 0x0800 is IPv4, 0x86DD IPv6, 0x0806 ARP, and 0x
 A frame on the wire is at least 64 bytes including the check sequence, so payloads shorter than 46 bytes are padded. The IP or ARP length fields say where the real payload ends; the bytes after it appear as Padding.
 """
 carries = ["vlan", "ipv4", "ipv6", "arp"]
+group = "Link layer"
 
 [[format.specs]]
 document = "IEEE 802.3-2022"
@@ -213,6 +216,8 @@ The control word holds a 3-bit priority code point, a 1-bit drop-eligible indica
 Tags can be stacked ("Q-in-Q"): a provider's outer service tag uses identifier 0x88A8 (or the older 0x9100) and the customer's inner tag 0x8100. Each tag appears as its own layer here, and the last one's EtherType names the payload.
 """
 carries = ["vlan", "ipv4", "ipv6", "arp"]
+group = "Link layer"
+ethertypes = [0x8100, 0x88a8, 0x9100]
 
 [[format.specs]]
 document = "IEEE 802.1Q-2022"
@@ -244,6 +249,8 @@ For IPv4 over Ethernet the lengths are 6 and 4, so the packet is 28 bytes and th
 A request is normally broadcast with the target hardware address left as zeros; the reply is sent directly back to the asker. A "gratuitous" ARP, where sender and target protocol addresses are the same, announces an address or detects a conflict.
 """
 carries = []
+group = "Link layer"
+ethertypes = [0x0806]
 
 [[format.specs]]
 document = "RFC 826"
@@ -309,6 +316,9 @@ The total length counts the header and the data together, so the packet ends at 
 A packet can be split into fragments that share an identification value. Each fragment's offset (in 8-byte units) says where its data belongs, and the "more fragments" flag is set on all but the last. Only the fragment at offset zero carries the transport header, so later fragments are shown here as plain Fragment data.
 """
 carries = ["tcp", "udp", "icmp"]
+group = "Internet layer"
+ethertypes = [0x0800]
+ip_protocols = [4]
 
 [[format.specs]]
 document = "RFC 791"
@@ -393,6 +403,9 @@ The payload length counts everything after the fixed header, extension headers i
 The next header byte uses the same numbers as IPv4's protocol field. It either names the upper layer (6 TCP, 17 UDP, 58 ICMPv6) or an extension header (0 hop-by-hop options, 43 routing, 44 fragment, 60 destination options), each of which carries its own next header byte, forming a chain. Value 59 means nothing follows.
 """
 carries = ["ipv6-extension", "ipv6-fragment", "tcp", "udp", "icmpv6"]
+group = "Internet layer"
+ethertypes = [0x86dd]
+ip_protocols = [41]
 
 [[format.specs]]
 document = "RFC 8200"
@@ -455,6 +468,8 @@ Each of these headers starts with two bytes: the next header (which type follows
 Hop-by-hop options (type 0) must come first and are examined by routers on the path, for instance the router alert and jumbo payload options. Destination options (type 60) are for the receiver. Both hold options encoded as type, length and value, padded with Pad1 and PadN to a multiple of 8 bytes. The routing header (type 43) carries a routing type and a list of addresses, used today mainly by segment routing (type 4).
 """
 carries = ["ipv6-extension", "ipv6-fragment", "tcp", "udp", "icmpv6"]
+group = "Internet layer"
+ip_protocols = [0, 43, 60]
 
 [[format.specs]]
 document = "RFC 8200"
@@ -482,6 +497,8 @@ The header is a fixed 8 bytes: next header, a reserved byte, a 16-bit word holdi
 Only the first fragment (offset zero) holds the upper-layer header, so later fragments are shown as plain Fragment data. Routers never fragment IPv6 packets; a router that cannot forward one sends an ICMPv6 Packet Too Big message to the sender instead.
 """
 carries = ["tcp", "udp", "icmpv6"]
+group = "Internet layer"
+ip_protocols = [44]
 
 [[format.specs]]
 document = "RFC 8200"
@@ -505,6 +522,8 @@ ICMP travels inside IPv4 with protocol number 1. Every message starts with a 1-b
 Error messages (destination unreachable 3, time exceeded 11, redirect 5) then quote the IPv4 header and at least the first 8 bytes of the packet that caused them, which is enough to identify the original ports. Echo messages carry arbitrary data that the reply returns unchanged.
 """
 carries = ["ipv4"]
+group = "Internet layer"
+ip_protocols = [1]
 
 [[format.specs]]
 document = "RFC 792"
@@ -552,6 +571,8 @@ ICMPv6 follows the IPv6 header (or its extension headers) with next header 58. L
 Types 0 to 127 are errors (1 destination unreachable, 2 packet too big, 3 time exceeded, 4 parameter problem), and they quote as much of the offending packet as fits in the minimum IPv6 MTU. Types 128 to 255 are informational: 128 and 129 are echo request and reply with an identifier and sequence number, and 133 to 137 are neighbour discovery messages (router solicitation and advertisement, neighbour solicitation and advertisement, redirect).
 """
 carries = ["ipv6"]
+group = "Internet layer"
+ip_protocols = [58]
 
 [[format.specs]]
 document = "RFC 4443"
@@ -616,6 +637,8 @@ A connection opens with a three-way handshake (SYN, SYN+ACK, ACK) in which each 
 The ports identify the conversation and, by convention, the application inside: 80 HTTP, 443 HTTPS (TLS), 22 SSH, 53 DNS, 502 Modbus/TCP, 1883 MQTT. Because TCP is a stream, one application message can span several segments and one segment can hold several messages.
 """
 carries = ["http", "tls-record", "ssh-banner", "dns", "modbus", "mqtt"]
+group = "Transport"
+ip_protocols = [6]
 
 [[format.specs]]
 document = "RFC 9293"
@@ -687,6 +710,8 @@ The length counts the header and the payload together, so it is never less than 
 The ports name the application by convention: 53 DNS, 5353 multicast DNS, 123 NTP. Each datagram is one application message, so unlike TCP no reassembly is needed.
 """
 carries = ["dns", "ntp"]
+group = "Transport"
+ip_protocols = [17]
 
 [[format.specs]]
 document = "RFC 768"
@@ -729,6 +754,8 @@ Names are a sequence of labels, each a length byte (1 to 63) followed by that ma
 DNS normally uses UDP port 53 (and multicast DNS uses port 5353 with the same format). Over TCP each message is preceded by a 2-byte length, shown here as the Length field.
 """
 carries = []
+group = "Naming and time"
+ports = ["udp/53", "tcp/53", "udp/5353"]
 
 [[format.specs]]
 document = "RFC 1035"
@@ -858,6 +885,8 @@ Header field lines follow, each "Name: value" ending in CR LF; names are case-in
 The body, if any, starts after the empty line. Its length comes from Transfer-Encoding: chunked (a series of hexadecimal-sized chunks ending with a zero-sized one), otherwise from Content-Length, and for responses without either, from the server closing the connection. Several messages can follow each other on one TCP connection. HTTP/2 and HTTP/3 are binary framings of the same semantics and are not decoded here; HTTPS is HTTP inside TLS.
 """
 carries = []
+group = "Web and remote access"
+ports = ["tcp/80", "tcp/8080"]
 
 [[format.specs]]
 document = "RFC 9112"
@@ -941,6 +970,8 @@ The version field is a legacy value: 0x0301 to 0x0303 for TLS 1.0 to 1.2, and TL
 Handshake records carry messages that each start with a 1-byte type and a 3-byte length. A connection begins with a ClientHello and a ServerHello in plain text. In TLS 1.2 the certificate and key exchange messages that follow are also readable; in TLS 1.3 everything after the ServerHello is encrypted and sent as application data records, with the real content type hidden inside.
 """
 carries = []
+group = "Web and remote access"
+ports = ["tcp/443", "tcp/465", "tcp/853", "tcp/993", "tcp/995", "tcp/8883"]
 
 [[format.specs]]
 document = "RFC 8446"
@@ -1043,6 +1074,8 @@ The identification line has the form "SSH-protoversion-softwareversion", optiona
 A server may send other lines of text before its identification line; only the line starting "SSH-" counts. Immediately after the exchange both sides switch to the binary packet protocol: each packet is a 4-byte length, a 1-byte padding length, the payload, random padding and, once keys are in place, a MAC. The first packets, the key exchange initialisation (message 20), are still unencrypted and list the algorithms each side supports.
 """
 carries = []
+group = "Web and remote access"
+ports = ["tcp/22"]
 
 [[format.specs]]
 document = "RFC 4253"
@@ -1064,6 +1097,8 @@ Timestamps are 32.32 fixed point: whole seconds since 1 January 1900 UTC and a b
 In a client/server exchange the client sends its transmit time; the server records when the request arrived and when its reply left, and copies the client's time into the origin field. With the client's own arrival time, those four timestamps give both the offset and the delay.
 """
 carries = []
+group = "Naming and time"
+ports = ["udp/123"]
 
 [[format.specs]]
 document = "RFC 5905"
@@ -1129,6 +1164,8 @@ The remaining length is a variable-length integer of one to four bytes, 7 bits p
 A PUBLISH carries its quality of service (0 at most once, 1 at least once, 2 exactly once), duplicate and retain bits in the flags; its variable header is the topic name (a 2-byte length then UTF-8 text) and, for QoS 1 and 2, a 2-byte packet identifier. In MQTT 5.0 a block of properties follows before the payload. A CONNECT starts with the protocol name "MQTT" and a protocol level (4 for 3.1.1, 5 for 5.0).
 """
 carries = []
+group = "Messaging"
+ports = ["tcp/1883"]
 
 [[format.specs]]
 document = "MQTT Version 3.1.1"
@@ -1194,6 +1231,8 @@ The Modbus PDU follows: a 1-byte function code and its data, at most 253 bytes i
 If the server cannot carry out a request it answers with the function code plus 0x80 and a 1-byte exception code. Servers listen on TCP port 502.
 """
 carries = []
+group = "Industrial control"
+ports = ["tcp/502"]
 
 [[format.specs]]
 document = "Modbus Application Protocol Specification V1.1b3"
