@@ -28,7 +28,7 @@ Errors are `{code, message, data}`, with these codes:
 | [`api.describe`](#apidescribe) | read | Every method with its summary, effect, stability and the JSON schemas of its parameters and result. |
 | [`documents.list`](#documentslist) | read | The open documents, with their ids, names, paths, lengths and versions. |
 | [`documents.info`](#documentsinfo) | read | One document's id, name, path, length, version and whether it has unsaved edits. |
-| [`documents.open`](#documentsopen) | view | Open a file by path and make it the current document; a file already open is made current again. |
+| [`documents.open`](#documentsopen) | view | Open a file by path, or an open document by id, and make it current; a file already open is made current again. In the window, a parent of the document shown is gone back to, closing what was derived from it. |
 | [`documents.new`](#documentsnew) | view | Open a new, empty document and make it current; the window refuses while its document has unsaved edits. |
 | [`documents.save`](#documentssave) | edit | Save a document over its file, or to a path, with every edit made so far. |
 | [`bytes.read`](#bytesread) | read | Read a span of bytes, as hex by default, or as base64 or text. |
@@ -134,11 +134,12 @@ One document's id, name, path, length, version and whether it has unsaved edits.
 
 ### documents.open
 
-Open a file by path and make it the current document; a file already open is made current again.
+Open a file by path, or an open document by id, and make it current; a file already open is made current again. In the window, a parent of the document shown is gone back to, closing what was derived from it.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `path` | string | yes | Path of the file to open. |
+| `doc` | string | no | Id of an open document to make current, such as a parent the window derived the document shown from. |
+| `path` | string | no | Path of the file to open. |
 
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |

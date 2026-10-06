@@ -456,7 +456,7 @@ fn columns_start_from_the_record_width_the_period_scan_published() {
     harness.state_mut().start_period_scan();
     wait_for(&mut harness, |app| !app.scan_pending);
     steps(&mut harness, 2);
-    let published = harness.state().bus.latest::<theviewer::bus::topics::RecordWidthEstimated>("doc-1").map(|(fact, estimate)| (fact.producer().to_string(), estimate.width));
+    let published = harness.state().bus.latest::<theviewer::bus::topics::RecordWidthEstimated>(&harness.state().document_id()).map(|(fact, estimate)| (fact.producer().to_string(), estimate.width));
     assert_eq!(published, Some(("tool:period-scan".to_string(), 24)));
 
     harness.state_mut().dock.toggle(DockTab::Columns);

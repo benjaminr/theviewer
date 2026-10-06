@@ -692,7 +692,7 @@ mod tests {
             end)"#,
         );
         publish_frames(&mut app, &[(0, 4), (4, 4)]);
-        let (fact, identified) = app.bus.latest::<ProtocolIdentified>("doc-1").expect("the plugin identified the frames");
+        let (fact, identified) = app.bus.latest::<ProtocolIdentified>(&app.document_id()).expect("the plugin identified the frames");
         assert_eq!((identified.protocol.as_str(), identified.frames.len()), ("acme-telemetry", 2));
         assert_eq!(fact.producer(), "plugin:acme.lua");
         assert!(fact.draft.caused_by.is_some(), "it says which message it answered");

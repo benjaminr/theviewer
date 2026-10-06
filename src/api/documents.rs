@@ -24,12 +24,18 @@ pub struct InfoParams {
     pub doc: Option<String>,
 }
 
-/// Parameters of `documents.open`.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+/// Parameters of `documents.open`: a file by `path`, or an open document
+/// by its id as `doc`.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct OpenParams {
     /// Path of the file to open.
-    pub path: String,
+    #[serde(default)]
+    pub path: Option<String>,
+    /// Id of an open document to make current, such as a parent the window
+    /// derived the document shown from.
+    #[serde(default)]
+    pub doc: Option<String>,
 }
 
 /// Parameters of `documents.save`.
@@ -74,7 +80,15 @@ pub fn info(workspace: &mut dyn Workspace, params: InfoParams) -> Result<Documen
 }
 
 pub fn open(workspace: &mut dyn Workspace, params: OpenParams) -> Result<DocumentInfo, ApiError> {
-    let id = workspace.open_path(Path::new(&params.path))?;
+    let id = match (params.path, params.doc) {
+        (Some(path), None) => workspace.open_path(Path::new(&path))?,
+        (None, Some(doc)) => {
+            let id = workspace::resolve(workspace, Some(&doc))?;
+            workspace.switch_to(&id)?;
+            id
+        }
+        _ => return Err(ApiError::invalid_params("give the file to open as path, or an open document's id as doc, not both")),
+    };
     workspace::info(workspace, &id)
 }
 

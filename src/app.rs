@@ -16,7 +16,6 @@ use crate::packing::RowPacker;
 use crate::preferences::{self, Preferences};
 use crate::parsers;
 use crate::plugins::{self, ActionHost, LoadReport, LuaHost};
-use crate::api::workspace::WINDOW_DOCUMENT_ID;
 use crate::bookmarks::{self, Bookmark, Sidecar};
 use crate::bus::topics::{FindingsPublished, RecordWidthEstimated, StructureIdentified};
 use crate::bus::{Draft, Payload};
@@ -85,7 +84,12 @@ pub struct PatternKey {
 /// A document we descended from by decompressing a block, kept so the user
 /// can go back to it with their place intact.
 pub struct ParentDocument {
+    /// The id the API and the bus know it by, kept while it waits.
+    pub id: String,
     pub document: Document,
+    /// The version `document.edited` has been published up to, so edits
+    /// made to it through the API while it waits are published.
+    pub(crate) published_version: u64,
     pub shape: Shape,
     pub cursor: usize,
     pub top_row: usize,
@@ -95,6 +99,20 @@ pub struct ParentDocument {
     pattern_key: Option<PatternKey>,
     period_scan: Option<PeriodScan>,
     entropy_map: Option<Vec<f32>>,
+}
+
+/// What a document shown in place of another is to the API and the bus.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Identity {
+    /// A new top-level document: the one shown and its parents are closed.
+    New,
+    /// Derived from the one shown, which waits on the parent stack.
+    Derived,
+    /// The parent with this id, come back to; the one shown is closed.
+    Back(String),
+    /// The same document with new bytes (a live source, or saved and
+    /// opened again): its id stays, and what was known about it goes.
+    Same,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -178,6 +196,10 @@ struct RasterKey {
 
 pub struct ViewerApp {
     pub document: Document,
+    /// The id the API and the bus know the shown document by.
+    pub(crate) document_id: String,
+    /// Documents ever opened in the window, for the next id.
+    documents_opened: usize,
     pub shape: Shape,
     pub zoom: f32,
     pub top_row: usize,
@@ -516,6 +538,8 @@ impl ViewerApp {
         let (analysis_tx, analysis_rx) = mpsc::channel();
         let mut app = ViewerApp {
             document: Document::default(),
+            document_id: format!("doc-{}", 1),
+            documents_opened: 1,
             shape: Shape {
                 format: PixelFormat::Gray8,
                 palette: Palette::Grey,
@@ -758,13 +782,19 @@ impl ViewerApp {
     }
 
     pub fn load_path(&mut self, path: &Path) {
+        self.load_path_as(path, Identity::New);
+    }
+
+    /// Open the file at `path` in place of the document shown, as `identity`
+    /// says: a new document, or the same one saved and opened again.
+    fn load_path_as(&mut self, path: &Path, identity: Identity) {
         match Document::open(path) {
             Ok(document) => {
                 self.stop_live_sources();
-                let previous_name = self.display_name();
+                let closed = self.closed_by(&identity);
                 self.document = document;
                 self.bench.document_changed();
-                self.parents.clear();
+                self.mapped_regions = Arc::default();
                 self.derived_name = None;
                 self.cursor = 0;
                 self.anchor = None;
@@ -781,7 +811,8 @@ impl ViewerApp {
                 self.cursor_structure = None;
                 self.cursor_structure_key = None;
                 self.start_entropy_map();
-                self.publish_document_replaced(previous_name);
+                self.take_identity(identity);
+                self.publish_document_replaced(closed);
                 let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
                 self.status = format!("Loaded {name}");
                 let remembered_shape = self.load_sidecar(path);
@@ -924,7 +955,7 @@ impl ViewerApp {
                 let top_row = self.top_row;
                 let shape = self.shape;
                 // Reopen so the piece table collapses back to a single mapping.
-                self.load_path(path);
+                self.load_path_as(path, Identity::Same);
                 self.shape = shape;
                 self.cursor = cursor.min(self.document.len());
                 self.top_row = top_row;
@@ -941,8 +972,7 @@ impl ViewerApp {
     pub fn new_document(&mut self) {
         self.stop_live_sources();
         self.bookmarks = Sidecar::default();
-        self.parents.clear();
-        self.install_document(Document::default(), None);
+        self.install_document(Document::default(), None, Identity::New);
         self.entropy_map = None;
         self.status = "New empty document".to_string();
     }
@@ -2231,7 +2261,11 @@ impl ViewerApp {
     /// Open `bytes` as a child of the current document: the current one goes
     /// on the parent stack with its place and analysis, and Back returns to it.
     pub fn open_derived(&mut self, bytes: Vec<u8>, name: String) {
+        // Edits so far are said about the parent before it is put away.
+        self.publish_edits_as(crate::api::workspace::DOCUMENT_PRODUCER);
         let parent = ParentDocument {
+            id: self.document_id.clone(),
+            published_version: self.document.version(),
             document: std::mem::take(&mut self.document),
             shape: self.shape,
             cursor: self.cursor,
@@ -2243,16 +2277,15 @@ impl ViewerApp {
             entropy_map: self.entropy_map.take(),
         };
         self.parents.push(parent);
-        self.install_document(Document::from_bytes(bytes), Some(name.clone()));
+        self.install_document(Document::from_bytes(bytes), Some(name.clone()), Identity::Derived);
         self.status = format!("Opened {name}");
     }
 
     /// Open `bytes` as a new top-level document (from a URL, device or capture).
     pub fn open_bytes(&mut self, bytes: Vec<u8>, name: String) {
         self.stop_live_sources();
-        self.parents.clear();
         self.bookmarks = Sidecar::default();
-        self.install_document(Document::from_bytes(bytes), Some(name.clone()));
+        self.install_document(Document::from_bytes(bytes), Some(name.clone()), Identity::New);
         self.status = format!("Opened {name}");
     }
 
@@ -2261,7 +2294,7 @@ impl ViewerApp {
     pub fn refresh_bytes(&mut self, document: Document) {
         let (cursor, anchor, top_row, shape) = (self.cursor, self.anchor, self.top_row, self.shape);
         let name = self.derived_name.clone();
-        self.install_document(document, name);
+        self.install_document(document, name, Identity::Same);
         self.shape = shape;
         self.shape.byte_offset = self.shape.byte_offset.min(self.document.len());
         self.cursor = cursor.min(self.document.len());
@@ -2277,14 +2310,45 @@ impl ViewerApp {
         self.reveal_cursor_in_hex(true);
     }
 
+    /// The documents `identity` closes, as (id, name): the one shown unless
+    /// it becomes a parent, and for a new document every parent too.
+    fn closed_by(&mut self, identity: &Identity) -> Vec<(String, String)> {
+        let mut closed = Vec::new();
+        if *identity != Identity::Derived {
+            closed.push((self.document_id.clone(), self.display_name()));
+        }
+        if *identity == Identity::New {
+            closed.extend(self.parents.drain(..).map(|parent| (parent.id, parent.name)));
+        }
+        closed
+    }
+
+    /// Give the document now shown its id, as `identity` says.
+    fn take_identity(&mut self, identity: Identity) {
+        self.document_id = match identity {
+            Identity::New | Identity::Derived => {
+                self.documents_opened += 1;
+                format!("doc-{}", self.documents_opened)
+            }
+            Identity::Back(id) => id,
+            Identity::Same => self.document_id.clone(),
+        };
+    }
+
     /// Swap the document being viewed and reset everything derived from it.
-    fn install_document(&mut self, document: Document, derived_name: Option<String>) {
-        let previous_name = self.display_name();
+    fn install_document(&mut self, document: Document, derived_name: Option<String>, identity: Identity) {
+        let closed = self.closed_by(&identity);
         self.document = document;
         self.bench.document_changed();
         self.mapped_regions = Arc::default();
         self.derived_name = derived_name;
-        self.publish_document_replaced(previous_name);
+        let announce = !matches!(identity, Identity::Back(_));
+        self.take_identity(identity);
+        if announce {
+            self.publish_document_replaced(closed);
+        } else {
+            self.publish_documents_closed(closed);
+        }
         self.cursor = 0;
         self.anchor = None;
         self.clear_secondary_selection();
@@ -2307,7 +2371,9 @@ impl ViewerApp {
             return;
         };
         let name = (!self.parents.is_empty()).then_some(parent.name.clone());
-        self.install_document(parent.document, name);
+        self.install_document(parent.document, name, Identity::Back(parent.id.clone()));
+        // Edits made to it through the API while it waited are said now.
+        self.bus_watch.version = parent.published_version;
         self.shape = parent.shape;
         self.cursor = parent.cursor.min(self.document.len());
         self.top_row = parent.top_row;
@@ -2653,7 +2719,7 @@ impl ViewerApp {
     fn publish_pattern_findings(&mut self) {
         let Some(key) = self.pattern_key else { return };
         let findings = FindingsPublished { findings: self.patterns.clone() };
-        self.bus.publish(Draft::new("tool:pattern-scan", Payload::FindingsPublished(findings)).about(WINDOW_DOCUMENT_ID, key.version).span(key.start, key.len));
+        self.bus.publish(Draft::new("tool:pattern-scan", Payload::FindingsPublished(findings)).about(self.document_id(), key.version).span(key.start, key.len));
     }
 
     /// Start and length of the region the current findings were scanned from.

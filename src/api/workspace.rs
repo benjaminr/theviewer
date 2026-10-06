@@ -29,8 +29,6 @@ pub const TEMPLATES_PRODUCER: &str = "tool:templates";
 
 /// The name that stands for the current document.
 pub const CURRENT: &str = "current";
-/// The id the window gives its document, which is the only one it shows.
-pub const WINDOW_DOCUMENT_ID: &str = "doc-1";
 
 /// One open document, as `documents.list` and `documents.info` describe it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -73,8 +71,11 @@ pub trait Workspace {
     fn view(&self, id: &str) -> Option<ViewState>;
     /// Every detector, parser and codec, built in or from plugins.
     fn registry(&self) -> Arc<Registry>;
-    /// Open the file at `path` and make it current, returning its id.
+    /// Open the file at `path` and make it current, returning its id; a
+    /// file already open is made current again.
     fn open_path(&mut self, path: &Path) -> Result<String, ApiError>;
+    /// Make the open document `id` current.
+    fn switch_to(&mut self, id: &str) -> Result<(), ApiError>;
     /// The workspace's bus, with every message published so far delivered.
     fn bus(&mut self) -> &mut Bus;
     /// Publish the changes made to document `id` since they were last
@@ -269,6 +270,12 @@ impl Workspace for HeadlessWorkspace {
         Ok(self.add_document(name, document))
     }
 
+    fn switch_to(&mut self, id: &str) -> Result<(), ApiError> {
+        let index = self.documents.iter().position(|open| open.id == id).ok_or_else(|| ApiError::not_found(format!("document '{id}' has closed")))?;
+        self.current = Some(index);
+        Ok(())
+    }
+
     /// With no frame loop to deliver messages, they are delivered whenever
     /// the bus is asked for.
     fn bus(&mut self) -> &mut Bus {
@@ -335,41 +342,90 @@ impl Workspace for HeadlessWorkspace {
     }
 }
 
-/// The window shows one document at a time, which the API calls `doc-1`.
+/// The window shows one document at a time; the documents it was derived
+/// from (a decompressed stream's container, say) wait on its parent stack,
+/// and are open too: they can be read, edited and gone back to.
 impl Workspace for ViewerApp {
     fn documents(&self) -> Vec<DocumentInfo> {
-        vec![DocumentInfo {
-            id: WINDOW_DOCUMENT_ID.to_string(),
+        let parents = self.parents.iter().map(|parent| DocumentInfo {
+            id: parent.id.clone(),
+            name: parent.name.clone(),
+            path: parent.document.path().map(|path| path.display().to_string()),
+            len: parent.document.len() as u64,
+            version: parent.document.version(),
+            modified: parent.document.is_modified(),
+            current: false,
+        });
+        let shown = DocumentInfo {
+            id: self.document_id(),
             name: self.display_name(),
             path: self.document.path().map(|path| path.display().to_string()),
             len: self.document.len() as u64,
             version: self.document.version(),
             modified: self.document.is_modified(),
             current: true,
-        }]
+        };
+        parents.chain(std::iter::once(shown)).collect()
     }
 
     fn current_document(&self) -> Option<String> {
-        Some(WINDOW_DOCUMENT_ID.to_string())
+        Some(self.document_id())
     }
 
     fn document_mut(&mut self, id: &str) -> Option<&mut Document> {
-        (id == WINDOW_DOCUMENT_ID).then_some(&mut self.document)
+        if id == self.document_id {
+            return Some(&mut self.document);
+        }
+        self.parents.iter_mut().find(|parent| parent.id == id).map(|parent| &mut parent.document)
     }
 
     fn view(&self, id: &str) -> Option<ViewState> {
-        (id == WINDOW_DOCUMENT_ID).then(|| ViewState { cursor: self.cursor, selection: self.current_selection(), record_stride: Some(self.shape.row_stride()) })
+        if id == self.document_id {
+            return Some(ViewState { cursor: self.cursor, selection: self.current_selection(), record_stride: Some(self.shape.row_stride()) });
+        }
+        let parent = self.parents.iter().find(|parent| parent.id == id)?;
+        Some(ViewState { cursor: parent.cursor, selection: None, record_stride: Some(parent.shape.row_stride()) })
     }
 
     fn registry(&self) -> Arc<Registry> {
         Arc::clone(&self.registry)
     }
 
+    /// A document already open is gone back to; another file is opened in
+    /// place of the one shown, unless that has unsaved edits.
     fn open_path(&mut self, path: &Path) -> Result<String, ApiError> {
-        if self.document.path() == Some(path) {
-            return Ok(WINDOW_DOCUMENT_ID.to_string());
+        if let Some(open) = self.documents().into_iter().find(|info| info.path.as_deref().map(Path::new) == Some(path)) {
+            self.switch_to(&open.id)?;
+            return Ok(open.id);
         }
-        Err(ApiError::not_found(format!("{} is not the open document; switching documents from the API is not supported yet", path.display())))
+        refuse_unsaved(self)?;
+        self.load_path(path);
+        if self.document.path() != Some(path) {
+            return Err(ApiError::not_found(format!("could not open {}: {}", path.display(), self.status)));
+        }
+        Ok(self.document_id())
+    }
+
+    /// Go back to a parent, closing the documents derived from it, as Back
+    /// does; refused while one of those has unsaved edits.
+    fn switch_to(&mut self, id: &str) -> Result<(), ApiError> {
+        if id == self.document_id {
+            return Ok(());
+        }
+        let Some(depth) = self.parents.iter().position(|parent| parent.id == id) else {
+            return Err(ApiError::not_found(format!("document '{id}' has closed")));
+        };
+        let unsaved = self.document.is_modified() || self.parents[depth + 1..].iter().any(|parent| parent.document.is_modified());
+        if unsaved {
+            return Err(ApiError::new(
+                super::ErrorCode::ReadOnly,
+                format!("going back to {id} closes the documents derived from it, and one has unsaved edits; save it (documents.save with a path) or undo them first"),
+            ));
+        }
+        while self.document_id != id {
+            self.back_to_parent();
+        }
+        Ok(())
     }
 
     /// Messages are delivered once per frame, before the API is called.
@@ -378,7 +434,8 @@ impl Workspace for ViewerApp {
     }
 
     fn publish_edits(&mut self, id: &str, producer: &str) {
-        if id != WINDOW_DOCUMENT_ID {
+        if id != self.document_id {
+            self.publish_parent_edits(id, producer);
             return;
         }
         self.publish_edits_as(producer);
@@ -391,7 +448,11 @@ impl Workspace for ViewerApp {
     }
 
     fn select(&mut self, id: &str, cursor: usize, selection: Option<Selection>, caller: &Caller) {
-        if id != WINDOW_DOCUMENT_ID {
+        if id != self.document_id {
+            // A parent keeps only its cursor until it is gone back to.
+            if let Some(parent) = self.parents.iter_mut().find(|parent| parent.id == id) {
+                parent.cursor = cursor.min(parent.document.len());
+            }
             return;
         }
         self.set_selection(cursor, selection);
@@ -401,8 +462,8 @@ impl Workspace for ViewerApp {
     }
 
     fn save(&mut self, id: &str, path: Option<&Path>) -> Result<(), ApiError> {
-        if id != WINDOW_DOCUMENT_ID {
-            return Err(ApiError::not_found(format!("document '{id}' has closed")));
+        if id != self.document_id {
+            return Err(ApiError::invalid_params(format!("{id} waits behind the document shown; go back to it (documents.open with its id) to save it")));
         }
         let path = path.or(self.document.path()).map(Path::to_path_buf).ok_or_else(|| ApiError::invalid_params("this document has no file yet; give a path to save it to"))?;
         self.save_sidecar();
@@ -410,15 +471,13 @@ impl Workspace for ViewerApp {
     }
 
     fn new_document(&mut self, _name: &str) -> Result<String, ApiError> {
-        if self.document.is_modified() {
-            return Err(ApiError::new(super::ErrorCode::ReadOnly, "the open document has unsaved edits; save it (documents.save) or undo them first"));
-        }
+        refuse_unsaved(self)?;
         ViewerApp::new_document(self);
-        Ok(WINDOW_DOCUMENT_ID.to_string())
+        Ok(self.document_id())
     }
 
     fn pin_template(&mut self, id: &str, applied: TemplateApplied) {
-        if id == WINDOW_DOCUMENT_ID {
+        if id == self.document_id {
             self.pin_template_parse(applied);
         }
     }
@@ -434,6 +493,28 @@ impl Workspace for ViewerApp {
 
     fn registered_methods(&self) -> Vec<Arc<RegisteredMethod>> {
         self.plugin_methods.clone()
+    }
+}
+
+/// Refuse to replace the window's documents while one has unsaved edits.
+fn refuse_unsaved(app: &ViewerApp) -> Result<(), ApiError> {
+    if app.document.is_modified() || app.parents.iter().any(|parent| parent.document.is_modified()) {
+        return Err(ApiError::new(super::ErrorCode::ReadOnly, "an open document has unsaved edits; save it (documents.save) or undo them first"));
+    }
+    Ok(())
+}
+
+impl ViewerApp {
+    /// Publish the edits made through the API to the parent `id` while it
+    /// waits behind the document shown.
+    fn publish_parent_edits(&mut self, id: &str, producer: &str) {
+        let Some(parent) = self.parents.iter_mut().find(|parent| parent.id == id) else { return };
+        let Some(edited) = edits_since(&parent.document, parent.published_version) else { return };
+        parent.published_version = parent.document.version();
+        let mut draft = self.draft(producer, Payload::DocumentEdited(edited));
+        draft.document = Some(id.to_string());
+        draft.version = self.parents.iter().find(|parent| parent.id == id).map_or(0, |parent| parent.published_version);
+        self.bus.publish(draft);
     }
 }
 
@@ -474,5 +555,79 @@ mod tests {
         assert_eq!(resolve(&workspace, Some(&path.display().to_string())).unwrap(), first, "an open document is found by its path");
         assert_eq!(workspace.open_path(Path::new("/no/such/file")).unwrap_err().code, ErrorCode::NotFound);
         std::fs::remove_file(path).ok();
+    }
+
+    mod window {
+        use serde_json::json;
+
+        use crate::api::{Caller, ErrorCode, call};
+        use crate::app::{Launch, ViewerApp};
+        use crate::bus::Topic;
+        use crate::bus::topics::RecordWidthEstimated;
+
+        fn ids(app: &mut ViewerApp) -> Vec<(String, bool)> {
+            let listed = call(app, &Caller::Panel, "documents.list", json!({})).unwrap();
+            listed["documents"].as_array().unwrap().iter().map(|info| (info["id"].as_str().unwrap().to_string(), info["current"].as_bool().unwrap())).collect()
+        }
+
+        #[test]
+        fn a_derived_document_and_the_one_it_came_from_are_listed_with_their_own_ids() {
+            let mut app = ViewerApp::new(Launch::default());
+            app.open_bytes(b"outer container".to_vec(), "outer.bin".to_string());
+            let outer = app.document_id();
+            app.publish("tool:period-scan", crate::bus::Payload::RecordWidthEstimated(RecordWidthEstimated { width: 4, score: 1.0, alternatives: Vec::new() }));
+            app.run_bus();
+            app.open_derived(b"inner stream".to_vec(), "outer.bin > zlib".to_string());
+            app.run_bus();
+            let inner = app.document_id();
+            assert_ne!(inner, outer);
+            assert_eq!(ids(&mut app), [(outer.clone(), false), (inner.clone(), true)]);
+            assert!(app.bus.latest::<RecordWidthEstimated>(&outer).is_some(), "what is known about the parent is kept while it waits");
+
+            // The parent can be read and edited by id while it waits.
+            let read = call(&mut app, &Caller::Panel, "bytes.read", json!({"doc": outer, "start": 0, "len": 5, "encoding": "text"})).unwrap();
+            assert_eq!(read["data"], "outer");
+            call(&mut app, &Caller::Panel, "bytes.write", json!({"doc": outer, "start": 0, "data": "4f"})).unwrap();
+            app.run_bus();
+            let edited = app.bus.recent().rev().find(|message| message.topic() == Topic::DocumentEdited).unwrap();
+            assert_eq!(edited.draft.document.as_deref(), Some(outer.as_str()));
+
+            // Going back to it by id closes the derived document.
+            let shown = call(&mut app, &Caller::Panel, "documents.open", json!({"doc": outer})).unwrap();
+            assert_eq!(shown["id"], outer.as_str());
+            assert_eq!(app.document.read_range(0, 5), b"Outer");
+            app.run_bus();
+            assert_eq!(ids(&mut app), [(outer.clone(), true)]);
+            assert_eq!(call(&mut app, &Caller::Panel, "documents.info", json!({"doc": inner})).unwrap_err().code, ErrorCode::NotFound);
+        }
+
+        #[test]
+        fn a_derived_document_with_unsaved_edits_is_not_closed_by_going_back() {
+            let mut app = ViewerApp::new(Launch::default());
+            app.open_bytes(b"outer".to_vec(), "outer.bin".to_string());
+            let outer = app.document_id();
+            app.open_derived(b"inner".to_vec(), "inner".to_string());
+            call(&mut app, &Caller::Panel, "bytes.write", json!({"start": 0, "data": "00"})).unwrap();
+            let refused = call(&mut app, &Caller::Panel, "documents.open", json!({"doc": outer})).unwrap_err();
+            assert_eq!(refused.code, ErrorCode::ReadOnly);
+            assert_ne!(app.document_id(), outer);
+        }
+
+        #[test]
+        fn the_window_opens_another_file_from_the_api_and_switches_back_to_an_open_one() {
+            let path = std::env::temp_dir().join(format!("theviewer-window-open-{}.bin", std::process::id()));
+            std::fs::write(&path, b"on disk").unwrap();
+            let mut app = ViewerApp::new(Launch::default());
+            app.open_bytes(b"first".to_vec(), "first.bin".to_string());
+            let first = app.document_id();
+            let opened = call(&mut app, &Caller::Panel, "documents.open", json!({"path": path.display().to_string()})).unwrap();
+            assert_ne!(opened["id"], first.as_str(), "a new document has a new id");
+            assert_eq!(app.document.read_range(0, 7), b"on disk");
+            let again = call(&mut app, &Caller::Panel, "documents.open", json!({"path": path.display().to_string()})).unwrap();
+            assert_eq!(again["id"], opened["id"], "a file already open is made current again");
+            let saved = call(&mut app, &Caller::Panel, "documents.save", json!({})).unwrap();
+            assert_eq!(saved["id"], opened["id"], "saving keeps the id");
+            std::fs::remove_file(path).ok();
+        }
     }
 }

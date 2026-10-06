@@ -347,7 +347,7 @@ pub static METHODS: &[Method] = &[
     method!("api.describe", Read, describe_method, values::NoParams, Description, "Every method with its summary, effect, stability and the JSON schemas of its parameters and result."),
     method!("documents.list", Read, documents::list, values::NoParams, documents::DocumentList, "The open documents, with their ids, names, paths, lengths and versions."),
     method!("documents.info", Read, documents::info, documents::InfoParams, workspace::DocumentInfo, "One document's id, name, path, length, version and whether it has unsaved edits."),
-    method!("documents.open", View, documents::open, documents::OpenParams, workspace::DocumentInfo, "Open a file by path and make it the current document; a file already open is made current again."),
+    method!("documents.open", View, documents::open, documents::OpenParams, workspace::DocumentInfo, "Open a file by path, or an open document by id, and make it current; a file already open is made current again. In the window, a parent of the document shown is gone back to, closing what was derived from it."),
     method!("documents.new", View, documents::new, documents::NewParams, workspace::DocumentInfo, "Open a new, empty document and make it current; the window refuses while its document has unsaved edits."),
     method!("documents.save", Edit, documents::save, documents::SaveParams, workspace::DocumentInfo, "Save a document over its file, or to a path, with every edit made so far."),
     method!("bytes.read", Read, bytes::read, bytes::ReadParams, bytes::ReadResult, "Read a span of bytes, as hex by default, or as base64 or text."),

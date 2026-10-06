@@ -19,7 +19,6 @@
 use std::collections::VecDeque;
 use std::sync::Arc;
 
-use crate::api::workspace::WINDOW_DOCUMENT_ID;
 use crate::app::ViewerApp;
 use crate::plugin::Finding;
 use crate::plugins::Subscription;
@@ -127,7 +126,7 @@ pub fn builtin_reactions() -> Vec<Reaction> {
 #[derive(Default)]
 pub struct BusWatch {
     /// The document version `document.edited` has been published up to.
-    version: u64,
+    pub(crate) version: u64,
     /// The cursor and selection last published.
     selection: Option<(usize, Option<Selection>)>,
     /// The pinned findings last published.
@@ -137,7 +136,7 @@ pub struct BusWatch {
 impl ViewerApp {
     /// The id the API and the bus know the shown document by.
     pub fn document_id(&self) -> String {
-        WINDOW_DOCUMENT_ID.to_string()
+        self.document_id.clone()
     }
 
     /// A message from `producer` about the window's document as it is now.
@@ -231,12 +230,23 @@ impl ViewerApp {
         &self.reactions
     }
 
-    /// The document was swapped for another: say so, and start watching the
-    /// new one's edits and selection afresh.
-    pub(crate) fn publish_document_replaced(&mut self, previous_name: String) {
-        self.publish(APP, Payload::DocumentClosed(DocumentClosed { name: previous_name }));
+    /// The document was swapped for another: say that `closed` (ids and
+    /// names) closed and the one shown opened, and start watching its edits
+    /// and selection afresh.
+    pub(crate) fn publish_document_replaced(&mut self, closed: Vec<(String, String)>) {
+        self.publish_documents_closed(closed);
         let opened = DocumentOpened { name: self.display_name(), path: self.document.path().map(|path| path.display().to_string()), len: self.document.len() };
         self.publish(APP, Payload::DocumentOpened(opened));
+    }
+
+    /// Say that `closed` (ids and names) closed, back on a document already
+    /// known, and start watching the one shown afresh.
+    pub(crate) fn publish_documents_closed(&mut self, closed: Vec<(String, String)>) {
+        for (id, name) in closed {
+            let mut draft = self.draft(APP, Payload::DocumentClosed(DocumentClosed { name }));
+            draft.document = Some(id);
+            self.bus.publish(draft);
+        }
         self.bus_watch.version = self.document.version();
         self.bus_watch.pinned.clear();
     }
