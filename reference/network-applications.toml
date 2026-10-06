@@ -369,7 +369,6 @@ rfc = 1002
 [[format.fields]]
 name = "Protocol"
 wireshark = "smb.server_component"
-aliases = ["Signature"]
 meaning = "The four bytes 0xFF 'S' 'M' 'B' that open every SMB1 message."
 section = "2.2.3.1"
 
@@ -434,7 +433,6 @@ section = "2.2.1"
 [[format.fields]]
 name = "Protocol ID"
 wireshark = "smb2.protocol_id"
-aliases = ["Signature"]
 meaning = "0xFE 'S' 'M' 'B' for a normal SMB2 header, 0xFD 'S' 'M' 'B' for an encrypted transform header, 0xFC 'S' 'M' 'B' for a compression transform header."
 section = "2.2.1"
 
@@ -2871,8 +2869,14 @@ meaning = "0xE0 connection request, 0xD0 connection confirm, 0x80 disconnect req
 [[format.fields]]
 name = "Called TSAP"
 wireshark = "cotp.dst-tsap"
-aliases = ["Destination TSAP", "Calling TSAP", "Source TSAP"]
-meaning = "Transport service access points naming the two ends of the connection; for S7 the called TSAP's second byte encodes rack and slot."
+aliases = ["Destination TSAP"]
+meaning = "Parameter 0xC2 of a connection request or confirm: the transport service access point being connected to. For S7 its first byte is the connection type (1 PG, 2 OP, 3 S7 basic) and its second the CPU's rack (top three bits) and slot (bottom five)."
+
+[[format.fields]]
+name = "Calling TSAP"
+wireshark = "cotp.src-tsap"
+aliases = ["Source TSAP"]
+meaning = "Parameter 0xC1 of a connection request or confirm: the transport service access point of the side that opens the connection, naming the client's end; for S7 often 0x0100 or 0x0200."
 
 [[format.fields]]
 name = "EOT"
