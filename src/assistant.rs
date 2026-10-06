@@ -34,6 +34,9 @@ const MAX_TOOL_ROUNDS: usize = 24;
 const MAX_RETRIES: u32 = 2;
 /// Longest a tool result may be, so one call cannot flood the context.
 pub const MAX_TOOL_RESULT_CHARS: usize = 24_000;
+/// How much longer than a confirmation may wait the conversation waits for
+/// a tool, so the window always answers first.
+const TOOL_GRACE: Duration = Duration::from_secs(30);
 
 /// The request behind *Characterise*: a short question that names the tools
 /// to work through, so the answer is grounded in measurements.
@@ -41,7 +44,7 @@ pub const CHARACTERISE_REQUEST: &str = "Characterise this file: what is it, how 
 
 const SYSTEM_PROMPT: &str = "You are the analysis assistant inside theviewer, a binary file viewer and editor used for reverse engineering, firmware analysis and data recovery. The user is looking at a file and asks you about it.
 
-Each question comes with a snapshot of what the user sees: the file's name and size, the cursor and selection, nearby findings from the app's detectors, the parsed structure at the cursor, reference notes on the formats enclosing the cursor, and a hex dump around the cursor. Use the tools to look further: read bytes or bits anywhere, search, decode numbers, list findings in a range, parse the structure at an offset or apply a template, detect and decode compressed data, dissect packets, map the whole file, split it into typed segments, measure a range's statistics, compressibility or text encoding, test a range for machine code, or read the reference notes on a format. Tool results are JSON; bytes in them are hex unless you ask for another encoding, and offsets are decimal numbers. When you explain a field or layout, cite the specification and section the notes give (for example RFC 791 §3.1). Look before you conclude; base claims on bytes you have seen, and say how sure you are when something is a guess.
+Each question comes with a snapshot of what the user sees: the file's name and size, the cursor and selection, nearby findings from the app's detectors, the parsed structure at the cursor, reference notes on the formats enclosing the cursor, and a hex dump around the cursor. Use the tools to look further: read bytes or bits anywhere, search, decode numbers, list findings in a range, parse the structure at an offset or apply a template, detect and decode compressed data, dissect packets, map the whole file, split it into typed segments, measure a range's statistics, compressibility or text encoding, test a range for machine code, or read the reference notes on a format. Tools that edit (write, insert or delete bytes or bits, apply a transform, undo, run a transaction) change the user's document: use them only when the user asks for a change, preview a transform first when in doubt, and expect the user to be asked to confirm each one; a refused edit is the user's choice, so do not retry it. Tool results are JSON; bytes in them are hex unless you ask for another encoding, and offsets are decimal numbers. When you explain a field or layout, cite the specification and section the notes give (for example RFC 791 §3.1). Look before you conclude; base claims on bytes you have seen, and say how sure you are when something is a guess.
 
 Write offsets as 0x-prefixed hexadecimal (for example 0x1A40); the app turns them into links that jump to that place in the file, so cite the offset for every specific claim.
 
@@ -126,10 +129,46 @@ impl FileContext {
     }
 }
 
-/// Whether Ask offers a method as a tool: every method that only reads,
-/// except the API's description of itself, which the tool list already is.
-fn offered_to_ask(method: &api::Method) -> bool {
-    method.effect == api::Effect::Read && method.namespace() != "api"
+/// Whether Ask offers a method as a tool: every method that reads or
+/// edits, plugins' included, except the API's description of itself (which
+/// the tool list already is) and saving, which is the person's to do.
+/// Methods that change only the view are not offered.
+fn offered_to_ask(method: &api::MethodRef) -> bool {
+    matches!(method.effect(), api::Effect::Read | api::Effect::Edit) && api::namespace_of(method.name()) != "api" && method.name() != "documents.save"
+}
+
+/// One tool offered to the model: the API method behind it and how the
+/// model sees it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Tool {
+    /// The API method, such as `bytes.hexdump`.
+    pub method: String,
+    /// What the model calls it, such as `bytes_hexdump`.
+    pub name: String,
+    pub description: String,
+    /// JSON Schema of the arguments.
+    pub input_schema: Value,
+}
+
+/// The tools Ask offers in `workspace`: generated from the API's method
+/// table and the methods plugins registered.
+pub fn offered_tools(workspace: &dyn api::Workspace) -> Vec<Tool> {
+    api::all_methods(workspace)
+        .iter()
+        .filter(|method| offered_to_ask(method))
+        .map(|method| {
+            let mut schema = method.params_schema();
+            if let Some(object) = schema.as_object_mut() {
+                object.remove("$schema");
+                object.remove("title");
+            }
+            let description = match method.effect() {
+                api::Effect::Edit => format!("{} Changes the document: the person is asked to confirm, unless they allowed Ask to edit.", method.summary()),
+                _ => method.summary().to_string(),
+            };
+            Tool { method: method.name().to_string(), name: tool_name(method.name()), description, input_schema: schema }
+        })
+        .collect()
 }
 
 /// The tool name for an API method. Tool names may hold only letters,
@@ -143,21 +182,15 @@ pub fn tool_name(method_name: &str) -> String {
 /// leaves them unchecked, so every call is checked against the method's
 /// types when it runs. The schemas are not strict: strict tools are limited
 /// in number and in the schema features they accept.
-pub fn tool_definitions() -> Value {
-    let tools: Vec<Value> = api::METHODS
+pub fn tool_definitions(tools: &[Tool]) -> Value {
+    let tools: Vec<Value> = tools
         .iter()
-        .filter(|method| offered_to_ask(method))
-        .map(|method| {
-            let mut schema = (method.params)().to_value();
-            if let Some(object) = schema.as_object_mut() {
-                object.remove("$schema");
-                object.remove("title");
-            }
+        .map(|tool| {
             json!({
-                "name": tool_name(method.name),
-                "description": method.summary,
+                "name": tool.name,
+                "description": tool.description,
                 "eager_input_streaming": true,
-                "input_schema": schema,
+                "input_schema": tool.input_schema,
             })
         })
         .collect();
@@ -168,7 +201,7 @@ pub fn tool_definitions() -> Value {
 #[derive(Clone, Debug, PartialEq)]
 pub struct ToolCall {
     /// The API method, such as `bytes.hexdump`.
-    pub method: &'static str,
+    pub method: String,
     pub params: Value,
 }
 
@@ -176,15 +209,12 @@ impl ToolCall {
     /// The call the model made with tool `name`. Only the tools offered are
     /// accepted, and only with an object of arguments; the arguments
     /// themselves are checked when the method runs.
-    pub fn parse(name: &str, input: &Value) -> Result<ToolCall, String> {
-        let method = api::METHODS
-            .iter()
-            .find(|method| offered_to_ask(method) && tool_name(method.name) == name)
-            .ok_or_else(|| format!("unknown tool '{name}'"))?;
+    pub fn parse(name: &str, input: &Value, tools: &[Tool]) -> Result<ToolCall, String> {
+        let tool = tools.iter().find(|tool| tool.name == name).ok_or_else(|| format!("unknown tool '{name}'"))?;
         if !input.is_object() {
             return Err("arguments must be an object".to_string());
         }
-        Ok(ToolCall { method: method.name, params: input.clone() })
+        Ok(ToolCall { method: tool.method.clone(), params: input.clone() })
     }
 
     /// Short description for the transcript, such as
@@ -194,10 +224,30 @@ impl ToolCall {
         format!("{}{arguments}", self.method)
     }
 
-    /// Run the call against `workspace`: the method's JSON result, or its
-    /// error as JSON.
-    pub fn run(&self, workspace: &mut dyn api::Workspace) -> Result<String, String> {
-        api::call(workspace, &api::Caller::Ask, self.method, self.params.clone()).map(|result| result.to_string()).map_err(|error| error.to_json().to_string())
+    /// Run the call against `workspace` as Ask, or hold it for the person
+    /// to confirm when it edits; `reply` gets the method's JSON result, or
+    /// its error as JSON, once there is one.
+    pub fn request(self, workspace: &mut dyn api::Workspace, reply: ToolReply) {
+        let ToolCall { method, params } = self;
+        api::call_or_hold(workspace, api::Caller::Ask, &method, params, Box::new(move |_, result| reply.send(result.map(|value| value.to_string()).map_err(|error| error.to_json().to_string()))));
+    }
+}
+
+/// Where a tool call's result goes: back to the conversation's thread,
+/// which waits for it, cut to a length the model can take.
+pub struct ToolReply {
+    sender: Sender<Result<String, String>>,
+}
+
+impl ToolReply {
+    pub fn new(sender: Sender<Result<String, String>>) -> ToolReply {
+        ToolReply { sender }
+    }
+
+    pub fn send(self, result: Result<String, String>) {
+        let result = result.map(|output| truncate(&output, MAX_TOOL_RESULT_CHARS)).map_err(|error| truncate(&error, MAX_TOOL_RESULT_CHARS));
+        // The conversation has gone only when it was stopped or timed out.
+        let _ = self.sender.send(result);
     }
 }
 
@@ -275,7 +325,8 @@ impl Assistant {
 
     /// Ask a question about the file. Fails at once if no credentials are
     /// available or a reply is still streaming.
-    pub fn ask(&mut self, question: &str, context: &FileContext, credentials: Option<Credentials>) -> Result<(), String> {
+    /// `tools` are the tools to offer, from [`offered_tools`].
+    pub fn ask(&mut self, question: &str, context: &FileContext, credentials: Option<Credentials>, tools: Vec<Tool>) -> Result<(), String> {
         if self.is_busy() {
             return Err("Still answering the last question".to_string());
         }
@@ -288,7 +339,7 @@ impl Assistant {
         let (sender, receiver) = mpsc::channel();
         self.events = Some(receiver);
         thread::spawn(move || {
-            let outcome = run_conversation(&credentials, messages, &sender);
+            let outcome = run_conversation(&credentials, messages, &tools, &sender);
             let event = match outcome {
                 Ok((messages, note)) => Event::Done { messages, note },
                 Err(message) => Event::Failed(message),
@@ -298,9 +349,11 @@ impl Assistant {
         Ok(())
     }
 
-    /// Drain events. Tool calls are handed to `run_tool`, whose answer goes
-    /// back to the model. Returns true when anything changed.
-    pub fn poll(&mut self, mut run_tool: impl FnMut(&ToolCall) -> Result<String, String>) -> bool {
+    /// Drain events. Tool calls are handed to `run_tool` with where to send
+    /// the answer, which goes back to the model; it may answer later (once
+    /// the person has confirmed an edit, say). Returns true when anything
+    /// changed.
+    pub fn poll(&mut self, mut run_tool: impl FnMut(ToolCall, ToolReply)) -> bool {
         // Take the receiver out while handling events, which update `self`.
         let Some(events) = self.events.take() else { return false };
         let mut changed = false;
@@ -319,8 +372,7 @@ impl Assistant {
                 Event::Thinking(text) => self.transcript.push(Turn::Reasoning(text)),
                 Event::Tool { call, reply } => {
                     self.transcript.push(Turn::Tool(call.describe()));
-                    let result = run_tool(&call).map(|output| truncate(&output, MAX_TOOL_RESULT_CHARS)).map_err(|error| truncate(&error, MAX_TOOL_RESULT_CHARS));
-                    let _ = reply.send(result);
+                    run_tool(call, ToolReply { sender: reply });
                 }
                 Event::ToolRejected(message) => self.transcript.push(Turn::Note(message)),
                 Event::Done { messages, note } => {
@@ -361,7 +413,7 @@ fn truncate(text: &str, max_chars: usize) -> String {
 }
 
 /// The request body for one turn.
-pub fn request_body(messages: &[Value]) -> Value {
+pub fn request_body(messages: &[Value], tools: &[Tool]) -> Value {
     json!({
         "model": MODEL,
         "max_tokens": MAX_TOKENS,
@@ -371,7 +423,7 @@ pub fn request_body(messages: &[Value]) -> Value {
         "output_config": { "effort": "high" },
         // The system prompt and tool list never change, so they cache.
         "system": [{ "type": "text", "text": SYSTEM_PROMPT, "cache_control": { "type": "ephemeral" } }],
-        "tools": tool_definitions(),
+        "tools": tool_definitions(tools),
         "tool_choice": { "type": "auto" },
         "messages": messages,
     })
@@ -379,14 +431,14 @@ pub fn request_body(messages: &[Value]) -> Value {
 
 /// Run one question to completion: stream a reply, run any tools it asks for,
 /// and continue until the model stops. Returns the updated history.
-fn run_conversation(credentials: &Credentials, mut messages: Vec<Value>, events: &Sender<Event>) -> Result<(Vec<Value>, Option<String>), String> {
+fn run_conversation(credentials: &Credentials, mut messages: Vec<Value>, tools: &[Tool], events: &Sender<Event>) -> Result<(Vec<Value>, Option<String>), String> {
     for _ in 0..MAX_TOOL_ROUNDS {
-        let reply = send_with_retries(credentials, &request_body(&messages), events)?;
+        let reply = send_with_retries(credentials, &request_body(&messages, tools), events)?;
         let stop_reason = reply.stop_reason.clone().unwrap_or_default();
         messages.push(json!({ "role": "assistant", "content": reply.blocks.clone() }));
         match stop_reason.as_str() {
             "tool_use" => {
-                let results = run_tools(&reply.blocks, events)?;
+                let results = run_tools(&reply.blocks, tools, events)?;
                 messages.push(json!({ "role": "user", "content": results }));
             }
             "refusal" => return Ok((messages, Some("Claude declined to answer this.".to_string()))),
@@ -399,16 +451,19 @@ fn run_conversation(credentials: &Credentials, mut messages: Vec<Value>, events:
 
 /// Ask the UI thread to run each tool call and collect the results, all in
 /// one user message.
-fn run_tools(blocks: &[Value], events: &Sender<Event>) -> Result<Vec<Value>, String> {
+fn run_tools(blocks: &[Value], tools: &[Tool], events: &Sender<Event>) -> Result<Vec<Value>, String> {
     let mut results = Vec::new();
     for block in blocks.iter().filter(|b| b["type"] == "tool_use") {
         let id = block["id"].as_str().unwrap_or_default().to_string();
         let name = block["name"].as_str().unwrap_or_default();
-        let result = match ToolCall::parse(name, &block["input"]) {
+        let result = match ToolCall::parse(name, &block["input"], tools) {
             Ok(call) => {
                 let (reply_sender, reply_receiver) = mpsc::channel();
                 events.send(Event::Tool { call, reply: reply_sender }).map_err(|_| "the window closed".to_string())?;
-                match reply_receiver.recv_timeout(Duration::from_secs(120)).map_err(|_| "the tool did not answer".to_string())? {
+                // An edit may wait for the person, who has until the
+                // confirmation times out to answer.
+                let patience = crate::confirmations::CONFIRMATION_TIMEOUT + TOOL_GRACE;
+                match reply_receiver.recv_timeout(patience).map_err(|_| "the tool did not answer".to_string())? {
                     Ok(output) => json!({ "type": "tool_result", "tool_use_id": id, "content": output }),
                     Err(error) => json!({ "type": "tool_result", "tool_use_id": id, "is_error": true, "content": error }),
                 }
@@ -731,19 +786,27 @@ mod tests {
         ] {
             sender.send(event).unwrap();
         }
-        assistant.poll(|_| Ok(String::new()));
+        assistant.poll(|_, reply| reply.send(Ok(String::new())));
         assert_eq!(
             assistant.transcript,
             vec![Turn::User("What is this?".into()), Turn::Assistant("It is a PNG image.".into())]
         );
     }
 
+    /// The tools offered with only the API's own methods.
+    fn builtin_tools() -> Vec<Tool> {
+        offered_tools(&crate::api::test_support::workspace_with("a.bin", b""))
+    }
+
     #[test]
-    fn tools_are_generated_from_every_read_method_with_valid_names_and_schemas() {
-        let tools = tool_definitions();
+    fn tools_are_generated_from_every_read_and_edit_method_with_valid_names_and_schemas() {
+        let tools = tool_definitions(&builtin_tools());
         let tools = tools.as_array().unwrap();
-        let readers = api::METHODS.iter().filter(|method| method.effect == api::Effect::Read && method.namespace() != "api").count();
-        assert_eq!(tools.len(), readers);
+        let offered = api::METHODS
+            .iter()
+            .filter(|method| matches!(method.effect, api::Effect::Read | api::Effect::Edit) && method.namespace() != "api" && method.name != "documents.save")
+            .count();
+        assert_eq!(tools.len(), offered);
         for tool in tools {
             let name = tool["name"].as_str().unwrap();
             assert!(!name.is_empty() && name.len() <= 64, "{name}");
@@ -756,35 +819,75 @@ mod tests {
         for earlier in ["bytes_hexdump", "search_find_all", "findings_query", "structure_parse", "analysis_overview", "analysis_statistics", "analysis_segments", "analysis_compressibility", "analysis_text_encoding", "reference_lookup", "analysis_processor"] {
             assert!(names.contains(&earlier), "the tool behind one of Ask's original eleven, {earlier}, is offered");
         }
-        assert!(!names.contains(&"documents_open") && !names.contains(&"api_describe"), "only methods that read are offered");
+        assert!(!names.contains(&"documents_open") && !names.contains(&"api_describe"), "methods that change only the view are not offered");
+        assert!(names.contains(&"bytes_write") && names.contains(&"transform_apply") && names.contains(&"history_transaction"), "edits are offered");
+        assert!(!names.contains(&"documents_save"), "saving is the person's to do");
+        let write = tools.iter().find(|tool| tool["name"] == "bytes_write").unwrap();
+        assert!(write["description"].as_str().unwrap().contains("asked to confirm"), "the model is told edits are confirmed");
+    }
+
+    #[test]
+    fn a_method_a_plugin_registered_is_offered_as_a_tool() {
+        let mut app = crate::app::ViewerApp::new(crate::app::Launch::default());
+        app.load_plugin_source("acme.lua", r#"theviewer.register_method{ name = "acme.count", summary = "Count the bytes.", run = function(params, api) return { n = api.documents.info{}.len } end }"#).unwrap();
+        let tools = offered_tools(&app);
+        let tool = tools.iter().find(|tool| tool.name == "acme_count").expect("offered");
+        assert_eq!(tool.method, "acme.count");
+        let call = ToolCall::parse("acme_count", &json!({}), &tools).unwrap();
+        let (sender, receiver) = mpsc::channel();
+        call.request(&mut app, ToolReply { sender });
+        assert_eq!(receiver.try_recv().unwrap().unwrap(), r#"{"n":0}"#);
     }
 
     #[test]
     fn tool_calls_name_an_offered_method_and_carry_an_object() {
-        let call = ToolCall::parse("bytes_hexdump", &json!({"start": 16, "len": 4})).unwrap();
+        let tools = builtin_tools();
+        let call = ToolCall::parse("bytes_hexdump", &json!({"start": 16, "len": 4}), &tools).unwrap();
         assert_eq!(call.method, "bytes.hexdump");
         assert_eq!(call.describe(), r#"bytes.hexdump {"len":4,"start":16}"#);
-        assert_eq!(ToolCall::parse("analysis_segments", &json!({})).unwrap().describe(), "analysis.segments");
-        assert!(ToolCall::parse("format_disk", &json!({})).is_err());
-        assert!(ToolCall::parse("documents_open", &json!({"path": "/etc/passwd"})).is_err(), "methods that change the view are not tools");
-        assert!(ToolCall::parse("bytes_read", &json!([1, 2])).is_err());
+        assert_eq!(ToolCall::parse("analysis_segments", &json!({}), &tools).unwrap().describe(), "analysis.segments");
+        assert!(ToolCall::parse("format_disk", &json!({}), &tools).is_err());
+        assert!(ToolCall::parse("documents_open", &json!({"path": "/etc/passwd"}), &tools).is_err(), "methods that change the view are not tools");
+        assert!(ToolCall::parse("bytes_read", &json!([1, 2]), &tools).is_err());
+    }
+
+    /// Run a tool call against `workspace` and wait for its answer.
+    fn run_tool(workspace: &mut dyn api::Workspace, name: &str, input: Value) -> Result<String, String> {
+        let call = ToolCall::parse(name, &input, &builtin_tools()).unwrap();
+        let (sender, receiver) = mpsc::channel();
+        call.request(workspace, ToolReply { sender });
+        receiver.try_recv().expect("answered at once")
     }
 
     #[test]
     fn a_tool_call_runs_its_method_and_reports_errors_as_json() {
         let mut workspace = crate::api::test_support::workspace_with("fw.bin", b"FWIM\x01\x02");
-        let call = ToolCall::parse("bytes_read", &json!({"start": 0, "len": 4})).unwrap();
-        let result: Value = serde_json::from_str(&call.run(&mut workspace).unwrap()).unwrap();
+        let result: Value = serde_json::from_str(&run_tool(&mut workspace, "bytes_read", json!({"start": 0, "len": 4})).unwrap()).unwrap();
         assert_eq!(result["data"], "4657494d");
-        let past_the_end = ToolCall::parse("bytes_read", &json!({"start": 4, "len": 9})).unwrap().run(&mut workspace).unwrap_err();
+        let past_the_end = run_tool(&mut workspace, "bytes_read", json!({"start": 4, "len": 9})).unwrap_err();
         assert!(past_the_end.contains("out_of_range"), "{past_the_end}");
-        let truncated_input = ToolCall::parse("bytes_read", &json!({})).unwrap().run(&mut workspace).unwrap_err();
+        let truncated_input = run_tool(&mut workspace, "bytes_read", json!({})).unwrap_err();
         assert!(truncated_input.contains("invalid_params"), "truncated eager input is rejected: {truncated_input}");
     }
 
     #[test]
+    fn an_edit_from_ask_waits_for_the_person_in_the_window() {
+        let mut app = crate::app::ViewerApp::new(crate::app::Launch::default());
+        app.open_bytes(vec![0; 8], "a.bin".to_string());
+        let tools = offered_tools(&app);
+        let call = ToolCall::parse("bytes_write", &json!({"start": 0, "data": "ff"}), &tools).unwrap();
+        let (sender, receiver) = mpsc::channel();
+        call.request(&mut app, ToolReply { sender });
+        assert!(receiver.try_recv().is_err(), "no answer until the person decides");
+        assert_eq!(app.confirmations.current().unwrap().caller, api::Caller::Ask);
+        app.answer_confirmation(crate::confirmations::Answer::AllowOnce);
+        assert!(receiver.try_recv().unwrap().is_ok());
+        assert_eq!(app.document.read_range(0, 1), [0xFF]);
+    }
+
+    #[test]
     fn request_body_uses_the_current_model_and_settings() {
-        let body = request_body(&[json!({"role":"user","content":"hi"})]);
+        let body = request_body(&[json!({"role":"user","content":"hi"})], &builtin_tools());
         assert_eq!(body["model"], "claude-opus-5-5");
         assert_eq!(body["stream"], true);
         assert_eq!(body["fallbacks"], "default");
@@ -834,7 +937,7 @@ mod tests {
     #[test]
     fn asking_without_credentials_explains_how_to_set_them() {
         let mut assistant = Assistant::default();
-        let error = assistant.ask("what is this?", &FileContext::default(), None).unwrap_err();
+        let error = assistant.ask("what is this?", &FileContext::default(), None, Vec::new()).unwrap_err();
         assert!(error.contains("Settings"));
         assert!(!assistant.is_busy());
         assert!(assistant.transcript.is_empty(), "nothing is recorded for a question that was not sent");

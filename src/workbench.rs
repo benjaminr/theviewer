@@ -14,7 +14,7 @@ use eframe::egui::{self, Color32, ColorImage, Context, Rect, RichText, Sense, St
 
 use crate::app::{DialogKind, FileAction, ViewerApp};
 use crate::panels::{self, PanelStates};
-use crate::assistant::{self, FileContext, ToolCall};
+use crate::assistant::{self, FileContext, ToolCall, ToolReply};
 use crate::bus::Payload;
 use crate::bus::topics::{MappedRegion, RegionsMapped};
 use crate::bus::window::job_finished;
@@ -303,7 +303,7 @@ impl ViewerApp {
         }
 
         let mut assistant = std::mem::take(&mut self.assistant);
-        if assistant.poll(|call| self.run_assistant_tool(call)) {
+        if assistant.poll(|call, reply| self.run_assistant_tool(call, reply)) {
             ctx.request_repaint();
         }
         if assistant.is_busy() {
@@ -856,7 +856,8 @@ impl ViewerApp {
         }
         let context = self.assistant_context();
         let credentials = self.credentials.as_ref().map(|(credentials, _)| credentials.clone());
-        match self.assistant.ask(&question, &context, credentials) {
+        let tools = assistant::offered_tools(self);
+        match self.assistant.ask(&question, &context, credentials, tools) {
             Ok(()) => self.dock.question.clear(),
             Err(message) => {
                 self.assistant.transcript.push(assistant::Turn::Note(message.clone()));
@@ -897,9 +898,11 @@ impl ViewerApp {
     }
 
     /// Carry out a tool call from the assistant against the open document,
-    /// through the data API: the method's JSON result, or its error as JSON.
-    pub fn run_assistant_tool(&mut self, call: &ToolCall) -> Result<String, String> {
-        call.run(self)
+    /// through the data API, as Ask: an edit waits for the person to confirm
+    /// it unless Ask may edit. The reply is the method's JSON result, or
+    /// its error as JSON.
+    pub fn run_assistant_tool(&mut self, call: ToolCall, reply: ToolReply) {
+        call.request(self, reply);
     }
 
     // -----------------------------------------------------------------------

@@ -8,7 +8,7 @@ use eframe::egui::{self, Key, Modifiers};
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
 use theviewer::app::{Launch, ViewerApp};
-use theviewer::assistant::ToolCall;
+use theviewer::assistant::{self, ToolCall, ToolReply};
 use theviewer::dock::DockTab;
 use theviewer::media::MediaKind;
 use theviewer::plugin::Category;
@@ -29,11 +29,20 @@ fn harness_for(path: PathBuf) -> Harness<'static, ViewerApp> {
     harness
 }
 
-/// Run one of Ask's tools against the window's document and read its JSON result.
+/// Run one of Ask's tools against the window's document, as Ask does, and
+/// take its answer.
+fn run_ask_tool(app: &mut ViewerApp, tool: &str, input: serde_json::Value) -> Result<String, String> {
+    let call = ToolCall::parse(tool, &input, &assistant::offered_tools(app)).unwrap();
+    let (sender, receiver) = std::sync::mpsc::channel();
+    app.run_assistant_tool(call, ToolReply::new(sender));
+    receiver.try_recv().expect("a tool that reads answers at once")
+}
+
+/// Run one of Ask's tools against the window's document and read its whole
+/// JSON result (which the model gets cut to a length it can take).
 fn ask_tool(app: &mut ViewerApp, tool: &str, input: serde_json::Value) -> serde_json::Value {
-    let call = ToolCall::parse(tool, &input).unwrap();
-    let output = app.run_assistant_tool(&call).unwrap_or_else(|error| panic!("{tool}: {error}"));
-    serde_json::from_str(&output).unwrap()
+    let call = ToolCall::parse(tool, &input, &assistant::offered_tools(app)).unwrap();
+    theviewer::api::call(app, &theviewer::api::Caller::Ask, &call.method, call.params).unwrap_or_else(|error| panic!("{tool}: {error}"))
 }
 
 fn steps(harness: &mut Harness<'static, ViewerApp>, count: usize) {
@@ -294,7 +303,7 @@ fn plotting_audio_from_bytes_and_the_assistant_tools() {
     assert!(listed.to_string().contains("gzip"), "{listed}");
     let parsed = ask_tool(app, "structure_parse", serde_json::json!({ "at": 1 }));
     assert_eq!(parsed["structures"], serde_json::json!([]), "nothing parses at offset 1");
-    let refused = app.run_assistant_tool(&ToolCall::parse("bytes_hexdump", &serde_json::json!({ "start": 1u64 << 40 })).unwrap());
+    let refused = run_ask_tool(app, "bytes_hexdump", serde_json::json!({ "start": 1u64 << 40 }));
     assert!(refused.unwrap_err().contains("out_of_range"));
 
     // Without credentials, asking explains where to add a key.
@@ -680,7 +689,7 @@ fn ask_can_map_the_file_measure_ranges_and_look_for_code() {
 
     let processor = ask_tool(app, "analysis_processor", serde_json::json!({ "start": 0, "len": 4096 }));
     assert!(!processor["summary"].as_str().unwrap().is_empty());
-    let missing = app.run_assistant_tool(&ToolCall::parse("analysis_statistics", &serde_json::json!({ "len": "all" })).unwrap());
+    let missing = run_ask_tool(app, "analysis_statistics", serde_json::json!({ "len": "all" }));
     assert!(missing.unwrap_err().contains("invalid_params"), "arguments of the wrong type are rejected");
 
     let segments = ask_tool(app, "analysis_segments", serde_json::json!({}));
