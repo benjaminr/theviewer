@@ -17,7 +17,9 @@
 //!
 //! This module holds the state, the sources and the live pipeline; the tables,
 //! the detail tree, the hex editor and the operations on packets are drawn by
-//! [`crate::panel_packets_view`].
+//! [`crate::panel_packets_view`], and the splitting rules, the raster and hex
+//! grids (one packet per row) and the column operations by
+//! [`crate::panel_packets_grid`].
 
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
@@ -32,6 +34,7 @@ use crate::app::ViewerApp;
 use crate::dock::DockTab;
 use crate::packets::sources::{self, CaptureLocation, MarkerMode, Recipe};
 use crate::packets::{self, Dissection, Flow, LinkKind, PacketSet, RawFrames, Summary};
+use crate::panel_packets_grid::{self as grid, GridState};
 use crate::panel_packets_view as view;
 use crate::plugin::{Category, Finding};
 use crate::templates::{self, Template};
@@ -258,6 +261,8 @@ pub struct PacketsState {
     pub(crate) list_hovered: bool,
     /// The height of the pane, for sizing the list inside the scrolling panel.
     pub(crate) pane_height: f32,
+    /// The raster and hex grids, the splitting rules and column selection.
+    pub grid: GridState,
 }
 
 impl PacketsState {
@@ -810,6 +815,7 @@ pub fn show_packets(state: &mut PacketsState, app: &mut ViewerApp, ui: &mut Ui) 
 /// Everything below the polling: controls, then the chosen view.
 fn show_body(state: &mut PacketsState, app: &mut ViewerApp, ui: &mut Ui) {
     show_controls(state, app, ui);
+    grid::show_split_rules(state, app, ui);
     show_captures(state, app, ui);
     show_status(state, app, ui);
     if state.set.is_none() {
@@ -1001,6 +1007,9 @@ fn show_status(state: &mut PacketsState, app: &mut ViewerApp, ui: &mut Ui) {
     }
     if let Some(set) = &state.set {
         let mut caption = format!("{} · {}", set.name, set.description);
+        if let Some(lengths) = packets::split::frame_lengths(set) {
+            caption.push_str(&format!(" · {lengths}"));
+        }
         if let Some(cap) = set.cap_note() {
             caption.push_str(" · ");
             caption.push_str(&cap);
@@ -1154,6 +1163,132 @@ mod tests {
         harness.state_mut().1.undo();
         settle(&mut harness);
         assert_eq!(harness.state().0.rows().len(), 3);
+    }
+
+    /// Frames of a sync byte 0xAA, a u16 big-endian payload length and the
+    /// payload, with the document offset of each frame.
+    fn length_prefixed_stream() -> (Vec<u8>, Vec<usize>) {
+        let mut stream = Vec::new();
+        let mut starts = Vec::new();
+        for index in 0..12u8 {
+            starts.push(stream.len());
+            let payload: Vec<u8> = (0..(index % 5 + 3)).map(|byte| byte ^ index.wrapping_mul(29)).collect();
+            stream.push(0xAA);
+            stream.extend_from_slice(&(payload.len() as u16).to_be_bytes());
+            stream.extend_from_slice(&payload);
+        }
+        (stream, starts)
+    }
+
+    fn click_at(harness: &mut PanelHarness, position: egui::Pos2) {
+        harness.hover_at(position);
+        harness.step();
+        harness.event(egui::Event::PointerButton { pos: position, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE });
+        harness.step();
+        harness.event(egui::Event::PointerButton { pos: position, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE });
+        harness.step();
+        harness.step();
+    }
+
+    #[test]
+    fn a_column_of_a_length_field_split_is_xored_in_every_packet_from_the_raster_and_hex_views_and_undone_in_one_step() {
+        let (stream, starts) = length_prefixed_stream();
+        let original = stream.clone();
+        let mut harness = harness_for(stream);
+        {
+            let (state, app) = harness.state_mut();
+            state.grid.split.rule = grid::SplitRule::LengthField;
+            state.grid.split.whole_document = true;
+            state.grid.split.field = packets::split::LengthField { offset: 1, ..Default::default() };
+            grid::split_now(state, app);
+        }
+        settle(&mut harness);
+        let found: Vec<usize> = harness.state().0.packet_set().expect("frames").packets.iter().map(|p| p.offset).collect();
+        assert_eq!(found, starts);
+
+        harness.get_by_label("Raster").click();
+        settle(&mut harness);
+        assert_eq!(harness.state().0.grid.row_count(), 12);
+        assert_eq!(harness.state().0.grid.column_count(), 3 + 7, "the longest frame has a 7-byte payload");
+        let ruler = harness.state().0.grid.ruler.expect("the raster's ruler was drawn");
+        click_at(&mut harness, ruler.column_centre(3));
+        assert_eq!(harness.state().0.grid.columns, Some((3, 1)), "clicking the ruler selects that column");
+
+        harness.get_by_label("Hex").click();
+        settle(&mut harness);
+        let ruler = harness.state().0.grid.ruler.expect("the hex grid's ruler was drawn");
+        click_at(&mut harness, ruler.column_centre(4));
+        assert_eq!(harness.state().0.grid.columns, Some((4, 1)));
+
+        harness.state_mut().0.grid.operation_text = "FF".to_string();
+        harness.get_by_label("XOR column").click();
+        settle(&mut harness);
+        let edited = harness.state_mut().1.document.read_range(0, original.len());
+        for (at, (&now, &before)) in edited.iter().zip(&original).enumerate() {
+            let in_column = at.checked_sub(4).is_some_and(|start| starts.contains(&start));
+            let expected = if in_column { before ^ 0xFF } else { before };
+            assert_eq!(now, expected, "byte {at:#x} (in the column: {in_column})");
+        }
+
+        harness.state_mut().1.undo();
+        settle(&mut harness);
+        assert_eq!(harness.state_mut().1.document.read_range(0, original.len()), original, "one undo restores every packet");
+    }
+
+    #[test]
+    fn auto_detect_fills_in_the_length_field_and_clicking_a_hex_cell_selects_that_byte() {
+        let (stream, starts) = length_prefixed_stream();
+        let mut repeated = stream.clone();
+        for _ in 0..4 {
+            repeated.extend_from_slice(&stream);
+        }
+        let mut harness = harness_for(repeated);
+        {
+            let (state, app) = harness.state_mut();
+            state.grid.split.whole_document = true;
+            grid::detect_length_field(state, app);
+            assert_eq!((state.grid.split.field.offset, state.grid.split.field.big_endian), (1, true), "{:?}", state.note.as_ref().map(|n| &n.text));
+            grid::split_now(state, app);
+            state.grid.layout = grid::PacketLayout::Hex;
+        }
+        settle(&mut harness);
+        assert_eq!(harness.state().0.rows().len(), 60);
+        let ruler = harness.state().0.grid.ruler.expect("the hex grid was drawn");
+        // The second row's first payload byte: one row below the ruler, column 3.
+        let cell = ruler.column_centre(3) + egui::vec2(0.0, 8.0 + 16.0 + 4.0);
+        click_at(&mut harness, cell);
+        let (state, app) = harness.state();
+        assert_eq!(app.selection(), Some((starts[1] + 3, 1)));
+        assert_eq!(state.focused_packet(), Some(1));
+    }
+
+    #[test]
+    fn deleting_a_column_of_fixed_width_records_shortens_each_record_and_one_undo_restores_them() {
+        let records: Vec<u8> = (0..40u8).collect();
+        let mut harness = harness_for(records.clone());
+        {
+            let (state, app) = harness.state_mut();
+            state.grid.split.rule = grid::SplitRule::FixedWidth;
+            state.grid.split.whole_document = true;
+            state.grid.split.row_width = 8;
+            grid::split_now(state, app);
+        }
+        settle(&mut harness);
+        {
+            let (state, app) = harness.state_mut();
+            state.grid.layout = grid::PacketLayout::Raster;
+            grid::refresh_rows(state, app);
+            state.grid.columns = Some((2, 3));
+            grid::delete_columns(state, app);
+        }
+        settle(&mut harness);
+        let expected: Vec<u8> = records.chunks(8).flat_map(|record| [&record[..2], &record[5..]].concat()).collect();
+        assert_eq!(harness.state_mut().1.document.read_range(0, 64), expected);
+        let lengths: Vec<usize> = harness.state().0.packet_set().expect("records").packets.iter().map(|p| p.len).collect();
+        assert_eq!(lengths, vec![5; 5], "the records are found again five bytes wide");
+        harness.state_mut().1.undo();
+        settle(&mut harness);
+        assert_eq!(harness.state_mut().1.document.read_range(0, 64), records);
     }
 
     #[test]

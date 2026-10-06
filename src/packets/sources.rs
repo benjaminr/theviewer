@@ -7,6 +7,7 @@ use std::fmt;
 
 use pcap_parser::pcapng::Block;
 
+use super::split::{self, BytePattern, LengthField, PatternMode};
 use super::{LinkKind, Packet, PacketSet};
 use crate::parsers::guarded;
 use crate::protocol::{self, Framing, Message};
@@ -50,6 +51,8 @@ pub enum SourceError {
     NoPacketsInCapture { offset: usize },
     /// There were no messages to take packets from.
     NoMessages,
+    /// A splitting rule found no frame, for the reason given.
+    NoFrames { reason: String },
 }
 
 impl fmt::Display for SourceError {
@@ -62,6 +65,7 @@ impl fmt::Display for SourceError {
             SourceError::NotACapture { offset } => write!(f, "There is no pcap or pcapng header at {offset:#x}."),
             SourceError::NoPacketsInCapture { offset } => write!(f, "The capture at {offset:#x} has a header but no readable packet records."),
             SourceError::NoMessages => write!(f, "There are no messages to take packets from."),
+            SourceError::NoFrames { reason } => write!(f, "No frames: {reason}."),
         }
     }
 }
@@ -247,6 +251,10 @@ pub enum Recipe {
     Records { start: usize, len: usize, record_len: usize, link: LinkKind },
     /// A range cut at a delimiter or sync word.
     Marker { start: usize, len: usize, marker: Vec<u8>, mode: MarkerMode, link: LinkKind },
+    /// A range cut into frames by a length field inside each.
+    LengthField { start: usize, len: usize, field: LengthField, link: LinkKind },
+    /// A range cut at every match of a pattern (which may hold wildcards).
+    Pattern { start: usize, len: usize, pattern: BytePattern, mode: PatternMode, link: LinkKind },
 }
 
 impl Recipe {
@@ -266,7 +274,11 @@ impl Recipe {
                 let offset = (*offset).min(document_len);
                 Some((offset, (document_len - offset).min(read_limit)))
             }
-            Recipe::Framing { start, len, .. } | Recipe::Records { start, len, .. } | Recipe::Marker { start, len, .. } => Some(grown(*start, *len)),
+            Recipe::Framing { start, len, .. }
+            | Recipe::Records { start, len, .. }
+            | Recipe::Marker { start, len, .. }
+            | Recipe::LengthField { start, len, .. }
+            | Recipe::Pattern { start, len, .. } => Some(grown(*start, *len)),
         }
     }
 
@@ -279,6 +291,8 @@ impl Recipe {
             Recipe::Framing { framing, .. } => from_framing(bytes, start, framing),
             Recipe::Records { record_len, link, .. } => split_fixed(start, bytes.len(), *record_len, *link),
             Recipe::Marker { marker, mode, link, .. } => split_by_marker(bytes, start, marker, *mode, *link),
+            Recipe::LengthField { field, link, .. } => split::split_by_length_field(bytes, start, field, *link),
+            Recipe::Pattern { pattern, mode, link, .. } => split::split_by_pattern(bytes, start, pattern, *mode, *link),
         }
     }
 }

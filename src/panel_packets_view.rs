@@ -15,6 +15,7 @@ use crate::packets::edit::{self, ByteOperation};
 use crate::packets::{self, ConversationKey, ExportPacket, Layer};
 use crate::plugin::Field;
 use crate::panel_packets::{self as panel, FieldEdit, PacketsState, PacketsView, Statistics};
+use crate::panel_packets_grid::{self as grid, PacketLayout};
 use crate::theme;
 
 /// Most bytes one undoable edit may span; wider operations are split into
@@ -68,10 +69,16 @@ pub fn start_row_unless_fits(ui: &mut Ui, width: f32) {
 // Packet list
 // ---------------------------------------------------------------------------
 
-/// The filter, the packet list, the operations on the selected packets and
-/// the selected packet's detail.
+/// The filter, the packet list (or the raster or hex grid of the packets),
+/// the operations on the selected packets and the selected packet's detail.
 pub fn show_packet_view(state: &mut PacketsState, app: &mut ViewerApp, ui: &mut Ui) {
     show_filter(state, ui);
+    grid::show_layout_choice(state, ui);
+    if state.grid.layout != PacketLayout::List {
+        grid::show_grid_view(state, app, ui);
+        show_operations(state, app, ui);
+        return;
+    }
     let height = (state.pane_height * TABLE_SHARE).clamp(MIN_TABLE_HEIGHT, MAX_TABLE_HEIGHT);
     show_table(state, app, ui, height);
     show_operations(state, app, ui);
@@ -167,7 +174,7 @@ fn show_table(state: &mut PacketsState, app: &mut ViewerApp, ui: &mut Ui, height
 
 /// Plain click selects one packet; Cmd (Ctrl) toggles one; Shift extends
 /// from the focused packet along the shown order.
-fn click_row(state: &mut PacketsState, app: &mut ViewerApp, index: usize, modifiers: Modifiers) {
+pub(crate) fn click_row(state: &mut PacketsState, app: &mut ViewerApp, index: usize, modifiers: Modifiers) {
     if modifiers.shift
         && let Some(anchor) = state.focus
         && let (Some(from), Some(to)) = (state.visible.iter().position(|&i| i == anchor), state.visible.iter().position(|&i| i == index))

@@ -148,7 +148,7 @@ right-click menu. Each one is a panel you can dock anywhere.
 | **Images** | Finds uncompressed pictures, fonts, splash screens and framebuffers by trying widths and pixel formats across the file; click a result to show it in the view at the right width and format. |
 | **Columns** | For a table of fixed-size records: a profile of each byte position (constant, counter, timestamp, a few values, text, random) and the fields it adds up to. One click applies them as a template. |
 | **Protocol** | For captures, serial logs and streams of messages: finds the framing (sync words, delimiters, length prefixes or fixed size), splits the messages, and identifies types, sequence numbers, lengths, timestamps and checksums. *Align messages* groups messages into types and lines them up, so constant, counting and length fields line up even when messages differ in length. |
-| **Packets** | A packet list for captures and message streams. Load the protocol framing's messages, a pcap or pcapng capture found inside the file, the selection as one packet, or the selection cut by length or at a delimiter. Each packet is dissected (Ethernet, VLAN, ARP, IPv4, IPv6, ICMP, TCP, UDP, DNS, HTTP, NTP, Modbus/TCP, MQTT; raw frames by a template or the protocol tool's field guesses), with conversations, endpoints and *Follow stream*. Filter with terms such as `udp port:53 len>60 hex:DEADBEEF`, and export the shown packets as a pcap file Wireshark opens. |
+| **Packets** | A packet list for captures and message streams. Load the protocol framing's messages, a pcap or pcapng capture found inside the file, the selection as one packet, or any range split into frames by a fixed width, a length field inside each frame (u8, u16, u32 or LEB128, with auto-detection) or a byte pattern with `??` wildcards. Show them as a list, or as a *Raster* or *Hex* grid with one packet per row so fields line up in columns. Each packet is dissected (Ethernet, VLAN, ARP, IPv4, IPv6, ICMP, TCP, UDP, DNS, HTTP, NTP, Modbus/TCP, MQTT; raw frames by a template or the protocol tool's field guesses), with conversations, endpoints and *Follow stream*. Filter with terms such as `udp port:53 len>60 hex:DEADBEEF`, and export the shown packets as a pcap file Wireshark opens. |
 | **Bits** | For data that is not byte-aligned or not plain binary: finds frame lengths in bits (such as a 37-bit radio frame) and their sync words; shows each bit plane as an image; decodes Manchester, differential Manchester, NRZI, 8b/10b, Gray code and BCD, picking the decoder and bit offset automatically; guesses what the field at the cursor holds (integer, float, fixed-point or a timestamp, and which byte order); and finds length prefixes, tag-length-value chains and offset tables. |
 | **Template** | Describe a structure in a small language, such as `struct Chunk { id: char[4]  len: u32  data: bytes[len] }`, and see it decoded as a tree and a table. It can also propose a template from a few selected records. See [docs/templates.md](docs/templates.md). |
 | **Statistics** | Byte histogram, randomness tests (entropy, chi-square, serial correlation, Monte Carlo π) with a plain verdict, a byte-pair fingerprint, entropy along the file, and the most repeated sequences. |
@@ -180,6 +180,22 @@ and dissected again a moment after any edit, wherever it was made. Open it
 from *Tools › Packet viewer*, *Open in packet viewer* in the Protocol tab,
 the message alignment and the findings list, or *Packets* in the
 right-click menu.
+
+**Packets as rows.** *Split into frames* cuts the selection or the whole
+document by a fixed width, a length field (where it sits, its width and byte
+order, whether it counts the whole frame, the bytes after it or the payload
+after a header, plus a constant; *Auto-detect* fills these in from the
+protocol tool), or a pattern such as `AA 55 ?? 01`, `0D 0A` or `"GET "` that
+starts each frame, ends it, or sits between frames. The frame count and the
+shortest, mean and longest lengths are shown. *Raster* draws each packet as
+one row of pixels (byte class or a palette, any pixel size, hex inside the
+pixels when zoomed in if you want it); *Hex* writes the same rows as hex
+with ASCII beside them. Rows can be lined up on a pattern or on the packet's
+end, and a strip above the columns marks each byte offset as constant,
+counter, few values, text or random. Click a byte to select it in the view;
+click the ruler (or Alt-click) to select columns and invert, fill, XOR, add
+to, set, number, byte-swap, copy (hex or CSV) or delete them in every packet
+at once, as one undoable edit.
 
 Also in the menus: *Plot selection* draws bytes as a time series, histogram,
 scatter or frequency spectrum, and *Play selection as audio* plays any bytes
@@ -353,7 +369,7 @@ never your Keychain.
 | `media.rs` `player.rs` | Media detection and decoding; the image, audio and video viewer. |
 | `explain.rs` `hilbert.rs` `region_colours.rs` | The whole-file report and map; the Hilbert and Morton curve layouts; colours by region, block class and entropy. |
 | `columns.rs` `protocol.rs` `templates.rs` | Record profiling, protocol analysis, and the template language. |
-| `packets.rs` `packets/` `panel_packets.rs` `panel_packets_view.rs` | Packet sources (framing, pcap and pcapng, splits), dissection, conversations and streams, the filter language, pcap export and in-place editing; the packet viewer panel. |
+| `packets.rs` `packets/` `panel_packets.rs` `panel_packets_view.rs` `panel_packets_grid.rs` | Packet sources (framing, pcap and pcapng, splits by width, length field or pattern), packets laid out as rows with column operations, dissection, conversations and streams, the filter language, pcap export and in-place editing; the packet viewer panel. |
 | `stats.rs` `strings.rs` `xor.rs` | Statistics and randomness tests, strings, XOR key recovery. |
 | `disasm.rs` `pointers.rs` `checksums.rs` `diff.rs` | Disassembly, the pointer graph, checksums, file comparison. |
 | `sources.rs` `plot.rs` | Live sources, watching and recording; plots and bytes as audio. |

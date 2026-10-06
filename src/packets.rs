@@ -5,8 +5,10 @@
 //! or an application frame of unknown format. Packets are gathered into a
 //! [`PacketSet`] from one of several sources ([`sources`]): the messages of
 //! the protocol analysis, a pcap or pcapng capture inside the document, a
-//! range cut into fixed-length records or at a delimiter, a single range, or a
-//! cluster from the message alignment.
+//! range cut into fixed-length records, at a delimiter or pattern, or by a
+//! length field inside each frame ([`split`]), a single range, or a cluster
+//! from the message alignment. [`grid`] lays packets out one per row, so the
+//! same field lines up across them, and edits whole columns at once.
 //!
 //! Each packet can be dissected into layers ([`dissect`]), summarised into
 //! conversations and endpoints and followed as a stream ([`flows`]), matched
@@ -22,7 +24,9 @@ pub mod edit;
 pub mod export;
 pub mod filter;
 pub mod flows;
+pub mod grid;
 pub mod sources;
+pub mod split;
 
 pub use dissect::{Dissection, Layer, RawFrames, Summary, dissect, dissect_with};
 pub use export::{ExportError, ExportPacket, write_pcap};

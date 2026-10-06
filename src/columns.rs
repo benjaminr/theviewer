@@ -164,7 +164,8 @@ pub fn profile(bytes: &[u8], record_len: usize, max_records: usize) -> Vec<Colum
     (0..record_len).map(|position| profile_column(&column(bytes, record_len, records, position), position)).collect()
 }
 
-fn profile_column(values: &[u8], position: usize) -> ColumnProfile {
+/// Profile one column from its value in each record, in record order.
+pub fn profile_column(values: &[u8], position: usize) -> ColumnProfile {
     let mut histogram = [0usize; 256];
     for &value in values {
         histogram[value as usize] += 1;
