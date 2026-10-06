@@ -1,12 +1,13 @@
 //! Small, defensive parsers for application protocols carried over TCP and
-//! UDP: DNS, HTTP, NTP, Modbus/TCP and MQTT here, and SNMP, DHCP and the
-//! NetBIOS session service with SMB in their own modules.
+//! UDP: DNS, HTTP, NTP, Modbus/TCP and MQTT here, and SNMP, DHCP, the
+//! NetBIOS session service with SMB, and ISO transport (TPKT and COTP) with
+//! S7comm in their own modules.
 //!
 //! Each parser takes a transport payload and returns an [`AppLayer`] whose
 //! field offsets are relative to the payload's first byte, or `None` when the
 //! bytes do not look like that protocol. Protocols carried inside others
-//! (SMB in the NetBIOS session service) give several layers, one after
-//! another. None of them can panic, and every loop is bounded.
+//! (SMB in the NetBIOS session service, S7comm in COTP in TPKT) give
+//! several layers, one after another. None of them can panic, and every loop is bounded.
 
 use crate::patterns::format_unix_seconds;
 use crate::plugin::Field;
@@ -14,6 +15,7 @@ use crate::plugin::Field;
 use super::flows::Transport;
 
 mod dhcp;
+mod iso_transport;
 mod smb;
 mod snmp;
 
@@ -31,6 +33,7 @@ const PORT_DHCP_SERVER: u16 = 67;
 const PORT_DHCP_CLIENT: u16 = 68;
 const PORT_NETBIOS_SESSION: u16 = 139;
 const PORT_SMB: u16 = 445;
+const PORT_ISO_TSAP: u16 = 102;
 
 /// A parsed application layer.
 #[derive(Clone, Debug, PartialEq)]
@@ -59,6 +62,7 @@ pub fn dissect_application(transport: Transport, source_port: u16, destination_p
     let stacked = match transport {
         Transport::Tcp if uses(PORT_NETBIOS_SESSION) => smb::dissect_netbios_session(payload, false),
         Transport::Tcp if uses(PORT_SMB) => smb::dissect_netbios_session(payload, true),
+        Transport::Tcp if uses(PORT_ISO_TSAP) => iso_transport::dissect_tpkt(payload),
         _ => Vec::new(),
     };
     if !stacked.is_empty() {
@@ -1103,5 +1107,15 @@ mod tests {
             assert_eq!(names, ["NetBIOS Session Service", "SMB2"], "port {port}");
         }
         assert_eq!(innermost(Transport::Tcp, 50000, 445, b"GET / HTTP/1.1\r\n\r\n").map(|l| l.key), Some("http"), "other bytes fall through to sniffing");
+    }
+
+    #[test]
+    fn tpkt_on_port_102_carries_cotp_and_s7comm() {
+        let payload = [3, 0, 0, 25, 2, 0xF0, 0x80, 0x32, 1, 0, 0, 0, 1, 0, 8, 0, 0, 0xF0, 0, 0, 1, 0, 1, 0x03, 0xC0];
+        let layers = dissect_application(Transport::Tcp, 102, 49152, &payload);
+        let names: Vec<&str> = layers.iter().map(|layer| layer.name).collect();
+        assert_eq!(names, ["TPKT", "COTP", "S7comm"]);
+        assert_eq!(layers.iter().map(|layer| layer.len).sum::<usize>(), payload.len(), "the layers follow one another");
+        assert!(dissect_application(Transport::Tcp, 102, 49152, &[0x16, 0x03, 0x01]).is_empty());
     }
 }

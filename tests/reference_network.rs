@@ -25,10 +25,16 @@ const FIELDS_WITH_FREE_NAMED_CHILDREN: [&str; 1] = ["Headers"];
 
 /// Fields of the newer dissectors that the notes do not describe yet, by
 /// layer. A field listed here that gains a note should leave the list.
-const FIELDS_AWAITING_NOTES: [(&str, &[&str]); 3] = [
+const FIELDS_AWAITING_NOTES: [(&str, &[&str]); 6] = [
     ("SNMP", &["Object name", "Value"]),
     ("NetBIOS Session Service", &["Message type", "Length"]),
     ("SMB2", &["Header length", "Chain offset", "Process ID"]),
+    ("TPKT", &["Reserved"]),
+    ("COTP", &["Destination reference", "Source reference", "Class", "TPDU size", "TPDU number"]),
+    (
+        "S7comm",
+        &["Redundancy identification", "Parameter", "Max AmQ (parallel jobs with ack) calling", "Max AmQ (parallel jobs with ack) called", "PDU length"],
+    ),
 ];
 
 /// An etherparse builder that has reached its UDP header.
@@ -167,6 +173,14 @@ fn smb2_negotiate() -> Vec<u8> {
     ipv4_tcp(445, &payload)
 }
 
+/// A COTP connection request to rack 0, slot 2 of an S7 controller, and the
+/// S7comm setup communication job that follows the connection.
+fn s7_connection_and_setup() -> (Vec<u8>, Vec<u8>) {
+    let request = [3, 0, 0, 22, 17, 0xE0, 0, 0, 0, 1, 0, 0xC0, 1, 0x0A, 0xC1, 2, 1, 0, 0xC2, 2, 1, 2];
+    let setup = [3, 0, 0, 25, 2, 0xF0, 0x80, 0x32, 1, 0, 0, 0, 1, 0, 8, 0, 0, 0xF0, 0, 0, 1, 0, 1, 0x03, 0xC0];
+    (ipv4_tcp(102, &request), ipv4_tcp(102, &setup))
+}
+
 fn dns_over_tcp() -> Vec<u8> {
     let query = dns_query();
     let mut payload = (query.len() as u16).to_be_bytes().to_vec();
@@ -190,6 +204,8 @@ fn sample_dissections() -> Vec<(&'static str, Dissection)> {
         ("IPv4/UDP/SNMP", dissect(&snmp_get_request(), LinkKind::RawIp)),
         ("IPv4/UDP/DHCP", dissect(&dhcp_offer(), LinkKind::RawIp)),
         ("IPv4/TCP/NBSS/SMB2", dissect(&smb2_negotiate(), LinkKind::RawIp)),
+        ("IPv4/TCP/TPKT/COTP", dissect(&s7_connection_and_setup().0, LinkKind::RawIp)),
+        ("IPv4/TCP/TPKT/COTP/S7comm", dissect(&s7_connection_and_setup().1, LinkKind::RawIp)),
     ]
 }
 
@@ -208,6 +224,7 @@ fn fields_without_notes(entry: &reference::FormatReference, fields: &[Field], mi
 #[test]
 fn every_layer_of_common_traffic_has_reference_notes_explaining_each_field() {
     let mut expected_layers = std::collections::BTreeSet::new();
+    let mut awaiting_seen = std::collections::BTreeSet::new();
     for (traffic, dissection) in sample_dissections() {
         assert!(dissection.notes.is_empty(), "{traffic}: the sample should dissect cleanly: {:?}", dissection.notes);
         for layer in &dissection.layers {
@@ -219,11 +236,15 @@ fn every_layer_of_common_traffic_has_reference_notes_explaining_each_field() {
             let mut missing = Vec::new();
             fields_without_notes(entry, &layer.fields, &mut missing);
             let awaiting: &[&str] = FIELDS_AWAITING_NOTES.iter().find(|(name, _)| *name == layer.name).map_or(&[], |(_, fields)| fields);
-            for field in awaiting {
-                assert!(missing.contains(&field.to_string()), "{traffic}: '{field}' of layer '{}' has a note now; take it off FIELDS_AWAITING_NOTES", layer.name);
-            }
+            awaiting_seen.extend(missing.iter().filter(|field| awaiting.contains(&field.as_str())).map(|field| (layer.name.clone(), field.clone())));
             missing.retain(|field| !awaiting.contains(&field.as_str()));
             assert!(missing.is_empty(), "{traffic}: layer '{}' ({}) has fields without notes: {missing:?}", layer.name, entry.id);
+        }
+    }
+    for (layer, fields) in FIELDS_AWAITING_NOTES {
+        for field in fields {
+            let seen = awaiting_seen.contains(&(layer.to_string(), field.to_string()));
+            assert!(seen, "'{field}' of layer '{layer}' has a note now, or no sample shows it; take it off FIELDS_AWAITING_NOTES");
         }
     }
     for layer in [
@@ -245,6 +266,9 @@ fn every_layer_of_common_traffic_has_reference_notes_explaining_each_field() {
         "DHCP",
         "NetBIOS Session Service",
         "SMB2",
+        "TPKT",
+        "COTP",
+        "S7comm",
     ] {
         assert!(expected_layers.contains(layer), "the sample traffic should include a '{layer}' layer, found {expected_layers:?}");
     }
@@ -261,6 +285,10 @@ fn wireshark_field_names_reach_the_fields_of_the_newer_dissectors_through_the_no
     let smb2 = dissect(&smb2_negotiate(), LinkKind::RawIp);
     assert_eq!(wireshark_values(&smb2, "smb2.cmd"), ["0 (Negotiate Protocol)"]);
     assert_eq!(smb2.summary.info, "SMB2 Negotiate Protocol Request");
+    let s7 = dissect(&s7_connection_and_setup().1, LinkKind::RawIp);
+    assert_eq!(wireshark_values(&s7, "s7comm.header.rosctr"), ["1 (Job)"]);
+    assert_eq!(wireshark_values(&s7, "tpkt.length"), ["25"]);
+    assert_eq!(s7.summary.info, "ROSCTR:[Job       ] Function:[Setup communication]");
 }
 
 #[test]
