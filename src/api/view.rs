@@ -164,6 +164,44 @@ pub fn set_shape(workspace: &mut dyn Workspace, params: SetShapeParams) -> Resul
     get_shape(workspace, ShapeParams { doc: Some(id) })
 }
 
+/// Pixels per row and padding bytes that make one row of `format` pixels
+/// `period` bytes long.
+pub fn width_for_period(format: PixelFormat, period: usize) -> (usize, usize) {
+    let bits = format.bits_per_pixel();
+    if bits >= 8 {
+        let bytes = bits / 8;
+        let width = (period / bytes).clamp(1, MAX_WIDTH);
+        (width, period.saturating_sub(width * bytes))
+    } else {
+        ((period * 8 / bits).clamp(1, MAX_WIDTH), 0)
+    }
+}
+
+/// The person's changes to the view's shape in the window, each a
+/// `view.set_shape` step. Zoom, scrolling and panning stay direct.
+impl crate::app::ViewerApp {
+    /// Move the view's origin to byte `offset` (a view offset, skipped
+    /// bytes left out) and bit `bit_offset`; whether it moved.
+    pub fn change_origin(&mut self, offset: usize, bit_offset: u32) -> bool {
+        self.perform("view.set_shape", serde_json::json!({ "offset": offset, "bit_offset": bit_offset })).is_ok()
+    }
+
+    /// Read the bytes as `format` pixels.
+    pub fn change_format(&mut self, format: PixelFormat) {
+        let _ = self.perform("view.set_shape", serde_json::json!({ "format": format }));
+    }
+
+    /// Skip `row_padding` bytes after each row.
+    pub fn change_row_padding(&mut self, row_padding: usize) {
+        let _ = self.perform("view.set_shape", serde_json::json!({ "row_padding": row_padding }));
+    }
+
+    /// An image layout: `format` pixels, `width` to a row, nothing skipped.
+    pub fn apply_image_layout(&mut self, format: PixelFormat, width: usize) {
+        let _ = self.perform("view.set_shape", serde_json::json!({ "format": format, "width": width.clamp(1, MAX_WIDTH), "row_padding": 0 }));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
@@ -204,9 +242,88 @@ mod tests {
     mod window {
         use serde_json::json;
 
+        use crate::actions::take_performed;
+        use crate::analysis::{Candidate, PeriodScan};
         use crate::api::{Caller, call};
         use crate::app::{Launch, ViewerApp};
         use crate::raster::PixelFormat;
+
+        fn app_with(bytes: &[u8]) -> ViewerApp {
+            let mut app = ViewerApp::new(Launch::default());
+            app.open_bytes(bytes.to_vec(), "test.bin".to_string());
+            app.run_bus();
+            take_performed();
+            app
+        }
+
+        fn performed_shape(params: serde_json::Value) -> Vec<(String, serde_json::Value)> {
+            vec![("view.set_shape".to_string(), params)]
+        }
+
+        #[test]
+        fn applying_a_period_sets_the_width_and_padding_as_one_view_step() {
+            let mut app = app_with(&[0u8; 4096]);
+            app.change_format(PixelFormat::Rgb8);
+            take_performed();
+            app.apply_period(100);
+            assert_eq!(take_performed(), performed_shape(json!({"width": 33, "row_padding": 1})), "33 three-byte pixels and a byte over");
+            assert_eq!((app.shape.width, app.shape.row_padding, app.status.as_str()), (33, 1, "Width set from a 100 byte period"));
+        }
+
+        #[test]
+        fn guessing_the_image_shape_sets_the_format_width_and_padding_in_one_step() {
+            let mut app = app_with(&[0u8; 4096]);
+            let best = Candidate { period: 192, score: 1.0, prominence: 9.0, column_gain: 1.0, multiple_of: None };
+            app.period_scan = Some(PeriodScan { window_start: 0, window_len: 4096, scores: Vec::new(), baseline: 0.0, candidates: vec![best] });
+            app.guess_image_shape();
+            assert_eq!(take_performed(), performed_shape(json!({"format": "rgba8", "width": 48, "row_padding": 0})));
+            assert_eq!((app.shape.format, app.shape.width), (PixelFormat::Rgba8, 48));
+            assert_eq!(app.status, "Guessed RGBA 32-bit at 192 bytes per row");
+        }
+
+        #[test]
+        fn moving_the_origin_to_the_cursor_back_to_the_start_or_by_bits_are_view_steps() {
+            let mut app = app_with(&[0u8; 256]);
+            app.set_cursor(0x40, false);
+            app.align_view_to_cursor();
+            assert_eq!(take_performed(), performed_shape(json!({"offset": 0x40, "bit_offset": 0})));
+            assert_eq!((app.shape.byte_offset, app.status.as_str()), (0x40, "View origin set to 0x40"));
+            app.adjust_bit_offset(-1);
+            assert_eq!(take_performed(), performed_shape(json!({"offset": 0x3F, "bit_offset": 7})), "a bit back crosses into the byte before");
+            app.adjust_bit_offset(-1000);
+            assert_eq!(take_performed(), performed_shape(json!({"offset": 0, "bit_offset": 0})), "the origin stops at the start");
+            app.change_origin(3, 2);
+            app.reset_origin();
+            take_performed();
+            assert_eq!((app.shape.byte_offset, app.shape.bit_offset), (0, 0));
+        }
+
+        #[test]
+        fn the_toolbar_s_format_padding_and_image_layouts_are_view_steps() {
+            let mut app = app_with(&[0u8; 256]);
+            app.change_format(PixelFormat::Rgb565);
+            app.change_row_padding(4);
+            app.apply_image_layout(PixelFormat::Bit1Msb, 128);
+            assert_eq!(
+                take_performed(),
+                [
+                    ("view.set_shape".to_string(), json!({"format": "rgb565"})),
+                    ("view.set_shape".to_string(), json!({"row_padding": 4})),
+                    ("view.set_shape".to_string(), json!({"format": "bit1", "width": 128, "row_padding": 0})),
+                ]
+            );
+            assert_eq!((app.shape.format, app.shape.width, app.shape.row_padding), (PixelFormat::Bit1Msb, 128, 0));
+        }
+
+        #[test]
+        fn applying_the_settings_to_the_window_sets_their_format_and_width_as_a_view_step() {
+            let mut app = app_with(&[0u8; 256]);
+            app.preferences.format = "rgb8".to_string();
+            app.preferences.width = 320;
+            app.apply_preferences_to_window();
+            assert_eq!(take_performed(), performed_shape(json!({"format": "rgb8", "width": 320})));
+            assert_eq!((app.shape.format, app.shape.width), (PixelFormat::Rgb8, 320));
+        }
 
         #[test]
         fn the_window_draws_its_bytes_in_the_pixel_format_set() {

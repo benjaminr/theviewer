@@ -46,8 +46,9 @@ pub fn show_raster(app: &mut ViewerApp, ui: &mut Ui) {
 
     if app.fit_width_requested {
         app.fit_width_requested = false;
+        // The width that fills the view, as the person's `view.set_shape`.
         let width = ((image_rect.width() - 2.0) / app.zoom).floor().max(1.0) as usize;
-        app.shape.width = width.min(crate::app::MAX_WIDTH);
+        app.change_width(width);
         app.pan_x = 0.0;
     }
 

@@ -1449,20 +1449,21 @@ impl ViewerApp {
         self.clamp_top_row();
     }
 
-    fn adjust_bit_offset(&mut self, delta: i64) {
+    /// Move the view's origin by `delta` bits, as `view.set_shape`.
+    pub(crate) fn adjust_bit_offset(&mut self, delta: i64) {
         let total_bits = (self.shape.byte_offset * 8) as i64 + self.shape.bit_offset as i64 + delta;
         let total_bits = total_bits.clamp(0, (self.document.len() * 8) as i64) as usize;
-        self.shape.byte_offset = total_bits / 8;
-        self.shape.bit_offset = (total_bits % 8) as u32;
+        self.change_origin(total_bits / 8, (total_bits % 8) as u32);
     }
 
-    /// Make the cursor the top-left pixel of the view.
+    /// Make the cursor the top-left pixel of the view, as `view.set_shape`.
     pub fn align_view_to_cursor(&mut self) {
-        self.shape.byte_offset = self.folds.to_view(self.cursor.min(self.document.len()));
-        self.shape.bit_offset = 0;
-        self.top_row = 0;
-        self.sync_hex_to_raster();
-        self.status = format!("View origin set to {:#x}", self.shape.byte_offset);
+        let offset = self.folds.to_view(self.cursor.min(self.document.len()));
+        if self.change_origin(offset, 0) {
+            self.top_row = 0;
+            self.sync_hex_to_raster();
+            self.status = format!("View origin set to {:#x}", self.shape.byte_offset);
+        }
     }
 
     // ------------------------------------------------------------------
@@ -1558,30 +1559,35 @@ impl ViewerApp {
         self.apply_operation(Operation::MirrorBits);
     }
 
+    /// Put the view's origin back at the start, as `view.set_shape`.
     pub fn reset_origin(&mut self) {
-        self.shape.byte_offset = 0;
-        self.shape.bit_offset = 0;
-        self.top_row = 0;
-        self.sync_hex_to_raster();
+        if self.change_origin(0, 0) {
+            self.top_row = 0;
+            self.sync_hex_to_raster();
+        }
     }
 
-    /// Apply the best detected period with a pixel format guessed from it:
-    /// strides divisible by 4 read as RGBA, by 3 as RGB, otherwise grey.
+    /// Apply the best detected period with a pixel format guessed from it,
+    /// as one `view.set_shape`: strides divisible by 4 read as RGBA, by 3 as
+    /// RGB, otherwise grey.
     pub fn guess_image_shape(&mut self) {
         let Some(best) = self.period_scan.as_ref().and_then(|scan| scan.candidates.first().copied()) else {
             self.start_period_scan();
             self.status = "Scanning for a period first; run Guess image again when the chart appears".to_string();
             return;
         };
-        self.shape.format = if best.period.is_multiple_of(4) && best.period >= 64 {
+        let format = if best.period.is_multiple_of(4) && best.period >= 64 {
             PixelFormat::Rgba8
         } else if best.period.is_multiple_of(3) && best.period >= 48 {
             PixelFormat::Rgb8
         } else {
             PixelFormat::Gray8
         };
-        self.apply_period(best.period);
-        self.status = format!("Guessed {} at {} bytes per row", self.shape.format.label(), best.period);
+        let (width, row_padding) = crate::api::view::width_for_period(format, best.period);
+        if self.perform("view.set_shape", serde_json::json!({ "format": format, "width": width, "row_padding": row_padding })).is_ok() {
+            self.pan_x = 0.0;
+            self.status = format!("Guessed {} at {} bytes per row", format.label(), best.period);
+        }
     }
 
     /// Throw away the current scan so the next frame rescans the view.
@@ -2847,22 +2853,17 @@ impl ViewerApp {
 
     /// Pixels per row and padding bytes that make one row equal `period` bytes.
     pub fn width_for_period(&self, period: usize) -> (usize, usize) {
-        let bits = self.shape.bits_per_pixel();
-        if bits >= 8 {
-            let bytes = bits / 8;
-            let width = (period / bytes).clamp(1, MAX_WIDTH);
-            (width, period.saturating_sub(width * bytes))
-        } else {
-            ((period * 8 / bits).clamp(1, MAX_WIDTH), 0)
-        }
+        crate::api::view::width_for_period(self.shape.format, period)
     }
 
+    /// Make one row `period` bytes long in the current pixel format, as
+    /// `view.set_shape`.
     pub fn apply_period(&mut self, period: usize) {
-        let (width, padding) = self.width_for_period(period);
-        self.set_width(width);
-        self.shape.row_padding = padding;
-        self.pan_x = 0.0;
-        self.status = format!("Width set from a {period} byte period");
+        let (width, row_padding) = self.width_for_period(period);
+        if self.perform("view.set_shape", serde_json::json!({ "width": width, "row_padding": row_padding })).is_ok() {
+            self.pan_x = 0.0;
+            self.status = format!("Width set from a {period} byte period");
+        }
     }
 
     // ------------------------------------------------------------------
@@ -3406,16 +3407,20 @@ impl ViewerApp {
         ui.add_space(2.0);
         let mut packer = RowPacker::begin(ui, "toolbar", self.toolbar_rows.as_deref());
         packer.captioned(ui, "format", "Format", |ui| {
+            let mut format = self.shape.format;
             egui::ComboBox::from_id_salt("pixel-format")
-                .selected_text(self.shape.format.label())
+                .selected_text(format.label())
                 .width(132.0)
                 .show_ui(ui, |ui| {
-                    for format in PixelFormat::ALL {
-                        ui.selectable_value(&mut self.shape.format, format, format.label());
+                    for choice in PixelFormat::ALL {
+                        ui.selectable_value(&mut format, choice, choice.label());
                     }
                 })
                 .response
                 .on_hover_text("How bytes become pixels");
+            if format != self.shape.format {
+                self.change_format(format);
+            }
             if self.shape.format.uses_palette() {
                 egui::ComboBox::from_id_salt("palette")
                     .selected_text(self.shape.palette.label())
@@ -3482,9 +3487,7 @@ impl ViewerApp {
                 ];
                 for (label, format, width) in layouts {
                     if ui.button(label).clicked() {
-                        self.shape.format = format;
-                        self.set_width(width);
-                        self.shape.row_padding = 0;
+                        self.apply_image_layout(format, width);
                         ui.close();
                     }
                 }
@@ -3496,16 +3499,25 @@ impl ViewerApp {
             });
             ui.label(RichText::new(format!("{} B/row", self.shape.row_bytes())).color(theme::TEXT_DIM));
             ui.label(RichText::new("pad").color(theme::TEXT_DIM));
-            ui.add(egui::DragValue::new(&mut self.shape.row_padding).range(0..=MAX_WIDTH * 4).suffix(" B"))
+            let mut row_padding = self.shape.row_padding;
+            let padding = ui
+                .add(egui::DragValue::new(&mut row_padding).range(0..=MAX_WIDTH * 4).suffix(" B"))
                 .on_hover_text("Bytes skipped after each row (for row headers or stride padding)");
+            if padding.changed() {
+                self.change_row_padding(row_padding);
+            }
         });
 
         packer.captioned(ui, "origin", "Origin", |ui| {
             let max_offset = self.document.len();
-            ui.add(egui::DragValue::new(&mut self.shape.byte_offset).range(0..=max_offset).speed(1.0).prefix("byte "))
+            let (mut byte_offset, mut bit_offset) = (self.shape.byte_offset, self.shape.bit_offset);
+            let byte = ui
+                .add(egui::DragValue::new(&mut byte_offset).range(0..=max_offset).speed(1.0).prefix("byte "))
                 .on_hover_text("Document offset shown at the top-left pixel\n, and . step by one byte");
-            ui.add(egui::DragValue::new(&mut self.shape.bit_offset).range(0..=7).prefix("bit "))
-                .on_hover_text("Extra bit shift\nAlt+Left / Alt+Right step by one bit");
+            let bit = ui.add(egui::DragValue::new(&mut bit_offset).range(0..=7).prefix("bit ")).on_hover_text("Extra bit shift\nAlt+Left / Alt+Right step by one bit");
+            if byte.changed() || bit.changed() {
+                self.change_origin(byte_offset, bit_offset);
+            }
             if ui.button("To cursor").on_hover_text("Make the cursor the top-left pixel").clicked() {
                 self.align_view_to_cursor();
             }

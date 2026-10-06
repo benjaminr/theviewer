@@ -242,6 +242,15 @@ impl Default for SettingsWindow {
 }
 
 impl ViewerApp {
+    /// Apply the settings to the window, as the person asked: the pixel
+    /// format and width as a `view.set_shape` step, the rest (palette,
+    /// zoom, highlights) directly.
+    pub fn apply_preferences_to_window(&mut self) {
+        let shape = serde_json::json!({ "format": self.preferences.pixel_format(), "width": self.preferences.width.clamp(1, crate::app::MAX_WIDTH) });
+        let _ = self.perform("view.set_shape", shape);
+        self.apply_preferences();
+    }
+
     /// Look up credentials again, after a key is added or removed.
     pub fn refresh_credentials(&mut self) {
         self.credentials = resolve(&self.settings.store);
@@ -372,7 +381,7 @@ impl ViewerApp {
                 edited = self.current_view_as_preferences();
             }
             if ui.button("Apply to this window").clicked() {
-                self.apply_preferences();
+                self.apply_preferences_to_window();
             }
             if ui.button("Reset").on_hover_text("Go back to the built-in defaults").clicked() {
                 edited = Preferences::default();
