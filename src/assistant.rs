@@ -33,9 +33,13 @@ const MAX_RETRIES: u32 = 2;
 /// Longest a tool result may be, so one call cannot flood the context.
 pub const MAX_TOOL_RESULT_CHARS: usize = 24_000;
 
+/// The request behind *Characterise*: a short question that names the tools
+/// to work through, so the answer is grounded in measurements.
+pub const CHARACTERISE_REQUEST: &str = "Characterise this file: what is it, how is it laid out, and what does each part contain? Start with file_overview and segment_file, check the main regions with byte_statistics, compressibility, identify_processor and text_encoding, look closer where something is unclear, and cite offsets.";
+
 const SYSTEM_PROMPT: &str = "You are the analysis assistant inside theviewer, a binary file viewer and editor used for reverse engineering, firmware analysis and data recovery. The user is looking at a file and asks you about it.
 
-Each question comes with a snapshot of what the user sees: the file's name and size, the cursor and selection, nearby findings from the app's detectors, the parsed structure at the cursor, and a hex dump around the cursor. Use the tools to look further: read bytes anywhere, search, list findings in a range, or parse the structure at an offset. Look before you conclude; base claims on bytes you have seen, and say how sure you are when something is a guess.
+Each question comes with a snapshot of what the user sees: the file's name and size, the cursor and selection, nearby findings from the app's detectors, the parsed structure at the cursor, and a hex dump around the cursor. Use the tools to look further: read bytes anywhere, search, list findings in a range, parse the structure at an offset, map the whole file, split it into typed segments, measure a range's statistics, compressibility or text encoding, or test a range for machine code. Look before you conclude; base claims on bytes you have seen, and say how sure you are when something is a guess.
 
 Write offsets as 0x-prefixed hexadecimal (for example 0x1A40); the app turns them into links that jump to that place in the file, so cite the offset for every specific claim.
 
@@ -173,6 +177,80 @@ pub fn tool_definitions() -> Value {
                 "required": ["offset"],
                 "additionalProperties": false
             }
+        },
+        {
+            "name": "file_overview",
+            "description": "Map the whole file: a one-line summary of what it is, its regions (headers, tables, text, code, compressed, embedded files) with offsets, and likely record widths. Start here when characterising an unknown file.",
+            "strict": true,
+            "eager_input_streaming": true,
+            "input_schema": { "type": "object", "properties": {}, "required": [], "additionalProperties": false }
+        },
+        {
+            "name": "byte_statistics",
+            "description": "Measure a range: entropy, chi-square randomness test, serial correlation, printable, zero and high-byte fractions, distinct values, and a verdict such as text, machine code, compressed or encrypted.",
+            "strict": true,
+            "eager_input_streaming": true,
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "start": integer("First offset of the range."),
+                    "length": integer("Length of the range in bytes; long ranges are sampled.")
+                },
+                "required": ["start", "length"],
+                "additionalProperties": false
+            }
+        },
+        {
+            "name": "segment_file",
+            "description": "Split the whole file into regions of one kind (text, tables, code, compressed, random, padding…) with boundaries on the real edges, and group similar regions into types. Returns each region's offsets and type.",
+            "strict": true,
+            "eager_input_streaming": true,
+            "input_schema": { "type": "object", "properties": {}, "required": [], "additionalProperties": false }
+        },
+        {
+            "name": "compressibility",
+            "description": "Compress a range with several codecs (deflate, bzip2, LZ4, zstd, an order-1 model) and report the ratios with a verdict: encrypted or random, already compressed, lossy media, or structured data.",
+            "strict": true,
+            "eager_input_streaming": true,
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "start": integer("First offset of the range."),
+                    "length": integer("Length of the range in bytes; long ranges are sampled.")
+                },
+                "required": ["start", "length"],
+                "additionalProperties": false
+            }
+        },
+        {
+            "name": "text_encoding",
+            "description": "Identify the character encoding of a text range (ASCII, UTF-8, UTF-16, Windows-1252, Shift-JIS, EUC-JP, GBK, Big5, EUC-KR, KOI8-R, EBCDIC) with previews, and the likely language.",
+            "strict": true,
+            "eager_input_streaming": true,
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "start": integer("First offset of the range."),
+                    "length": integer("Length of the range in bytes; long ranges are sampled.")
+                },
+                "required": ["start", "length"],
+                "additionalProperties": false
+            }
+        },
+        {
+            "name": "identify_processor",
+            "description": "Test whether a range is machine code, and for which processor (x86, ARM, Thumb, AArch64, RISC-V, MIPS, PowerPC), by disassembling samples for each architecture. Returns ranked candidates with confidence and reasons, or says the range looks like data.",
+            "strict": true,
+            "eager_input_streaming": true,
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "start": integer("First offset of the range."),
+                    "length": integer("Length of the range in bytes; long ranges are sampled.")
+                },
+                "required": ["start", "length"],
+                "additionalProperties": false
+            }
         }
     ])
 }
@@ -185,6 +263,14 @@ pub enum ToolCall {
     Search { query: String, hex: bool },
     ListFindings { start: usize, length: usize },
     ParseStructure { offset: usize },
+    /// The whole-file report: summary, regions and likely record widths.
+    FileOverview,
+    ByteStatistics { start: usize, length: usize },
+    IdentifyProcessor { start: usize, length: usize },
+    /// Split the file into regions of one kind and group them into types.
+    SegmentFile,
+    Compressibility { start: usize, length: usize },
+    TextEncoding { start: usize, length: usize },
 }
 
 impl ToolCall {
@@ -210,6 +296,12 @@ impl ToolCall {
             }
             "list_findings" => Ok(ToolCall::ListFindings { start: number("start")?, length: number("length")?.min(4 * 1024 * 1024) }),
             "parse_structure" => Ok(ToolCall::ParseStructure { offset: number("offset")? }),
+            "file_overview" => Ok(ToolCall::FileOverview),
+            "byte_statistics" => Ok(ToolCall::ByteStatistics { start: number("start")?, length: number("length")? }),
+            "identify_processor" => Ok(ToolCall::IdentifyProcessor { start: number("start")?, length: number("length")? }),
+            "segment_file" => Ok(ToolCall::SegmentFile),
+            "compressibility" => Ok(ToolCall::Compressibility { start: number("start")?, length: number("length")? }),
+            "text_encoding" => Ok(ToolCall::TextEncoding { start: number("start")?, length: number("length")? }),
             other => Err(format!("unknown tool '{other}'")),
         }
     }
@@ -221,6 +313,12 @@ impl ToolCall {
             ToolCall::Search { query, hex } => format!("search for {} \"{query}\"", if *hex { "bytes" } else { "text" }),
             ToolCall::ListFindings { start, length } => format!("list findings in {start:#x}..{:#x}", start + length),
             ToolCall::ParseStructure { offset } => format!("parse the structure at {offset:#x}"),
+            ToolCall::FileOverview => "map the whole file".to_string(),
+            ToolCall::ByteStatistics { start, length } => format!("measure the bytes in {start:#x}..{:#x}", start + length),
+            ToolCall::IdentifyProcessor { start, length } => format!("look for machine code in {start:#x}..{:#x}", start + length),
+            ToolCall::SegmentFile => "segment the file".to_string(),
+            ToolCall::Compressibility { start, length } => format!("try compressing {start:#x}..{:#x}", start + length),
+            ToolCall::TextEncoding { start, length } => format!("identify the text encoding of {start:#x}..{:#x}", start + length),
         }
     }
 }

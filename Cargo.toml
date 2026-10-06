@@ -16,6 +16,7 @@ der-parser = "10.0.0"
 eframe = "0.36.2"
 egui_dock = { version = "0.21.1", features = ["serde"] }
 egui_plot = "0.37"
+encoding_rs = "0.8.42"
 etherparse = "0.21.0"
 flate2 = "1.1.10"
 goblin = "0.10.7"

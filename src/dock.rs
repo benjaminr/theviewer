@@ -36,10 +36,12 @@ pub enum DockTab {
     StructureMap,
     Trigrams,
     SizeMap,
+    Characterise,
+    Learn,
 }
 
 impl DockTab {
-    pub const ALL: [DockTab; 23] = [
+    pub const ALL: [DockTab; 25] = [
         DockTab::Report,
         DockTab::Assistant,
         DockTab::Template,
@@ -63,13 +65,15 @@ impl DockTab {
         DockTab::StructureMap,
         DockTab::Trigrams,
         DockTab::SizeMap,
+        DockTab::Characterise,
+        DockTab::Learn,
     ];
 
     /// Tabs grouped by purpose, for the tab bar.
     pub const GROUPS: [&'static [DockTab]; 5] = [
         &[DockTab::Report, DockTab::StructureMap, DockTab::SizeMap, DockTab::Assistant, DockTab::DotPlot, DockTab::Trigrams, DockTab::Images],
         &[DockTab::Template, DockTab::Columns, DockTab::Protocol, DockTab::Bits],
-        &[DockTab::Statistics, DockTab::Strings, DockTab::Xor, DockTab::Crypto, DockTab::Checksums],
+        &[DockTab::Statistics, DockTab::Characterise, DockTab::Strings, DockTab::Xor, DockTab::Crypto, DockTab::Checksums, DockTab::Learn],
         &[DockTab::Disassembly, DockTab::Firmware, DockTab::Unpacked, DockTab::Forensics, DockTab::Diff, DockTab::Compare],
         &[DockTab::Live],
     ];
@@ -99,6 +103,8 @@ impl DockTab {
             DockTab::StructureMap => "Structure map",
             DockTab::Trigrams => "Trigrams",
             DockTab::SizeMap => "Size map",
+            DockTab::Characterise => "Characterise",
+            DockTab::Learn => "Learn",
         }
     }
 
@@ -127,6 +133,8 @@ impl DockTab {
             DockTab::StructureMap => "Split the file into regions of one kind, find more like the selection, and track features along the file",
             DockTab::Trigrams => "A rotatable 3D cloud of byte triples: a fingerprint of text, code, tables and compressed data",
             DockTab::SizeMap => "What takes up the space: regions or unpacked contents as nested rectangles",
+            DockTab::Characterise => "Compressibility by codec, raw audio and video streams, and text encoding and language",
+            DockTab::Learn => "Learn a new format from samples, and fuzzy-match files and shared fragments",
         }
     }
 }
@@ -329,7 +337,7 @@ fn show_assistant(app: &mut ViewerApp, ui: &mut Ui) {
         let field = ui.add(
             egui::TextEdit::singleline(&mut app.dock.question)
                 .hint_text("Ask about the file…  (Enter to send)")
-                .desired_width((ui.available_width() - 150.0).max(100.0)),
+                .desired_width((ui.available_width() - 260.0).max(100.0)),
         );
         let send = ui.add_enabled(!app.assistant.is_busy(), egui::Button::new("Ask"));
         if send.clicked() || (field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))) {
@@ -338,6 +346,13 @@ fn show_assistant(app: &mut ViewerApp, ui: &mut Ui) {
         }
         if ui.add_enabled(!app.assistant.is_busy(), egui::Button::new("Clear")).clicked() {
             app.assistant.clear();
+        }
+        if ui
+            .add_enabled(!app.assistant.is_busy(), egui::Button::new("Characterise"))
+            .on_hover_text("Have Claude run the analysis tools and describe what this file is, part by part")
+            .clicked()
+        {
+            app.characterise_with_ask();
         }
     });
 }

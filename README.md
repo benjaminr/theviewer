@@ -148,10 +148,12 @@ right-click menu. Each one is a panel you can dock anywhere.
 | **Bits** | For data that is not byte-aligned or not plain binary: finds frame lengths in bits (such as a 37-bit radio frame) and their sync words; shows each bit plane as an image; decodes Manchester, differential Manchester, NRZI, 8b/10b, Gray code and BCD, picking the decoder and bit offset automatically; guesses what the field at the cursor holds (integer, float, fixed-point or a timestamp, and which byte order); and finds length prefixes, tag-length-value chains and offset tables. |
 | **Template** | Describe a structure in a small language, such as `struct Chunk { id: char[4]  len: u32  data: bytes[len] }`, and see it decoded as a tree and a table. It can also propose a template from a few selected records. See [docs/templates.md](docs/templates.md). |
 | **Statistics** | Byte histogram, randomness tests (entropy, chi-square, serial correlation, Monte Carlo π) with a plain verdict, a byte-pair fingerprint, entropy along the file, and the most repeated sequences. |
+| **Characterise** | *Compressibility* compresses the selection or the whole file with several codecs and reads the pattern: encrypted or random, already compressed, lossy media, or structured data. *Media streams* finds raw MP3, AAC, H.264, H.265 and PCM audio with no container, to play or extract. *Text* identifies the character encoding (UTF-8 and UTF-16, Windows-1252, Shift-JIS, EUC-JP, GBK, Big5, EUC-KR, KOI8-R, EBCDIC) and the language. |
 | **Strings** | ASCII, UTF-8 and UTF-16 strings, tagged when they look like URLs, paths, IP addresses, UUIDs, versions or keys. |
 | **XOR** | Recovers single-byte and repeating XOR keys. Preview the result or apply it as an edit. |
 | **Crypto** | Finds well-known crypto and compression constants (AES tables, SHA and MD5 constants, CRC tables, Blowfish, DES, ChaCha, curve primes, Base64 alphabets), which show where a firmware does its cryptography. Spots ECB-style encryption from repeated cipher blocks; finds PEM and DER certificates and keys, OpenSSH keys and likely raw keys; and tries rolling XOR, ADD, rotation and combined ciphers, or drags a known plaintext such as `PK\x03\x04` across the data to reveal the key. Decodes open as a document or apply as an edit. |
 | **Firmware** | For a raw firmware image: which processor the code is for (judged by disassembling samples for each architecture), the address it was built to load at (by matching pointers to the strings they point to), and any ARM Cortex-M vector table. |
+| **Learn** | Give it a few samples of an unknown format and it finds what they share (magic bytes, fixed fields, a length field), then writes a catalogue entry so the format is recognised from now on, and a template for its header. *Fuzzy match* compares files by ssdeep-compatible fuzzy hash and finds fragments they share. |
 | **Disassembly** | x86, ARM, RISC-V, MIPS and PowerPC, with the architecture read from executable headers or guessed, and branch targets you can follow. |
 | **Unpacked** | Extracts ZIP, tar, compressed streams and embedded filesystems (SquashFS, CramFS, JFFS2 and UBI volumes) recursively into a tree you can browse, open or save. |
 | **Forensics** | Lists the embedded filesystems in the file with their files, and classifies every block (padding, text, markup, machine code, compressed, random, raw image, audio, tables) as a coloured strip, for carving fragments that have no headers. |
@@ -159,7 +161,7 @@ right-click menu. Each one is a panel you can dock anywhere.
 | **Diff** | Compares with another file, finding inserted and deleted bytes rather than only changed ones, and scrolls both together. |
 | **Compare** | Many files at once (captures, firmware versions, saved states): which byte ranges stay constant, vary or count up across them; which fields follow a value you enter for each file, such as a temperature or a setting; and, for a live recording, a timeline of which bytes changed when. |
 | **Live** | Opens a URL, a serial port (`serial:/dev/cu.usbserial@115200`), a block device (`/dev/rdisk2`, needs sudo) or process memory (`pid:1234`, Linux only). Can watch a file as it grows and record its history. |
-| **Ask** | Ask Claude about the file (see below). |
+| **Ask** | Ask Claude about the file (see below). *Characterise* has Claude run the analysis tools and describe the whole file. |
 
 Also in the menus: *Plot selection* draws bytes as a time series, histogram,
 scatter or frequency spectrum, and *Play selection as audio* plays any bytes
@@ -170,8 +172,11 @@ as sound.
 *Ask* (`Cmd+L`) lets you ask questions such as "what format is this?" or
 "which field is the length?". Claude (`claude-opus-5-5`) sees the cursor,
 the selection, nearby findings and the bytes around them, and can read,
-search and parse more of the file itself. Offsets in its answers are links,
-and templates it writes can be applied with one click.
+search and parse more of the file itself, and run the analysis tools: the
+file overview, segmentation, statistics, compressibility, text encoding and
+processor detection. *Characterise* asks it to work through them and
+describe the whole file. Offsets in its answers are links, and templates it
+writes can be applied with one click.
 
 Ask is off until you add an Anthropic API key in **Settings** (`Cmd+,`).
 On macOS the key is kept in your Keychain; elsewhere in

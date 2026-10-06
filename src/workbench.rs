@@ -31,6 +31,14 @@ use crate::{patterns, player};
 
 /// Largest prefix of a file the report and unpacker read into memory.
 pub(crate) const ANALYSIS_READ_LIMIT: usize = 256 * 1024 * 1024;
+/// Largest prefix Ask's file overview reads; it runs while Claude waits.
+const ASK_OVERVIEW_LIMIT: usize = 64 * 1024 * 1024;
+/// Findings included in Ask's file overview.
+const ASK_OVERVIEW_FINDINGS: usize = 150;
+/// Largest range Ask's statistics and processor tools read.
+const ASK_RANGE_LIMIT: usize = 16 * 1024 * 1024;
+/// Regions listed by Ask's segmentation tool.
+const ASK_SEGMENTS_LISTED: usize = 80;
 /// Largest file kept in the recording history.
 const RECORDING_FILE_LIMIT: usize = 256 * 1024 * 1024;
 /// How often watched files and serial captures are checked.
@@ -353,6 +361,8 @@ impl ViewerApp {
             DockTab::Forensics => panels::show(self, ui, |p| &mut p.forensics, crate::panel_forensics::show_forensics),
             DockTab::DotPlot => panels::show(self, ui, |p| &mut p.dot_plot, crate::panel_dotplot::show_dot_plot),
             DockTab::Trigrams => panels::show(self, ui, |p| &mut p.trigrams, crate::panel_trigram::show_trigram),
+            DockTab::Characterise => panels::show(self, ui, |p| &mut p.characterise, crate::panel_characterise::show_characterise),
+            DockTab::Learn => panels::show(self, ui, |p| &mut p.learn, crate::panel_learn::show_learn),
             DockTab::SizeMap => panels::show(self, ui, |p| &mut p.size_map, crate::panel_treemap::show_treemap),
             DockTab::StructureMap => panels::show(self, ui, |p| &mut p.structure_map, crate::panel_structure_map::show_structure_map),
             DockTab::Images => panels::show(self, ui, |p| &mut p.images, crate::panel_image_finder::show_image_finder),
@@ -767,6 +777,14 @@ impl ViewerApp {
     // -----------------------------------------------------------------------
 
     /// Send the typed question with a snapshot of what the user sees.
+    /// Ask Claude to characterise the whole file using the analysis tools.
+    pub fn characterise_with_ask(&mut self) {
+        self.dock.open = true;
+        self.dock.tab = DockTab::Assistant;
+        self.dock.question = assistant::CHARACTERISE_REQUEST.to_string();
+        self.ask_assistant();
+    }
+
     pub fn ask_assistant(&mut self) {
         let question = self.dock.question.trim().to_string();
         if question.is_empty() {
@@ -862,6 +880,80 @@ impl ViewerApp {
                     Some(finding) => format!("{} ({} bytes)\n{}", finding.description(), finding.len, render_fields(&finding.fields, 0, 300)),
                     None => format!("No parser recognises a structure at {offset:#x}."),
                 }
+            }
+            ToolCall::FileOverview => {
+                let bytes = self.document.read_range(0, ASK_OVERVIEW_LIMIT);
+                let name = self.display_name();
+                let report = crate::headless::analyse_bytes(&bytes, &name, &name, self.document.len(), &self.registry);
+                crate::headless::render_text(&crate::headless::FileReport {
+                    findings: report.findings.into_iter().take(ASK_OVERVIEW_FINDINGS).collect(),
+                    ..report
+                })
+            }
+            ToolCall::ByteStatistics { start, length } => {
+                let bytes = self.document.read_range(*start, (*length).min(ASK_RANGE_LIMIT));
+                let stats = crate::stats::byte_stats(&bytes);
+                let verdict = crate::stats::verdict(&stats);
+                format!(
+                    "{} bytes at {start:#x}: {} — {}\nentropy {:.3} bits/byte, chi-square p {:.4}, serial correlation {:+.3}, printable {:.1}%, zero {:.1}%, ≥0x80 {:.1}%, {} distinct values",
+                    bytes.len(),
+                    verdict.label,
+                    verdict.explanation,
+                    stats.entropy,
+                    stats.chi_square_p,
+                    stats.serial_correlation,
+                    stats.printable_fraction * 100.0,
+                    stats.zero_fraction * 100.0,
+                    stats.high_fraction * 100.0,
+                    stats.distinct_values,
+                )
+            }
+            ToolCall::SegmentFile => {
+                let bytes = self.document.read_range(0, ASK_OVERVIEW_LIMIT);
+                let segmentation = crate::segments::segment_file(&bytes, &crate::segments::SegmentOptions::default());
+                let mut lines: Vec<String> = segmentation
+                    .types
+                    .iter()
+                    .map(|kind| format!("type {}: {} ({} regions, {} bytes)", kind.id, kind.label, kind.count, kind.total_bytes))
+                    .collect();
+                lines.extend(segmentation.segments.iter().take(ASK_SEGMENTS_LISTED).map(|segment| {
+                    format!("{:#x}..{:#x} type {} {} — {}", segment.start, segment.end(), segment.type_id, segment.label, segment.reason)
+                }));
+                if segmentation.segments.len() > ASK_SEGMENTS_LISTED {
+                    lines.push(format!("… and {} more regions", segmentation.segments.len() - ASK_SEGMENTS_LISTED));
+                }
+                lines.join("\n")
+            }
+            ToolCall::Compressibility { start, length } => {
+                let bytes = self.document.read_range(*start, (*length).min(ASK_RANGE_LIMIT));
+                let profile = crate::codec_profile::profile_region(&bytes);
+                let mut lines = vec![format!("{}: {}", profile.verdict.label(), profile.reason)];
+                lines.extend(profile.ratios.iter().map(|ratio| match ratio.ratio(profile.sample_len) {
+                    Some(value) => format!("{}: {:.1}% of original size", ratio.probe.label(), value * 100.0),
+                    None => format!("{}: failed", ratio.probe.label()),
+                }));
+                lines.join("\n")
+            }
+            ToolCall::TextEncoding { start, length } => {
+                let bytes = self.document.read_range(*start, (*length).min(ASK_RANGE_LIMIT));
+                let report = crate::charset::characterise_text(&bytes);
+                let mut lines: Vec<String> = report
+                    .encodings
+                    .iter()
+                    .take(3)
+                    .map(|guess| format!("{}: {:.2} — {} — \"{}\"", guess.encoding.label(), guess.confidence, guess.reason, guess.preview))
+                    .collect();
+                lines.extend(report.languages.iter().take(2).map(|guess| format!("language {}: {:.2}", guess.language.label(), guess.confidence)));
+                if lines.is_empty() { "This does not look like text.".to_string() } else { lines.join("\n") }
+            }
+            ToolCall::IdentifyProcessor { start, length } => {
+                let bytes = self.document.read_range(*start, (*length).min(ASK_RANGE_LIMIT));
+                let report = crate::cpu_detect::identify_architecture(&bytes, *start);
+                let mut lines = vec![report.summary.clone()];
+                lines.extend(report.candidates.iter().take(5).map(|candidate| {
+                    format!("{}: confidence {:.2} — {}", candidate.arch.label(), candidate.confidence, candidate.reason)
+                }));
+                lines.join("\n")
             }
         }
     }

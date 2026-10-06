@@ -9,6 +9,7 @@ use eframe::egui::Ui;
 use crate::app::ViewerApp;
 use crate::panel_alignment::AlignmentState;
 use crate::panel_bits::BitsState;
+use crate::panel_characterise::CharacteriseState;
 use crate::panel_compare::CompareState;
 use crate::panel_forensics::ForensicsState;
 use crate::panel_crc_solver::CrcSolverState;
@@ -17,6 +18,7 @@ use crate::panel_crypto_constants::CryptoConstantsState;
 use crate::panel_dotplot::DotPlotState;
 use crate::panel_firmware::FirmwareState;
 use crate::panel_image_finder::ImageFinderState;
+use crate::panel_learn::LearnState;
 use crate::panel_structure_map::StructureMapState;
 use crate::panel_treemap::TreemapState;
 use crate::panel_trigram::TrigramState;
@@ -37,6 +39,8 @@ pub struct PanelStates {
     pub structure_map: StructureMapState,
     pub trigrams: TrigramState,
     pub size_map: TreemapState,
+    pub characterise: CharacteriseState,
+    pub learn: LearnState,
 }
 
 /// Draw a panel, lending it its state from `app` for the frame. The state is

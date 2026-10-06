@@ -4340,6 +4340,7 @@ dependencies = [
  "egui_dock",
  "egui_kittest",
  "egui_plot",
+ "encoding_rs",
  "etherparse",
  "flate2",
  "goblin",

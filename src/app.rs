@@ -359,6 +359,7 @@ pub fn build_registry_with(host: Option<&SharedLuaHost>) -> Registry {
     registry.add_detector(catalog);
     registry.add_detector(crate::cortex_m::CortexMVectorDetector);
     registry.add_detector(crate::crypto_constants::CryptoConstantDetector);
+    registry.add_detector(crate::elementary::ElementaryStreamDetector);
     for parser in parsers::builtin_parsers() {
         registry.add_parser_arc(parser);
     }
@@ -2613,6 +2614,7 @@ impl ViewerApp {
                 if ui.button("Firmware: processor, load address, vectors").clicked() { self.dock.toggle(DockTab::Firmware); ui.close(); }
                 if self.assistant_available() {
                     if ui.button("Ask about this file…   Cmd+L").clicked() { self.dock.open = true; self.dock.tab = DockTab::Assistant; ui.close(); }
+                    if ui.button("Characterise with Ask").clicked() { self.characterise_with_ask(); ui.close(); }
                 } else {
                     ui.add_enabled(false, egui::Button::new("Ask about this file…   Cmd+L")).on_disabled_hover_text(crate::assistant::NO_KEY_MESSAGE);
                     if ui.button("Add API key to enable Ask…").clicked() { self.open_settings(); ui.close(); }
@@ -2624,6 +2626,8 @@ impl ViewerApp {
                 if ui.button("Filesystems and block types").clicked() { self.dock.toggle(DockTab::Forensics); ui.close(); }
                 if ui.button("Checksums").clicked() { self.dock.toggle(DockTab::Checksums); ui.close(); }
                 ui.separator();
+                if ui.button("Characterise: codecs, media streams, text").clicked() { self.dock.toggle(DockTab::Characterise); ui.close(); }
+                if ui.button("Learn a format, fuzzy match").clicked() { self.dock.toggle(DockTab::Learn); ui.close(); }
                 if ui.button("Byte statistics").clicked() { self.dock.open = true; self.dock.tab = DockTab::Statistics; crate::analysis_stats::start_statistics(self); ui.close(); }
                 if ui.button("Strings").clicked() { self.dock.toggle(DockTab::Strings); ui.close(); }
                 if ui.button("Record columns").clicked() { self.dock.toggle(DockTab::Columns); ui.close(); }

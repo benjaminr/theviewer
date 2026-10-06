@@ -81,13 +81,19 @@ pub fn analyse(path: &Path, registry: &Registry) -> Result<FileReport, String> {
     let size = document.len();
     let bytes = document.read_range(0, ANALYSIS_READ_LIMIT);
     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    let regions = explain::map_file(&bytes, registry);
-    let report = explain::explain(&bytes, &name, &regions);
-    Ok(FileReport {
-        file: path.display().to_string(),
+    Ok(analyse_bytes(&bytes, &path.display().to_string(), &name, size, registry))
+}
+
+/// Analyse bytes already in memory: the first `bytes.len()` of a file called
+/// `name` (shown as `file`) that is `size` bytes long.
+pub fn analyse_bytes(bytes: &[u8], file: &str, name: &str, size: usize, registry: &Registry) -> FileReport {
+    let regions = explain::map_file(bytes, registry);
+    let report = explain::explain(bytes, name, &regions);
+    FileReport {
+        file: file.to_string(),
         size,
         analysed: bytes.len(),
-        entropy_bits_per_byte: stats::byte_stats(&bytes).entropy,
+        entropy_bits_per_byte: stats::byte_stats(bytes).entropy,
         headline: report.headline,
         sentences: report
             .sentences
@@ -105,9 +111,9 @@ pub fn analyse(path: &Path, registry: &Registry) -> Result<FileReport, String> {
                 confident: region.confident,
             })
             .collect(),
-        record_widths: record_widths(&bytes),
-        findings: confident_findings(&bytes, registry),
-    })
+        record_widths: record_widths(bytes),
+        findings: confident_findings(bytes, registry),
+    }
 }
 
 /// The likeliest record widths, from the start of the data.

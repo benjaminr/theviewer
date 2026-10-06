@@ -624,3 +624,31 @@ fn file_dialog_answers_open_compare_and_save_without_blocking() {
         std::fs::remove_file(path).ok();
     }
 }
+
+#[test]
+fn ask_can_map_the_file_measure_ranges_and_look_for_code() {
+    let (bytes, gzip_at, _, _) = composite_file();
+    let path = temp_path("ask-tools.bin");
+    std::fs::write(&path, &bytes).unwrap();
+    let mut harness = harness_for(path.clone());
+    let app = harness.state_mut();
+
+    let overview = app.run_assistant_tool(&ToolCall::parse("file_overview", &serde_json::json!({})).unwrap());
+    assert!(overview.contains("gzip"), "{overview}");
+
+    let call = ToolCall::parse("byte_statistics", &serde_json::json!({ "start": gzip_at, "length": 256 })).unwrap();
+    let statistics = app.run_assistant_tool(&call);
+    assert!(statistics.contains("entropy"), "{statistics}");
+
+    let call = ToolCall::parse("identify_processor", &serde_json::json!({ "start": 0, "length": 4096 })).unwrap();
+    assert!(!app.run_assistant_tool(&call).is_empty());
+    assert!(ToolCall::parse("byte_statistics", &serde_json::json!({ "start": 0 })).is_err(), "a missing length is rejected");
+
+    let segments = app.run_assistant_tool(&ToolCall::parse("segment_file", &serde_json::json!({})).unwrap());
+    assert!(segments.contains("type 0"), "{segments}");
+    let call = ToolCall::parse("compressibility", &serde_json::json!({ "start": gzip_at, "length": 256 })).unwrap();
+    assert!(app.run_assistant_tool(&call).contains('%'));
+    let call = ToolCall::parse("text_encoding", &serde_json::json!({ "start": 0, "length": 256 })).unwrap();
+    assert!(!app.run_assistant_tool(&call).is_empty());
+    std::fs::remove_file(path).ok();
+}
