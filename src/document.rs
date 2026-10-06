@@ -125,8 +125,13 @@ pub fn map_span_through(edits: &[Edit], from_version: u64, start: usize, len: us
 }
 
 /// Everything one undo or redo reverses or repeats: usually one edit, or
-/// every edit made inside a group.
-type UndoStep = Vec<EditRecord>;
+/// every edit made inside a group, with what the step is called in the
+/// undo history when someone named it ("XOR by mcp:claude-code").
+#[derive(Clone, Debug, Default)]
+struct UndoStep {
+    edits: Vec<EditRecord>,
+    label: Option<String>,
+}
 
 pub struct Document {
     original: Backing,
@@ -142,8 +147,10 @@ pub struct Document {
     redo_stack: Vec<UndoStep>,
     /// Edits made since [`Document::begin_group`], undone together.
     open_group: Option<UndoStep>,
-    /// How many groups are open; the step is recorded when the last closes.
-    group_depth: usize,
+    /// Where each open group began in `open_group`, innermost last, so a
+    /// group can be abandoned without undoing the groups around it. The
+    /// step is recorded when the last closes.
+    group_starts: Vec<usize>,
     /// Incremented on every mutation so caches can detect staleness.
     version: u64,
     /// The latest changes, oldest first, at most [`EDIT_LOG_LIMIT`].
@@ -176,7 +183,7 @@ impl Document {
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
             open_group: None,
-            group_depth: 0,
+            group_starts: Vec::new(),
             version: 0,
             edit_log: VecDeque::new(),
         }
@@ -210,7 +217,7 @@ impl Document {
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
             open_group: None,
-            group_depth: 0,
+            group_starts: Vec::new(),
             version: 0,
             edit_log: VecDeque::new(),
         })
@@ -266,6 +273,18 @@ impl Document {
 
     pub fn can_redo(&self) -> bool {
         !self.redo_stack.is_empty()
+    }
+
+    /// What the step [`Document::undo`] would reverse is called, when it
+    /// was named.
+    pub fn undo_label(&self) -> Option<&str> {
+        self.undo_stack.last().and_then(|step| step.label.as_deref())
+    }
+
+    /// What the step [`Document::redo`] would repeat is called, when it was
+    /// named.
+    pub fn redo_label(&self) -> Option<&str> {
+        self.redo_stack.last().and_then(|step| step.label.as_deref())
     }
 
     // ----------------------------------------------------------------------
@@ -431,8 +450,8 @@ impl Document {
     fn commit(&mut self, record: EditRecord) {
         self.apply(&record);
         match &mut self.open_group {
-            Some(group) => group.push(record),
-            None => self.undo_stack.push(vec![record]),
+            Some(group) => group.edits.push(record),
+            None => self.undo_stack.push(UndoStep { edits: vec![record], label: None }),
         }
         self.redo_stack.clear();
     }
@@ -440,19 +459,42 @@ impl Document {
     /// Start a group: every edit until the matching [`Document::end_group`]
     /// becomes one undo step. Groups may nest; the outermost decides.
     pub fn begin_group(&mut self) {
-        self.group_depth += 1;
-        self.open_group.get_or_insert_with(Vec::new);
+        let group = self.open_group.get_or_insert_with(UndoStep::default);
+        self.group_starts.push(group.edits.len());
+    }
+
+    /// Start a group named `label` in the undo history. Inside another
+    /// group, the outermost group's name is kept.
+    pub fn begin_labelled_group(&mut self, label: impl Into<String>) {
+        self.begin_group();
+        if let Some(group) = &mut self.open_group
+            && group.label.is_none()
+        {
+            group.label = Some(label.into());
+        }
     }
 
     /// Close a group opened by [`Document::begin_group`].
     pub fn end_group(&mut self) {
-        self.group_depth = self.group_depth.saturating_sub(1);
-        if self.group_depth == 0
+        self.group_starts.pop();
+        if self.group_starts.is_empty()
             && let Some(group) = self.open_group.take()
-            && !group.is_empty()
+            && !group.edits.is_empty()
         {
             self.undo_stack.push(group);
         }
+    }
+
+    /// Close the innermost open group, reversing every edit made in it, so
+    /// the document is as it was when the group began. Edits made earlier
+    /// in an enclosing group are kept.
+    pub fn abandon_group(&mut self) {
+        let Some(start) = self.group_starts.last().copied() else { return };
+        let made = self.open_group.as_mut().map(|group| group.edits.split_off(start)).unwrap_or_default();
+        for record in made.iter().rev() {
+            self.apply(&record.inverse());
+        }
+        self.end_group();
     }
 
     /// Run `edits` as one undo step.
@@ -460,6 +502,18 @@ impl Document {
         self.begin_group();
         let result = edits(self);
         self.end_group();
+        result
+    }
+
+    /// Run `edits` as one undo step named `label`. When they fail, every
+    /// change they made is reversed and no step is left.
+    pub fn transaction<R, E>(&mut self, label: impl Into<String>, edits: impl FnOnce(&mut Document) -> Result<R, E>) -> Result<R, E> {
+        self.begin_labelled_group(label);
+        let result = edits(self);
+        match result {
+            Ok(_) => self.end_group(),
+            Err(_) => self.abandon_group(),
+        }
         result
     }
 
@@ -505,10 +559,10 @@ impl Document {
             && self
                 .undo_stack
                 .last()
-                .is_some_and(|last| matches!(last.as_slice(), [only] if only.pos == pos && only.inserted.len() == 1));
+                .is_some_and(|last| last.label.is_none() && matches!(last.edits.as_slice(), [only] if only.pos == pos && only.inserted.len() == 1));
         if folds {
             let mut step = self.undo_stack.pop().expect("checked above");
-            let previous = step.pop().expect("a step of one edit");
+            let previous = step.edits.pop().expect("a step of one edit");
             self.apply(&previous.inverse());
             self.commit(EditRecord { pos, removed: previous.removed, inserted: vec![byte] });
         } else {
@@ -530,10 +584,10 @@ impl Document {
     /// earliest of its edits was.
     pub fn undo(&mut self) -> Option<usize> {
         let step = self.undo_stack.pop()?;
-        for record in step.iter().rev() {
+        for record in step.edits.iter().rev() {
             self.apply(&record.inverse());
         }
-        let pos = step.iter().map(|record| record.pos).min();
+        let pos = step.edits.iter().map(|record| record.pos).min();
         self.redo_stack.push(step);
         pos
     }
@@ -541,10 +595,10 @@ impl Document {
     /// Redo the last undone step. Returns where the earliest of its edits was.
     pub fn redo(&mut self) -> Option<usize> {
         let step = self.redo_stack.pop()?;
-        for record in &step {
+        for record in &step.edits {
             self.apply(record);
         }
-        let pos = step.iter().map(|record| record.pos).min();
+        let pos = step.edits.iter().map(|record| record.pos).min();
         self.undo_stack.push(step);
         pos
     }
@@ -659,6 +713,70 @@ mod tests {
         assert!(!document.can_undo());
         document.redo();
         assert_eq!(document.read_range(0, 10), b"ZdeXYf");
+    }
+
+    #[test]
+    fn a_named_step_keeps_its_name_through_undo_and_redo() {
+        let mut document = doc(b"abcdef");
+        document.overwrite(0, b"x");
+        assert_eq!(document.undo_label(), None, "edits made by hand are not named");
+        document.begin_labelled_group("XOR by mcp:claude-code");
+        document.begin_labelled_group("inner");
+        document.overwrite(2, b"z");
+        document.end_group();
+        document.end_group();
+        assert_eq!(document.undo_label(), Some("XOR by mcp:claude-code"), "the outermost group names the step");
+        document.undo();
+        assert_eq!(document.redo_label(), Some("XOR by mcp:claude-code"));
+        assert_eq!(document.undo_label(), None);
+        document.redo();
+        assert_eq!(document.read_range(0, 6), b"xbzdef");
+    }
+
+    #[test]
+    fn typing_over_a_byte_a_named_step_wrote_is_a_step_of_its_own() {
+        let mut document = doc(b"abc");
+        document.transaction::<(), ()>("Write 1 byte by ask", |document| {
+            document.overwrite(1, b"x");
+            Ok(())
+        })
+        .unwrap();
+        document.overwrite_byte_coalescing(1, b'y');
+        document.undo();
+        assert_eq!(document.read_range(0, 3), b"axc", "the typed byte is undone alone");
+        assert_eq!(document.undo_label(), Some("Write 1 byte by ask"));
+    }
+
+    #[test]
+    fn a_failed_transaction_leaves_the_document_and_its_history_as_they_were() {
+        let mut document = doc(b"abcdef");
+        document.overwrite(0, b"Z");
+        let failed: Result<(), &str> = document.transaction("two edits", |document| {
+            document.delete(1, 2);
+            document.insert(0, b"12");
+            Err("the second call failed")
+        });
+        assert!(failed.is_err());
+        assert_eq!(document.read_range(0, 10), b"Zbcdef");
+        assert_eq!(document.undo_label(), None, "no step was left for the transaction");
+        document.undo();
+        assert_eq!(document.read_range(0, 10), b"abcdef");
+        assert!(!document.can_undo());
+    }
+
+    #[test]
+    fn abandoning_an_inner_group_keeps_the_edits_of_the_group_around_it() {
+        let mut document = doc(b"abcdef");
+        document.begin_labelled_group("outer");
+        document.overwrite(0, b"1");
+        document.begin_group();
+        document.overwrite(1, b"2");
+        document.abandon_group();
+        document.overwrite(2, b"3");
+        document.end_group();
+        assert_eq!(document.read_range(0, 6), b"1b3def");
+        document.undo();
+        assert_eq!(document.read_range(0, 6), b"abcdef", "one step");
     }
 
     #[test]
