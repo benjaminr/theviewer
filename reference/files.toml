@@ -1,3 +1,2002 @@
 # Reference notes on file formats, encodings and compressed streams. See
 # src/reference.rs for the schema. Notes are written for this project;
 # specifications are cited.
+#
+# Keys cover the parser finding ids (`png`), the signature catalogue ids
+# (`image/png`, `partition/mbr`, matched with or without `signature:`) and,
+# for compressed streams, `stream:<codec>` and the "<codec> stream" titles the
+# compression scanner and unpacker use.
+
+# ---------------------------------------------------------------------------
+# Images
+# ---------------------------------------------------------------------------
+
+[[format]]
+id = "png"
+name = "Portable Network Graphics"
+keys = ["PNG", "PNG image", "image/png"]
+summary = "A lossless raster image format: filtered rows of pixels compressed with deflate, wrapped in checksummed chunks."
+organisation = """
+An eight-byte signature (89 50 4E 47 0D 0A 1A 0A) is followed by a chain of chunks. Each chunk is a 4-byte big-endian data length, a 4-byte ASCII type, the data, and a CRC-32 over the type and data. The length counts the data only, so the next chunk starts 12 + length bytes on.
+
+IHDR must come first and gives width, height, bit depth, colour type and interlace method. PLTE holds the palette for indexed images. The pixels live in one or more IDAT chunks whose contents, joined end to end, form a single zlib stream; inflated, it is a series of scanlines, each led by a filter-type byte. IEND, with no data, closes the file.
+
+The case of each letter in a chunk type is meaningful: an upper-case first letter marks a critical chunk a decoder must understand, and a lower-case fourth letter marks one that editors may copy unchanged. Ancillary chunks carry gamma, colour profiles, text, timestamps, transparency and animation frames (APNG).
+"""
+carries = ["zlib"]
+
+[[format.specs]]
+document = "RFC 2083"
+title = "PNG (Portable Network Graphics) Specification Version 1.0"
+url = "https://www.rfc-editor.org/rfc/rfc2083"
+rfc = 2083
+section = "3"
+
+[[format.specs]]
+document = "W3C PNG Third Edition"
+title = "Portable Network Graphics (PNG) Specification (Third Edition)"
+url = "https://www.w3.org/TR/png-3/"
+
+[[format.fields]]
+name = "signature"
+meaning = "The fixed eight bytes 89 'PNG' CR LF 1A LF. The high-bit byte and the line endings catch transfers that strip the eighth bit or translate newlines."
+section = "3"
+
+[[format.fields]]
+name = "chunks"
+meaning = "Every chunk after the signature, in file order: length, type, data and CRC each."
+section = "3"
+
+[[format.fields]]
+name = "IHDR"
+meaning = "Image header, always first: width, height, bit depth, colour type, compression, filter and interlace methods (13 bytes of data)."
+section = "4"
+
+[[format.fields]]
+name = "PLTE"
+meaning = "Palette of up to 256 RGB triples; required for colour type 3 (indexed), optional as a hint otherwise."
+section = "4"
+
+[[format.fields]]
+name = "IDAT"
+meaning = "Image data. All IDAT chunks together form one zlib stream of filtered scanlines; a split between chunks can fall anywhere."
+section = "4"
+
+[[format.fields]]
+name = "IEND"
+meaning = "Image trailer with no data; marks the end of the PNG datastream."
+section = "4"
+
+[[format.fields]]
+name = "tRNS"
+meaning = "Transparency: alpha values for palette entries, or a single colour treated as fully transparent."
+section = "4"
+
+[[format.fields]]
+name = "gAMA"
+meaning = "Image gamma, stored as gamma times 100000."
+section = "4"
+
+[[format.fields]]
+name = "cHRM"
+meaning = "Chromaticities of the red, green and blue primaries and the white point."
+section = "4"
+
+[[format.fields]]
+name = "sRGB"
+meaning = "Declares the image to be in the sRGB colour space, with a rendering intent byte."
+
+[[format.fields]]
+name = "iCCP"
+meaning = "An embedded ICC colour profile, named and zlib-compressed."
+
+[[format.fields]]
+name = "tEXt"
+aliases = ["zTXt", "iTXt"]
+meaning = "Textual metadata: a Latin-1 keyword and value (tEXt), the same with a compressed value (zTXt), or international UTF-8 text (iTXt)."
+section = "4"
+
+[[format.fields]]
+name = "pHYs"
+meaning = "Intended pixel size or aspect ratio: pixels per unit on each axis, with a unit byte (1 = metre)."
+section = "4"
+
+[[format.fields]]
+name = "tIME"
+meaning = "Time of the last image modification, in UTC."
+section = "4"
+
+[[format.fields]]
+name = "bKGD"
+meaning = "Suggested background colour to show the image against."
+section = "4"
+
+[[format.fields]]
+name = "eXIf"
+meaning = "Exif metadata, as the TIFF-structured block a camera would write."
+
+[[format.fields]]
+name = "acTL"
+aliases = ["fcTL", "fdAT"]
+meaning = "Animated PNG chunks: animation control (frame and loop count), per-frame control (size, offset, delay) and frame data."
+
+[[format.fields]]
+name = "width"
+meaning = "Image width in pixels, a 4-byte big-endian value from 1 to 2^31 − 1."
+section = "4"
+
+[[format.fields]]
+name = "height"
+meaning = "Image height in pixels, a 4-byte big-endian value from 1 to 2^31 − 1."
+section = "4"
+
+[[format.fields]]
+name = "bit depth"
+meaning = "Bits per sample (or per palette index): 1, 2, 4, 8 or 16, restricted by colour type."
+section = "4"
+
+[[format.fields]]
+name = "colour type"
+aliases = ["color type"]
+meaning = "Sum of flags: 1 palette used, 2 colour, 4 alpha channel. Valid values are 0 greyscale, 2 RGB, 3 indexed, 4 greyscale with alpha and 6 RGBA."
+section = "4"
+
+[[format.fields]]
+name = "interlace"
+meaning = "0 for rows in order, 1 for Adam7: seven passes over the image that fill in progressively finer detail."
+section = "4"
+
+[[format]]
+id = "jpeg"
+name = "JPEG image"
+keys = ["JPEG", "JPEG image", "image/jpeg", "JFIF"]
+summary = "The common lossy photographic image format: blocks of DCT coefficients, quantised and entropy coded, in a stream of marker segments."
+organisation = """
+A JPEG file is a sequence of markers, each a 0xFF byte followed by a code. Start of image (FF D8) and end of image (FF D9) stand alone; most other markers begin a segment whose next two bytes are a big-endian length that counts itself but not the marker.
+
+Segments set up decoding before the image data: DQT holds quantisation tables, DHT Huffman tables, SOFn the frame (sample precision, height, width and the components with their sampling factors), and DRI the restart interval. APPn segments hold application data: JFIF in APP0, Exif (a TIFF structure) and XMP in APP1, ICC profiles in APP2, Adobe colour transform flags in APP14.
+
+SOS starts a scan and is followed directly by entropy-coded data with no length. Inside it, a literal 0xFF is written as FF 00, and restart markers FF D0 to FF D7 may appear, so the scan ends at the first other marker. Progressive images contain several scans, each refining the last.
+"""
+carries = ["xml"]
+
+[[format.specs]]
+document = "ITU-T T.81"
+title = "Information technology – Digital compression and coding of continuous-tone still images – Requirements and guidelines"
+url = "https://www.itu.int/rec/T-REC-T.81"
+
+[[format.specs]]
+document = "ITU-T T.871"
+title = "JPEG File Interchange Format (JFIF)"
+url = "https://www.itu.int/rec/T-REC-T.871"
+
+[[format.specs]]
+document = "JFIF 1.02"
+title = "JPEG File Interchange Format, Version 1.02 (C-Cube Microsystems)"
+url = "https://www.w3.org/Graphics/JPEG/jfif3.pdf"
+
+[[format.fields]]
+name = "SOI"
+meaning = "Start of image, FF D8: the first two bytes of every JPEG. It has no length."
+
+[[format.fields]]
+name = "EOI"
+meaning = "End of image, FF D9. Data after it is not part of the image (often an appended thumbnail, a second image or something hidden)."
+
+[[format.fields]]
+name = "SOF*"
+meaning = "Start of frame. The number gives the coding process: 0 baseline, 1 extended sequential, 2 progressive, 3 lossless; 5 to 7 and 9 to 15 are hierarchical or arithmetic-coded variants. Holds precision, image size and the component list."
+
+[[format.fields]]
+name = "DQT"
+meaning = "Define quantisation tables: 64 divisors per table, in zig-zag order, that set how coarsely each DCT frequency is kept. They largely decide quality and file size."
+
+[[format.fields]]
+name = "DHT"
+meaning = "Define Huffman tables: code counts per length and the symbols they encode, for DC or AC coefficients."
+
+[[format.fields]]
+name = "DRI"
+meaning = "Define restart interval: the number of MCUs between restart markers, which let a decoder resynchronise after damage."
+
+[[format.fields]]
+name = "SOS"
+meaning = "Start of scan: which components the scan covers and their tables. The entropy-coded data follows immediately, with no length."
+
+[[format.fields]]
+name = "scan data"
+meaning = "Entropy-coded image data after SOS, with 0xFF bytes stuffed as FF 00 and optional restart markers; it runs until the next real marker."
+
+[[format.fields]]
+name = "COM"
+meaning = "A free-text comment."
+
+[[format.fields]]
+name = "APP*"
+meaning = "Application segment. Its first bytes name its contents: 'JFIF' (APP0), 'Exif' or an XMP namespace (APP1), 'ICC_PROFILE' (APP2), 'Adobe' (APP14)."
+
+[[format.fields]]
+name = "precision"
+meaning = "Bits per sample: 8 for baseline, 12 for some extended and medical images, 2 to 16 for lossless."
+
+[[format.fields]]
+name = "height"
+meaning = "Number of lines. Zero means the height is given later by a DNL marker after the first scan."
+
+[[format.fields]]
+name = "width"
+meaning = "Samples per line, in pixels."
+
+[[format.fields]]
+name = "components"
+meaning = "Number of colour components: 1 greyscale, 3 YCbCr or RGB, 4 CMYK or YCCK."
+
+[[format.fields]]
+name = "marker *"
+meaning = "A marker this parser does not name, shown by its code byte."
+
+[[format]]
+id = "gif"
+name = "Graphics Interchange Format"
+keys = ["GIF", "GIF image", "image/gif"]
+summary = "A palette-based image format of up to 256 colours per frame, compressed with LZW, that also supports simple animation."
+organisation = """
+A six-byte header ('GIF87a' or 'GIF89a') is followed by the logical screen descriptor: canvas width and height as 16-bit little-endian values, a packed flags byte, a background colour index and an aspect ratio. If the flags say so, a global colour table of 2^(n+1) RGB triples comes next.
+
+The rest is a series of blocks, each identified by its first byte. 0x2C starts an image: its position and size on the canvas, an optional local colour table, the LZW minimum code size, then the compressed pixels. 0x21 starts an extension, followed by a label byte: 0xF9 graphic control (frame delay, transparency, disposal), 0xFE comment, 0x01 plain text, 0xFF application data such as the NETSCAPE2.0 loop count. 0x3B is the trailer that ends the file.
+
+Image data and extensions are both carried as sub-blocks: a length byte of 1 to 255 followed by that many bytes, repeated until a zero-length block. A reader can therefore skip anything it does not understand.
+"""
+carries = []
+
+[[format.specs]]
+document = "GIF89a"
+title = "Graphics Interchange Format, Version 89a (CompuServe)"
+url = "https://www.w3.org/Graphics/GIF/spec-gif89a.txt"
+
+[[format.fields]]
+name = "header"
+meaning = "Signature 'GIF' and version '87a' or '89a'. 89a is needed for extensions such as transparency and animation."
+
+[[format.fields]]
+name = "logical screen"
+meaning = "The logical screen descriptor: canvas size, colour table flags, background colour index and pixel aspect ratio."
+
+[[format.fields]]
+name = "width"
+meaning = "Canvas width in pixels, 16-bit little-endian."
+
+[[format.fields]]
+name = "height"
+meaning = "Canvas height in pixels, 16-bit little-endian."
+
+[[format.fields]]
+name = "flags"
+meaning = "Packed byte: bit 7 global colour table present, bits 6-4 colour resolution, bit 3 table sorted, bits 2-0 table size n (2^(n+1) entries)."
+
+[[format.fields]]
+name = "global colour table"
+aliases = ["global color table"]
+meaning = "RGB triples shared by every image that has no local table."
+
+[[format.fields]]
+name = "extension *"
+meaning = "An extension block, named by its label: 0xF9 graphic control (delay, transparent index, disposal), 0xFE comment, 0x01 plain text, 0xFF application (such as the animation loop count)."
+
+[[format.fields]]
+name = "image *"
+meaning = "One image (frame): descriptor with position and size, optional local colour table, LZW code size and the compressed pixel sub-blocks."
+
+[[format.fields]]
+name = "trailer"
+meaning = "The single byte 0x3B that ends the GIF. Anything after it is extra data."
+
+[[format]]
+id = "bmp"
+name = "Windows bitmap"
+keys = ["BMP", "BMP image", "image/bmp", "DIB"]
+summary = "The Windows device-independent bitmap: uncompressed (or simply run-length compressed) pixel rows behind a small header."
+organisation = """
+A 14-byte file header starts with 'BM', then the file size, two reserved words and the offset of the pixel data, all little-endian. A DIB header follows whose first four bytes give its own size, and so its version: 12 for the old OS/2 core header, 40 for BITMAPINFOHEADER, 108 for V4 and 124 for V5, which add colour masks, colour space and ICC profile details.
+
+The DIB header holds width, signed height, colour planes (always 1), bits per pixel and the compression method. A positive height means rows are stored bottom-up; negative means top-down. Images of 8 bits per pixel or fewer have a colour table of BGRA entries after the header.
+
+Pixel data starts at the offset in the file header. Each row is padded to a multiple of four bytes, and pixels are stored blue first. Compression may be none, RLE8 or RLE4, bit fields (masks for 16- and 32-bit pixels), or, for printers, an embedded JPEG or PNG.
+"""
+carries = ["png", "jpeg"]
+
+[[format.specs]]
+document = "Microsoft Learn: Bitmap Storage"
+title = "Bitmap Storage (Windows GDI)"
+url = "https://learn.microsoft.com/windows/win32/gdi/bitmap-storage"
+
+[[format.specs]]
+document = "Microsoft Learn: BITMAPINFOHEADER"
+title = "BITMAPINFOHEADER structure (wingdi.h)"
+url = "https://learn.microsoft.com/windows/win32/api/wingdi/ns-wingdi-bitmapinfoheader"
+
+[[format.specs]]
+document = "Microsoft Learn: BITMAPFILEHEADER"
+title = "BITMAPFILEHEADER structure (wingdi.h)"
+url = "https://learn.microsoft.com/windows/win32/api/wingdi/ns-wingdi-bitmapfileheader"
+
+[[format.fields]]
+name = "file header"
+meaning = "BITMAPFILEHEADER: 'BM', file size, two reserved words and the pixel data offset (14 bytes)."
+
+[[format.fields]]
+name = "file size"
+meaning = "Whole file size in bytes as the writer recorded it. Some writers leave it zero or wrong, so it is a hint."
+
+[[format.fields]]
+name = "pixel data offset"
+meaning = "Where the pixel rows start, counted from the start of the file; the gap before it holds the DIB header, masks and colour table."
+
+[[format.fields]]
+name = "DIB header"
+meaning = "The bitmap information header. Its size field selects the version: 12 core, 40 BITMAPINFOHEADER, 52/56 with masks, 108 V4, 124 V5."
+
+[[format.fields]]
+name = "width"
+meaning = "Image width in pixels, signed 32-bit (16-bit in the 12-byte core header)."
+
+[[format.fields]]
+name = "height"
+meaning = "Image height in pixels. Positive means rows are stored bottom-up; negative means top-down."
+
+[[format.fields]]
+name = "bits per pixel"
+meaning = "1, 4 or 8 for palette images; 16, 24 or 32 for direct colour (BGR order, with masks for 16 and 32 when compression is bit fields)."
+
+# ---------------------------------------------------------------------------
+# Archives
+# ---------------------------------------------------------------------------
+
+[[format]]
+id = "zip"
+name = "ZIP archive"
+keys = ["ZIP", "ZIP archive", "application/zip"]
+summary = "An archive of individually compressed files with a central directory at the end; also the container for JAR, APK, Office Open XML, OpenDocument and EPUB files."
+organisation = """
+Each member is stored as a local file header ('PK' 03 04), the file name, an extra field, then the file data. The 30-byte header gives the version needed, flags, compression method, DOS time and date, CRC-32 and the compressed and uncompressed sizes. All values are little-endian.
+
+After the members comes the central directory: one entry ('PK' 01 02) per file repeating its metadata and adding attributes, a comment and the offset of its local header. The end of central directory record ('PK' 05 06), the last 22 bytes plus an optional comment, gives the number of entries and the size and offset of the central directory. Readers are meant to start from that record and follow its offsets, which is why ZIP data can be appended to other files (self-extracting executables) and why a damaged directory can still be recovered by walking local headers.
+
+When bit 3 of the flags is set the sizes and CRC are zero in the local header and follow the data in a data descriptor (optionally signed 'PK' 07 08), so the data's length is only known from the central directory. Zip64 records extend the 32-bit sizes and counts. Each member's data is compressed on its own, most often with raw deflate.
+"""
+carries = ["deflate", "bzip2", "lzma", "xz", "zstd", "xml"]
+
+[[format.specs]]
+document = "PKWARE APPNOTE 6.3.10"
+title = ".ZIP File Format Specification"
+url = "https://pkware.cachefly.net/webdocs/casestudies/APPNOTE.TXT"
+section = "4.3"
+
+[[format.fields]]
+name = "entries"
+meaning = "The local file entries, walked from the first header: each is a header, a name, an extra field and the data."
+section = "4.3.6"
+
+[[format.fields]]
+name = "method"
+meaning = "Compression method: 0 stored, 8 deflate, 9 deflate64, 12 bzip2, 14 LZMA, 93 zstd, 95 xz, 99 AES encryption (the real method is in the extra field)."
+section = "4.4.5"
+
+[[format.fields]]
+name = "compressed size"
+meaning = "Bytes of member data as stored. Zero with flag bit 3 set means the size is in a data descriptor after the data; 0xFFFFFFFF means a Zip64 extra field holds it."
+section = "4.4.8"
+
+[[format.fields]]
+name = "uncompressed size"
+meaning = "Size of the member once decompressed, under the same rules as the compressed size."
+section = "4.4.9"
+
+[[format.fields]]
+name = "data"
+meaning = "The member's stored bytes: compressed (with the method above) and possibly encrypted."
+section = "4.3.8"
+
+[[format]]
+id = "tar"
+name = "tar archive"
+keys = ["tar", "tar archive", "ustar", "application/x-tar", "application/x-gtar"]
+summary = "The Unix tape archive: files laid end to end in 512-byte blocks, each behind a text header. Usually compressed as a whole (.tar.gz, .tar.xz)."
+organisation = """
+Everything is in 512-byte blocks. Each member starts with a header block holding its name (100 bytes), mode, owner ids, size and modification time as octal ASCII digits, a checksum, a type flag, a link target and, in the POSIX ustar form, the magic 'ustar' at offset 257, user and group names and a 155-byte name prefix.
+
+The member's data follows in as many whole blocks as its size needs, with the last one padded with zeros. The next header comes straight after, so walking the archive needs only the size field. Two all-zero blocks mark the end, and archives are often padded further to a record size of 10240 bytes.
+
+Long names and extra metadata are carried by special members placed before the file they describe: pax extended headers (type 'x' for one file, 'g' for all following) hold 'length key=value' records, and GNU tar uses type 'L' and 'K' for long names and link targets.
+"""
+carries = ["elf"]
+
+[[format.specs]]
+document = "POSIX.1-2017 pax"
+title = "pax – portable archive interchange (IEEE Std 1003.1), ustar and pax interchange formats"
+url = "https://pubs.opengroup.org/onlinepubs/9699919799/utilities/pax.html"
+
+[[format.specs]]
+document = "GNU tar manual: Basic Tar Format"
+title = "GNU tar: Basic Tar Format"
+url = "https://www.gnu.org/software/tar/manual/html_node/Standard.html"
+
+[[format.fields]]
+name = "entries"
+meaning = "Every member walked from the first header until the zero blocks that end the archive."
+
+[[format.fields]]
+name = "header"
+meaning = "The 512-byte header block. The value shows the type flag: '0' file, '1' hard link, '2' symlink, '3'/'4' devices, '5' directory, '6' FIFO, 'x'/'g' pax headers, 'L' GNU long name."
+
+[[format.fields]]
+name = "data"
+meaning = "The member's contents, occupying whole 512-byte blocks; the last block is padded with zeros."
+
+[[format]]
+id = "ar"
+name = "ar archive"
+keys = ["ar archive", "application/x-archive"]
+summary = "The simple Unix archive used for static libraries (.a) and Debian packages (.deb)."
+organisation = """
+The file opens with the eight bytes '!<arch>' and a newline. Each member then has a 60-byte text header: name (16 bytes), modification time (12), owner and group ids (6 each), octal mode (8), decimal size (10) and the two-byte terminator '`' newline. The member's data follows and is padded with a newline to an even length.
+
+Long names are handled differently by each family. GNU ar ends names with '/', keeps a symbol index in a member called '/' and long names in one called '//', referring to them as '/offset'. BSD ar writes '#1/length' and puts the name at the start of the data.
+
+A Debian package is an ar archive of three members: 'debian-binary', then compressed tar archives of control data and of the files to install.
+"""
+carries = ["elf", "gzip", "xz", "zstd"]
+
+[[format.specs]]
+document = "FreeBSD ar(5)"
+title = "ar – format of archive files"
+url = "https://man.freebsd.org/cgi/man.cgi?query=ar&sektion=5"
+
+[[format.fields]]
+name = "members"
+meaning = "Every member after the global header, each with a 60-byte header and even-padded data."
+
+[[format]]
+id = "cpio"
+name = "cpio archive"
+keys = ["cpio archive", "application/x-cpio"]
+summary = "A stream archive of headers, names and file data, used for Linux initramfs images and RPM payloads."
+organisation = """
+The 'newc' form found here starts each entry with the six ASCII characters '070701' (or '070702' when data checksums are present), then thirteen fields of eight hexadecimal digits: inode, mode, owner, group, link count, modification time, file size, device numbers, name size and checksum. The header is 110 bytes.
+
+The file name follows, including its terminating NUL, padded so the data starts on a four-byte boundary; the data is padded to four bytes as well. The archive ends with an entry named 'TRAILER!!!'.
+
+Older variants use '070707' with octal fields (odc) or a binary header beginning with the 16-bit value 070707 in octal. The Linux kernel accepts a concatenation of newc archives, some of them compressed, as its initial root filesystem.
+"""
+carries = ["elf"]
+
+[[format.specs]]
+document = "FreeBSD cpio(5)"
+title = "cpio – format of cpio archive files"
+url = "https://man.freebsd.org/cgi/man.cgi?query=cpio&sektion=5"
+
+[[format.specs]]
+document = "Linux initramfs buffer format"
+title = "initramfs buffer format (Linux kernel documentation)"
+url = "https://docs.kernel.org/driver-api/early-userspace/buffer-format.html"
+
+[[format.fields]]
+name = "entries"
+meaning = "Every entry from the first header to the 'TRAILER!!!' entry that ends the archive."
+
+[[format.fields]]
+name = "TRAILER!!!"
+meaning = "The empty entry that marks the end of a cpio archive."
+
+# ---------------------------------------------------------------------------
+# Executables
+# ---------------------------------------------------------------------------
+
+[[format]]
+id = "elf"
+name = "Executable and Linkable Format"
+keys = ["ELF", "ELF executable", "executable/elf32", "executable/elf64", "application/x-elf", "application/x-executable", "application/x-sharedlib", "application/x-object", "application/x-coredump"]
+summary = "The object file format of Linux, the BSDs and most embedded toolchains, used for executables, shared libraries, relocatable objects and core dumps."
+organisation = """
+The file starts with e_ident: 7F 'ELF', a class byte (1 for 32-bit, 2 for 64-bit), a data byte (1 little-endian, 2 big-endian), a version and the OS ABI. Every later multi-byte value uses that byte order, and addresses and offsets are 4 or 8 bytes wide according to the class. The rest of the 52- or 64-byte header gives the file type, machine, entry point, and the offsets, entry sizes and counts of two tables.
+
+The program header table is the loader's view: each entry describes a segment, a range of the file (offset, file size) to map at a virtual address (with a memory size that may be larger, for zero-filled data) with given permissions. PT_LOAD entries are mapped; others name the interpreter, dynamic linking table, notes or thread-local storage.
+
+The section header table is the linker's view: named sections such as .text, .data, .rodata, .bss and the symbol and string tables, each with a type, flags, address, file offset and size. Section names are offsets into the string table section indicated by e_shstrndx. Either table may be absent: stripped executables can drop sections, and relocatable objects have no segments.
+"""
+carries = ["zlib", "zstd"]
+
+[[format.specs]]
+document = "System V ABI (gABI)"
+title = "System V Application Binary Interface – Object Files"
+url = "https://refspecs.linuxfoundation.org/elf/gabi4+/contents.html"
+
+[[format.specs]]
+document = "TIS ELF 1.2"
+title = "Tool Interface Standard (TIS) Executable and Linking Format (ELF) Specification, Version 1.2"
+url = "https://refspecs.linuxfoundation.org/elf/elf.pdf"
+
+[[format.specs]]
+document = "elf(5)"
+title = "elf – format of Executable and Linking Format (ELF) files (Linux manual page)"
+url = "https://man7.org/linux/man-pages/man5/elf.5.html"
+
+[[format.fields]]
+name = "ELF header"
+meaning = "The file header: identification, type, machine, entry point and the locations of the program and section header tables (52 bytes for 32-bit, 64 for 64-bit)."
+
+[[format.fields]]
+name = "e_ident"
+meaning = "Sixteen identification bytes: 7F 'ELF', class (32/64-bit), byte order, header version, OS ABI and ABI version, then padding."
+
+[[format.fields]]
+name = "e_type"
+meaning = "Object file type: 1 relocatable (.o), 2 executable, 3 shared object (also position-independent executables), 4 core dump."
+
+[[format.fields]]
+name = "e_machine"
+meaning = "Target architecture, such as 3 x86, 40 ARM, 62 x86-64, 183 AArch64, 243 RISC-V."
+
+[[format.fields]]
+name = "e_entry"
+meaning = "Virtual address where execution starts; zero when the file has no entry point."
+
+[[format.fields]]
+name = "e_phoff"
+meaning = "File offset of the program header table, or zero if there is none."
+
+[[format.fields]]
+name = "e_shoff"
+meaning = "File offset of the section header table, or zero if there is none."
+
+[[format.fields]]
+name = "e_phnum"
+meaning = "Number of program header entries (segments)."
+
+[[format.fields]]
+name = "e_shnum"
+meaning = "Number of section header entries. Zero with a non-zero e_shoff means the real count is in the first section header's size field."
+
+[[format.fields]]
+name = "Program headers"
+meaning = "The segment table: what to map into memory, where, and with which permissions."
+
+[[format.fields]]
+name = "Section headers"
+meaning = "The section table: every named section with its type, flags, address, file offset and size."
+
+[[format.fields]]
+name = "PT_*"
+meaning = "A program header (segment). PT_LOAD is mapped into memory; PT_DYNAMIC locates the dynamic linking table, PT_INTERP names the program interpreter, PT_NOTE holds notes and PT_GNU_STACK sets stack permissions."
+
+[[format.fields]]
+name = ".text"
+meaning = "Executable machine code."
+
+[[format.fields]]
+name = ".data"
+meaning = "Initialised writable data."
+
+[[format.fields]]
+name = ".rodata"
+meaning = "Read-only data such as constants and string literals."
+
+[[format.fields]]
+name = ".bss"
+meaning = "Zero-initialised data. It occupies memory but no space in the file."
+
+[[format.fields]]
+name = ".symtab"
+aliases = [".dynsym"]
+meaning = "Symbol table: names, values and sizes of functions and variables. .dynsym holds the subset needed for dynamic linking."
+
+[[format.fields]]
+name = ".strtab"
+aliases = [".dynstr", ".shstrtab"]
+meaning = "String table: NUL-terminated names referred to by offset (symbol names, dynamic names, or section names for .shstrtab)."
+
+[[format.fields]]
+name = ".dynamic"
+meaning = "Dynamic linking table: needed libraries, symbol and relocation table locations, and initialisation functions."
+
+[[format.fields]]
+name = "section *"
+meaning = "A section without a name, such as the null section at index 0."
+
+[[format]]
+id = "pe"
+name = "Portable Executable"
+keys = ["PE", "Windows PE executable", "executable/pe", "application/x-msdownload;format=pe", "application/x-msdownload;format=pe32", "application/x-msdownload;format=pe64", "application/x-msdownload;format=pe-itanium", "application/x-msdownload;format=pe-armLE", "application/x-msdownload;format=pe-arm7"]
+summary = "The executable format of Windows and UEFI: .exe, .dll, .sys and .efi files, including .NET assemblies."
+organisation = """
+The file starts with an MS-DOS header ('MZ') and a small DOS program that prints a message. The 32-bit value at offset 0x3C (e_lfanew) points to the signature 'PE' 00 00, which is followed by the 20-byte COFF file header: machine, number of sections, timestamp, size of the optional header and characteristics. Everything is little-endian.
+
+The optional header, required for images, starts with a magic of 0x10B (PE32) or 0x20B (PE32+, 64-bit). It gives the entry point, the preferred image base, section and file alignment, the subsystem, and a table of data directories locating the import, export, resource, relocation, debug, exception, TLS and CLR (.NET) structures.
+
+The section table follows: 40-byte entries giving each section's name, virtual address and size, and its file offset and size. Addresses inside the image are relative virtual addresses (RVAs), turned into file offsets through the section that contains them. The certificate (Authenticode) directory is the exception: it is a file offset, and its signature lives outside any section, usually at the end of the file.
+"""
+carries = ["bmp", "png", "der", "x509", "xml"]
+
+[[format.specs]]
+document = "Microsoft PE Format"
+title = "PE Format (Microsoft Learn)"
+url = "https://learn.microsoft.com/windows/win32/debug/pe-format"
+
+[[format.fields]]
+name = "DOS header"
+meaning = "The 64-byte MS-DOS header starting 'MZ'. Only its magic and e_lfanew matter to Windows."
+
+[[format.fields]]
+name = "e_lfanew"
+meaning = "File offset of the PE signature, stored at 0x3C in the DOS header."
+
+[[format.fields]]
+name = "PE signature"
+meaning = "The four bytes 'PE' 00 00 that mark the start of the NT headers."
+
+[[format.fields]]
+name = "COFF header"
+meaning = "The 20-byte file header: machine, section count, timestamp, symbol table pointer and count, optional header size and characteristics."
+
+[[format.fields]]
+name = "Machine"
+meaning = "Target CPU, such as 0x14C x86, 0x8664 x64, 0x1C4 ARM Thumb-2, 0xAA64 ARM64."
+
+[[format.fields]]
+name = "NumberOfSections"
+meaning = "Entries in the section table, which follows the optional header."
+
+[[format.fields]]
+name = "TimeDateStamp"
+meaning = "Seconds since 1970 when the linker built the file. Reproducible builds store a hash here instead."
+
+[[format.fields]]
+name = "SizeOfOptionalHeader"
+meaning = "Bytes in the optional header; the section table starts right after it."
+
+[[format.fields]]
+name = "Characteristics"
+meaning = "Flags: 0x0002 executable image, 0x0020 large-address aware, 0x2000 DLL, among others."
+
+[[format.fields]]
+name = "Optional header"
+meaning = "Image layout and loader settings: entry point, image base, alignments, sizes, subsystem and the data directory table."
+
+[[format.fields]]
+name = "Magic"
+meaning = "0x10B for PE32 (32-bit), 0x20B for PE32+ (64-bit); decides the width of the fields that follow."
+
+[[format.fields]]
+name = "AddressOfEntryPoint"
+meaning = "RVA where execution starts (the DLL entry for libraries); zero when there is none."
+
+[[format.fields]]
+name = "ImageBase"
+meaning = "Preferred load address; the loader relocates the image elsewhere when ASLR or a clash demands it."
+
+[[format.fields]]
+name = "Subsystem"
+meaning = "What the image runs under: 2 Windows GUI, 3 console, 1 native (drivers), 10 to 13 EFI applications and drivers."
+
+[[format.fields]]
+name = "Sections"
+meaning = "The section table: name, virtual address and size, file offset and size, and flags for each section."
+
+[[format.fields]]
+name = ".text"
+meaning = "Executable code."
+
+[[format.fields]]
+name = ".rdata"
+meaning = "Read-only data, often including import and debug directories."
+
+[[format.fields]]
+name = ".data"
+meaning = "Initialised writable data."
+
+[[format.fields]]
+name = ".rsrc"
+meaning = "Resources: icons, bitmaps, dialogs, version information and the manifest, arranged as a three-level tree."
+
+[[format.fields]]
+name = ".reloc"
+meaning = "Base relocations, needed when the image is loaded away from its preferred base."
+
+[[format.fields]]
+name = ".pdata"
+meaning = "Exception and unwind tables for 64-bit code."
+
+[[format.fields]]
+name = ".idata"
+aliases = [".edata"]
+meaning = "Import (.idata) or export (.edata) tables, when the linker gives them their own section."
+
+[[format]]
+id = "macho"
+name = "Mach-O"
+keys = ["Mach-O", "Mach-O executable", "executable/macho-32", "executable/macho-64", "executable/macho-64-x86_64", "executable/macho-64-arm64", "application/x-mach-o", "application/x-mach-o-executable", "application/x-mach-o-object", "application/x-mach-o-dylib", "application/x-mach-o-bundle", "application/x-mach-o-core", "application/x-mach-o-dylinker", "application/x-mach-o-kext-bundle", "application/x-mach-o-dsym"]
+summary = "The object file format of macOS, iOS and Apple's other systems, for executables, dynamic libraries, bundles and object files."
+organisation = """
+The header starts with a magic of FEEDFACE (32-bit) or FEEDFACF (64-bit) in the file's own byte order, so little-endian files begin CE FA ED FE or CF FA ED FE. It gives the CPU type and subtype, file type (object, executable, dylib, bundle, core and so on), the number and total size of load commands, and flags; the 64-bit header adds a reserved word.
+
+Load commands follow the header back to back. Each begins with a command number and its own size, so unknown commands can be skipped. Segment commands map a range of the file to virtual memory and list the sections inside; others give the symbol table, dynamic linking information, the dylibs to load, the entry point (LC_MAIN), a UUID, the minimum OS version and the code signature.
+
+The data follows: __TEXT (code and constants, normally including the header itself), __DATA (writable data), and __LINKEDIT, which holds symbols, strings, fix-ups and the code signature. The signature contains code-directory hashes and a CMS (DER) signature blob.
+"""
+carries = ["der", "x509"]
+
+[[format.specs]]
+document = "Apple mach-o/loader.h"
+title = "mach-o/loader.h (XNU sources)"
+url = "https://github.com/apple-oss-distributions/xnu/blob/main/EXTERNAL_HEADERS/mach-o/loader.h"
+
+[[format.fields]]
+name = "Mach header"
+meaning = "The file header: magic, CPU type and subtype, file type, load command count and size, and flags (28 bytes, 32 for 64-bit)."
+
+[[format.fields]]
+name = "magic"
+meaning = "0xFEEDFACE for 32-bit or 0xFEEDFACF for 64-bit, read in the file's byte order; the byte-swapped forms mean the other endianness."
+
+[[format.fields]]
+name = "cputype"
+meaning = "Target CPU family (x86, ARM, PowerPC), with a 64-bit ABI flag (0x01000000) for x86_64 and arm64."
+
+[[format.fields]]
+name = "filetype"
+meaning = "Kind of file: 1 object, 2 executable, 4 core, 6 dylib, 7 dynamic linker, 8 bundle, 10 debug symbols (dSYM), 11 kernel extension set."
+
+[[format.fields]]
+name = "ncmds"
+meaning = "Number of load commands after the header."
+
+[[format.fields]]
+name = "sizeofcmds"
+meaning = "Total bytes of all load commands; the area after the header that they occupy."
+
+[[format.fields]]
+name = "flags"
+meaning = "Header flags such as MH_PIE (position-independent, for ASLR), MH_TWOLEVEL namespace and MH_NOUNDEFS."
+
+[[format.fields]]
+name = "Load commands"
+meaning = "The load commands, each starting with its command number and size."
+
+[[format.fields]]
+name = "Segments"
+meaning = "The segments described by segment load commands, each with the sections it contains."
+
+[[format.fields]]
+name = "Segment*"
+meaning = "LC_SEGMENT or LC_SEGMENT_64: maps a file range to virtual memory with protections and lists its sections."
+
+[[format.fields]]
+name = "Symtab"
+aliases = ["Dysymtab"]
+meaning = "LC_SYMTAB locates the symbol and string tables in __LINKEDIT; LC_DYSYMTAB groups them for dynamic linking."
+
+[[format.fields]]
+name = "LoadDylib"
+aliases = ["LoadWeakDylib", "ReexportDylib"]
+meaning = "A dynamic library the image needs, by install path (weak: may be missing; re-export: its symbols are passed on)."
+
+[[format.fields]]
+name = "LoadDylinker"
+meaning = "LC_LOAD_DYLINKER: path of the dynamic linker, usually /usr/lib/dyld."
+
+[[format.fields]]
+name = "Main"
+meaning = "LC_MAIN: file offset of the entry point within __TEXT, and the initial stack size."
+
+[[format.fields]]
+name = "Uuid"
+meaning = "LC_UUID: a 128-bit identifier that ties the binary to its debug symbols."
+
+[[format.fields]]
+name = "CodeSignature"
+meaning = "LC_CODE_SIGNATURE: offset and size of the code signature blob in __LINKEDIT."
+
+[[format.fields]]
+name = "__TEXT"
+meaning = "Read-and-execute segment with the code, constants and usually the Mach header itself."
+
+[[format.fields]]
+name = "__DATA"
+aliases = ["__DATA_CONST"]
+meaning = "Writable data segment (__DATA_CONST becomes read-only after fix-ups)."
+
+[[format.fields]]
+name = "__LINKEDIT"
+meaning = "Raw data for the linker and loader: symbols, strings, fix-ups, function starts and the code signature."
+
+[[format.fields]]
+name = "__PAGEZERO"
+meaning = "An inaccessible region at address zero (4 GiB on 64-bit) that turns null pointer use into a crash; it takes no file space."
+
+[[format]]
+id = "macho-fat"
+name = "Mach-O universal (fat) binary"
+keys = ["Mach-O universal binary", "executable/macho-fat", "application/x-mach-o-universal"]
+summary = "A wrapper that holds complete Mach-O files for several CPU architectures in one file."
+organisation = """
+A big-endian header with the magic CAFEBABE (or CAFEBABF for 64-bit offsets) and the number of architectures is followed by one fat_arch record per slice: CPU type, subtype, file offset, size and alignment (as a power of two).
+
+Each slice is a whole Mach-O file at its offset, normally page-aligned. The loader picks the slice best suited to the running CPU.
+
+The magic is shared with Java class files, where the following word is a version number; a small architecture count tells the two apart.
+"""
+carries = ["macho"]
+
+[[format.specs]]
+document = "Apple mach-o/fat.h"
+title = "mach-o/fat.h (XNU sources)"
+url = "https://github.com/apple-oss-distributions/xnu/blob/main/EXTERNAL_HEADERS/mach-o/fat.h"
+
+[[format.fields]]
+name = "Fat header"
+meaning = "Magic and architecture count, followed by a 20-byte record per architecture giving the slice's CPU type, offset, size and alignment."
+
+# ---------------------------------------------------------------------------
+# Disks and filesystems
+# ---------------------------------------------------------------------------
+
+[[format]]
+id = "mbr"
+name = "Master boot record"
+keys = ["MBR", "MBR partition table", "partition/mbr"]
+summary = "The first sector of a PC-style disk: boot code and a table of up to four partitions."
+organisation = """
+The 512-byte sector holds 446 bytes of boot code (where an optional disk signature sits at offset 440), four 16-byte partition entries from offset 446, and the signature 55 AA at offset 510.
+
+Each entry has a status byte (0x80 marks the bootable partition), a start address in the old cylinder-head-sector form, a partition type byte, an end CHS address, and then the starting LBA and sector count as 32-bit little-endian values. With 512-byte sectors that limits the table to 2 TiB.
+
+Type 0x05 or 0x0F marks an extended partition, whose first sector holds another table (an EBR) describing one logical partition and linking to the next. Type 0xEE marks a protective MBR, which covers the whole disk so that older tools leave a GPT disk alone.
+"""
+carries = ["gpt", "fat", "ntfs", "ext"]
+
+[[format.specs]]
+document = "UEFI 2.10 §5.2"
+title = "UEFI Specification, chapter 5: GUID Partition Table (GPT) Disk Layout – LBA 0 Format"
+url = "https://uefi.org/specs/UEFI/2.10/05_GUID_Partition_Table_Format.html"
+section = "5.2.1"
+
+[[format.fields]]
+name = "boot code"
+meaning = "Code the BIOS runs after loading the sector at 0x7C00. Bytes 440 to 443 often hold a disk signature that Windows uses to identify the disk."
+
+[[format.fields]]
+name = "partition table"
+meaning = "Four 16-byte entries starting at offset 446; unused entries are zero."
+
+[[format.fields]]
+name = "partition *"
+meaning = "One partition entry: status, CHS start, type, CHS end, starting LBA and sector count."
+
+[[format.fields]]
+name = "status"
+meaning = "0x80 for the active (bootable) partition, 0x00 otherwise; any other value means the sector is probably not an MBR."
+
+[[format.fields]]
+name = "type"
+meaning = "Partition type: 0x07 NTFS/exFAT, 0x0B/0x0C FAT32, 0x83 Linux, 0x82 Linux swap, 0x05/0x0F extended, 0xEE GPT protective, 0xEF EFI system."
+
+[[format.fields]]
+name = "starting LBA"
+meaning = "First sector of the partition, counted from the start of the disk."
+
+[[format.fields]]
+name = "sectors"
+meaning = "Length of the partition in sectors."
+
+[[format.fields]]
+name = "signature"
+meaning = "The boot signature 55 AA at offset 510 that marks a valid boot sector."
+
+[[format]]
+id = "gpt"
+name = "GUID Partition Table"
+keys = ["GPT", "GPT partition table", "partition/gpt-header", "partition/gpt-disk"]
+summary = "The modern partition table defined by UEFI: 64-bit sector addresses, GUID-typed partitions, checksums and a backup copy."
+organisation = """
+Sector 0 holds a protective MBR. The GPT header is in sector 1: the signature 'EFI PART', a revision, the header size (92 bytes) and its CRC-32, then the header's own LBA and the backup header's LBA, the first and last LBAs usable for partitions, the disk GUID, and the location, count and size of the partition entries with their CRC-32. Values are little-endian.
+
+The entry array normally starts at LBA 2 and has 128 entries of 128 bytes. Each gives a partition type GUID, a unique GUID, first and last LBAs (inclusive), attribute flags, and a name of up to 36 UTF-16LE characters. An all-zero type GUID marks an unused entry.
+
+A backup header sits in the last sector of the disk, with a copy of the entry array just before it. GUIDs are stored with their first three fields little-endian, so their bytes appear partly reversed compared with the printed form.
+"""
+carries = ["fat", "ntfs", "ext"]
+
+[[format.specs]]
+document = "UEFI 2.10 §5.3"
+title = "UEFI Specification, chapter 5: GUID Partition Table (GPT) Disk Layout"
+url = "https://uefi.org/specs/UEFI/2.10/05_GUID_Partition_Table_Format.html"
+section = "5.3"
+
+[[format.fields]]
+name = "GPT header"
+meaning = "The partition table header at LBA 1 (and its backup at the last LBA)."
+section = "5.3.2"
+
+[[format.fields]]
+name = "header size"
+meaning = "Bytes of the header covered by its CRC; 92 in current revisions."
+section = "5.3.2"
+
+[[format.fields]]
+name = "current LBA"
+meaning = "The LBA of this header: 1 for the primary, the disk's last sector for the backup."
+section = "5.3.2"
+
+[[format.fields]]
+name = "backup LBA"
+meaning = "The LBA of the other copy of the header. On a disk image cut short, this points beyond the end."
+section = "5.3.2"
+
+[[format.fields]]
+name = "first usable LBA"
+meaning = "First sector a partition may use, after the primary entry array."
+section = "5.3.2"
+
+[[format.fields]]
+name = "last usable LBA"
+meaning = "Last sector a partition may use, before the backup entry array."
+section = "5.3.2"
+
+[[format.fields]]
+name = "disk GUID"
+meaning = "A unique identifier for the disk."
+section = "5.3.2"
+
+[[format.fields]]
+name = "entries LBA"
+meaning = "Where the partition entry array starts; 2 for the primary table."
+section = "5.3.2"
+
+[[format.fields]]
+name = "entry count"
+meaning = "Number of slots in the entry array, used or not; usually 128."
+section = "5.3.2"
+
+[[format.fields]]
+name = "entry size"
+meaning = "Bytes per entry: 128 times a power of two, and 128 in practice."
+section = "5.3.2"
+
+[[format.fields]]
+name = "partition entries"
+meaning = "The used entries of the partition entry array."
+section = "5.3.3"
+
+[[format.fields]]
+name = "entry *"
+meaning = "One partition: type and unique GUIDs, first and last LBA, attributes and name."
+section = "5.3.3"
+
+[[format.fields]]
+name = "type GUID"
+meaning = "What the partition holds, such as C12A7328-… EFI system, EBD0A0A2-… Microsoft basic data, 0FC63DAF-… Linux filesystem."
+section = "5.3.3"
+
+[[format.fields]]
+name = "unique GUID"
+meaning = "An identifier for this particular partition, used by boot loaders and /dev/disk/by-partuuid."
+section = "5.3.3"
+
+[[format.fields]]
+name = "first LBA"
+meaning = "First sector of the partition."
+section = "5.3.3"
+
+[[format.fields]]
+name = "last LBA"
+meaning = "Last sector of the partition, inclusive."
+section = "5.3.3"
+
+[[format.fields]]
+name = "name"
+meaning = "A human-readable partition name of up to 36 UTF-16LE code units."
+section = "5.3.3"
+
+[[format]]
+id = "fat"
+name = "FAT filesystem"
+keys = ["FAT", "FAT boot sector", "FAT12 boot sector", "FAT16 boot sector", "FAT32 boot sector", "fs/fat12", "fs/fat16", "fs/fat32", "application/x-fat-diskimage"]
+summary = "The File Allocation Table filesystem (FAT12, FAT16, FAT32), still used on memory cards, USB drives and EFI system partitions."
+organisation = """
+The volume begins with a boot sector holding a jump instruction, an OEM name and the BIOS parameter block: bytes per sector, sectors per cluster, reserved sectors, number of FATs, root directory entries, total sectors, media type and sectors per FAT. FAT12/16 and FAT32 then differ: FAT32 adds a 32-bit FAT size, the root directory's first cluster and the locations of the FSInfo and backup boot sectors. Both end with a volume ID, a volume label, a type string and 55 AA at offset 510. Values are little-endian.
+
+After the reserved sectors come the FAT copies, then (for FAT12/16 only) a fixed-size root directory, then the data area divided into clusters numbered from 2. The FAT is an array with one entry per cluster, each giving the next cluster of the same file or an end-of-chain mark, so a file is a linked list of clusters.
+
+Directories are arrays of 32-byte entries: an 8.3 name, attributes, timestamps, first cluster and size; long names are stored in extra entries placed before the short one. The FAT type is decided by the number of clusters, not by the type string.
+"""
+carries = []
+
+[[format.specs]]
+document = "Microsoft FAT specification 1.03"
+title = "Microsoft Extensible Firmware Initiative FAT32 File System Specification (FAT: General Overview of On-Disk Format)"
+url = "https://download.microsoft.com/download/1/6/1/161ba512-40e2-4cc9-843a-923143f3456c/fatgen103.doc"
+
+[[format.fields]]
+name = "jump"
+meaning = "A jump over the parameter block to the boot code: EB xx 90 or E9 xx xx."
+
+[[format.fields]]
+name = "OEM name"
+meaning = "Eight characters naming the formatting tool, such as 'MSDOS5.0' or 'mkfs.fat'. Informational only."
+
+[[format.fields]]
+name = "bytes per sector"
+meaning = "Sector size: 512, 1024, 2048 or 4096."
+
+[[format.fields]]
+name = "sectors per cluster"
+meaning = "Allocation unit size in sectors, a power of two."
+
+[[format.fields]]
+name = "reserved sectors"
+meaning = "Sectors before the first FAT, including the boot sector (usually 1 for FAT12/16, 32 for FAT32)."
+
+[[format.fields]]
+name = "FAT count"
+meaning = "Number of copies of the allocation table, normally 2."
+
+[[format.fields]]
+name = "root entries"
+meaning = "Entries in the fixed root directory of FAT12/16; zero on FAT32, whose root directory is an ordinary cluster chain."
+
+[[format.fields]]
+name = "total sectors"
+meaning = "Sectors in the volume: the 16-bit field at offset 19 when it fits, otherwise the 32-bit field at offset 32."
+
+[[format.fields]]
+name = "volume label"
+meaning = "Eleven-character label set when formatting; the root directory may hold a newer one."
+
+[[format.fields]]
+name = "filesystem type"
+meaning = "Informational text such as 'FAT12   ', 'FAT16   ' or 'FAT32   '. The real type follows from the cluster count."
+
+[[format.fields]]
+name = "signature"
+meaning = "55 AA at offset 510, closing the boot sector."
+
+[[format]]
+id = "ntfs"
+name = "NTFS"
+keys = ["NTFS boot sector", "fs/ntfs"]
+summary = "The Windows NT filesystem, in which all metadata, including the file table itself, is stored as files."
+organisation = """
+The boot sector starts with a jump and the OEM ID 'NTFS' followed by four spaces. Its parameter block gives bytes per sector and sectors per cluster, the total sector count (64-bit), the cluster numbers of the master file table ($MFT) and its mirror, the size of file records and index blocks, and a 64-bit volume serial number. A copy of the boot sector is kept in the last sector of the volume.
+
+The MFT is an array of file records, usually 1 KiB each and starting 'FILE'. The first records describe the filesystem itself: $MFT, $MFTMirr, $LogFile, $Volume, $AttrDef, the root directory, $Bitmap, $Boot and so on. Each record holds attributes such as standard information, file name and data.
+
+Small attribute values are stored inside the record (resident); large ones are stored in clusters elsewhere, described by run lists of (length, offset) pairs. Directories are B-trees of file name entries. Values are little-endian, and multi-sector structures carry update sequence fix-ups to detect torn writes.
+"""
+carries = []
+
+[[format.specs]]
+document = "libfsntfs NTFS format notes"
+title = "New Technologies File System (NTFS) – libyal documentation"
+url = "https://github.com/libyal/libfsntfs/blob/main/documentation/New%20Technologies%20File%20System%20(NTFS).asciidoc"
+
+[[format.specs]]
+document = "Microsoft Learn: NTFS overview"
+title = "NTFS overview"
+url = "https://learn.microsoft.com/windows-server/storage/file-server/ntfs-overview"
+
+[[format.fields]]
+name = "OEM ID"
+meaning = "'NTFS' followed by four spaces, at offset 3; this is how NTFS volumes are recognised."
+
+[[format.fields]]
+name = "bytes per sector"
+meaning = "Sector size, normally 512 or 4096."
+
+[[format.fields]]
+name = "sectors per cluster"
+meaning = "Cluster size in sectors. Values above 0x80 are negative powers: the cluster is 2^(256 − value) bytes."
+
+[[format.fields]]
+name = "total sectors"
+meaning = "Sectors in the volume, not counting the backup boot sector at the end."
+
+[[format.fields]]
+name = "MFT cluster"
+meaning = "Cluster number of the start of the master file table; multiply by the cluster size for the byte offset within the volume."
+
+[[format.fields]]
+name = "MFT mirror cluster"
+meaning = "Cluster number of $MFTMirr, a copy of the first MFT records used for recovery."
+
+[[format.fields]]
+name = "volume serial"
+meaning = "64-bit serial number chosen at format time; Windows shows its low 32 bits."
+
+[[format.fields]]
+name = "signature"
+meaning = "55 AA at offset 510, closing the boot sector."
+
+[[format]]
+id = "ext"
+name = "ext2/ext3/ext4 filesystem"
+keys = ["ext2", "ext3", "ext4", "ext2/3/4 superblock", "ext2 superblock", "ext3 superblock", "ext4 superblock", "fs/ext"]
+summary = "The Linux extended filesystem family. ext3 adds a journal to ext2, and ext4 adds extents, larger volumes and checksums."
+organisation = """
+The superblock lies 1024 bytes into the volume and is 1024 bytes long. It records the inode and block counts, the block size (1024 shifted left by s_log_block_size), blocks and inodes per group, the magic 0xEF53 at offset 56, state, revision, feature flags, UUID, volume name and the last mount point. Values are little-endian.
+
+The volume is split into block groups. A table of group descriptors follows the superblock; each descriptor locates its group's block bitmap, inode bitmap and inode table. Copies of the superblock and descriptors are kept in some groups (with sparse_super, groups 0, 1 and powers of 3, 5 and 7) for recovery.
+
+Inodes hold a file's metadata and either block pointers (ext2/3) or an extent tree (ext4). Directories are files of variable-length entries, optionally hashed into a tree. Three feature words decide what a driver must understand: compatible, incompatible and read-only compatible; for example has_journal (compatible) marks ext3, and extents or flex_bg (incompatible) mark ext4.
+"""
+carries = []
+
+[[format.specs]]
+document = "Linux ext4 data structures"
+title = "ext4 Data Structures and Algorithms: Super Block (Linux kernel documentation)"
+url = "https://docs.kernel.org/filesystems/ext4/super.html"
+
+[[format.specs]]
+document = "Linux ext4 documentation"
+title = "ext4 Data Structures and Algorithms (Linux kernel documentation)"
+url = "https://docs.kernel.org/filesystems/ext4/index.html"
+
+[[format.fields]]
+name = "inodes count"
+meaning = "s_inodes_count: total inodes, which caps the number of files."
+
+[[format.fields]]
+name = "blocks count"
+meaning = "s_blocks_count_lo: total blocks (ext4 with the 64-bit feature keeps the high half elsewhere)."
+
+[[format.fields]]
+name = "block size"
+meaning = "Block size in bytes, computed as 1024 shifted left by s_log_block_size; usually 4096."
+
+[[format.fields]]
+name = "blocks per group"
+meaning = "s_blocks_per_group: blocks in each block group, normally eight times the block size."
+
+[[format.fields]]
+name = "magic"
+meaning = "s_magic, 0xEF53, at offset 56 of the superblock."
+
+[[format.fields]]
+name = "state"
+meaning = "s_state: bit 0 set means cleanly unmounted; bit 1 means errors were detected."
+
+[[format.fields]]
+name = "revision"
+meaning = "s_rev_level: 0 for the original format with fixed inode size, 1 for dynamic (variable inode size, feature flags)."
+
+[[format.fields]]
+name = "feature_compat"
+meaning = "Compatible features, safe to ignore: 0x4 has_journal, 0x8 extended attributes, 0x20 directory indexes, and others."
+
+[[format.fields]]
+name = "feature_incompat"
+meaning = "Features a driver must support to mount at all: 0x2 file type in directories, 0x40 extents, 0x80 64-bit, 0x200 flex_bg, and others."
+
+[[format.fields]]
+name = "volume name"
+meaning = "s_volume_name: up to 16 bytes of label."
+
+[[format.fields]]
+name = "last mounted"
+meaning = "s_last_mounted: the directory the filesystem was last mounted on, up to 64 bytes."
+
+[[format]]
+id = "squashfs"
+name = "SquashFS"
+keys = ["SquashFS filesystem", "fs/squashfs", "fs/squashfs-be"]
+summary = "A compressed, read-only Linux filesystem, common in firmware images, live CDs and snaps."
+organisation = """
+A 96-byte superblock starts with the magic 'hsqs' (little-endian; 'sqsh' marks the big-endian layout of older versions). It gives the inode count, creation time, block size, fragment count, compressor (1 zlib, 2 LZMA, 3 LZO, 4 xz, 5 LZ4, 6 zstd), flags, version (4.0 today), the root inode reference, the bytes used, and the start offsets of the id, extended attribute, inode, directory, fragment and export tables.
+
+File data is stored first, in blocks of the chosen size, each compressed on its own; small files and file tails are packed together into fragment blocks. Metadata (inodes and directories) is stored in 8 KiB blocks, each preceded by a 16-bit header whose top bit means 'stored uncompressed' and whose low bits give the length.
+
+Inodes are referenced by the position of their metadata block and an offset within it, so the filesystem can be read without any allocation maps.
+"""
+carries = ["zlib", "lzma", "xz", "lz4", "zstd"]
+
+[[format.specs]]
+document = "SquashFS binary format"
+title = "SquashFS Binary Format (D. Emann)"
+url = "https://dr-emann.github.io/squashfs/"
+
+[[format.specs]]
+document = "Linux SquashFS documentation"
+title = "Squashfs 4.0 Filesystem (Linux kernel documentation)"
+url = "https://docs.kernel.org/filesystems/squashfs.html"
+
+# ---------------------------------------------------------------------------
+# Firmware
+# ---------------------------------------------------------------------------
+
+[[format]]
+id = "uimage"
+name = "U-Boot legacy image (uImage)"
+keys = ["U-Boot uImage", "uImage", "firmware/uimage"]
+summary = "The legacy image wrapper of the U-Boot boot loader: a 64-byte header describing a kernel, ramdisk or script, followed by its (often compressed) data."
+organisation = """
+The header is 64 bytes of big-endian fields: the magic 27 05 19 56, a CRC-32 of the header, a timestamp, the data size, the load address, the entry point, a CRC-32 of the data, then single bytes for operating system, CPU architecture, image type and compression, and a 32-byte name.
+
+The data follows immediately. Compression may be none, gzip, bzip2, LZMA, LZO, LZ4 or zstd; U-Boot decompresses to the load address and jumps to the entry point. Multi-file images start their data with a zero-terminated list of the component sizes.
+
+Newer U-Boot builds prefer FIT images, which describe several components with a flattened device tree.
+"""
+carries = ["gzip", "bzip2", "lzma", "lz4", "zstd", "cpio", "elf"]
+
+[[format.specs]]
+document = "U-Boot include/image.h"
+title = "U-Boot image.h: legacy image header (struct legacy_img_hdr)"
+url = "https://github.com/u-boot/u-boot/blob/master/include/image.h"
+
+[[format]]
+id = "cortex-m-vectors"
+name = "Arm Cortex-M vector table"
+keys = ["executable:cortex-m-vectors", "Cortex-M vector table"]
+summary = "The table of initial stack pointer and exception handler addresses at the start of Cortex-M firmware, which the processor reads on reset."
+organisation = """
+The table is an array of 32-bit little-endian words. Word 0 is the initial main stack pointer, loaded on reset and usually pointing to the top of RAM. Word 1 is the reset handler, where execution starts. The next fourteen words are the system exceptions (NMI, HardFault, MemManage, BusFault, UsageFault, SVCall, DebugMonitor, PendSV, SysTick, with reserved slots between), and external interrupt handlers (IRQ 0 onwards) follow.
+
+Handler addresses have bit 0 set to mark Thumb code, so the real address is one less. At reset the table is read from address 0 (often aliased to the start of flash); software can move it by writing VTOR, which needs a suitably aligned address. Unused handlers usually all point to the same default loop, which makes such tables easy to spot.
+
+Because the stack pointer and reset vector reveal the RAM and flash ranges, a table found in a dump suggests the image's load address.
+"""
+carries = []
+
+[[format.specs]]
+document = "Arm DDI 0403 (ARMv7-M ARM)"
+title = "ARMv7-M Architecture Reference Manual"
+url = "https://developer.arm.com/documentation/ddi0403/latest/"
+
+[[format.fields]]
+name = "Initial stack pointer"
+meaning = "Value loaded into the main stack pointer at reset; normally the top of RAM, so it shows where RAM is."
+
+[[format.fields]]
+name = "Reset"
+meaning = "Address of the reset handler, where execution starts (bit 0 set for Thumb)."
+
+[[format.fields]]
+name = "NMI"
+meaning = "Non-maskable interrupt handler."
+
+[[format.fields]]
+name = "HardFault"
+meaning = "Handler for faults that cannot be handled by their own handler, and for all faults on ARMv6-M."
+
+[[format.fields]]
+name = "MemManage"
+aliases = ["BusFault", "UsageFault"]
+meaning = "Configurable fault handlers (ARMv7-M and later): memory protection violations, bus errors, and undefined instructions or invalid state."
+
+[[format.fields]]
+name = "SVCall"
+meaning = "Supervisor call handler, entered by the SVC instruction; RTOSes use it for system calls."
+
+[[format.fields]]
+name = "DebugMonitor"
+meaning = "Debug monitor exception (ARMv7-M and later)."
+
+[[format.fields]]
+name = "PendSV"
+meaning = "Pendable service call, typically used by an RTOS for context switches."
+
+[[format.fields]]
+name = "SysTick"
+meaning = "System timer tick handler."
+
+[[format.fields]]
+name = "Reserved"
+meaning = "A reserved slot. Some vendors store a checksum here (NXP LPC parts use slot 7 so that the first eight words sum to zero)."
+
+[[format.fields]]
+name = "IRQ *"
+meaning = "External interrupt handler, numbered by the device's interrupt line; their number and meaning are vendor-specific."
+
+# ---------------------------------------------------------------------------
+# Serialisation and text
+# ---------------------------------------------------------------------------
+
+[[format]]
+id = "protobuf"
+name = "Protocol Buffers wire format"
+keys = ["Protocol Buffers", "protobuf message"]
+summary = "Google's compact binary serialisation: a message is a run of numbered fields whose meaning comes from a separate schema."
+organisation = """
+A message is a sequence of records with no header or overall length. Each record starts with a tag, a varint holding the field number shifted left three bits plus a three-bit wire type. Varints store 7 bits per byte, least significant group first, with the top bit set on every byte but the last.
+
+The wire type says how to find the value: 0 varint (integers, booleans, enums; signed sint types use ZigZag encoding), 1 fixed 64-bit little-endian, 2 length-delimited (a varint length then that many bytes), 5 fixed 32-bit. Types 3 and 4 are the deprecated group start and end.
+
+Length-delimited values may be strings, raw bytes, packed repeated numbers or an embedded message, and the wire format does not say which, so a decoder without the schema can only guess. Fields can appear in any order and repeat. Messages are usually framed by whatever carries them (gRPC, a file length prefix).
+"""
+carries = []
+
+[[format.specs]]
+document = "Protocol Buffers encoding"
+title = "Encoding (protobuf.dev programming guide)"
+url = "https://protobuf.dev/programming-guides/encoding/"
+
+[[format.fields]]
+name = "field *"
+meaning = "One record: field number from the tag, the wire type in brackets, and its value. Length-delimited values that decode cleanly are shown as nested messages."
+
+[[format]]
+id = "msgpack"
+name = "MessagePack"
+keys = ["MessagePack", "MessagePack value"]
+summary = "A binary serialisation with JSON's data model (maps, arrays, strings, numbers), plus raw bytes and extension types."
+organisation = """
+Every value starts with a type byte, and small values fit inside it: 0x00 to 0x7F are positive integers, 0xE0 to 0xFF negative integers, 0x80 to 0x8F maps of up to 15 pairs, 0x90 to 0x9F arrays of up to 15 items, 0xA0 to 0xBF strings of up to 31 bytes. 0xC0 is nil, 0xC2 false and 0xC3 true.
+
+Larger values use a type byte followed by a big-endian length or value: 0xCC to 0xCF unsigned and 0xD0 to 0xD3 signed integers of 1 to 8 bytes, 0xCA and 0xCB floats, 0xD9 to 0xDB strings, 0xC4 to 0xC6 binary, 0xDC/0xDD arrays and 0xDE/0xDF maps with 16- or 32-bit counts, and 0xC7 to 0xC9 and 0xD4 to 0xD8 extension types.
+
+Containers are followed directly by their items (key then value for maps), so the total length is only known by walking the whole value. Extension type -1 is the standard timestamp.
+"""
+carries = []
+
+[[format.specs]]
+document = "MessagePack specification"
+title = "MessagePack specification"
+url = "https://github.com/msgpack/msgpack/blob/master/spec.md"
+
+[[format.fields]]
+name = "map"
+meaning = "A map: a count of key–value pairs, each child shown as 'key = type'."
+
+[[format.fields]]
+name = "array"
+meaning = "An array: a count followed by that many values."
+
+[[format.fields]]
+name = "str"
+meaning = "A UTF-8 string: fixstr (length in the type byte) or str 8/16/32 with a length prefix."
+
+[[format.fields]]
+name = "bin"
+meaning = "Raw bytes with an 8-, 16- or 32-bit length prefix."
+
+[[format.fields]]
+name = "uint"
+aliases = ["int"]
+meaning = "An integer: a fixint packed into the type byte, or 1 to 8 big-endian bytes after it."
+
+[[format.fields]]
+name = "f32"
+aliases = ["f64"]
+meaning = "An IEEE 754 float, big-endian."
+
+[[format.fields]]
+name = "nil"
+aliases = ["bool"]
+meaning = "Single-byte values: 0xC0 nil, 0xC2 false, 0xC3 true."
+
+[[format.fields]]
+name = "ext"
+meaning = "An extension value: a signed type number and opaque data. Type -1 is a timestamp."
+
+[[format]]
+id = "cbor"
+name = "Concise Binary Object Representation"
+keys = ["CBOR", "CBOR value", "application/cbor", "serial/cbor"]
+summary = "An IETF binary data format with JSON's data model plus byte strings and tags, used in COSE, CWT and WebAuthn."
+organisation = """
+Every item starts with an initial byte: the top three bits are the major type and the low five bits are additional information. Values below 24 are used directly; 24, 25, 26 and 27 mean the argument follows in 1, 2, 4 or 8 big-endian bytes; 31 means indefinite length.
+
+The major types are 0 unsigned integer, 1 negative integer (−1 − n), 2 byte string, 3 UTF-8 text string, 4 array, 5 map, 6 tag and 7 simple values and floats. For strings the argument is the length in bytes, for arrays and maps the number of items or pairs, which follow directly.
+
+A tag wraps the next item with a meaning such as date-time (0, 1), bignum (2, 3) or embedded CBOR (24). Indefinite-length strings, arrays and maps continue until the break byte 0xFF. The tag 55799, encoded D9 D9 F7, may prefix a file to mark it as CBOR.
+"""
+carries = []
+
+[[format.specs]]
+document = "RFC 8949"
+title = "Concise Binary Object Representation (CBOR)"
+url = "https://www.rfc-editor.org/rfc/rfc8949"
+rfc = 8949
+section = "3"
+
+[[format.fields]]
+name = "uint"
+aliases = ["int"]
+meaning = "Major type 0 (unsigned) or 1 (negative, stored as −1 − n)."
+section = "3.1"
+
+[[format.fields]]
+name = "bytes"
+meaning = "Major type 2: a byte string."
+section = "3.1"
+
+[[format.fields]]
+name = "text"
+meaning = "Major type 3: a UTF-8 text string."
+section = "3.1"
+
+[[format.fields]]
+name = "array"
+meaning = "Major type 4: the argument is the number of items that follow."
+section = "3.1"
+
+[[format.fields]]
+name = "map"
+meaning = "Major type 5: the argument is the number of key–value pairs; each child is shown as 'key = type'."
+section = "3.1"
+
+[[format.fields]]
+name = "tag *"
+meaning = "Major type 6: a tag number giving the next item extra meaning, such as 1 epoch time, 2 bignum, 24 embedded CBOR, 55799 self-described CBOR."
+section = "3.4"
+
+[[format.fields]]
+name = "bool"
+aliases = ["null", "undefined"]
+meaning = "Major type 7 simple values: 20 false, 21 true, 22 null, 23 undefined."
+section = "3.3"
+
+[[format.fields]]
+name = "f16"
+aliases = ["f32", "f64"]
+meaning = "Major type 7 floats: half, single or double precision, big-endian."
+section = "3.3"
+
+[[format]]
+id = "json"
+name = "JSON"
+keys = ["JSON document"]
+summary = "JavaScript Object Notation: a text format for objects, arrays, strings, numbers, booleans and null."
+organisation = """
+JSON is plain text, which must be UTF-8 when exchanged between systems. A document is one value: an object in braces of comma-separated "name": value pairs, an array in brackets, a double-quoted string with backslash escapes, a number in decimal (with optional fraction and exponent), true, false or null.
+
+Values nest to any depth and whitespace between tokens is ignored. Nothing records a length, so the end of a document is found by matching brackets while skipping over strings.
+
+Related formats include JSON Lines (one document per line) and many binary encodings of the same model, such as CBOR and MessagePack.
+"""
+carries = []
+
+[[format.specs]]
+document = "RFC 8259"
+title = "The JavaScript Object Notation (JSON) Data Interchange Format"
+url = "https://www.rfc-editor.org/rfc/rfc8259"
+rfc = 8259
+section = "2"
+
+[[format]]
+id = "xml"
+name = "XML"
+keys = ["XML document", "application/xml", "serial/xml-utf16le"]
+summary = "The Extensible Markup Language: nested, named elements with attributes and text, used for documents, configuration and data exchange."
+organisation = """
+A document may begin with a declaration such as <?xml version="1.0" encoding="UTF-8"?>, possibly preceded by a byte order mark, and an optional document type declaration. It then has exactly one root element, which can contain other elements, text, comments, processing instructions and CDATA sections.
+
+Elements are marked by start tags (with attributes as name="value") and matching end tags, or a single empty-element tag ending '/>'. Special characters in text are written as entity or character references such as &lt; and &#x41;.
+
+A document is well-formed when its tags nest properly and match; validity against a schema or DTD is a separate question. Without an encoding declaration the text is UTF-8 or, with a byte order mark, UTF-16.
+"""
+carries = []
+
+[[format.specs]]
+document = "W3C XML 1.0"
+title = "Extensible Markup Language (XML) 1.0 (Fifth Edition)"
+url = "https://www.w3.org/TR/xml/"
+
+[[format]]
+id = "utf8-text"
+name = "UTF-8 text"
+keys = ["UTF-8 text", "serial/utf8-bom"]
+summary = "Text in UTF-8, the dominant Unicode encoding, which leaves ASCII unchanged and uses two to four bytes for other characters."
+organisation = """
+Code points up to U+007F are single bytes identical to ASCII. Larger code points use a lead byte that says how many bytes follow (110xxxxx for two, 1110xxxx for three, 11110xxx for four) and continuation bytes of the form 10xxxxxx, which carry six bits each.
+
+The structure makes UTF-8 easy to recognise and resynchronise: a continuation byte never starts a character, and bytes C0, C1 and F5 to FF never appear. Encoders must use the shortest form, and surrogate code points are not allowed.
+
+A file may begin with the byte order mark EF BB BF, although UTF-8 has no byte order to mark.
+"""
+carries = []
+
+[[format.specs]]
+document = "RFC 3629"
+title = "UTF-8, a transformation format of ISO 10646"
+url = "https://www.rfc-editor.org/rfc/rfc3629"
+rfc = 3629
+section = "3"
+
+[[format]]
+id = "der"
+name = "ASN.1 DER"
+keys = ["ASN.1 DER", "ASN.1 DER structure", "DER"]
+summary = "The Distinguished Encoding Rules for ASN.1: a canonical tag-length-value encoding used by certificates, keys and cryptographic messages."
+organisation = """
+Every value is a TLV: an identifier octet, a length, then the contents. The identifier's top two bits give the class (universal, application, context-specific, private), bit 5 says whether the contents are primitive or constructed from further TLVs, and the low five bits give the tag number (31 means the number continues in following bytes).
+
+A length below 128 is a single byte. Otherwise the first byte is 0x80 plus the number of length bytes that follow, big-endian. DER requires the shortest form and forbids the indefinite length (0x80) that BER allows.
+
+Constructed values such as SEQUENCE (0x30) and SET (0x31) contain their members back to back, so a structure is a tree that can be walked by lengths alone. DER also fixes every other choice BER leaves open, such as the order of SET OF members and the encoding of booleans, so that the same value always produces the same bytes, which signatures rely on. Context-specific tags such as [0] mark optional or explicitly tagged fields defined by the schema.
+"""
+carries = []
+
+[[format.specs]]
+document = "ITU-T X.690"
+title = "ASN.1 encoding rules: Specification of Basic Encoding Rules (BER), Canonical Encoding Rules (CER) and Distinguished Encoding Rules (DER)"
+url = "https://www.itu.int/rec/T-REC-X.690"
+
+[[format.fields]]
+name = "SEQUENCE"
+meaning = "Universal tag 16, constructed (0x30): an ordered list of members, each a full TLV."
+
+[[format.fields]]
+name = "SET"
+meaning = "Universal tag 17, constructed (0x31): an unordered collection; DER sorts SET OF members by their encodings."
+
+[[format.fields]]
+name = "INTEGER"
+meaning = "Tag 2: a two's-complement big-endian integer in as few bytes as possible (a leading zero byte keeps a positive value's top bit clear)."
+
+[[format.fields]]
+name = "BIT STRING"
+meaning = "Tag 3: a first byte giving the number of unused bits in the last byte, then the bits. Public keys and signatures are carried this way."
+
+[[format.fields]]
+name = "OCTET STRING"
+meaning = "Tag 4: arbitrary bytes, often wrapping another DER structure (as in certificate extensions)."
+
+[[format.fields]]
+name = "NULL"
+meaning = "Tag 5 with no contents, used as an empty parameter (05 00)."
+
+[[format.fields]]
+name = "OBJECT IDENTIFIER"
+meaning = "Tag 6: a dotted number naming an algorithm, attribute or extension. The first two arcs share one byte (40 × first + second); later arcs use base-128 with continuation bits."
+
+[[format.fields]]
+name = "BOOLEAN"
+meaning = "Tag 1: one byte; DER requires 0xFF for true and 0x00 for false."
+
+[[format.fields]]
+name = "ENUMERATED"
+meaning = "Tag 10: an integer value from a list defined by the schema."
+
+[[format.fields]]
+name = "UTF8String"
+aliases = ["PrintableString", "IA5String", "T61String", "BMPString"]
+meaning = "Character strings: UTF8String (tag 12), PrintableString (19, a restricted ASCII subset), T61String (20), IA5String (22, ASCII) and BMPString (30, UCS-2)."
+
+[[format.fields]]
+name = "UTCTime"
+aliases = ["GeneralizedTime"]
+meaning = "Times as ASCII: UTCTime (tag 23) YYMMDDHHMMSSZ with a two-digit year, GeneralizedTime (tag 24) YYYYMMDDHHMMSSZ."
+
+[[format.fields]]
+name = "[*"
+meaning = "A context-specific tag such as [0] or [3]; its meaning comes from the surrounding structure's schema (in a certificate, [0] is the version and [3] the extensions)."
+
+[[format.fields]]
+name = "APPLICATION [*"
+meaning = "An application-class tag, defined by the protocol that uses it (LDAP and Kerberos, for example)."
+
+[[format]]
+id = "x509"
+name = "X.509 certificate"
+keys = ["X.509 certificate", "crypto/der-certificate", "application/x-x509-cert;format=der"]
+summary = "A public key certificate: a signed DER structure binding a subject's name and public key, used by TLS, code signing and S/MIME."
+organisation = """
+A certificate is a DER SEQUENCE of three parts: the to-be-signed certificate (tbsCertificate), the signature algorithm, and the signature value as a BIT STRING. The signature is computed over the exact DER bytes of tbsCertificate.
+
+tbsCertificate is itself a SEQUENCE: an optional explicit [0] version (2 for v3), the serial number, the signature algorithm again, the issuer name, a validity SEQUENCE of notBefore and notAfter, the subject name, the subject public key info (algorithm and key bits), optional unique identifiers [1] and [2], and in v3 the extensions in [3].
+
+Names are sequences of sets of attribute–value pairs, each attribute an OID such as commonName or organizationName. Each extension is an OID, an optional critical flag and an OCTET STRING wrapping its own DER value; subject alternative names, key usage and basic constraints are the most common. The PEM form is the same DER bytes in Base64 between '-----BEGIN CERTIFICATE-----' lines.
+"""
+carries = ["der"]
+
+[[format.specs]]
+document = "RFC 5280"
+title = "Internet X.509 Public Key Infrastructure Certificate and Certificate Revocation List (CRL) Profile"
+url = "https://www.rfc-editor.org/rfc/rfc5280"
+rfc = 5280
+section = "4.1"
+
+[[format.specs]]
+document = "ITU-T X.509"
+title = "Information technology – Open Systems Interconnection – The Directory: Public-key and attribute certificate frameworks"
+url = "https://www.itu.int/rec/T-REC-X.509"
+
+[[format.fields]]
+name = "certificate"
+meaning = "A summary of the decoded certificate, named by its subject."
+section = "4.1"
+
+[[format.fields]]
+name = "version"
+meaning = "Certificate version: v3 (encoded as 2) whenever extensions are present, which is nearly always."
+section = "4.1.2.1"
+
+[[format.fields]]
+name = "serial"
+meaning = "Serial number, unique per issuer; up to 20 bytes, and today mostly random."
+section = "4.1.2.2"
+
+[[format.fields]]
+name = "signature algorithm"
+meaning = "The algorithm the issuer signed with, such as sha256WithRSAEncryption or ecdsa-with-SHA256."
+section = "4.1.1"
+
+[[format.fields]]
+name = "issuer"
+meaning = "Distinguished name of the authority that signed the certificate; equal to the subject for self-signed certificates."
+section = "4.1.2.4"
+
+[[format.fields]]
+name = "subject"
+meaning = "Distinguished name of the entity the certificate is for. For TLS, the host names are in the subject alternative names instead."
+section = "4.1.2.6"
+
+[[format.fields]]
+name = "not before"
+aliases = ["not after"]
+meaning = "Validity period. Dates up to 2049 are encoded as UTCTime, later ones as GeneralizedTime."
+section = "4.1.2.5"
+
+[[format.fields]]
+name = "subject alternative names"
+meaning = "DNS names (and possibly addresses, e-mail and URIs) the certificate is valid for, from the subjectAltName extension."
+section = "4.2.1.6"
+
+# ---------------------------------------------------------------------------
+# Compressed streams
+# ---------------------------------------------------------------------------
+
+[[format]]
+id = "zlib"
+name = "zlib stream"
+keys = ["stream:zlib", "zlib stream", "application/zlib"]
+summary = "A thin wrapper around deflate data with a two-byte header and an Adler-32 checksum; used inside PNG, PDF, Git objects and many protocols."
+organisation = """
+The first byte (CMF) holds the compression method in its low four bits (8 for deflate) and the base-2 logarithm of the window size minus 8 in its high four. The second byte (FLG) has a preset-dictionary bit, a compression level hint, and check bits chosen so that CMF × 256 + FLG is a multiple of 31. That is why zlib data so often starts 78 01, 78 5E, 78 9C or 78 DA.
+
+If the dictionary bit is set, a 4-byte dictionary identifier follows. Then comes the deflate data, and finally the Adler-32 checksum of the uncompressed data, big-endian.
+
+There is no length field: the end is found by decoding the deflate blocks to the last one and reading the four bytes after it.
+"""
+carries = ["deflate"]
+
+[[format.specs]]
+document = "RFC 1950"
+title = "ZLIB Compressed Data Format Specification version 3.3"
+url = "https://www.rfc-editor.org/rfc/rfc1950"
+rfc = 1950
+section = "2"
+
+[[format]]
+id = "deflate"
+name = "Deflate (raw)"
+keys = ["stream:raw deflate", "stream:deflate", "raw deflate", "raw deflate stream", "deflate stream"]
+summary = "LZ77 matching with Huffman coding, the compression inside zlib, gzip, ZIP and PNG; raw deflate has no header or checksum of its own."
+organisation = """
+A deflate stream is a series of blocks read as a bit stream, least significant bit of each byte first. Each block opens with three bits: BFINAL (set on the last block) and BTYPE, which is 00 stored, 01 compressed with fixed Huffman codes, 10 compressed with dynamic Huffman codes (the code tables are sent first), and 11 invalid.
+
+Stored blocks skip to a byte boundary and give a 16-bit length and its complement, then the raw bytes. Compressed blocks are sequences of literal bytes and (length, distance) pairs that copy 3 to 258 bytes from up to 32 KiB back, ended by an end-of-block code.
+
+Because nothing marks the start or records the length, raw deflate can only be found by trying to decode it; this app does so where no other format explains the bytes.
+"""
+carries = []
+
+[[format.specs]]
+document = "RFC 1951"
+title = "DEFLATE Compressed Data Format Specification version 1.3"
+url = "https://www.rfc-editor.org/rfc/rfc1951"
+rfc = 1951
+section = "3"
+
+[[format]]
+id = "gzip"
+name = "gzip stream"
+keys = ["stream:gzip", "gzip stream", "application/gzip"]
+summary = "The gzip file format: deflate data with a header carrying a file name and timestamp, and a CRC-32 and length trailer."
+organisation = """
+Each member begins with 1F 8B, the method byte 08 (deflate) and a flags byte, then a 4-byte modification time, an extra-flags byte and an operating system byte. Flags announce optional fields that follow in order: an extra field with its own length, the original file name and a comment (each zero-terminated), and a CRC-16 of the header.
+
+The deflate data comes next, and an 8-byte trailer ends the member: the CRC-32 of the uncompressed data and its length modulo 2^32, both little-endian.
+
+A gzip file may hold several members one after another; they decompress to the concatenation of their contents. Most .tar.gz files hold one member containing a tar archive.
+"""
+carries = ["deflate", "tar"]
+
+[[format.specs]]
+document = "RFC 1952"
+title = "GZIP file format specification version 4.3"
+url = "https://www.rfc-editor.org/rfc/rfc1952"
+rfc = 1952
+section = "2"
+
+[[format]]
+id = "bzip2"
+name = "bzip2 stream"
+keys = ["stream:bzip2", "bzip2 stream"]
+summary = "Block-sorting compression: the Burrows–Wheeler transform, move-to-front and Huffman coding over blocks of 100 to 900 kB."
+organisation = """
+A stream starts with 'BZh' and a digit 1 to 9 giving the block size in units of 100 kB. Each block begins with the 48-bit magic 0x314159265359 (the digits of pi) and a CRC of its data, followed by the transformed and Huffman-coded contents.
+
+After the last block comes the 48-bit end-of-stream marker 0x177245385090 (from the square root of pi) and a CRC combining every block's. Blocks are packed as bits with no byte alignment, so the block markers can sit at any bit offset.
+
+The format has no official specification beyond the reference implementation; independent descriptions such as Joe Tsai's document it in detail.
+"""
+carries = ["tar"]
+
+[[format.specs]]
+document = "bzip2 manual"
+title = "bzip2 and libbzip2 manual"
+url = "https://sourceware.org/bzip2/manual/manual.html"
+
+[[format.specs]]
+document = "bzip2 format (J. Tsai)"
+title = "BZIP2: Format Specification"
+url = "https://github.com/dsnet/compress/blob/master/doc/bzip2-format.pdf"
+
+[[format]]
+id = "xz"
+name = "xz stream"
+keys = ["stream:xz", "xz stream", "application/x-xz"]
+summary = "A container for LZMA2 (and filter chains) with integrity checks and an index, used for .xz files and many software releases."
+organisation = """
+A 12-byte stream header begins with FD '7zXZ' 00, then two flag bytes choosing the check type (none, CRC-32, CRC-64 or SHA-256) and a CRC-32 of those flags.
+
+Blocks follow. Each has a header (its size, flags, optional compressed and uncompressed sizes, and the filter chain, typically LZMA2 with an optional branch-call-jump filter for executable code), the compressed data, padding to a multiple of four bytes and the check value.
+
+An index then lists every block's sizes, and a 12-byte stream footer ends with the magic 'YZ'. Since the footer gives the index size, a reader can locate blocks from the end. Several streams can be concatenated, with zero padding between them.
+"""
+carries = ["tar"]
+
+[[format.specs]]
+document = "xz file format 1.2.1"
+title = "The .xz File Format"
+url = "https://tukaani.org/xz/xz-file-format.txt"
+
+[[format]]
+id = "lzma"
+name = "LZMA stream (.lzma)"
+keys = ["stream:lzma", "lzma stream", "LZMA"]
+summary = "The original LZMA format of the LZMA SDK (\"LZMA alone\"): a short header and range-coded LZ77 data with no checksum."
+organisation = """
+The 13-byte header has a properties byte encoding the literal context bits, literal position bits and position bits (as (pb × 5 + lp) × 9 + lc, commonly 0x5D), a 4-byte little-endian dictionary size, and an 8-byte little-endian uncompressed size, where all ones means unknown and the data ends with an end marker instead.
+
+The compressed data follows directly as a range-coded stream. There is no magic number and no integrity check, so the app recognises LZMA only by decoding it successfully.
+
+The same compressed data appears inside 7z archives, ZIP method 14 and many firmware images (U-Boot, SquashFS); xz uses the related LZMA2.
+"""
+carries = ["tar"]
+
+[[format.specs]]
+document = "LZMA SDK"
+title = "LZMA SDK (lzma-specification.txt in the DOC folder)"
+url = "https://www.7-zip.org/sdk.html"
+
+[[format]]
+id = "zstd"
+name = "Zstandard stream"
+keys = ["stream:zstd", "zstd stream", "Zstandard", "application/zstd"]
+summary = "Facebook's fast modern compressor, combining LZ77 with finite-state entropy and Huffman coding."
+organisation = """
+A frame starts with the magic 28 B5 2F FD (0xFD2FB528 little-endian). The frame header descriptor byte says whether the frame content size is present and how wide it is, whether the window descriptor is replaced by a single segment, whether a content checksum follows, and the size of the optional dictionary ID.
+
+Blocks follow, each with a 3-byte header: a last-block bit, a 2-bit type (raw, run-length, compressed or reserved) and the block size. Compressed blocks hold a literals section and a sequences section that copies matches from earlier output.
+
+After the last block an optional 4-byte checksum (the low 32 bits of the XXH64 of the content) ends the frame. Frames can be concatenated, and skippable frames (magic 0x184D2A50 to 0x184D2A5F with a length) carry user metadata.
+"""
+carries = ["tar"]
+
+[[format.specs]]
+document = "RFC 8878"
+title = "Zstandard Compression and the 'application/zstd' Media Type"
+url = "https://www.rfc-editor.org/rfc/rfc8878"
+rfc = 8878
+section = "3.1.1"
+
+[[format]]
+id = "lz4"
+name = "LZ4 frame"
+keys = ["stream:lz4", "stream:LZ4 frame", "LZ4 frame", "LZ4 frame stream", "lz4 stream", "application/x-lz4"]
+summary = "A very fast LZ77 compressor; the frame format wraps its blocks with a header, sizes and optional checksums."
+organisation = """
+A frame starts with the magic 04 22 4D 18 (0x184D2204 little-endian), then a FLG byte (version, block independence, block checksums, content size present, content checksum present, dictionary ID present) and a BD byte giving the maximum block size (64 KiB to 4 MiB). The optional 8-byte content size and 4-byte dictionary ID follow, then a one-byte header checksum taken from xxHash32.
+
+Data blocks follow, each led by a 4-byte little-endian size whose top bit means the block is stored uncompressed, and optionally trailed by a block checksum. A zero size marks the end, after which an optional content checksum (xxHash32) ends the frame.
+
+The blocks themselves are sequences of a token, literal bytes and a 2-byte back-reference offset. Skippable frames share zstd's range of magic numbers, and an older legacy frame uses the magic 0x184C2102.
+"""
+carries = ["tar"]
+
+[[format.specs]]
+document = "LZ4 Frame Format"
+title = "LZ4 Frame Format Description"
+url = "https://github.com/lz4/lz4/blob/dev/doc/lz4_Frame_format.md"
+
+[[format.specs]]
+document = "LZ4 Block Format"
+title = "LZ4 Block Format Description"
+url = "https://github.com/lz4/lz4/blob/dev/doc/lz4_Block_format.md"
+
+# ---------------------------------------------------------------------------
+# Elementary media streams
+# ---------------------------------------------------------------------------
+
+[[format]]
+id = "mpeg-audio"
+name = "MPEG audio (MP3, MP2, MP1)"
+keys = ["media:mpeg-audio", "MPEG audio", "audio/mpeg"]
+summary = "MPEG-1 and MPEG-2 audio layers I to III, of which layer III is MP3: a run of self-contained frames, each with a 4-byte header."
+organisation = """
+Each frame starts with an 11-bit sync of ones, then the version (MPEG-1, MPEG-2, or the unofficial MPEG-2.5), the layer, a protection bit (clear when a 16-bit CRC follows the header), the bitrate and sampling rate indices, a padding bit, a private bit, the channel mode and mode extension, and copyright, original and emphasis bits.
+
+The frame length follows from those fields: for layer III at MPEG-1 it is 144 × bitrate ÷ sampling rate bytes, plus one when padded. Frames sit back to back, so a valid stream is a chain of headers each exactly one frame length apart.
+
+Files often begin with an ID3v2 tag (starting 'ID3') and may end with a 128-byte ID3v1 tag starting 'TAG'. Variable-bitrate files usually carry a Xing or VBRI header in the first frame. The standards are ISO/IEC 11172-3 (MPEG-1) and 13818-3 (MPEG-2).
+"""
+carries = []
+
+[[format.fields]]
+name = "First frame header"
+meaning = "The 4-byte header of the first frame in the run, decoded."
+
+[[format.fields]]
+name = "Sync"
+meaning = "Eleven set bits that start every frame."
+
+[[format.fields]]
+name = "Version"
+meaning = "MPEG-1, MPEG-2 (lower sampling rates) or MPEG-2.5 (an unofficial extension to even lower rates)."
+
+[[format.fields]]
+name = "Layer"
+meaning = "Coding layer: I, II or III (MP3)."
+
+[[format.fields]]
+name = "CRC protected"
+meaning = "Whether a 16-bit CRC follows the header (the protection bit is 0 when it does)."
+
+[[format.fields]]
+name = "Bitrate"
+meaning = "Bit rate from the index in the header; varies frame to frame in VBR files."
+
+[[format.fields]]
+name = "Sample rate"
+meaning = "Sampling frequency, which with the bitrate sets the frame length."
+
+[[format.fields]]
+name = "Padding"
+meaning = "Whether this frame has one extra byte (one extra slot) to keep the average bitrate exact."
+
+[[format.fields]]
+name = "Channel mode"
+meaning = "Stereo, joint stereo, dual channel or mono."
+
+[[format.fields]]
+name = "Frame length"
+meaning = "Bytes in the frame including the header, computed from bitrate, sample rate and padding."
+
+[[format]]
+id = "aac-adts"
+name = "AAC in ADTS"
+keys = ["media:aac-adts", "AAC", "ADTS", "audio/x-aac"]
+summary = "Advanced Audio Coding frames framed with ADTS headers, the raw .aac format and the form AAC takes in MPEG transport streams."
+organisation = """
+Each frame starts with a 7-byte header (9 when a CRC is present): a 12-bit sync of ones, an MPEG version bit (0 MPEG-4, 1 MPEG-2), two layer bits (always 0), a protection-absent bit, the profile (audio object type minus one), the sampling frequency index, a private bit, the channel configuration, and then copyright bits.
+
+A 13-bit frame length (including the header), an 11-bit buffer fullness and the number of raw data blocks in the frame complete the header. Frames sit back to back, so each header can be checked by jumping one frame length to the next.
+
+ADTS is defined in ISO/IEC 13818-7 (MPEG-2 AAC) and ISO/IEC 14496-3 (MPEG-4 Audio). Inside MP4 files AAC is stored without these headers.
+"""
+carries = []
+
+[[format.fields]]
+name = "First frame header"
+meaning = "The ADTS header of the first frame in the run, decoded."
+
+[[format.fields]]
+name = "Sync"
+meaning = "Twelve set bits (0xFFF) that start every ADTS frame."
+
+[[format.fields]]
+name = "MPEG version"
+meaning = "The ID bit: 0 for MPEG-4, 1 for MPEG-2; the AAC data is the same either way."
+
+[[format.fields]]
+name = "CRC protected"
+meaning = "Whether a 16-bit CRC follows the header (the protection-absent bit is 0 when it does)."
+
+[[format.fields]]
+name = "Profile"
+meaning = "Audio object type minus one: 0 Main, 1 LC (low complexity, by far the most common), 2 SSR, 3 LTP."
+
+[[format.fields]]
+name = "Sample rate"
+meaning = "Sampling frequency from a 4-bit index into a table (for example 3 is 48 kHz, 4 is 44.1 kHz)."
+
+[[format.fields]]
+name = "Channels"
+meaning = "Channel configuration: 1 mono, 2 stereo, up to 7 for 7.1; 0 means the layout is given in the stream."
+
+[[format.fields]]
+name = "Frame length"
+meaning = "Bytes in the frame including the header (13 bits)."
+
+[[format]]
+id = "h264"
+name = "H.264 / AVC video"
+keys = ["media:h264", "H.264 video", "H.264", "AVC"]
+summary = "The widely used Advanced Video Coding standard, found here as an Annex B byte stream of NAL units."
+organisation = """
+In the Annex B byte stream each NAL unit is preceded by a start code, 00 00 01 or 00 00 00 01. Inside a unit, any 00 00 that would be followed by 00 to 03 has an emulation prevention byte 03 inserted, so start codes cannot appear by accident.
+
+Each unit begins with a one-byte header: a forbidden zero bit, a 2-bit reference priority (nal_ref_idc) and a 5-bit type. The common types are 1 coded slice, 5 IDR (keyframe) slice, 6 SEI, 7 sequence parameter set (SPS), 8 picture parameter set (PPS) and 9 access unit delimiter.
+
+The SPS describes the whole sequence: profile, constraint flags and level in its first three bytes, then Exp-Golomb coded fields such as picture size and frame numbering. Decoding starts at an IDR slice preceded by its SPS and PPS. In MP4 files the same units are stored with length prefixes instead of start codes.
+"""
+carries = []
+
+[[format.specs]]
+document = "ITU-T H.264"
+title = "Advanced video coding for generic audiovisual services"
+url = "https://www.itu.int/rec/T-REC-H.264"
+
+[[format.fields]]
+name = "SPS"
+meaning = "The sequence parameter set (NAL type 7): profile, level and picture-wide settings."
+
+[[format.fields]]
+name = "NAL header"
+meaning = "One byte: forbidden zero bit, nal_ref_idc (whether other pictures refer to this one) and the 5-bit unit type."
+
+[[format.fields]]
+name = "profile_idc"
+meaning = "Coding profile: 66 Baseline, 77 Main, 88 Extended, 100 High, 110 High 10, 122 High 4:2:2, 244 High 4:4:4."
+
+[[format.fields]]
+name = "constraint flags"
+meaning = "constraint_set0 to 5 flags, which mark the stream as also conforming to stricter profiles."
+
+[[format.fields]]
+name = "level_idc"
+meaning = "Level times ten (for example 40 is level 4.0), bounding resolution, frame rate and bit rate."
+
+[[format]]
+id = "h265"
+name = "H.265 / HEVC video"
+keys = ["media:h265", "H.265 video", "H.265", "HEVC"]
+summary = "High Efficiency Video Coding, the successor to H.264, here as an Annex B byte stream of NAL units."
+organisation = """
+The byte stream uses the same start codes and emulation prevention as H.264. The NAL unit header is two bytes: a forbidden zero bit, a 6-bit unit type, a 6-bit layer id and a 3-bit temporal id plus one.
+
+Types 0 to 31 are slices, with 16 to 23 marking random access points (IDR, CRA, BLA) where decoding can begin. Parameter sets are 32 video (VPS), 33 sequence (SPS) and 34 picture (PPS); 35 is an access unit delimiter and 39 and 40 SEI.
+
+The SPS starts with the VPS id, the maximum number of temporal sub-layers and a nesting flag, then the profile_tier_level structure: profile space, tier flag and general_profile_idc, compatibility and constraint flags, and general_level_idc (level times 30).
+"""
+carries = []
+
+[[format.specs]]
+document = "ITU-T H.265"
+title = "High efficiency video coding"
+url = "https://www.itu.int/rec/T-REC-H.265"
+
+[[format.fields]]
+name = "SPS"
+meaning = "The sequence parameter set (NAL type 33): profile, tier, level and picture-wide settings."
+
+[[format.fields]]
+name = "NAL header"
+meaning = "Two bytes: forbidden zero bit, 6-bit unit type, 6-bit layer id and 3-bit temporal id plus one."
+
+[[format.fields]]
+name = "general_profile_idc"
+meaning = "Coding profile: 1 Main, 2 Main 10, 3 Main Still Picture, 4 range extensions."
+
+[[format]]
+id = "pcm"
+name = "PCM audio"
+keys = ["media:pcm", "PCM audio"]
+summary = "Uncompressed audio samples with no header, recognised statistically as smoothly varying 16-bit values."
+organisation = """
+Raw PCM is a plain array of samples: for 16-bit audio, two bytes per sample in little- or big-endian order, with stereo channels interleaved left then right. Nothing in the data records the sample rate, channel count or byte order, so they must be guessed or known.
+
+Audio is recognised by its smoothness: consecutive samples of real sound differ far less than random values, and the two channels of stereo audio tend to follow each other. The same samples sit inside WAV and AIFF files, behind a header that does describe them.
+"""
+carries = []
