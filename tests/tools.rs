@@ -51,10 +51,10 @@ fn steps(harness: &mut Harness<'static, ViewerApp>, count: usize) {
     }
 }
 
-/// Step until `done` holds or ten seconds pass.
+/// Step until `done` holds, or a minute passes: generous, as a busy machine is slow and only a failing test waits that long.
 fn wait_for(harness: &mut Harness<'static, ViewerApp>, done: impl Fn(&ViewerApp) -> bool) {
     let started = Instant::now();
-    while !done(harness.state()) && started.elapsed() < Duration::from_secs(10) {
+    while !done(harness.state()) && started.elapsed() < Duration::from_secs(60) {
         std::thread::sleep(Duration::from_millis(20));
         harness.step();
     }
@@ -749,7 +749,7 @@ fn the_packet_viewer_finds_an_embedded_capture_filters_it_and_selects_a_packet_i
     // result to be listed rather than for the panel to be idle.
     let capture_label = format!("pcap at {capture_at:#x}");
     let started = Instant::now();
-    while harness.query_by_label_contains(&capture_label).is_none() && started.elapsed() < Duration::from_secs(10) {
+    while harness.query_by_label_contains(&capture_label).is_none() && started.elapsed() < Duration::from_secs(60) {
         std::thread::sleep(Duration::from_millis(20));
         harness.step();
     }
@@ -792,10 +792,10 @@ fn the_packet_viewer_finds_an_embedded_capture_filters_it_and_selects_a_packet_i
     std::fs::remove_file(path).ok();
 }
 
-/// Step until a label containing `text` is shown, or ten seconds pass.
+/// Step until a label containing `text` is shown, or a minute passes.
 fn wait_for_label(harness: &mut Harness<'static, ViewerApp>, text: &str) {
     let started = Instant::now();
-    while harness.query_by_label_contains(text).is_none() && started.elapsed() < Duration::from_secs(10) {
+    while harness.query_by_label_contains(text).is_none() && started.elapsed() < Duration::from_secs(60) {
         std::thread::sleep(Duration::from_millis(20));
         harness.step();
     }

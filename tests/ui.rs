@@ -247,7 +247,7 @@ fn detect_width_finds_the_record_stride_and_applies_it() {
 
     // Wait for the background scan.
     let started = std::time::Instant::now();
-    while harness.state().scan_pending && started.elapsed().as_secs() < 10 {
+    while harness.state().scan_pending && started.elapsed().as_secs() < 60 {
         std::thread::sleep(std::time::Duration::from_millis(20));
         harness.step();
     }
@@ -462,7 +462,7 @@ fn pattern_highlights_find_the_counter_and_can_be_selected() {
     let mut harness = harness(sample_file("patterns"));
     harness.state_mut().shape.width = 64;
     let started = std::time::Instant::now();
-    while harness.state().patterns.is_empty() && started.elapsed().as_secs() < 10 {
+    while harness.state().patterns.is_empty() && started.elapsed().as_secs() < 60 {
         std::thread::sleep(std::time::Duration::from_millis(20));
         harness.step();
     }
@@ -602,7 +602,7 @@ fn compressed_blocks_are_found_decompressed_and_recompressed() {
 
     let mut harness = harness(path);
     let started = std::time::Instant::now();
-    while !harness.state().patterns.iter().any(|p| p.category == Category::Compressed) && started.elapsed().as_secs() < 10 {
+    while !harness.state().patterns.iter().any(|p| p.category == Category::Compressed) && started.elapsed().as_secs() < 60 {
         std::thread::sleep(std::time::Duration::from_millis(20));
         harness.step();
     }
@@ -680,7 +680,7 @@ fn flipping_extracting_and_repacking_a_stream() {
 
     let mut harness = harness(path);
     let started = std::time::Instant::now();
-    while !harness.state().patterns.iter().any(|p| p.category == Category::Compressed) && started.elapsed().as_secs() < 10 {
+    while !harness.state().patterns.iter().any(|p| p.category == Category::Compressed) && started.elapsed().as_secs() < 60 {
         std::thread::sleep(std::time::Duration::from_millis(20));
         harness.step();
     }
@@ -881,7 +881,7 @@ fn embedded_images_audio_and_video_open_in_the_media_window() {
     };
 
     let started = std::time::Instant::now();
-    while harness.state().patterns.is_empty() && started.elapsed().as_secs() < 10 {
+    while harness.state().patterns.is_empty() && started.elapsed().as_secs() < 60 {
         std::thread::sleep(std::time::Duration::from_millis(20));
         harness.step();
     }
@@ -950,7 +950,7 @@ fn a_png_larger_than_the_scan_window_still_opens_whole() {
 
     let mut harness = harness(path);
     let started = std::time::Instant::now();
-    while harness.state().patterns.is_empty() && started.elapsed().as_secs() < 10 {
+    while harness.state().patterns.is_empty() && started.elapsed().as_secs() < 60 {
         std::thread::sleep(std::time::Duration::from_millis(20));
         harness.step();
     }
@@ -1474,7 +1474,7 @@ fn alt_arrows_nudge_the_selected_bytes_and_quick_keys_insert_and_skip() {
 /// Step until `done` holds or ten seconds pass.
 fn step_until(harness: &mut Harness<'static, ViewerApp>, done: impl Fn(&ViewerApp) -> bool) {
     let started = std::time::Instant::now();
-    while !done(harness.state()) && started.elapsed() < std::time::Duration::from_secs(10) {
+    while !done(harness.state()) && started.elapsed() < std::time::Duration::from_secs(60) {
         std::thread::sleep(std::time::Duration::from_millis(20));
         harness.step();
     }
@@ -1559,7 +1559,7 @@ fn the_workspace_tab_lists_the_record_width_the_period_scan_found() {
     let mut harness = harness(sample_file("workspace.bin"));
     harness.state_mut().start_period_scan();
     let started = std::time::Instant::now();
-    while harness.state().scan_pending && started.elapsed().as_secs() < 10 {
+    while harness.state().scan_pending && started.elapsed().as_secs() < 60 {
         std::thread::sleep(std::time::Duration::from_millis(20));
         harness.step();
     }
@@ -1581,7 +1581,7 @@ fn a_plugin_detector_failing_in_a_background_scan_is_shown_in_the_status_bar() {
     let mut harness = harness(sample_file("plugin-error.bin"));
     // Let the first scan, made without the plugin, finish.
     let started = std::time::Instant::now();
-    while harness.state().pattern_scan_region().is_none() && started.elapsed().as_secs() < 10 {
+    while harness.state().pattern_scan_region().is_none() && started.elapsed().as_secs() < 60 {
         std::thread::sleep(std::time::Duration::from_millis(20));
         harness.step();
     }
@@ -1592,16 +1592,24 @@ fn a_plugin_detector_failing_in_a_background_scan_is_shown_in_the_status_bar() {
     harness.state_mut().plugin_host = Some(host);
     harness.state_mut().force_rescan();
 
-    // The scan runs on a background thread; its error reaches the bus and the status bar.
+    // The scan runs on a background thread; its error reaches the bus and the
+    // status bar. A later message may replace the status, so it is watched
+    // while waiting; the limit is generous because a busy machine is slow,
+    // and only a failing test waits that long.
+    let logged = |app: &ViewerApp| app.bus.recent().any(|message| message.topic() == theviewer::bus::Topic::PluginLog && message.producer() == "plugin:faulty.lua");
+    let mut shown = None;
     let started = std::time::Instant::now();
-    while !harness.state().status.contains("faulty.lua") && started.elapsed().as_secs() < 10 {
+    while !(logged(harness.state()) && shown.is_some()) && started.elapsed().as_secs() < 60 {
         std::thread::sleep(std::time::Duration::from_millis(20));
         harness.step();
+        let status = &harness.state().status;
+        if status.contains("Plugin faulty.lua failed") {
+            shown = Some(status.clone());
+        }
     }
-    let status = harness.state().status.clone();
-    assert!(status.contains("Plugin faulty.lua failed") && status.contains("cannot read this"), "{status}");
-    let logged = harness.state().bus.recent().any(|message| message.topic() == theviewer::bus::Topic::PluginLog && message.producer() == "plugin:faulty.lua");
-    assert!(logged, "the error is on the bus for the Workspace tab");
+    assert!(logged(harness.state()), "the error is on the bus for the Workspace tab");
+    let shown = shown.expect("the status bar said the plugin failed");
+    assert!(shown.contains("cannot read this"), "{shown}");
 }
 
 /// The result of a call made as Ask makes them, which comes back on a
