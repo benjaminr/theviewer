@@ -1,0 +1,3 @@
+# Reference notes on file formats, encodings and compressed streams. See
+# src/reference.rs for the schema. Notes are written for this project;
+# specifications are cited.

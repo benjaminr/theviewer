@@ -1,0 +1,36 @@
+# Reference notes on network protocols and capture formats. See src/reference.rs
+# for the schema. Notes are written for this project; specifications are cited.
+
+[[format]]
+id = "udp"
+name = "User Datagram Protocol"
+keys = ["UDP", "User Datagram Protocol"]
+summary = "A minimal transport: each datagram travels on its own between two ports, with no connection, ordering or retransmission."
+organisation = """
+An eight-byte header of four 16-bit big-endian fields (source port, destination port, length and checksum) followed directly by the payload.
+
+The length counts the header and the payload together, so it is never less than 8. Over IPv4 a checksum of zero means none was computed; over IPv6 the checksum is mandatory. The checksum covers a pseudo-header of the IP addresses, protocol and length as well as the datagram itself.
+"""
+carries = []
+
+[[format.specs]]
+document = "RFC 768"
+title = "User Datagram Protocol"
+url = "https://www.rfc-editor.org/rfc/rfc768"
+rfc = 768
+
+[[format.fields]]
+name = "Source port"
+meaning = "The sender's port; replies are addressed to it. Zero when no reply is expected."
+
+[[format.fields]]
+name = "Destination port"
+meaning = "The receiving application's port. Well-known ports below 1024 often name the protocol inside (53 for DNS, 123 for NTP)."
+
+[[format.fields]]
+name = "Length"
+meaning = "Bytes in the header and payload together; at least 8."
+
+[[format.fields]]
+name = "Checksum"
+meaning = "Ones' complement sum over a pseudo-header (addresses, protocol, length), the header and the payload. Zero over IPv4 means no checksum."
