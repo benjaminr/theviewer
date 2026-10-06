@@ -29,7 +29,7 @@ const fn layer(ours: &'static str, tshark: &'static [&'static str]) -> LayerMapp
     LayerMapping { ours, tshark, spans_all: false }
 }
 
-pub const LAYER_MAP: [LayerMapping; 27] = [
+pub const LAYER_MAP: [LayerMapping; 28] = [
     // tshark names the cooked header of a netlink device `netlink`.
     layer("Linux cooked capture", &["sll", "netlink"]),
     layer("Linux cooked capture v2", &["sll", "netlink"]),
@@ -60,10 +60,11 @@ pub const LAYER_MAP: [LayerMapping; 27] = [
     LayerMapping { ours: "Modbus/TCP", tshark: &["mbtcp", "modbus"], spans_all: true },
     layer("MQTT", &["mqtt"]),
     layer("SNMP", &["snmp"]),
+    layer("DHCP", &["dhcp"]),
 ];
 
 /// `(our layer, our field, tshark filter name)` for fields both sides name.
-pub const FIELD_MAP: [(&str, &str, &str); 101] = [
+pub const FIELD_MAP: [(&str, &str, &str); 104] = [
     ("Linux cooked capture", "Packet type", "sll.pkttype"),
     ("Linux cooked capture", "ARPHRD type", "sll.hatype"),
     ("Linux cooked capture", "Link-layer address length", "sll.halen"),
@@ -165,6 +166,9 @@ pub const FIELD_MAP: [(&str, &str, &str); 101] = [
     ("SNMP", "version", "snmp.version"),
     ("SNMP", "community", "snmp.community"),
     ("SNMP", "PDU", "snmp.data"),
+    ("DHCP", "Message type", "dhcp.type"),
+    ("DHCP", "Transaction ID", "dhcp.id"),
+    ("DHCP", "Magic cookie", "dhcp.cookie"),
 ];
 
 /// The mapping for one of our layers, if we compare it.

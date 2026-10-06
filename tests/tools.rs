@@ -887,30 +887,28 @@ fn opening_a_capture_offers_the_network_layout_and_switching_lists_its_packets_i
     std::fs::remove_file(plain).ok();
 }
 
-/// A DHCP Discover from 0.0.0.0:68 to 255.255.255.255:67, built byte by byte.
-fn dhcp_discover_frame() -> Vec<u8> {
-    let mut dhcp = vec![1, 1, 6, 0]; // boot request, Ethernet, 6-byte addresses, no hops
-    dhcp.extend_from_slice(&[0x12, 0x34, 0x56, 0x78]); // transaction ID
-    dhcp.extend_from_slice(&[0; 4]); // seconds and flags
-    dhcp.extend_from_slice(&[0; 16]); // client, your, server and relay addresses
-    dhcp.extend_from_slice(&[2, 0, 0, 0, 0, 1]); // client MAC
-    dhcp.extend_from_slice(&[0; 10 + 64 + 128]); // MAC padding, server name, boot file
-    dhcp.extend_from_slice(&[0x63, 0x82, 0x53, 0x63]); // magic cookie
-    dhcp.extend_from_slice(&[53, 1, 1, 255]); // message type Discover, end
-    let builder = etherparse::PacketBuilder::ethernet2([2, 0, 0, 0, 0, 1], [0xFF; 6]).ipv4([0, 0, 0, 0], [255, 255, 255, 255], 64).udp(68, 67);
+/// A NetBIOS name service node status query for "*", from port 137 to
+/// port 137, built byte by byte: a protocol tshark decodes and we do not.
+fn nbns_query_frame() -> Vec<u8> {
+    let mut nbns = vec![0x12, 0x34, 0x00, 0x10]; // transaction ID; a broadcast query
+    nbns.extend_from_slice(&[0, 1, 0, 0, 0, 0, 0, 0]); // one question
+    nbns.push(32);
+    nbns.extend_from_slice(b"CKAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"); // "*" padded with zeros
+    nbns.extend_from_slice(&[0, 0, 0x21, 0, 1]); // end of name, NBSTAT, class IN
+    let builder = etherparse::PacketBuilder::ethernet2([2, 0, 0, 0, 0, 1], [0xFF; 6]).ipv4([10, 0, 0, 2], [10, 0, 0, 255], 64).udp(137, 137);
     let mut frame = Vec::new();
-    builder.write(&mut frame, &dhcp).unwrap();
+    builder.write(&mut frame, &nbns).unwrap();
     frame
 }
 
 #[test]
-fn decoding_with_tshark_adds_a_dhcp_layer_whose_fields_select_their_bytes() {
+fn decoding_with_tshark_adds_an_nbns_layer_whose_fields_select_their_bytes() {
     if theviewer::packets::tshark::find_tshark(None).is_none() {
         eprintln!("tshark is not installed; skipping the tshark decoding test");
         return;
     }
-    let path = temp_path("tshark-dhcp.pcap");
-    std::fs::write(&path, pcap_of(&[dhcp_discover_frame()])).unwrap();
+    let path = temp_path("tshark-nbns.pcap");
+    std::fs::write(&path, pcap_of(&[nbns_query_frame()])).unwrap();
     let mut harness = harness_for(path.clone());
     theviewer::panel_packets::open_capture_at(harness.state_mut(), 0);
     wait_for(&mut harness, |app| app.bench.panels.packets.rows().len() == 1 && !app.bench.panels.packets.is_busy());
@@ -918,24 +916,24 @@ fn decoding_with_tshark_adds_a_dhcp_layer_whose_fields_select_their_bytes() {
 
     wait_for_label(&mut harness, "Decode with tshark");
     harness.get_by_label("Decode with tshark").click();
-    wait_for(&mut harness, |app| app.bench.panels.packets.rows()[0].summary.protocol == "DHCP" && !app.bench.panels.packets.is_busy());
-    assert_eq!(harness.state().bench.panels.packets.rows()[0].summary.protocol, "DHCP");
-    harness.state_mut().bench.panels.packets.set_filter("proto:dhcp");
+    wait_for(&mut harness, |app| app.bench.panels.packets.rows()[0].summary.protocol == "NBNS" && !app.bench.panels.packets.is_busy());
+    assert_eq!(harness.state().bench.panels.packets.rows()[0].summary.protocol, "NBNS");
+    harness.state_mut().bench.panels.packets.set_filter("proto:nbns");
     steps(&mut harness, 3);
     assert_eq!(harness.state().bench.panels.packets.visible_rows(), &[0], "tshark's protocols can be filtered on");
 
-    harness.get_by_label_contains("Dynamic Host Configuration").scroll_to_me();
+    harness.get_by_label_contains("NetBIOS Name Service").scroll_to_me();
     steps(&mut harness, 2);
-    harness.get_by_label_contains("Dynamic Host Configuration").click_accesskit();
+    harness.get_by_label_contains("NetBIOS Name Service").click_accesskit();
     wait_for_label(&mut harness, "Transaction ID:");
     assert!(harness.query_by_label("tshark").is_some(), "the layer tshark decoded is tagged");
     harness.get_by_label("Transaction ID:").scroll_to_me();
     steps(&mut harness, 10);
     harness.get_by_label("Transaction ID:").click_accesskit();
     steps(&mut harness, 3);
-    // File header, record header, Ethernet, IPv4 and UDP, then four bytes in.
-    let transaction_id_at = 24 + 16 + 14 + 20 + 8 + 4;
-    assert_eq!(harness.state().selection(), Some((transaction_id_at, 4)));
+    // File header, record header, Ethernet, IPv4 and UDP, then the first bytes.
+    let transaction_id_at = 24 + 16 + 14 + 20 + 8;
+    assert_eq!(harness.state().selection(), Some((transaction_id_at, 2)));
     std::fs::remove_file(path).ok();
 }
 

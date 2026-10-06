@@ -139,6 +139,17 @@ fn snmp_get_request() -> Vec<u8> {
     build(PacketBuilder::ipv4(CLIENT_IPV4, SERVER_IPV4, 64).udp(40000, 161), &message)
 }
 
+fn dhcp_offer() -> Vec<u8> {
+    let mut message = vec![0u8; 236];
+    message[..4].copy_from_slice(&[2, 1, 6, 0]);
+    message[4..8].copy_from_slice(&0x3D1Du32.to_be_bytes());
+    message[16..20].copy_from_slice(&CLIENT_IPV4);
+    message[28..34].copy_from_slice(&CLIENT_MAC);
+    message.extend_from_slice(&[0x63, 0x82, 0x53, 0x63]);
+    message.extend_from_slice(&[53, 1, 2, 54, 4, 10, 0, 0, 1, 51, 4, 0, 0, 0x0E, 0x10, 1, 4, 255, 255, 255, 0, 255, 0, 0, 0]);
+    build(PacketBuilder::ipv4(SERVER_IPV4, [255, 255, 255, 255], 64).udp(67, 68), &message)
+}
+
 fn dns_over_tcp() -> Vec<u8> {
     let query = dns_query();
     let mut payload = (query.len() as u16).to_be_bytes().to_vec();
@@ -160,6 +171,7 @@ fn sample_dissections() -> Vec<(&'static str, Dissection)> {
         ("IPv4/TCP/MQTT", dissect(&mqtt_publish(), LinkKind::RawIp)),
         ("IPv4/TCP/DNS", dissect(&dns_over_tcp(), LinkKind::RawIp)),
         ("IPv4/UDP/SNMP", dissect(&snmp_get_request(), LinkKind::RawIp)),
+        ("IPv4/UDP/DHCP", dissect(&dhcp_offer(), LinkKind::RawIp)),
     ]
 }
 
@@ -212,6 +224,7 @@ fn every_layer_of_common_traffic_has_reference_notes_explaining_each_field() {
         "Modbus/TCP",
         "MQTT",
         "SNMP",
+        "DHCP",
     ] {
         assert!(expected_layers.contains(layer), "the sample traffic should include a '{layer}' layer, found {expected_layers:?}");
     }
@@ -222,6 +235,9 @@ fn wireshark_field_names_reach_the_fields_of_the_newer_dissectors_through_the_no
     let snmp = dissect(&snmp_get_request(), LinkKind::RawIp);
     assert_eq!(wireshark_values(&snmp, "snmp.community"), ["public"]);
     assert_eq!(wireshark_values(&snmp, "snmp.version"), ["1 (SNMPv2c)"]);
+    let dhcp = dissect(&dhcp_offer(), LinkKind::RawIp);
+    assert_eq!(wireshark_values(&dhcp, "dhcp.ip.your"), ["10.0.0.2"]);
+    assert_eq!(dhcp.summary.info, "DHCP Offer - Transaction ID 0x3d1d");
 }
 
 #[test]

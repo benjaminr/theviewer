@@ -1,6 +1,6 @@
 //! Small, defensive parsers for application protocols carried over TCP and
-//! UDP: DNS, HTTP, NTP, Modbus/TCP and MQTT here, and SNMP in its own
-//! module.
+//! UDP: DNS, HTTP, NTP, Modbus/TCP and MQTT here, and SNMP and DHCP in
+//! their own modules.
 //!
 //! Each parser takes a transport payload and returns an [`AppLayer`] whose
 //! field offsets are relative to the payload's first byte, or `None` when the
@@ -12,6 +12,7 @@ use crate::plugin::Field;
 
 use super::flows::Transport;
 
+mod dhcp;
 mod snmp;
 
 /// Well-known ports.
@@ -24,6 +25,8 @@ const PORT_MODBUS: u16 = 502;
 const PORT_MQTT: u16 = 1883;
 const PORT_SNMP: u16 = 161;
 const PORT_SNMP_TRAP: u16 = 162;
+const PORT_DHCP_SERVER: u16 = 67;
+const PORT_DHCP_CLIENT: u16 = 68;
 
 /// A parsed application layer.
 #[derive(Clone, Debug, PartialEq)]
@@ -52,6 +55,7 @@ pub fn dissect_application(transport: Transport, source_port: u16, destination_p
         Transport::Tcp if uses(PORT_DNS) => dissect_dns_over_tcp(payload),
         Transport::Udp if uses(PORT_NTP) => dissect_ntp(payload),
         Transport::Udp if uses(PORT_SNMP) || uses(PORT_SNMP_TRAP) => snmp::dissect_snmp(payload),
+        Transport::Udp if uses(PORT_DHCP_SERVER) || uses(PORT_DHCP_CLIENT) => dhcp::dissect_dhcp(payload),
         Transport::Tcp if uses(PORT_MODBUS) => dissect_modbus(payload, destination_port == PORT_MODBUS),
         Transport::Tcp if uses(PORT_MQTT) => dissect_mqtt(payload),
         Transport::Tcp if uses(PORT_HTTP) || PORT_HTTP_ALTERNATIVES.iter().any(|&port| uses(port)) => dissect_http(payload),
