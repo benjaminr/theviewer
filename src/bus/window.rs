@@ -111,6 +111,7 @@ pub fn builtin_reactions() -> Vec<Reaction> {
         Reaction { topic: Topic::JobFinished, name: "Packets loads the protocol analysis's messages it waited for", react: crate::panel_packets::follow_protocol_job },
         Reaction { topic: Topic::ReferenceFocus, name: "Reference shows the format asked for", react: crate::panel_reference::follow_focus },
         Reaction { topic: Topic::DocumentEdited, name: "Tools note the edit and refresh once it settles", react: crate::freshness::note_edit },
+        Reaction { topic: Topic::DocumentEdited, name: "Packets dissects its chosen packet again", react: crate::panel_packets::decode_focused_after_edit },
         Reaction { topic: Topic::TemplateApplied, name: "The views outline the template applied", react: crate::workbench::follow_applied_template },
         Reaction { topic: Topic::TemplateApplied, name: "Packets decodes raw frames with the template applied again", react: crate::panel_packets::follow_applied_template },
         Reaction { topic: Topic::ViewPointed, name: "The views outline the bytes pointed at", react: outline_pointed_bytes },

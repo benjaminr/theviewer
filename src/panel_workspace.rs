@@ -157,6 +157,7 @@ fn summary(payload: &Payload, document_len: usize) -> String {
             many => format!("{} findings, such as {}", many.len(), many[0].title),
         },
         Payload::StructureIdentified(structure) => format!("{} ({} fields)", structure.title, structure.fields.len()),
+        Payload::FieldsDecoded(decoded) => decoded.layers.iter().map(|layer| layer.name.as_str()).collect::<Vec<_>>().join(" / "),
         Payload::TemplateApplied(applied) => format!("{} at {:#x} ({} records)", applied.name, applied.structure.start, applied.records),
         Payload::RegionsMapped(mapped) => format!("{} regions", mapped.regions.len()),
         Payload::RecordWidthEstimated(estimate) => format!("{} bytes (score {:.2})", estimate.width, estimate.score),

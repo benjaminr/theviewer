@@ -950,6 +950,7 @@ What tools, panels and plugins publish on the workspace bus. Facts are kept, the
 | [`selection.changed`](#selectionchanged) | event | What is selected changed, in the main view or by a tool selecting bytes in the document. |
 | [`findings.published`](#findingspublished) | fact | What one producer recognises in the document: the scan, signatures, templates, the structure map, crypto constants, a comparison, checksums or protocol messages. |
 | [`structure.identified`](#structureidentified) | fact | A structure parsed at the cursor, or a template applied, with its field tree. |
+| [`fields.decoded`](#fieldsdecoded) | fact | A packet dissected into protocol layers and fields, at document offsets: the packet viewer's chosen packet, which the Reference tab reads. |
 | [`template.applied`](#templateapplied) | fact | A binary template applied to the document (or, retracted, cleared): its name, source and parse, which the views outline and the packet viewer's raw frames follow. |
 | [`regions.mapped`](#regionsmapped) | fact | The file split into regions of one kind, from the report. |
 | [`record_width.estimated`](#record_widthestimated) | fact | The length of the records the data repeats in, from the period scan. |
@@ -1033,6 +1034,17 @@ A structure parsed at the cursor, or a template applied, with its field tree.
 | `len` | integer | yes |  |
 | `start` | integer | yes | Document offset of the structure's first byte. |
 | `title` | string | yes | Such as "PNG image". |
+
+### fields.decoded
+
+A packet dissected into protocol layers and fields, at document offsets: the packet viewer's chosen packet, which the Reference tab reads.
+
+| Payload field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `ether_type` | integer | no | The EtherType after the Ethernet header and any VLAN tags. |
+| `flow` | Flow | no | Addresses, ports and transport, for an IP packet. |
+| `layers` | array of Layer | yes | Protocol layers, outermost first, each with its fields; every offset is a document offset. |
+| `payload` | Span | no | The transport payload's bytes in the document. |
 
 ### template.applied
 

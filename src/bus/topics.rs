@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::document::Edit;
 use super::Span;
+use crate::packets::{Flow, Layer};
 use crate::plugin::{Field, Finding};
 use crate::protocol::{Framing, MessageField};
 use crate::selection::Selection;
@@ -103,6 +104,7 @@ topics! {
     SelectionChanged(SelectionChanged) = "selection.changed", Event, "What is selected changed, in the main view or by a tool selecting bytes in the document.";
     FindingsPublished(FindingsPublished) = "findings.published", Fact, "What one producer recognises in the document: the scan, signatures, templates, the structure map, crypto constants, a comparison, checksums or protocol messages.";
     StructureIdentified(StructureIdentified) = "structure.identified", Fact, "A structure parsed at the cursor, or a template applied, with its field tree.";
+    FieldsDecoded(FieldsDecoded) = "fields.decoded", Fact, "A packet dissected into protocol layers and fields, at document offsets: the packet viewer's chosen packet, which the Reference tab reads.";
     TemplateApplied(TemplateApplied) = "template.applied", Fact, "A binary template applied to the document (or, retracted, cleared): its name, source and parse, which the views outline and the packet viewer's raw frames follow.";
     RegionsMapped(RegionsMapped) = "regions.mapped", Fact, "The file split into regions of one kind, from the report.";
     RecordWidthEstimated(RecordWidthEstimated) = "record_width.estimated", Fact, "The length of the records the data repeats in, from the period scan.";
@@ -191,6 +193,13 @@ impl Payload {
             Payload::StructureIdentified(structure) => {
                 moved(&mut structure.start);
                 move_fields(&mut structure.fields, delta);
+            }
+            Payload::FieldsDecoded(decoded) => {
+                for layer in &mut decoded.layers {
+                    moved(&mut layer.offset);
+                    move_fields(&mut layer.fields, delta);
+                }
+                decoded.payload.iter_mut().for_each(|span| moved(&mut span.start));
             }
             Payload::TemplateApplied(applied) => {
                 moved(&mut applied.structure.start);
@@ -286,6 +295,20 @@ pub struct StructureIdentified {
     pub len: usize,
     /// The field tree, at document offsets.
     pub fields: Vec<Field>,
+}
+
+/// A packet's layers and fields.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct FieldsDecoded {
+    /// Protocol layers, outermost first, each with its fields; every offset
+    /// is a document offset.
+    pub layers: Vec<Layer>,
+    /// Addresses, ports and transport, for an IP packet.
+    pub flow: Option<Flow>,
+    /// The transport payload's bytes in the document.
+    pub payload: Option<Span>,
+    /// The EtherType after the Ethernet header and any VLAN tags.
+    pub ether_type: Option<u16>,
 }
 
 /// A template applied to the document.

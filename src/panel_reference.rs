@@ -19,8 +19,8 @@ use std::time::Duration;
 use eframe::egui::{self, Align2, Color32, FontId, Rect, RichText, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
 
 use crate::app::ViewerApp;
-use crate::bus::topics::{ProtocolIdentified, ReferenceFocus};
-use crate::bus::{Message, Payload};
+use crate::bus::topics::{FieldsDecoded, ProtocolIdentified, ReferenceFocus};
+use crate::bus::{Message, MessageId, Payload, Topic};
 use crate::dock::DockTab;
 use crate::packets::{self, Flow, Layer, PacketSet};
 use crate::panel_packets::{self, PacketLayers};
@@ -372,11 +372,24 @@ struct CaptureCache {
     set: Option<PacketSet>,
 }
 
-/// The dissected packet holding `position`: from the packet viewer when it
-/// shows that packet, else from a capture finding covering it.
+/// The newest current `fields.decoded` fact whose packet holds `position`.
+fn decoded_at(app: &ViewerApp, position: usize) -> Option<Arc<Message>> {
+    app.bus
+        .facts_in(Topic::FieldsDecoded, &app.document_id(), position, 1)
+        .into_iter()
+        .filter(|fact| !app.bus.is_stale(fact))
+        .max_by_key(|fact| fact.id)
+        .cloned()
+}
+
+/// The dissected packet holding `position`: as decoded on the bus (by the
+/// packet viewer, for its chosen packet), else from a capture finding
+/// covering it.
 fn packet_at(app: &mut ViewerApp, position: usize, findings: &[Finding], cache: &mut Option<CaptureCache>) -> Option<PacketLayers> {
-    if let Some(layers) = panel_packets::layers_at(app, position) {
-        return Some(layers);
+    if let Some(fact) = decoded_at(app, position)
+        && let (Some(span), Some(decoded)) = (fact.draft.span, fact.payload_as::<FieldsDecoded>())
+    {
+        return Some(PacketLayers::from_decoded(span.start, span.len, decoded));
     }
     let capture = findings.iter().find(|finding| crate::parsers::captures::CAPTURE_FINDING_IDS.contains(&finding.id.as_str()))?;
     let version = app.document.version();
@@ -541,7 +554,8 @@ struct StackKey {
     position: usize,
     version: u64,
     findings: Vec<(String, usize, usize)>,
-    packets: (u64, u64),
+    /// The `fields.decoded` fact the packet's layers came from.
+    decoded: Option<MessageId>,
 }
 
 /// RFC text asked for by the user.
@@ -607,12 +621,11 @@ impl ReferenceState {
 fn refresh_stack(state: &mut ReferenceState, app: &mut ViewerApp) {
     let position = focus_position(app);
     let findings = findings_at(app, position);
-    let packets_state = &app.bench.panels.packets;
     let key = StackKey {
         position,
         version: app.document.version(),
         findings: findings.iter().map(|finding| (finding.id.clone(), finding.start, finding.len)).collect(),
-        packets: (packets_state.rows_generation, packets_state.raw_generation),
+        decoded: decoded_at(app, position).map(|fact| fact.id),
     };
     if state.stack_key.as_ref() == Some(&key) {
         return;

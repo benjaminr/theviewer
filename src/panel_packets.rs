@@ -34,7 +34,7 @@ use crate::analysis_tools;
 use crate::api::workspace::WINDOW_DOCUMENT_ID;
 use crate::app::ViewerApp;
 use crate::analysis_tools::PROTOCOL_PRODUCER;
-use crate::bus::topics::{FieldsGuessed, FramesDefined, ProtocolIdentified, TemplateApplied};
+use crate::bus::topics::{FieldsDecoded, FieldsGuessed, FramesDefined, ProtocolIdentified, TemplateApplied};
 use crate::bus::window::job_finished;
 use crate::bus::{Draft, Message, Payload, Publisher};
 use crate::dock::DockTab;
@@ -295,6 +295,8 @@ pub struct PacketsState {
     pub(crate) link_choice: LinkChoice,
     pub(crate) raw: RawFrames,
     pub(crate) raw_label: String,
+    /// Whether the focused packet's fields are said on `fields.decoded`.
+    fields_published: bool,
     /// The source of the template raw frames are decoded with.
     pub(crate) raw_template_source: Option<String>,
     pub(crate) raw_generation: u64,
@@ -934,6 +936,9 @@ pub(crate) fn refresh_from_document(state: &mut PacketsState, app: &mut ViewerAp
 fn refresh_detail(state: &mut PacketsState, app: &mut ViewerApp) {
     let Some(index) = state.focus else {
         state.detail = None;
+        if state.fields_published {
+            publish_focused_fields(state, app);
+        }
         return;
     };
     let Some(packet) = state.set.as_ref().and_then(|set| set.packets.get(index)) else {
@@ -968,6 +973,7 @@ fn refresh_detail(state: &mut PacketsState, app: &mut ViewerApp) {
         bytes,
         dissection,
     });
+    publish_focused_fields(state, app);
 }
 
 /// When the selection changes, unless the packet viewer made the change
@@ -976,7 +982,13 @@ pub fn follow_selection(app: &mut ViewerApp, message: &Arc<Message>) {
     if app.bus.caused_by_producer(message, PACKETS_PRODUCER) {
         return;
     }
-    panels::with(app, |panels| &mut panels.packets, |state, app| follow_main_selection(state, app));
+    panels::with(app, |panels| &mut panels.packets, |state, app| {
+        let focus = state.focus;
+        follow_main_selection(state, app);
+        if state.focus != focus || state.focus.is_some() {
+            publish_focused_fields(state, app);
+        }
+    });
 }
 
 /// When the main view's cursor moves into a packet, select that packet (and
@@ -1001,6 +1013,69 @@ fn follow_main_selection(state: &mut PacketsState, app: &ViewerApp) {
     }
 }
 
+/// Say on `fields.decoded` how the focused packet dissects, at document
+/// offsets: from the detail when it is current, else dissected afresh. When
+/// no packet is focused, what was said is withdrawn.
+pub(crate) fn publish_focused_fields(state: &mut PacketsState, app: &mut ViewerApp) {
+    if state.foreign_document {
+        return;
+    }
+    let focused = state.focus.and_then(|index| Some((index, state.set.as_ref()?.packets.get(index)?.clone())));
+    let Some((index, packet)) = focused else {
+        let blank = FieldsDecoded { layers: Vec::new(), flow: None, payload: None, ether_type: None };
+        app.bus.publish(app.draft(PACKETS_PRODUCER, Payload::FieldsDecoded(blank)).retraction());
+        state.fields_published = false;
+        return;
+    };
+    let version = app.document.version();
+    let dissection = match &state.detail {
+        Some(detail) if detail.index == index && detail.version == version && detail.link_choice == state.link_choice && detail.raw_generation == state.raw_generation && detail.tshark_generation == state.tshark.generation => {
+            detail.dissection.clone()
+        }
+        _ => {
+            let bytes = app.document.read_range(packet.offset, packet.len.min(PACKET_READ_LIMIT));
+            let dissection = packets::dissect_with(&bytes, state.link_choice.apply(packet.link), &state.raw);
+            // tshark's layers describe the bytes as they were read.
+            if state.built.is_some_and(|built| built.version == version) { tshark_view::merged(state, index, dissection) } else { dissection }
+        }
+    };
+    let decoded = decoded_fields(packet.offset, &dissection);
+    app.bus.publish(app.draft(PACKETS_PRODUCER, Payload::FieldsDecoded(decoded)).span(packet.offset, packet.len));
+    state.fields_published = true;
+}
+
+/// A dissection of the packet at document offset `offset`, with its
+/// offsets moved into the document.
+fn decoded_fields(offset: usize, dissection: &Dissection) -> FieldsDecoded {
+    fn shift(fields: &mut [crate::plugin::Field], by: usize) {
+        for field in fields {
+            field.offset += by;
+            shift(&mut field.children, by);
+        }
+    }
+    let layers = dissection
+        .layers
+        .iter()
+        .cloned()
+        .map(|mut layer| {
+            layer.offset += offset;
+            shift(&mut layer.fields, offset);
+            layer
+        })
+        .collect();
+    let payload = dissection.payload.map(|(start, len)| crate::bus::Span { start: offset + start, len });
+    FieldsDecoded { layers, flow: dissection.flow, payload, ether_type: dissection.ether_type }
+}
+
+/// After an edit, say again how the focused packet dissects. Runs whether
+/// or not the panel is showing.
+pub fn decode_focused_after_edit(app: &mut ViewerApp, _message: &Arc<Message>) {
+    if app.bench.panels.packets.focus.is_none() {
+        return;
+    }
+    panels::with(app, |panels| &mut panels.packets, publish_focused_fields);
+}
+
 /// A dissected packet: where it lies in the document and its layers, whose
 /// field offsets are relative to the packet's first byte.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -1021,37 +1096,29 @@ impl PacketLayers {
     pub fn from_dissection(offset: usize, len: usize, dissection: &Dissection) -> PacketLayers {
         PacketLayers { offset, len, layers: dissection.layers.clone(), flow: dissection.flow, payload: dissection.payload, ether_type: dissection.ether_type }
     }
-}
 
-/// The layers of the viewer's packet holding document offset `position`:
-/// the selected packet's dissection when it is current, otherwise that
-/// packet dissected afresh. `None` when the viewer holds no such packet.
-pub(crate) fn layers_at(app: &mut ViewerApp, position: usize) -> Option<PacketLayers> {
-    let state = &app.bench.panels.packets;
-    if state.foreign_document {
-        return None;
+    /// The layers `fields.decoded` gives for the packet at document offset
+    /// `offset`, with their offsets made relative to the packet again.
+    pub fn from_decoded(offset: usize, len: usize, decoded: &FieldsDecoded) -> PacketLayers {
+        fn unshift(fields: &mut [crate::plugin::Field], by: usize) {
+            for field in fields {
+                field.offset = field.offset.saturating_sub(by);
+                unshift(&mut field.children, by);
+            }
+        }
+        let layers = decoded
+            .layers
+            .iter()
+            .cloned()
+            .map(|mut layer| {
+                layer.offset = layer.offset.saturating_sub(offset);
+                unshift(&mut layer.fields, offset);
+                layer
+            })
+            .collect();
+        let payload = decoded.payload.map(|span| (span.start.saturating_sub(offset), span.len));
+        PacketLayers { offset, len, layers, flow: decoded.flow, payload, ether_type: decoded.ether_type }
     }
-    let index = state.packet_at(position)?;
-    let packet = state.set.as_ref()?.packets.get(index)?.clone();
-    let version = app.document.version();
-    if let Some(detail) = &state.detail
-        && detail.index == index
-        && detail.version == version
-        && detail.link_choice == state.link_choice
-        && detail.raw_generation == state.raw_generation
-        && detail.tshark_generation == state.tshark.generation
-    {
-        return Some(PacketLayers::from_dissection(packet.offset, packet.len, &detail.dissection));
-    }
-    let link = state.link_choice.apply(packet.link);
-    let raw = state.raw.clone();
-    let unchanged = state.built.is_some_and(|built| built.version == version);
-    let bytes = app.document.read_range(packet.offset, packet.len.min(PACKET_READ_LIMIT));
-    let mut dissection = packets::dissect_with(&bytes, link, &raw);
-    if unchanged {
-        dissection = tshark_view::merged(&app.bench.panels.packets, index, dissection);
-    }
-    Some(PacketLayers::from_dissection(packet.offset, packet.len, &dissection))
 }
 
 /// Publish the main view's selection as one the panel made, so it is not
@@ -2052,5 +2119,30 @@ mod tests {
         app.apply_template_source(other);
         app.run_bus();
         assert_eq!(app.bench.panels.packets.raw_template_source.as_deref(), Some(edited), "another template leaves the frames alone");
+    }
+
+    #[test]
+    fn the_chosen_packet_s_fields_are_said_on_the_bus_for_the_reference_tab_even_while_hidden() {
+        let (document, at) = document_with_capture();
+        let mut harness = harness_for(document);
+        load_capture_into(&mut harness, at);
+        settle(&mut harness);
+        let third = harness.state().0.packet_set().unwrap().packets[2].clone();
+        hide_panel(&mut harness);
+        let app = &mut harness.state_mut().1;
+        app.set_cursor(third.offset + 3, false);
+        app.run_bus();
+        let (fact, decoded) = app.bus.latest_from::<FieldsDecoded>(&app.document_id(), PACKETS_PRODUCER).expect("the chosen packet's fields");
+        assert_eq!(fact.draft.span, Some(crate::bus::Span { start: third.offset, len: third.len }));
+        assert!(decoded.layers.iter().all(|layer| layer.offset >= third.offset), "at document offsets");
+        let stack = crate::panel_reference::stack_at_cursor(app);
+        assert!(stack.iter().any(|entry| entry.label == "IPv4"), "the Reference tab reads them: {:?}", stack.iter().map(|entry| &entry.label).collect::<Vec<_>>());
+
+        // An edit inside the packet is dissected again, the panel still hidden.
+        app.document.replace(third.offset + third.len - 1, 1, b"!");
+        app.run_bus();
+        app.run_bus();
+        let (fact, _) = app.bus.latest_from::<FieldsDecoded>(&app.document_id(), PACKETS_PRODUCER).unwrap();
+        assert!(!app.bus.is_stale(fact), "said again for the edited bytes");
     }
 }
