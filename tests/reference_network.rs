@@ -26,11 +26,13 @@ const FIELDS_WITH_FREE_NAMED_CHILDREN: [&str; 1] = ["Headers"];
 
 /// Fields of the newer dissectors that the notes do not describe yet, by
 /// layer. A field listed here that gains a note should leave the list.
-const FIELDS_AWAITING_NOTES: [(&str, &[&str]); 6] = [
+const FIELDS_AWAITING_NOTES: [(&str, &[&str]); 8] = [
     ("SNMP", &["Object name", "Value"]),
     ("NetBIOS Session Service", &["Message type", "Length"]),
     ("SMB2", &["Header length", "Chain offset", "Process ID"]),
     ("TPKT", &["Reserved"]),
+    ("RTP", &["Padding", "Extension", "CSRC count", "Payload"]),
+    ("RTCP", &["Receiver Report", "Sender SSRC"]),
     ("COTP", &["Destination reference", "Source reference", "Class", "TPDU size", "TPDU number"]),
     (
         "S7comm",
@@ -197,6 +199,29 @@ fn dns_over_tcp() -> Vec<u8> {
     ipv4_tcp(53, &payload)
 }
 
+/// A SIP INVITE whose SDP offers audio on port 7078, a G.711 packet sent
+/// there, and a receiver report sent to the RTCP port above it.
+fn sip_rtp_and_rtcp() -> [Vec<u8>; 3] {
+    let invite = b"INVITE sip:plc@10.0.0.1 SIP/2.0\r\nContent-Type: application/sdp\r\n\r\nv=0\r\nc=IN IP4 10.0.0.2\r\nm=audio 7078 RTP/AVP 0\r\n";
+    let mut media = vec![0x80, 0x00, 0x00, 0x01, 0, 0, 0, 160, 0x12, 0x34, 0x56, 0x78];
+    media.extend_from_slice(&[0xD5; 160]);
+    let report = [0x80, 201, 0, 1, 0x9A, 0xBC, 0xDE, 0xF0];
+    [
+        build(PacketBuilder::ipv4(CLIENT_IPV4, SERVER_IPV4, 64).udp(5060, 5060), invite),
+        build(PacketBuilder::ipv4(SERVER_IPV4, CLIENT_IPV4, 64).udp(9000, 7078), &media),
+        build(PacketBuilder::ipv4(SERVER_IPV4, CLIENT_IPV4, 64).udp(9001, 7079), &report),
+    ]
+}
+
+/// The media and the report of [`sip_rtp_and_rtcp`], dissected with what the
+/// INVITE announced.
+fn rtp_and_rtcp_in_their_set() -> (Dissection, Dissection) {
+    let packets = sip_rtp_and_rtcp();
+    let hints = SetHints::learn(packets.iter().map(|packet| (packet.as_slice(), LinkKind::RawIp)));
+    let raw = RawFrames { hints, ..RawFrames::default() };
+    (dissect_with(&packets[1], LinkKind::RawIp, &raw), dissect_with(&packets[2], LinkKind::RawIp, &raw))
+}
+
 /// The TFTP data block dissected with what its read request taught.
 fn tftp_data_in_its_set() -> Dissection {
     let (request, data) = tftp_read_and_data();
@@ -224,6 +249,8 @@ fn sample_dissections() -> Vec<(&'static str, Dissection)> {
         ("IPv4/TCP/TPKT/COTP/S7comm", dissect(&s7_connection_and_setup().1, LinkKind::RawIp)),
         ("IPv4/UDP/TFTP", dissect(&tftp_read_and_data().0, LinkKind::RawIp)),
         ("IPv4/UDP/TFTP data", tftp_data_in_its_set()),
+        ("IPv4/UDP/RTP", rtp_and_rtcp_in_their_set().0),
+        ("IPv4/UDP/RTCP", rtp_and_rtcp_in_their_set().1),
     ]
 }
 
@@ -288,6 +315,8 @@ fn every_layer_of_common_traffic_has_reference_notes_explaining_each_field() {
         "COTP",
         "S7comm",
         "TFTP",
+        "RTP",
+        "RTCP",
     ] {
         assert!(expected_layers.contains(layer), "the sample traffic should include a '{layer}' layer, found {expected_layers:?}");
     }
@@ -309,6 +338,10 @@ fn wireshark_field_names_reach_the_fields_of_the_newer_dissectors_through_the_no
     assert_eq!(wireshark_values(&s7, "tpkt.length"), ["25"]);
     assert_eq!(s7.summary.info, "ROSCTR:[Job       ] Function:[Setup communication]");
     assert_eq!(wireshark_values(&tftp_data_in_its_set(), "tftp.block"), ["1"]);
+    let (rtp, rtcp) = rtp_and_rtcp_in_their_set();
+    assert_eq!(wireshark_values(&rtp, "rtp.ssrc"), ["0x12345678"]);
+    assert_eq!(rtp.summary.info, "PT=ITU-T G.711 PCMU, SSRC=0x12345678, Seq=1, Time=160");
+    assert_eq!(wireshark_values(&rtcp, "rtcp.pt"), ["201 (Receiver Report)"]);
 }
 
 #[test]

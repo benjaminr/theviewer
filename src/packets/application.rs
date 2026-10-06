@@ -1,15 +1,15 @@
 //! Small, defensive parsers for application protocols carried over TCP and
-//! UDP: DNS, HTTP, NTP, Modbus/TCP and MQTT here, and SNMP, DHCP, TFTP, the
-//! NetBIOS session service with SMB, and ISO transport (TPKT and COTP) with
-//! S7comm in their own modules.
+//! UDP: DNS, HTTP, NTP, Modbus/TCP and MQTT here, and SNMP, DHCP, TFTP,
+//! RTP and RTCP, the NetBIOS session service with SMB, and ISO transport
+//! (TPKT and COTP) with S7comm in their own modules.
 //!
 //! Each parser takes a transport payload and returns an [`AppLayer`] whose
 //! field offsets are relative to the payload's first byte, or `None` when the
 //! bytes do not look like that protocol. Protocols carried inside others
 //! (SMB in the NetBIOS session service, S7comm in COTP in TPKT) give
-//! several layers, one after another. Protocols that move to ports chosen
-//! on the fly (TFTP) are followed with what the rest of the packet set says
-//! ([`SetHints`]). None of them can panic, and every loop is bounded.
+//! several layers, one after another. Protocols on ports chosen on the fly
+//! (a TFTP transfer, RTP media) are found with what the rest of the packet
+//! set says ([`SetHints`]); RTCP also by its strict layout. None of them can panic, and every loop is bounded.
 
 use crate::patterns::format_unix_seconds;
 use crate::plugin::Field;
@@ -18,7 +18,9 @@ use super::flows::{Flow, Transport};
 
 mod dhcp;
 mod iso_transport;
+mod rtp;
 mod set_hints;
+mod signalling;
 mod smb;
 mod snmp;
 mod tftp;
@@ -85,12 +87,20 @@ pub fn dissect_application(flow: &Flow, payload: &[u8], hints: &SetHints) -> Vec
         Transport::Udp if uses(PORT_SNMP) || uses(PORT_SNMP_TRAP) => snmp::dissect_snmp(payload),
         Transport::Udp if uses(PORT_DHCP_SERVER) || uses(PORT_DHCP_CLIENT) => dhcp::dissect_dhcp(payload),
         Transport::Udp if uses(PORT_TFTP) || hints.is_tftp(flow) => tftp::dissect_tftp(payload),
+        Transport::Udp if hints.is_rtcp(flow) => rtp::dissect_rtcp(payload),
+        // RTCP may share the RTP port (RFC 5761); its packet types tell it apart.
+        Transport::Udp if hints.is_rtp(flow) => rtp::dissect_rtcp(payload).or_else(|| if rtp::looks_like_rtcp_type(payload) { None } else { rtp::dissect_rtp(payload) }),
         Transport::Tcp if uses(PORT_MODBUS) => dissect_modbus(payload, destination_port == PORT_MODBUS),
         Transport::Tcp if uses(PORT_MQTT) => dissect_mqtt(payload),
         Transport::Tcp if uses(PORT_HTTP) || PORT_HTTP_ALTERNATIVES.iter().any(|&port| uses(port)) => dissect_http(payload),
         _ => None,
     };
-    parsed.or_else(|| if transport == Transport::Tcp { dissect_http(payload) } else { None }).into_iter().collect()
+    let sniffed = || match transport {
+        Transport::Tcp => dissect_http(payload),
+        Transport::Udp => rtp::dissect_rtcp(payload),
+        _ => None,
+    };
+    parsed.or_else(sniffed).into_iter().collect()
 }
 
 fn u16_at(bytes: &[u8], at: usize) -> Option<u16> {

@@ -29,7 +29,7 @@ const fn layer(ours: &'static str, tshark: &'static [&'static str]) -> LayerMapp
     LayerMapping { ours, tshark, spans_all: false }
 }
 
-pub const LAYER_MAP: [LayerMapping; 35] = [
+pub const LAYER_MAP: [LayerMapping; 37] = [
     // tshark names the cooked header of a netlink device `netlink`.
     layer("Linux cooked capture", &["sll", "netlink"]),
     layer("Linux cooked capture v2", &["sll", "netlink"]),
@@ -68,10 +68,12 @@ pub const LAYER_MAP: [LayerMapping; 35] = [
     layer("COTP", &["cotp"]),
     layer("S7comm", &["s7comm"]),
     layer("TFTP", &["tftp"]),
+    layer("RTP", &["rtp"]),
+    layer("RTCP", &["rtcp"]),
 ];
 
 /// `(our layer, our field, tshark filter name)` for fields both sides name.
-pub const FIELD_MAP: [(&str, &str, &str); 118] = [
+pub const FIELD_MAP: [(&str, &str, &str); 121] = [
     ("Linux cooked capture", "Packet type", "sll.pkttype"),
     ("Linux cooked capture", "ARPHRD type", "sll.hatype"),
     ("Linux cooked capture", "Link-layer address length", "sll.halen"),
@@ -190,6 +192,9 @@ pub const FIELD_MAP: [(&str, &str, &str); 118] = [
     ("S7comm", "PDU reference", "s7comm.header.pduref"),
     ("TFTP", "Opcode", "tftp.opcode"),
     ("TFTP", "Block", "tftp.block"),
+    ("RTP", "Sequence number", "rtp.seq"),
+    ("RTP", "Timestamp", "rtp.timestamp"),
+    ("RTP", "SSRC", "rtp.ssrc"),
 ];
 
 /// The mapping for one of our layers, if we compare it.
