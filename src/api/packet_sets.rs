@@ -22,7 +22,7 @@ use super::packets::DissectionResult;
 use super::values::{self, ByteEncoding, NoParams};
 use super::workspace::{self, Workspace};
 use super::{ApiError, Caller, Effect, ErrorCode};
-use crate::bus::topics::FramesDefined;
+use crate::bus::topics::{FieldsGuessed, FramesDefined};
 use crate::bus::{Draft, Payload};
 use crate::document::Document;
 use crate::packets::sources;
@@ -42,7 +42,30 @@ pub(super) const METHODS: &[super::Method] = &[
     method!("packets.export_pcap", Read, caller export_pcap, ExportParams, ExportResult, "A set's packets (those a filter keeps) as a pcap file, returned or written to a path given (which needs leave to edit)."),
     method!("packets.conversations", Read, conversations, ConversationsParams, ConversationList, "The conversations in a set (the packets a filter keeps): each pair of endpoints with its transport, packets and bytes each way, and a filter for it."),
     method!("packets.follow_stream", Read, follow_stream, PacketParams, StreamResult, "The payloads of a packet's conversation in order, each with its direction, and the stream as text."),
+    method!("packets.find_captures", Read, find_captures, FindCapturesParams, CaptureList, "The captures inside a span of a document (pcap, pcapng, snoop, Network Monitor or ERF, or one of these compressed with gzip), each with its offset, format, link type and packets, for packets.sets.create."),
+    method!("packets.sets.add_packets", View, caller add_packets, AddPacketsParams, SetInfo, "Add ranges of the document to a set as packets of their own, so packets can be gathered one at a time; the set then keeps its packets where they are."),
+    method!("packets.sets.refresh", View, caller refresh, RefreshParams, SetInfo, "Find a set's packets again, the way they were found, in another document (the current one by default), which the set then belongs to."),
+    method!("packets.detect_length_field", Read, detect_length_field, SpanParams, LengthFieldFound, "Look for a length field that cuts a span into frames, with the protocol analysis's framing detection; returns it as packets.sets.create's length_field, or the best framing found instead."),
+    method!("packets.endpoints", Read, endpoints, ConversationsParams, EndpointList, "The addresses in a set (the packets a filter keeps), busiest first, with the packets and bytes each sent and received."),
+    method!("packets.extract", Read, caller editing::extract, ExtractParams, ExtractResult, "Some of a set's packets' bytes one after another, returned or written to a path given (which needs leave to edit)."),
+    method!("packets.delete", Edit, caller editing::delete, IndicesParams, PacketEditResult, "Remove packets from the document (their whole capture records, so a capture stays readable), as one undoable step."),
+    method!("packets.fix_checksums", Edit, caller editing::fix_checksums, IndicesParams, PacketEditResult, "Recompute the IPv4 header, TCP and UDP checksums of some of a set's packets, as one undoable step."),
+    method!("packets.apply", Edit, caller editing::apply, ApplyParams, PacketEditResult, "Invert, fill or XOR some of a set's packets, or the same field of each, as one undoable step."),
+    method!("packets.write_field", Edit, caller editing::write_field, WriteFieldParams, PacketEditResult, "Write a value (a number, or hex bytes as wide as the field) into a field of one packet, as one undoable step."),
+    method!("packets.columns.apply", Edit, caller editing::apply_to_columns, ColumnOperationParams, PacketEditResult, "Change the same columns (byte offsets) of every packet, or of some, laid out one packet per row: invert, fill, XOR, add, set, number or swap the byte order, as one undoable step."),
+    method!("packets.columns.delete", Edit, caller editing::delete_columns, ColumnsParams, PacketEditResult, "Remove the same columns (byte offsets) from every packet, or from some, as one undoable step; length fields and checksums are not changed."),
+    method!("packets.columns.read", Read, editing::read_columns, ColumnsReadParams, ColumnsText, "The same columns (byte offsets) of every packet, or of some, as hex lines or CSV."),
+    method!("packets.tshark_decode", Job, caller tshark::decode, TsharkParams, super::jobs::JobStartedResult, "Have Wireshark's tshark decode some of a set's packets (run locally with -n) as a background job; the protocols it named are the job's result, and in the window its layers merge into the Packets panel's."),
 ];
+
+mod editing;
+mod tshark;
+
+pub use editing::{
+    ApplyParams, ColumnFormat, ColumnOp, ColumnOperationParams, ColumnsParams, ColumnsReadParams, ColumnsText, ExtractParams, ExtractResult, FieldSpan, IndicesParams, PacketEditResult, PacketOp,
+    SINGLE_EDIT_LIMIT, WriteFieldParams,
+};
+pub use tshark::{TsharkPacket, TsharkParams, TsharkResult, TsharkUse};
 
 /// An example call of each of [`METHODS`], run in order on a fresh
 /// document by the API's tests, whose results must fit the result schema.
@@ -58,6 +81,20 @@ pub(super) fn examples() -> Vec<(&'static str, serde_json::Value)> {
         ("packets.export_pcap", json!({"set": "set-1"})),
         ("packets.conversations", json!({"set": "set-1"})),
         ("packets.follow_stream", json!({"set": "set-1", "index": 0})),
+        ("packets.find_captures", json!({"start": 0})),
+        ("packets.sets.add_packets", json!({"set": "set-1", "ranges": [[64, 4]]})),
+        ("packets.sets.refresh", json!({"set": "set-1"})),
+        ("packets.detect_length_field", json!({"start": 0, "len": 64})),
+        ("packets.endpoints", json!({"set": "set-1"})),
+        ("packets.extract", json!({"set": "set-1", "indices": [0, 1]})),
+        ("packets.columns.read", json!({"set": "set-1", "first": 0, "width": 2, "format": "csv"})),
+        ("packets.columns.apply", json!({"set": "set-1", "first": 1, "width": 1, "indices": [0, 2], "op": "xor", "key": "ff"})),
+        ("packets.columns.delete", json!({"set": "set-1", "first": 7, "width": 1, "indices": [1]})),
+        ("packets.apply", json!({"set": "set-1", "indices": [0], "op": "fill", "key": "00", "field": {"offset": 0, "len": 2}})),
+        ("packets.write_field", json!({"set": "set-1", "index": 0, "offset": 0, "len": 2, "value": "258"})),
+        ("packets.fix_checksums", json!({"set": "set-1", "indices": [0]})),
+        ("packets.delete", json!({"set": "set-1", "indices": [2]})),
+        ("packets.tshark_decode", json!({"set": "set-1", "indices": [0]})),
     ]
 }
 
@@ -153,7 +190,8 @@ fn big_endian_by_default() -> bool {
 }
 
 impl LengthFieldSpec {
-    fn field(&self) -> LengthField {
+    /// The length field the splitter reads.
+    pub fn field(&self) -> LengthField {
         LengthField {
             offset: self.offset,
             encoding: match self.encoding {
@@ -170,6 +208,40 @@ impl LengthFieldSpec {
             },
             adjustment: self.adjustment,
             max_frame: self.max_frame.unwrap_or(split::DEFAULT_MAX_FRAME),
+        }
+    }
+
+    /// `field` as `packets.sets.create` takes it.
+    pub fn of(field: &LengthField) -> LengthFieldSpec {
+        let (counts, header_len) = match field.counts {
+            LengthCounts::WholeFrame => (LengthFieldCounts::WholeFrame, 0),
+            LengthCounts::AfterField => (LengthFieldCounts::AfterField, 0),
+            LengthCounts::Payload { header_len } => (LengthFieldCounts::Payload, header_len),
+        };
+        LengthFieldSpec {
+            offset: field.offset,
+            encoding: match field.encoding {
+                LengthEncoding::U8 => LengthFieldEncoding::U8,
+                LengthEncoding::U16 => LengthFieldEncoding::U16,
+                LengthEncoding::U32 => LengthFieldEncoding::U32,
+                LengthEncoding::Leb128 => LengthFieldEncoding::Leb128,
+            },
+            big_endian: field.big_endian,
+            counts,
+            header_len,
+            adjustment: field.adjustment,
+            max_frame: (field.max_frame != split::DEFAULT_MAX_FRAME).then_some(field.max_frame),
+        }
+    }
+}
+
+impl PatternPlace {
+    /// Where a pattern of `mode` goes, as `packets.sets.create` takes it.
+    pub fn of(mode: PatternMode) -> PatternPlace {
+        match mode {
+            PatternMode::StartsFrame => PatternPlace::StartsPacket,
+            PatternMode::EndsFrame => PatternPlace::EndsPacket,
+            PatternMode::Separates => PatternPlace::Separates,
         }
     }
 }
@@ -239,6 +311,11 @@ pub struct CreateParams {
     /// Binary template source applied to each frame no protocol reads.
     #[serde(default)]
     pub template: Option<String>,
+    /// For `capture`: the capture at `start` is compressed with gzip. It is
+    /// opened decompressed as a document of its own, derived from this one,
+    /// and the set is taken from there.
+    #[serde(default)]
+    pub gunzip: bool,
 }
 
 /// A packet set, as the set methods describe it.
@@ -264,11 +341,19 @@ pub struct SetInfo {
     pub detect: bool,
     /// Whether a template decodes frames no protocol reads.
     pub template: bool,
+    /// The template's name when it was chosen by name, or "protocol" for
+    /// the one the protocol analysis suggested.
+    #[serde(default)]
+    pub template_name: Option<String>,
     /// Where the packets were taken from, as [start, len], once worked out
     /// (a capture found, the selection's ranges).
     pub ranges: Vec<(u64, u64)>,
     /// The framing that cut the messages, for `protocol_framing`.
     pub framing: Option<Framing>,
+    /// What the person should know about how the set was taken, such as a
+    /// decompressed capture cut short.
+    #[serde(default)]
+    pub notes: Vec<String>,
 }
 
 /// Parameters naming a set.
@@ -364,11 +449,29 @@ pub struct DecodeAsParams {
     /// Whether to detect the protocol when none is given (true by default).
     #[serde(default)]
     pub detect: Option<bool>,
-    /// Template source for frames no protocol reads; omitted, the set's
-    /// template is dropped.
+    /// Template source for frames no protocol reads, or "protocol" for the
+    /// template the protocol analysis suggested for the document; omitted
+    /// (with no template_name), the set's template is dropped.
     #[serde(default)]
     pub template: Option<String>,
+    /// A built-in or saved template, by name, for frames no protocol reads.
+    #[serde(default)]
+    pub template_name: Option<String>,
+    /// What every packet's first byte is, such as "ethernet"; null for each
+    /// packet's own; omitted, the set's link stays as it is.
+    #[serde(default, deserialize_with = "given", skip_serializing_if = "Option::is_none")]
+    pub link: Option<Option<LinkKind>>,
 }
+
+/// A field given, even as null, as `Some`; a field left out stays `None`
+/// through `#[serde(default)]`.
+fn given<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(deserializer: D) -> Result<Option<T>, D::Error> {
+    T::deserialize(deserializer).map(Some)
+}
+
+/// What a template asked for by `packets.decode_as` is called: "protocol"
+/// for the protocol analysis's suggestion.
+pub const PROTOCOL_TEMPLATE: &str = "protocol";
 
 /// Parameters of `packets.export_pcap`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -378,6 +481,10 @@ pub struct ExportParams {
     /// Only the packets this display filter keeps.
     #[serde(default)]
     pub filter: Option<String>,
+    /// Only these packets, by their index in the set (those of them the
+    /// filter keeps, when one is given too).
+    #[serde(default)]
+    pub indices: Option<Vec<u64>>,
     /// Write the pcap file here instead of returning it; needs leave to
     /// edit, as writing a file does.
     #[serde(default)]
@@ -463,6 +570,114 @@ pub struct StreamResult {
     pub truncated: bool,
 }
 
+/// Parameters of `packets.find_captures`.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FindCapturesParams {
+    /// Document id, path or "current" (the default).
+    #[serde(default)]
+    pub doc: Option<String>,
+    /// First offset looked in (0 by default).
+    #[serde(default)]
+    pub start: Option<u64>,
+    /// Bytes looked in; to the end of the document when omitted, at most 128 MiB.
+    #[serde(default)]
+    pub len: Option<u64>,
+}
+
+/// A capture found in a document.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct CaptureEntry {
+    /// Document offset of its file header, for packets.sets.create's start.
+    pub offset: u64,
+    /// Such as "pcap", "pcapng", "snoop", "Network Monitor" or "ERF".
+    pub format: String,
+    /// The link type of its first interface.
+    pub link: LinkKind,
+    pub packets: u64,
+    /// Bytes from the header to the end of the last readable record, or of
+    /// the gzip stream.
+    pub len: u64,
+    /// Whether it is compressed with gzip (packets.sets.create then needs gunzip).
+    pub gzipped: bool,
+    /// Such as "pcap at 0x40 · Ethernet · 3 packets".
+    pub description: String,
+}
+
+/// The result of `packets.find_captures`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct CaptureList {
+    pub captures: Vec<CaptureEntry>,
+}
+
+/// Parameters of `packets.sets.add_packets`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AddPacketsParams {
+    pub set: String,
+    /// The ranges to add, each `[start, len]`, one packet each.
+    pub ranges: Vec<(u64, u64)>,
+}
+
+/// Parameters of `packets.sets.refresh`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RefreshParams {
+    pub set: String,
+    /// The document to find the packets in: id, path or "current" (the default).
+    #[serde(default)]
+    pub doc: Option<String>,
+}
+
+/// A span of a document.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SpanParams {
+    /// Document id, path or "current" (the default).
+    #[serde(default)]
+    pub doc: Option<String>,
+    /// First offset (0 by default).
+    #[serde(default)]
+    pub start: u64,
+    /// Bytes in the span; to the end of the document when omitted.
+    #[serde(default)]
+    pub len: Option<u64>,
+}
+
+/// The result of `packets.detect_length_field`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct LengthFieldFound {
+    /// The length field, as packets.sets.create's length_field; absent when
+    /// none was found.
+    pub length_field: Option<LengthFieldSpec>,
+    /// The field in words, such as "u16 big-endian length at +1".
+    pub description: Option<String>,
+    /// Frames the framing that found it cuts.
+    pub frames: u64,
+    /// Share of the span those frames cover, 0 to 1.
+    pub coverage: f64,
+    /// When no length field was found, the best framing found instead.
+    pub best_framing: Option<String>,
+}
+
+/// One address and its traffic.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct EndpointEntry {
+    pub address: String,
+    pub packets_sent: u64,
+    pub bytes_sent: u64,
+    pub packets_received: u64,
+    pub bytes_received: u64,
+    /// A display filter keeping its packets.
+    pub filter: String,
+}
+
+/// The result of `packets.endpoints`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct EndpointList {
+    pub endpoints: Vec<EndpointEntry>,
+}
+
 /// Every packet dissected, for one document version and decoding.
 struct Decoded {
     version: u64,
@@ -507,6 +722,53 @@ impl PacketSets {
     pub fn retain_documents(&mut self, open: &[String]) {
         self.sets.retain(|stored| open.contains(&stored.info.doc));
     }
+
+    /// Keep `packets`, found in document `doc` (at `version`, `len` bytes
+    /// long) by some other means than `packets.sets.create`, as a set the
+    /// methods on a set can name, and return its id. For packets a tool
+    /// handed the Packets panel itself: the set is described as its
+    /// packets' ranges, and follows edits as its recipe says.
+    pub fn keep(&mut self, doc: &str, packets: PacketSet, (version, len): (u64, usize)) -> String {
+        self.created += 1;
+        let id = format!("set-{}", self.created);
+        let ranges: Vec<(u64, u64)> = packets.packets.iter().map(|packet| (packet.offset as u64, packet.len as u64)).collect();
+        let params = CreateParams {
+            doc: Some(doc.to_string()),
+            from: SetSource::Selection,
+            start: None,
+            len: None,
+            record_len: None,
+            length_field: None,
+            pattern: None,
+            pattern_mode: PatternPlace::default(),
+            ranges: Some(ranges.clone()),
+            framing: None,
+            link: None,
+            decode_as: None,
+            detect: None,
+            template: None,
+            gunzip: false,
+        };
+        let info = SetInfo {
+            set: id.clone(),
+            doc: doc.to_string(),
+            from: SetSource::Selection,
+            name: packets.name.clone(),
+            description: packets.description.clone(),
+            count: packets.len() as u64,
+            capped: packets.capped,
+            link: None,
+            decode_as: None,
+            detect: true,
+            template: false,
+            template_name: None,
+            ranges,
+            framing: None,
+            notes: Vec::new(),
+        };
+        self.sets.push(StoredSet { info, params, packets, built: (version, len), generation: 0, decoded: None });
+        id
+    }
 }
 
 fn unknown_set(id: &str) -> ApiError {
@@ -525,9 +787,11 @@ struct Found {
 }
 
 /// Find the packets `params` describe in `document`, and say where they came
-/// from and with what framing.
+/// from and with what framing. Packets split from the document are frames
+/// of unknown format, and a capture's keep their own link type, until the
+/// set's `link` is put over them, so the link can be taken off again.
 fn find_packets(document: &mut Document, view_ranges: Vec<(usize, usize)>, params: &CreateParams) -> Result<Found, ApiError> {
-    let link = params.link.unwrap_or(LinkKind::Unknown);
+    let link = LinkKind::Unknown;
     let range = |document: &mut Document| values::span_within(document.len(), params.start.unwrap_or(0), params.len);
     let needs = |what: &str| ApiError::invalid_params(format!("packets from {} need {what}", serde_json::to_value(params.from).ok().and_then(|from| from.as_str().map(str::to_string)).unwrap_or_default()));
     match params.from {
@@ -592,19 +856,50 @@ fn find_packets(document: &mut Document, view_ranges: Vec<(usize, usize)>, param
                 Some(framing) => framing.clone(),
                 None => protocol::detect_framing(&bytes, 1).into_iter().next().map(|candidate| candidate.framing).ok_or_else(|| ApiError::not_found("the protocol analysis found no framing in the range; give one as framing"))?,
             };
-            let mut set = sources::from_framing(&bytes, start, &framing).map_err(source_error)?;
-            if link != LinkKind::Unknown {
-                set.packets.iter_mut().for_each(|packet| packet.link = link);
-            }
+            let set = sources::from_framing(&bytes, start, &framing).map_err(source_error)?;
             Ok(Found { packets: set, ranges: vec![(start as u64, bytes.len() as u64)], framing: Some(framing) })
         }
     }
 }
 
+/// Open the gzip-compressed capture at `start` of document `doc`
+/// decompressed, as a document derived from it, and return the new
+/// document's id with what to say of it.
+fn open_gunzipped(workspace: &mut dyn Workspace, doc: &str, start: Option<u64>) -> Result<(String, Vec<String>), ApiError> {
+    let start = start.ok_or_else(|| ApiError::invalid_params("gunzip needs start, the offset of the gzip stream"))?;
+    let parent = workspace::info(workspace, doc)?.name;
+    let (_, document) = workspace::document(workspace, Some(doc))?;
+    let (offset, _) = values::span_within(document.len(), start, Some(0))?;
+    let bytes = document.read_range(offset, CAPTURE_READ_LIMIT);
+    if !sources::gzip::looks_like(&bytes) {
+        return Err(ApiError::not_found(format!("there is no gzip stream at {offset:#x}; leave out gunzip for a capture that is not compressed")));
+    }
+    let capture = sources::gzip::gunzip(&bytes, offset).map_err(source_error)?;
+    if let Err(error) = sources::from_capture(&capture.data, 0) {
+        return Err(ApiError::not_found(format!("the gzip stream at {offset:#x} decompresses to a {} header, but: {error}", capture.format.label())));
+    }
+    let name = format!("{parent} › {} capture decompressed from {offset:#x}", capture.format.label());
+    let notes = if capture.truncated { vec![format!("Only the first {} of the decompressed capture were opened.", crate::compress::human_bytes(sources::gzip::MAX_GUNZIPPED_LEN))] } else { Vec::new() };
+    let derived = workspace.open_derived(doc, capture.data, &name)?;
+    Ok((derived, notes))
+}
+
 pub fn create(workspace: &mut dyn Workspace, caller: &Caller, params: CreateParams) -> Result<SetInfo, ApiError> {
-    let doc = workspace::resolve(workspace, params.doc.as_deref())?;
+    let mut doc = workspace::resolve(workspace, params.doc.as_deref())?;
     if let Some(source) = &params.template {
         Template::parse(source).map_err(|error| ApiError::invalid_params(format!("the template does not parse: {error}")))?;
+    }
+    let mut notes = Vec::new();
+    let mut params = params;
+    if params.gunzip {
+        if params.from != SetSource::Capture {
+            return Err(ApiError::invalid_params("gunzip is for a capture compressed with gzip: give from \"capture\""));
+        }
+        (doc, notes) = open_gunzipped(workspace, &doc, params.start)?;
+        // The capture is now the derived document's, from its first byte.
+        params.doc = Some(doc.clone());
+        params.start = Some(0);
+        params.gunzip = false;
     }
     let view_ranges = match (params.from, workspace.view(&doc)) {
         (SetSource::Selection, Some(view)) => {
@@ -634,8 +929,10 @@ pub fn create(workspace: &mut dyn Workspace, caller: &Caller, params: CreatePara
         decode_as: params.decode_as,
         detect: params.detect.unwrap_or(true),
         template: params.template.is_some(),
+        template_name: None,
         ranges,
         framing,
+        notes,
     };
     sets.sets.push(StoredSet { info: info.clone(), params, packets: found, built, generation: 0, decoded: None });
     publish_set(workspace, caller, &id);
@@ -803,6 +1100,20 @@ pub fn dissection_result(dissection: Dissection) -> DissectionResult {
     }
 }
 
+/// Check that every one of `indices` is a packet of the set, and return
+/// them in the order given, once each.
+fn packet_indices(stored: &StoredSet, indices: &[u64]) -> Result<Vec<usize>, ApiError> {
+    let mut chosen = Vec::with_capacity(indices.len());
+    let mut seen = std::collections::HashSet::new();
+    for &index in indices {
+        let index = packet_index(stored, index)?;
+        if seen.insert(index) {
+            chosen.push(index);
+        }
+    }
+    Ok(chosen)
+}
+
 /// Check that packet `index` is in the set.
 fn packet_index(stored: &StoredSet, index: u64) -> Result<usize, ApiError> {
     let count = stored.packets.len();
@@ -821,17 +1132,67 @@ pub fn dissect(workspace: &mut dyn Workspace, params: PacketParams) -> Result<Pa
     })
 }
 
-pub fn decode_as(workspace: &mut dyn Workspace, caller: &Caller, params: DecodeAsParams) -> Result<SetInfo, ApiError> {
-    if let Some(source) = &params.template {
-        Template::parse(source).map_err(|error| ApiError::invalid_params(format!("the template does not parse: {error}")))?;
+/// The built-in templates and the person's own, as (name, source).
+pub fn available_templates() -> Vec<(String, String)> {
+    let mut all: Vec<(String, String)> = crate::templates::builtin_templates().into_iter().map(|(name, source)| (name.to_string(), source.to_string())).collect();
+    if let Some(dir) = crate::templates::default_dir() {
+        for (name, result) in crate::templates::load_dir(&dir) {
+            if result.is_ok()
+                && let Ok(source) = std::fs::read_to_string(dir.join(format!("{name}.tpl")))
+            {
+                all.push((name, source));
+            }
+        }
     }
+    all
+}
+
+/// The template `params` ask for, as (source, name it was asked for by).
+fn chosen_template(workspace: &mut dyn Workspace, params: &DecodeAsParams) -> Result<(Option<String>, Option<String>), ApiError> {
+    if let Some(name) = &params.template_name {
+        if params.template.is_some() {
+            return Err(ApiError::invalid_params("give the template as template (its source) or as template_name, not both"));
+        }
+        let (_, source) = available_templates().into_iter().find(|(known, _)| known == name).ok_or_else(|| ApiError::not_found(format!("there is no template called '{name}'")))?;
+        return Ok((Some(source), Some(name.clone())));
+    }
+    match params.template.as_deref() {
+        Some(PROTOCOL_TEMPLATE) => {
+            let doc = workspace.packet_sets().get(&params.set).map(|stored| stored.info.doc.clone()).ok_or_else(|| unknown_set(&params.set))?;
+            let suggested = workspace.bus().latest_from::<FieldsGuessed>(&doc, crate::analysis_tools::PROTOCOL_PRODUCER).and_then(|(_, guessed)| guessed.template.clone());
+            let source = suggested.ok_or_else(|| ApiError::not_found("the protocol analysis has suggested no template for this document; run it first"))?;
+            Ok((Some(source), Some(PROTOCOL_TEMPLATE.to_string())))
+        }
+        Some(source) => {
+            Template::parse(source).map_err(|error| ApiError::invalid_params(format!("the template does not parse: {error}")))?;
+            Ok((Some(source.to_string()), None))
+        }
+        None => Ok((None, None)),
+    }
+}
+
+/// Put `link` over every packet of `stored`, or give each its own back.
+fn relink(stored: &mut StoredSet, link: Option<LinkKind>) {
+    for packet in &mut stored.packets.packets {
+        packet.link = link.unwrap_or_else(|| LinkKind::from_pcap_link_type(packet.link_type));
+    }
+    stored.info.link = link;
+    stored.params.link = link;
+}
+
+pub fn decode_as(workspace: &mut dyn Workspace, caller: &Caller, params: DecodeAsParams) -> Result<SetInfo, ApiError> {
+    let (template, template_name) = chosen_template(workspace, &params)?;
     let info = with_set(workspace, &params.set, |stored, _| {
         stored.info.decode_as = params.protocol;
         stored.info.detect = params.detect.unwrap_or(true);
-        stored.info.template = params.template.is_some();
+        stored.info.template = template.is_some();
+        stored.info.template_name = template_name;
         stored.params.decode_as = params.protocol;
         stored.params.detect = params.detect;
-        stored.params.template = params.template.clone();
+        stored.params.template = template;
+        if let Some(link) = params.link {
+            relink(stored, link);
+        }
         stored.generation += 1;
         Ok(stored.info.clone())
     })?;
@@ -847,7 +1208,12 @@ pub fn export_pcap(workspace: &mut dyn Workspace, caller: &Caller, params: Expor
     let file = with_set(workspace, &params.set, |stored, document| {
         decode(stored, document);
         let decoded = stored.decoded.as_ref().expect("decoded");
-        let kept = filtered(stored, decoded, params.filter.as_deref())?;
+        let mut kept = filtered(stored, decoded, params.filter.as_deref())?;
+        if let Some(indices) = &params.indices {
+            let order: std::collections::HashMap<usize, usize> = packet_indices(stored, indices)?.into_iter().enumerate().map(|(position, index)| (index, position)).collect();
+            kept.retain(|index| order.contains_key(index));
+            kept.sort_by_key(|index| order[index]);
+        }
         let export: Vec<ExportPacket> = kept
             .iter()
             .map(|&index| {
@@ -922,6 +1288,128 @@ pub fn follow_stream(workspace: &mut dyn Workspace, params: PacketParams) -> Res
             .collect();
         Ok(StreamResult { conversation, parts, text: stream.marked_text(), retransmissions: stream.retransmissions as u64, truncated: stream.truncated })
     })
+}
+
+pub fn endpoints(workspace: &mut dyn Workspace, params: ConversationsParams) -> Result<EndpointList, ApiError> {
+    with_set(workspace, &params.set, |stored, document| {
+        decode(stored, document);
+        let decoded = stored.decoded.as_ref().expect("decoded");
+        let kept = filtered(stored, decoded, params.filter.as_deref())?;
+        let found = packets::endpoints(kept.iter().map(|&index| (decoded.dissections[index].flow.as_ref(), stored.packets.packets[index].len)));
+        let endpoints = found
+            .into_iter()
+            .map(|endpoint| EndpointEntry {
+                address: endpoint.address.to_string(),
+                packets_sent: endpoint.packets_sent as u64,
+                bytes_sent: endpoint.bytes_sent as u64,
+                packets_received: endpoint.packets_received as u64,
+                bytes_received: endpoint.bytes_received as u64,
+                filter: format!("ip:{}", endpoint.address),
+            })
+            .collect();
+        Ok(EndpointList { endpoints })
+    })
+}
+
+pub fn find_captures(workspace: &mut dyn Workspace, params: FindCapturesParams) -> Result<CaptureList, ApiError> {
+    let (_, document) = workspace::document(workspace, params.doc.as_deref())?;
+    let (start, len) = values::span_within(document.len(), params.start.unwrap_or(0), params.len)?;
+    let bytes = document.read_range(start, len.min(CAPTURE_READ_LIMIT));
+    let captures = sources::find_captures(&bytes, start)
+        .into_iter()
+        .map(|capture| CaptureEntry {
+            offset: capture.offset as u64,
+            format: capture.format.label().to_string(),
+            link: capture.link,
+            packets: capture.packets as u64,
+            len: capture.len as u64,
+            gzipped: capture.gzipped,
+            description: capture.describe(),
+        })
+        .collect();
+    Ok(CaptureList { captures })
+}
+
+/// Framings asked of the protocol analysis's detection when looking for a
+/// length field.
+const LENGTH_FIELD_CANDIDATES: usize = 8;
+
+pub fn detect_length_field(workspace: &mut dyn Workspace, params: SpanParams) -> Result<LengthFieldFound, ApiError> {
+    let (_, document) = workspace::document(workspace, params.doc.as_deref())?;
+    let (start, len) = values::span_within(document.len(), params.start, params.len)?;
+    if len == 0 {
+        return Err(ApiError::invalid_params("the span is empty; give some bytes to look at"));
+    }
+    let bytes = document.read_range(start, len.min(SPLIT_READ_LIMIT));
+    let candidates = protocol::detect_framing(&bytes, LENGTH_FIELD_CANDIDATES);
+    let found = candidates.iter().find_map(|candidate| split::length_field_from_framing(&candidate.framing).map(|field| (field, candidate)));
+    Ok(match found {
+        Some((field, candidate)) => LengthFieldFound {
+            length_field: Some(LengthFieldSpec::of(&field)),
+            description: Some(field.describe()),
+            frames: candidate.messages as u64,
+            coverage: candidate.coverage,
+            best_framing: None,
+        },
+        None => LengthFieldFound { length_field: None, description: None, frames: 0, coverage: 0.0, best_framing: candidates.first().map(|best| best.framing.describe()) },
+    })
+}
+
+pub fn add_packets(workspace: &mut dyn Workspace, caller: &Caller, params: AddPacketsParams) -> Result<SetInfo, ApiError> {
+    if params.ranges.is_empty() {
+        return Err(ApiError::invalid_params("give the packets to add as ranges, each [start, len]"));
+    }
+    let info = with_set(workspace, &params.set, |stored, document| {
+        let ranges: Vec<(usize, usize)> = params.ranges.iter().map(|&(start, len)| values::span_within(document.len(), start, Some(len))).collect::<Result<_, _>>()?;
+        if ranges.iter().any(|&(_, len)| len == 0) {
+            return Err(ApiError::invalid_params("a packet needs at least one byte"));
+        }
+        if stored.packets.len() + ranges.len() > packets::MAX_PACKETS {
+            return Err(ApiError::too_large(format!("a set holds at most {} packets", packets::MAX_PACKETS)));
+        }
+        let link = stored.info.link;
+        for &(start, len) in &ranges {
+            let mut packet = packets::Packet::new(start, len, LinkKind::Unknown, format!("range {start:#x}"));
+            packet.link = link.unwrap_or(LinkKind::Unknown);
+            stored.packets.push(packet);
+        }
+        let set = &mut stored.packets;
+        set.recipe = sources::Recipe::Fixed;
+        set.name = "packets added by hand".to_string();
+        set.description = format!("{} ranges added by hand", set.len());
+        stored.info.name = set.name.clone();
+        stored.info.description = set.description.clone();
+        stored.info.count = set.len() as u64;
+        stored.info.ranges.extend(ranges.iter().map(|&(start, len)| (start as u64, len as u64)));
+        stored.decoded = None;
+        Ok(stored.info.clone())
+    })?;
+    publish_set(workspace, caller, &params.set);
+    workspace.show_packet_set(&params.set);
+    Ok(info)
+}
+
+pub fn refresh(workspace: &mut dyn Workspace, caller: &Caller, params: RefreshParams) -> Result<SetInfo, ApiError> {
+    let doc = workspace::resolve(workspace, params.doc.as_deref())?;
+    let sets = workspace.packet_sets_mut();
+    let index = sets.sets.iter().position(|stored| stored.info.set == params.set).ok_or_else(|| unknown_set(&params.set))?;
+    let mut stored = sets.sets.remove(index);
+    let result = match workspace.document_mut(&doc) {
+        Some(document) => {
+            // Found again in this document as it is now, with nothing grown.
+            stored.built = (u64::MAX, document.len());
+            stored.info.doc = doc.clone();
+            follow_document(&mut stored, document);
+            Ok(stored.info.clone())
+        }
+        None => Err(ApiError::not_found(format!("document '{doc}' has closed"))),
+    };
+    let sets = workspace.packet_sets_mut();
+    sets.sets.insert(index.min(sets.sets.len()), stored);
+    let info = result?;
+    publish_set(workspace, caller, &params.set);
+    workspace.show_packet_set(&params.set);
+    Ok(info)
 }
 
 #[cfg(test)]
@@ -1051,6 +1539,124 @@ mod tests {
         assert_eq!(created["ranges"], json!([[0, 8], [16, 4]]));
         let given = call(&mut workspace, "packets.sets.create", json!({"from": "selection", "ranges": [[4, 4]]})).unwrap();
         assert_eq!(given["count"], 1);
+    }
+
+    #[test]
+    fn captures_are_found_where_they_are_and_a_gzipped_one_opens_decompressed_as_its_own_document() {
+        let capture = dns_capture(2);
+        let mut bytes = vec![0x11; 40];
+        bytes.extend(&capture);
+        let gzip_at = bytes.len();
+        bytes.extend(crate::compress::compress(crate::compress::Codec::Gzip, &capture).unwrap());
+        let mut workspace = workspace_with("traffic.bin", &bytes);
+        let found = call(&mut workspace, "packets.find_captures", json!({})).unwrap();
+        let captures = found["captures"].as_array().unwrap();
+        assert_eq!(captures.len(), 2, "{found}");
+        assert_eq!((captures[0]["offset"].as_u64(), captures[0]["gzipped"].as_bool()), (Some(40), Some(false)));
+        assert_eq!((captures[1]["offset"].as_u64(), captures[1]["gzipped"].as_bool()), (Some(gzip_at as u64), Some(true)));
+        assert!(captures[0]["description"].as_str().unwrap().starts_with("pcap at 0x28"));
+        let none = call(&mut workspace, "packets.find_captures", json!({"start": 0, "len": 40})).unwrap();
+        assert!(none["captures"].as_array().unwrap().is_empty(), "only the span given is looked in");
+
+        let created = call(&mut workspace, "packets.sets.create", json!({"from": "capture", "start": gzip_at, "gunzip": true})).unwrap();
+        assert_eq!(created["count"], 2);
+        assert_ne!(created["doc"], "doc-1", "the decompressed capture is a document of its own");
+        let documents = call(&mut workspace, "documents.list", json!({})).unwrap();
+        assert_eq!(documents["documents"].as_array().unwrap().len(), 2);
+        let refused = |workspace: &mut crate::api::HeadlessWorkspace, params| call(workspace, "packets.sets.create", params).unwrap_err().code;
+        assert_eq!(refused(&mut workspace, json!({"doc": "doc-1", "from": "capture", "start": 40, "gunzip": true})), ErrorCode::NotFound, "no gzip stream there");
+        assert_eq!(refused(&mut workspace, json!({"doc": "doc-1", "from": "capture", "gunzip": true})), ErrorCode::InvalidParams, "the stream's start is needed");
+        assert_eq!(refused(&mut workspace, json!({"doc": "doc-1", "from": "split_fixed", "record_len": 4, "gunzip": true})), ErrorCode::InvalidParams);
+    }
+
+    #[test]
+    fn packets_added_by_hand_join_the_set_and_stay_where_they_are() {
+        let mut workspace = workspace_with("a.bin", &[0u8; 64]);
+        call(&mut workspace, "packets.sets.create", json!({"from": "selection", "ranges": [[0, 8]], "link": "raw_ip"})).unwrap();
+        let added = call(&mut workspace, "packets.sets.add_packets", json!({"set": "set-1", "ranges": [[16, 4], [32, 8]]})).unwrap();
+        assert_eq!((added["count"].as_u64(), added["name"].as_str()), (Some(3), Some("packets added by hand")));
+        let listed = call(&mut workspace, "packets.list", json!({"set": "set-1"})).unwrap();
+        assert_eq!(listed["packets"][2]["link"], "raw_ip", "added packets are read as the set's link says");
+        let refused = |workspace: &mut crate::api::HeadlessWorkspace, params| call(workspace, "packets.sets.add_packets", params).unwrap_err().code;
+        assert_eq!(refused(&mut workspace, json!({"set": "set-1", "ranges": []})), ErrorCode::InvalidParams);
+        assert_eq!(refused(&mut workspace, json!({"set": "set-1", "ranges": [[60, 8]]})), ErrorCode::OutOfRange);
+        assert_eq!(refused(&mut workspace, json!({"set": "set-1", "ranges": [[4, 0]]})), ErrorCode::InvalidParams);
+        assert_eq!(refused(&mut workspace, json!({"set": "set-2", "ranges": [[4, 1]]})), ErrorCode::NotFound);
+    }
+
+    #[test]
+    fn a_set_is_found_again_in_another_document_the_same_way() {
+        let mut workspace = workspace_with("first.bin", &[1u8; 32]);
+        call(&mut workspace, "packets.sets.create", json!({"from": "split_fixed", "record_len": 8})).unwrap();
+        let other = workspace.add_document("second.bin", crate::document::Document::from_bytes(vec![2u8; 48]));
+        let refreshed = call(&mut workspace, "packets.sets.refresh", json!({"set": "set-1", "doc": other})).unwrap();
+        assert_eq!((refreshed["doc"].as_str(), refreshed["count"].as_u64()), (Some(other.as_str()), Some(4)), "the same 32 bytes cut the same way: {refreshed}");
+        assert_eq!(call(&mut workspace, "packets.sets.refresh", json!({"set": "set-1", "doc": "doc-9"})).unwrap_err().code, ErrorCode::NotFound);
+        assert_eq!(call(&mut workspace, "packets.sets.refresh", json!({"set": "set-7"})).unwrap_err().code, ErrorCode::NotFound);
+    }
+
+    #[test]
+    fn a_length_field_is_found_for_the_split_form_or_the_best_framing_said_instead() {
+        let mut workspace = workspace_with("stream.bin", &length_prefixed_dns(12));
+        let found = call(&mut workspace, "packets.detect_length_field", json!({"start": 0})).unwrap();
+        assert!(found["length_field"].is_object(), "{found}");
+        let created = call(&mut workspace, "packets.sets.create", json!({"from": "length_field", "length_field": found["length_field"]})).unwrap();
+        assert_eq!(created["count"], found["frames"], "what was found splits the stream as it said");
+        let mut text = workspace_with("text.bin", b"hello hello hello hello");
+        let none = call(&mut text, "packets.detect_length_field", json!({})).unwrap();
+        assert!(none["length_field"].is_null());
+        assert_eq!(call(&mut text, "packets.detect_length_field", json!({"start": 5, "len": 0})).unwrap_err().code, ErrorCode::InvalidParams);
+        assert_eq!(call(&mut text, "packets.detect_length_field", json!({"start": 500})).unwrap_err().code, ErrorCode::OutOfRange);
+    }
+
+    #[test]
+    fn a_set_s_link_is_put_over_its_packets_and_taken_off_again() {
+        let mut workspace = workspace_with("traffic.bin", &dns_capture(1));
+        call(&mut workspace, "packets.sets.create", json!({"from": "capture"})).unwrap();
+        let link = |workspace: &mut crate::api::HeadlessWorkspace| call(workspace, "packets.list", json!({"set": "set-1"})).unwrap()["packets"][0]["link"].clone();
+        assert_eq!(link(&mut workspace), "ethernet");
+        let raw = call(&mut workspace, "packets.decode_as", json!({"set": "set-1", "link": "raw_ip"})).unwrap();
+        assert_eq!(raw["link"], "raw_ip");
+        assert_eq!(link(&mut workspace), "raw_ip");
+        call(&mut workspace, "packets.decode_as", json!({"set": "set-1"})).unwrap();
+        assert_eq!(link(&mut workspace), "raw_ip", "left out, the link stays");
+        call(&mut workspace, "packets.decode_as", json!({"set": "set-1", "link": null})).unwrap();
+        assert_eq!(link(&mut workspace), "ethernet", "null gives each packet its capture's own back");
+    }
+
+    #[test]
+    fn a_template_is_chosen_by_name_or_as_the_protocol_analysis_suggested() {
+        let mut workspace = workspace_with("records.bin", &[0u8; 32]);
+        call(&mut workspace, "packets.sets.create", json!({"from": "split_fixed", "record_len": 8})).unwrap();
+        let (name, _) = super::available_templates().into_iter().next().expect("built-in templates");
+        let named = call(&mut workspace, "packets.decode_as", json!({"set": "set-1", "detect": false, "template_name": name})).unwrap();
+        assert_eq!((named["template"].as_bool(), named["template_name"].as_str()), (Some(true), Some(name.as_str())));
+        let refused = |workspace: &mut crate::api::HeadlessWorkspace, params| call(workspace, "packets.decode_as", params).unwrap_err().code;
+        assert_eq!(refused(&mut workspace, json!({"set": "set-1", "template_name": "no such template"})), ErrorCode::NotFound);
+        assert_eq!(refused(&mut workspace, json!({"set": "set-1", "template_name": name, "template": "x"})), ErrorCode::InvalidParams);
+        assert_eq!(refused(&mut workspace, json!({"set": "set-1", "template": "protocol"})), ErrorCode::NotFound, "no analysis has suggested one");
+        assert_eq!(refused(&mut workspace, json!({"set": "set-1", "template": "struct {"})), ErrorCode::InvalidParams);
+    }
+
+    #[test]
+    fn only_the_packets_asked_for_are_exported_in_the_order_asked() {
+        let mut workspace = workspace_with("traffic.bin", &dns_capture(3));
+        call(&mut workspace, "packets.sets.create", json!({"from": "capture"})).unwrap();
+        let exported = call(&mut workspace, "packets.export_pcap", json!({"set": "set-1", "indices": [2, 0]})).unwrap();
+        assert_eq!(exported["count"], 2);
+        let filtered = call(&mut workspace, "packets.export_pcap", json!({"set": "set-1", "indices": [2, 0], "filter": "udp.srcport==4000"})).unwrap();
+        assert_eq!(filtered["count"], 1, "those of them the filter keeps");
+        assert_eq!(call(&mut workspace, "packets.export_pcap", json!({"set": "set-1", "indices": [3]})).unwrap_err().code, ErrorCode::OutOfRange);
+    }
+
+    #[test]
+    fn the_endpoints_of_a_set_are_counted_with_a_filter_for_each() {
+        let mut workspace = workspace_with("traffic.bin", &dns_capture(2));
+        call(&mut workspace, "packets.sets.create", json!({"from": "capture"})).unwrap();
+        let endpoints = call(&mut workspace, "packets.endpoints", json!({"set": "set-1"})).unwrap();
+        let sender = endpoints["endpoints"].as_array().unwrap().iter().find(|endpoint| endpoint["address"] == "10.0.0.2").expect("the sender");
+        assert_eq!((sender["packets_sent"].as_u64(), sender["filter"].as_str()), (Some(2), Some("ip:10.0.0.2")));
+        assert_eq!(call(&mut workspace, "packets.endpoints", json!({"set": "set-1", "filter": "len>"})).unwrap_err().code, ErrorCode::InvalidParams);
     }
 
     #[test]

@@ -15,13 +15,14 @@
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::thread;
 use std::time::Duration;
 
 use eframe::egui::{self, RichText, Ui};
 
+use crate::api::packet_sets::{TsharkPacket, TsharkResult, TsharkUse};
 use crate::app::ViewerApp;
 use crate::bus::{JobHandle, Payload};
 use crate::bus::topics::{FramesDefined, ProtocolIdentified};
@@ -66,31 +67,35 @@ pub(crate) struct Decodes {
 }
 
 struct Job {
+    /// The job's id, for `jobs.cancel`.
+    id: String,
     receiver: Receiver<Result<Finished, String>>,
-    cancel: Arc<AtomicBool>,
     done: Arc<AtomicUsize>,
     total: usize,
     set_generation: u64,
 }
 
 /// What a finished run gives back.
-struct Finished {
-    packets: HashMap<usize, TsharkLayers>,
+pub(crate) struct Finished {
+    pub packets: HashMap<usize, TsharkLayers>,
     rows: Vec<(usize, PacketRow)>,
-    warning: Option<String>,
+    pub warning: Option<String>,
 }
 
 /// One packet to decode.
-struct Request {
-    index: usize,
-    bytes: Vec<u8>,
-    original_len: usize,
-    timestamp: Option<f64>,
+pub(crate) struct Request {
+    pub index: usize,
+    pub bytes: Vec<u8>,
+    pub original_len: usize,
+    pub timestamp: Option<f64>,
     /// The tcpdump.org LINKTYPE number tshark is told.
-    link_type: u32,
+    pub link_type: u32,
     /// The link type our dissector uses.
-    link: LinkKind,
+    pub link: LinkKind,
 }
+
+/// What is said when tshark cannot be found.
+pub const NOT_FOUND: &str = "tshark was not found. Install Wireshark, or set where tshark is in Settings.";
 
 impl TsharkState {
     /// Where tshark is, for the path set in Settings (empty: look for it).
@@ -126,14 +131,11 @@ pub fn merged(state: &PacketsState, index: usize, dissection: Dissection) -> Dis
     }
 }
 
-/// The packets to decode: the shown ones, at most [`MAX_TSHARK_PACKETS`], or
-/// only `only`.
-fn requests(state: &PacketsState, only: Option<usize>) -> Vec<Request> {
+/// The packets to decode: `indices`, or the shown ones, at most
+/// [`MAX_TSHARK_PACKETS`].
+fn requests(state: &PacketsState, indices: Option<Vec<usize>>) -> Vec<Request> {
     let Some(set) = &state.set else { return Vec::new() };
-    let indices: Vec<usize> = match only {
-        Some(index) => vec![index],
-        None => state.visible.iter().copied().take(MAX_TSHARK_PACKETS).collect(),
-    };
+    let indices: Vec<usize> = indices.unwrap_or_else(|| state.visible.clone()).into_iter().take(MAX_TSHARK_PACKETS).collect();
     indices
         .into_iter()
         .filter_map(|index| {
@@ -145,42 +147,69 @@ fn requests(state: &PacketsState, only: Option<usize>) -> Vec<Request> {
         .collect()
 }
 
-/// Start decoding with tshark: the shown packets, or only packet `only`.
-pub fn start(state: &mut PacketsState, app: &mut ViewerApp, only: Option<usize>) {
-    let Some(program) = state.tshark.program(&app.preferences.tshark_path) else {
-        state.tshark.error = Some("tshark was not found. Install Wireshark, or set where tshark is in Settings.".to_string());
-        return;
-    };
-    if let Some(job) = state.tshark.job.take() {
-        job.cancel.store(true, Ordering::Relaxed);
+/// What `packets.tshark_decode` does in the window for the set the panel
+/// shows: decode packets `indices` (the shown ones when `None`) with
+/// tshark's layers merged as `mode` says, and return the job's id.
+pub fn start_for(app: &mut ViewerApp, indices: Option<Vec<usize>>, mode: TsharkMode) -> String {
+    let mut state = std::mem::take(&mut app.bench.panels.packets);
+    if state.tshark.mode != mode {
+        state.tshark.mode = mode;
+        remerge_rows(&mut state);
     }
-    let requests = requests(state, only);
+    let job = start(&mut state, app, indices);
+    app.bench.panels.packets = state;
+    job
+}
+
+/// Start decoding with tshark: packets `indices`, or the shown packets.
+/// Returns the job's id; when tshark is missing or there is nothing to
+/// decode, the job has already failed and the panel says why.
+fn start(state: &mut PacketsState, app: &mut ViewerApp, indices: Option<Vec<usize>>) -> String {
+    let job = app.start_job("tshark", "Decoding with tshark");
+    let id = job.id().to_string();
+    let Some(program) = state.tshark.program(&app.preferences.tshark_path) else {
+        state.tshark.error = Some(NOT_FOUND.to_string());
+        job.finish(false, NOT_FOUND);
+        return id;
+    };
+    if let Some(running) = state.tshark.job.take() {
+        app.bus.jobs_mut().cancel(&running.id);
+    }
+    let requests = requests(state, indices);
     if requests.is_empty() {
         state.tshark.error = Some("No packets to decode.".to_string());
-        return;
+        job.finish(false, "no packets to decode");
+        return id;
     }
     let (sender, receiver) = mpsc::channel();
-    let job = app.start_job("tshark", "Decoding with tshark");
-    // Cancelling from the panel or through jobs.cancel stops tshark alike.
-    let cancel = job.cancel_flag();
     let done = Arc::new(AtomicUsize::new(0));
     let total = requests.len();
     let (raw, mode) = (state.raw.clone(), state.tshark.mode);
     let thread_done = Arc::clone(&done);
     thread::spawn(move || {
-        let finished = decode(&program, requests, &raw, mode, &job, &thread_done);
+        let finished = run(&program, requests, &raw, mode, &job, &thread_done);
         match &finished {
-            Ok(finished) => job.finish(true, format!("{} packets decoded", finished.packets.len())),
+            Ok(finished) => job.finish_with(true, format!("{} packets decoded", finished.packets.len()), serde_json::to_value(finished.result()).ok()),
             Err(error) => job.finish(false, error.clone()),
         }
         let _ = sender.send(finished);
     });
     state.tshark.error = None;
-    state.tshark.job = Some(Job { receiver, cancel, done, total, set_generation: state.set_generation });
+    state.tshark.job = Some(Job { id: id.clone(), receiver, done, total, set_generation: state.set_generation });
+    id
+}
+
+impl Finished {
+    /// The job's result: the protocols tshark named in each packet.
+    pub fn result(&self) -> TsharkResult {
+        let mut packets: Vec<TsharkPacket> = self.packets.iter().map(|(&index, layers)| TsharkPacket { index: index as u64, protocols: layers.protocols.clone() }).collect();
+        packets.sort_by_key(|packet| packet.index);
+        TsharkResult { packets, warning: self.warning.clone() }
+    }
 }
 
 /// Run tshark once per link type and merge its layers into ours.
-fn decode(program: &std::path::Path, requests: Vec<Request>, raw: &RawFrames, mode: TsharkMode, job: &JobHandle, done: &AtomicUsize) -> Result<Finished, String> {
+pub(crate) fn run(program: &std::path::Path, requests: Vec<Request>, raw: &RawFrames, mode: TsharkMode, job: &JobHandle, done: &AtomicUsize) -> Result<Finished, String> {
     let cancel = job.cancel_flag();
     let total = requests.len() as u64;
     let mut by_link_type: BTreeMap<u32, Vec<&Request>> = BTreeMap::new();
@@ -307,7 +336,7 @@ pub fn show_controls(state: &mut PacketsState, app: &mut ViewerApp, ui: &mut Ui)
             ui.spinner();
             ui.label(RichText::new(format!("Decoding with tshark… {} of {}", job.done.load(Ordering::Relaxed).min(job.total), job.total)).color(theme::TEXT_DIM));
             if ui.small_button("Cancel").clicked() {
-                job.cancel.store(true, Ordering::Relaxed);
+                let _ = app.perform("jobs.cancel", serde_json::json!({ "job": job.id }));
             }
             return;
         }
@@ -317,7 +346,7 @@ pub fn show_controls(state: &mut PacketsState, app: &mut ViewerApp, ui: &mut Ui)
             .on_hover_text(format!("Have Wireshark's tshark decode the {shown} shown packets (run locally with -n: no name lookups) and show the protocols ours does not"))
             .on_disabled_hover_text(if available { "No packets are shown".to_string() } else { format!("Install Wireshark (tshark) to decode {TSHARK_PROTOCOLS} more protocols") });
         if button.clicked() {
-            start(state, app, None);
+            ask_to_decode(state, app, None);
         }
         let mut everything = state.tshark.mode == TsharkMode::Everything;
         if ui.add_enabled(available, egui::Checkbox::new(&mut everything, "Use tshark for everything")).on_hover_text("Show tshark's layers in place of ours for the packets it decoded").changed() {
@@ -332,6 +361,23 @@ pub fn show_controls(state: &mut PacketsState, app: &mut ViewerApp, ui: &mut Ui)
     if let Some(error) = &state.tshark.error {
         ui.add(egui::Label::new(RichText::new(error).small().color(theme::DANGER)).wrap());
     }
+}
+
+/// Ask, as `packets.tshark_decode` once the panel is drawn, for the shown
+/// packets (by index when a filter hides some), or only packet `only`, to
+/// be decoded with tshark, its layers merged as the panel merges them now.
+pub(crate) fn ask_to_decode(state: &mut PacketsState, app: &mut ViewerApp, only: Option<usize>) {
+    let Some(set) = crate::panel_packets::api_set_id(state, app) else { return };
+    let mut params = serde_json::json!({ "set": set, "mode": TsharkUse::of(state.tshark.mode) });
+    let indices: Option<Vec<usize>> = match only {
+        Some(index) => Some(vec![index]),
+        None if state.visible.len() != state.rows.len() => Some(state.visible.iter().copied().take(MAX_TSHARK_PACKETS).collect()),
+        None => None,
+    };
+    if let Some(indices) = indices {
+        params["indices"] = serde_json::json!(indices);
+    }
+    app.perform_later("packets.tshark_decode", params);
 }
 
 /// Whether tshark can be offered for one packet in the detail view.
@@ -362,7 +408,7 @@ mod tests {
         state.visible = vec![0];
         assert_eq!(requests(&state, None)[0].link_type, 105, "an 802.11 frame stays 802.11");
         state.link_choice = LinkChoice::Ethernet;
-        assert_eq!(requests(&state, Some(0))[0].link_type, packets::LINKTYPE_ETHERNET);
+        assert_eq!(requests(&state, Some(vec![0]))[0].link_type, packets::LINKTYPE_ETHERNET);
     }
 
     #[test]

@@ -75,6 +75,20 @@ Errors are `{code, message, data}`, with these codes:
 | [`packets.export_pcap`](#packetsexport_pcap) | read | A set's packets (those a filter keeps) as a pcap file, returned or written to a path given (which needs leave to edit). |
 | [`packets.conversations`](#packetsconversations) | read | The conversations in a set (the packets a filter keeps): each pair of endpoints with its transport, packets and bytes each way, and a filter for it. |
 | [`packets.follow_stream`](#packetsfollow_stream) | read | The payloads of a packet's conversation in order, each with its direction, and the stream as text. |
+| [`packets.find_captures`](#packetsfind_captures) | read | The captures inside a span of a document (pcap, pcapng, snoop, Network Monitor or ERF, or one of these compressed with gzip), each with its offset, format, link type and packets, for packets.sets.create. |
+| [`packets.sets.add_packets`](#packetssetsadd_packets) | view | Add ranges of the document to a set as packets of their own, so packets can be gathered one at a time; the set then keeps its packets where they are. |
+| [`packets.sets.refresh`](#packetssetsrefresh) | view | Find a set's packets again, the way they were found, in another document (the current one by default), which the set then belongs to. |
+| [`packets.detect_length_field`](#packetsdetect_length_field) | read | Look for a length field that cuts a span into frames, with the protocol analysis's framing detection; returns it as packets.sets.create's length_field, or the best framing found instead. |
+| [`packets.endpoints`](#packetsendpoints) | read | The addresses in a set (the packets a filter keeps), busiest first, with the packets and bytes each sent and received. |
+| [`packets.extract`](#packetsextract) | read | Some of a set's packets' bytes one after another, returned or written to a path given (which needs leave to edit). |
+| [`packets.delete`](#packetsdelete) | edit | Remove packets from the document (their whole capture records, so a capture stays readable), as one undoable step. |
+| [`packets.fix_checksums`](#packetsfix_checksums) | edit | Recompute the IPv4 header, TCP and UDP checksums of some of a set's packets, as one undoable step. |
+| [`packets.apply`](#packetsapply) | edit | Invert, fill or XOR some of a set's packets, or the same field of each, as one undoable step. |
+| [`packets.write_field`](#packetswrite_field) | edit | Write a value (a number, or hex bytes as wide as the field) into a field of one packet, as one undoable step. |
+| [`packets.columns.apply`](#packetscolumnsapply) | edit | Change the same columns (byte offsets) of every packet, or of some, laid out one packet per row: invert, fill, XOR, add, set, number or swap the byte order, as one undoable step. |
+| [`packets.columns.delete`](#packetscolumnsdelete) | edit | Remove the same columns (byte offsets) from every packet, or from some, as one undoable step; length fields and checksums are not changed. |
+| [`packets.columns.read`](#packetscolumnsread) | read | The same columns (byte offsets) of every packet, or of some, as hex lines or CSV. |
+| [`packets.tshark_decode`](#packetstshark_decode) | job | Have Wireshark's tshark decode some of a set's packets (run locally with -n) as a background job; the protocols it named are the job's result, and in the window its layers merge into the Packets panel's. |
 | [`analysis.overview`](#analysisoverview) | read | Map the whole document: a summary of what it is, its regions with offsets, likely record widths and confident findings. |
 | [`analysis.overview_job`](#analysisoverview_job) | job | Start analysis.overview as a background job and return its id at once; the report arrives as job.finished's result and from jobs.status, for large files and clients that should not wait. |
 | [`analysis.statistics`](#analysisstatistics) | read | Measure a span: entropy, chi-square, serial correlation, printable, zero and high-byte fractions, distinct values and a verdict. |
@@ -840,6 +854,7 @@ Take a set of packets from a document: a capture in it, a range cut into fixed r
 | `doc` | string | no | Document id, path or "current" (the default). |
 | `framing` | Framing | no | For `protocol_framing`: how the range is cut into messages; found by the protocol analysis when omitted. |
 | `from` | `"capture"` \| `"split_fixed"` \| `"length_field"` \| `"pattern"` \| `"selection"` \| `"protocol_framing"` | yes | Where the packets come from. |
+| `gunzip` | boolean | no | For `capture`: the capture at `start` is compressed with gzip. It is opened decompressed as a document of its own, derived from this one, and the set is taken from there. |
 | `len` | integer | no | Bytes in the range; to the end of the document when omitted. |
 | `length_field` | LengthFieldSpec | no | For `length_field`: where each frame's length is and what it counts. |
 | `link` | `"ethernet"` \| `"raw_ip"` \| `"linux_sll"` \| `"linux_sll2"` \| `"bsd_loopback"` \| `"open_bsd_loopback"` \| `"ppp"` \| `"ppp_hdlc"` \| `"ieee80211"` \| `"radiotap"` \| `"unknown"` | no | What every packet's first byte is, such as "ethernet" or "raw_ip"; each packet's own (its capture's, or frames of unknown format) when omitted. |
@@ -862,9 +877,11 @@ Take a set of packets from a document: a capture in it, a range cut into fixed r
 | `from` | `"capture"` \| `"split_fixed"` \| `"length_field"` \| `"pattern"` \| `"selection"` \| `"protocol_framing"` | yes | Where a set's packets come from. |
 | `link` | `"ethernet"` \| `"raw_ip"` \| `"linux_sll"` \| `"linux_sll2"` \| `"bsd_loopback"` \| `"open_bsd_loopback"` \| `"ppp"` \| `"ppp_hdlc"` \| `"ieee80211"` \| `"radiotap"` \| `"unknown"` | no | The link every packet is read as, when one was chosen. |
 | `name` | string | yes | Such as "pcap capture at 0x40". |
+| `notes` | array of string | no | What the person should know about how the set was taken, such as a decompressed capture cut short. |
 | `ranges` | array of pair | yes | Where the packets were taken from, as [start, len], once worked out (a capture found, the selection's ranges). |
 | `set` | string | yes | The set's id, such as "set-1", for the other packet methods. |
 | `template` | boolean | yes | Whether a template decodes frames no protocol reads. |
+| `template_name` | string | no | The template's name when it was chosen by name, or "protocol" for the one the protocol analysis suggested. |
 
 ### packets.sets.list
 
@@ -918,9 +935,11 @@ Choose the protocol a set's frames of unknown format are decoded as, or detectio
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `detect` | boolean | no | Whether to detect the protocol when none is given (true by default). |
+| `link` | `"ethernet"` \| `"raw_ip"` \| `"linux_sll"` \| `"linux_sll2"` \| `"bsd_loopback"` \| `"open_bsd_loopback"` \| `"ppp"` \| `"ppp_hdlc"` \| `"ieee80211"` \| `"radiotap"` \| `"unknown"` | no | What every packet's first byte is, such as "ethernet"; null for each packet's own; omitted, the set's link stays as it is. |
 | `protocol` | `"ethernet"` \| `"raw_ip"` \| `"dns"` \| `"snmp"` \| `"ntp"` \| `"modbus_tcp"` \| `"mqtt"` \| `"tls"` \| `"dhcp"` \| `"tftp"` \| `"rtp"` \| `"rtcp"` \| `"http"` \| `"dns_over_tcp"` \| `"tpkt"` \| `"nbss"` | no | The protocol frames of unknown format are decoded as; omitted, they are detected (unless `detect` is false). |
 | `set` | string | yes |  |
-| `template` | string | no | Template source for frames no protocol reads; omitted, the set's template is dropped. |
+| `template` | string | no | Template source for frames no protocol reads, or "protocol" for the template the protocol analysis suggested for the document; omitted (with no template_name), the set's template is dropped. |
+| `template_name` | string | no | A built-in or saved template, by name, for frames no protocol reads. |
 
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -934,9 +953,11 @@ Choose the protocol a set's frames of unknown format are decoded as, or detectio
 | `from` | `"capture"` \| `"split_fixed"` \| `"length_field"` \| `"pattern"` \| `"selection"` \| `"protocol_framing"` | yes | Where a set's packets come from. |
 | `link` | `"ethernet"` \| `"raw_ip"` \| `"linux_sll"` \| `"linux_sll2"` \| `"bsd_loopback"` \| `"open_bsd_loopback"` \| `"ppp"` \| `"ppp_hdlc"` \| `"ieee80211"` \| `"radiotap"` \| `"unknown"` | no | The link every packet is read as, when one was chosen. |
 | `name` | string | yes | Such as "pcap capture at 0x40". |
+| `notes` | array of string | no | What the person should know about how the set was taken, such as a decompressed capture cut short. |
 | `ranges` | array of pair | yes | Where the packets were taken from, as [start, len], once worked out (a capture found, the selection's ranges). |
 | `set` | string | yes | The set's id, such as "set-1", for the other packet methods. |
 | `template` | boolean | yes | Whether a template decodes frames no protocol reads. |
+| `template_name` | string | no | The template's name when it was chosen by name, or "protocol" for the one the protocol analysis suggested. |
 
 ### packets.export_pcap
 
@@ -946,6 +967,7 @@ A set's packets (those a filter keeps) as a pcap file, returned or written to a 
 | --- | --- | --- | --- |
 | `encoding` | `"hex"` \| `"base64"` \| `"text"` | no | How the returned file is written: base64 (the default) or hex. |
 | `filter` | string | no | Only the packets this display filter keeps. |
+| `indices` | array of integer | no | Only these packets, by their index in the set (those of them the filter keeps, when one is given too). |
 | `path` | string | no | Write the pcap file here instead of returning it; needs leave to edit, as writing a file does. |
 | `set` | string | yes |  |
 
@@ -985,6 +1007,300 @@ The payloads of a packet's conversation in order, each with its direction, and t
 | `retransmissions` | integer | yes | TCP segments sent again and left out. |
 | `text` | string | yes | The whole stream as text, each direction's turns marked. |
 | `truncated` | boolean | yes | Whether the stream was longer than is kept. |
+
+### packets.find_captures
+
+The captures inside a span of a document (pcap, pcapng, snoop, Network Monitor or ERF, or one of these compressed with gzip), each with its offset, format, link type and packets, for packets.sets.create.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `doc` | string | no | Document id, path or "current" (the default). |
+| `len` | integer | no | Bytes looked in; to the end of the document when omitted, at most 128 MiB. |
+| `start` | integer | no | First offset looked in (0 by default). |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `captures` | array of CaptureEntry | yes |  |
+
+### packets.sets.add_packets
+
+Add ranges of the document to a set as packets of their own, so packets can be gathered one at a time; the set then keeps its packets where they are.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `ranges` | array of pair | yes | The ranges to add, each `[start, len]`, one packet each. |
+| `set` | string | yes |  |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `capped` | boolean | yes | Whether the source had more packets than a set holds. |
+| `count` | integer | yes | Packets in the set. |
+| `decode_as` | `"ethernet"` \| `"raw_ip"` \| `"dns"` \| `"snmp"` \| `"ntp"` \| `"modbus_tcp"` \| `"mqtt"` \| `"tls"` \| `"dhcp"` \| `"tftp"` \| `"rtp"` \| `"rtcp"` \| `"http"` \| `"dns_over_tcp"` \| `"tpkt"` \| `"nbss"` | no | The protocol chosen for frames of unknown format. |
+| `description` | string | yes | How the packets were found. |
+| `detect` | boolean | yes |  |
+| `doc` | string | yes | The document its packets are in. |
+| `framing` | Framing | no | The framing that cut the messages, for `protocol_framing`. |
+| `from` | `"capture"` \| `"split_fixed"` \| `"length_field"` \| `"pattern"` \| `"selection"` \| `"protocol_framing"` | yes | Where a set's packets come from. |
+| `link` | `"ethernet"` \| `"raw_ip"` \| `"linux_sll"` \| `"linux_sll2"` \| `"bsd_loopback"` \| `"open_bsd_loopback"` \| `"ppp"` \| `"ppp_hdlc"` \| `"ieee80211"` \| `"radiotap"` \| `"unknown"` | no | The link every packet is read as, when one was chosen. |
+| `name` | string | yes | Such as "pcap capture at 0x40". |
+| `notes` | array of string | no | What the person should know about how the set was taken, such as a decompressed capture cut short. |
+| `ranges` | array of pair | yes | Where the packets were taken from, as [start, len], once worked out (a capture found, the selection's ranges). |
+| `set` | string | yes | The set's id, such as "set-1", for the other packet methods. |
+| `template` | boolean | yes | Whether a template decodes frames no protocol reads. |
+| `template_name` | string | no | The template's name when it was chosen by name, or "protocol" for the one the protocol analysis suggested. |
+
+### packets.sets.refresh
+
+Find a set's packets again, the way they were found, in another document (the current one by default), which the set then belongs to.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `doc` | string | no | The document to find the packets in: id, path or "current" (the default). |
+| `set` | string | yes |  |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `capped` | boolean | yes | Whether the source had more packets than a set holds. |
+| `count` | integer | yes | Packets in the set. |
+| `decode_as` | `"ethernet"` \| `"raw_ip"` \| `"dns"` \| `"snmp"` \| `"ntp"` \| `"modbus_tcp"` \| `"mqtt"` \| `"tls"` \| `"dhcp"` \| `"tftp"` \| `"rtp"` \| `"rtcp"` \| `"http"` \| `"dns_over_tcp"` \| `"tpkt"` \| `"nbss"` | no | The protocol chosen for frames of unknown format. |
+| `description` | string | yes | How the packets were found. |
+| `detect` | boolean | yes |  |
+| `doc` | string | yes | The document its packets are in. |
+| `framing` | Framing | no | The framing that cut the messages, for `protocol_framing`. |
+| `from` | `"capture"` \| `"split_fixed"` \| `"length_field"` \| `"pattern"` \| `"selection"` \| `"protocol_framing"` | yes | Where a set's packets come from. |
+| `link` | `"ethernet"` \| `"raw_ip"` \| `"linux_sll"` \| `"linux_sll2"` \| `"bsd_loopback"` \| `"open_bsd_loopback"` \| `"ppp"` \| `"ppp_hdlc"` \| `"ieee80211"` \| `"radiotap"` \| `"unknown"` | no | The link every packet is read as, when one was chosen. |
+| `name` | string | yes | Such as "pcap capture at 0x40". |
+| `notes` | array of string | no | What the person should know about how the set was taken, such as a decompressed capture cut short. |
+| `ranges` | array of pair | yes | Where the packets were taken from, as [start, len], once worked out (a capture found, the selection's ranges). |
+| `set` | string | yes | The set's id, such as "set-1", for the other packet methods. |
+| `template` | boolean | yes | Whether a template decodes frames no protocol reads. |
+| `template_name` | string | no | The template's name when it was chosen by name, or "protocol" for the one the protocol analysis suggested. |
+
+### packets.detect_length_field
+
+Look for a length field that cuts a span into frames, with the protocol analysis's framing detection; returns it as packets.sets.create's length_field, or the best framing found instead.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `doc` | string | no | Document id, path or "current" (the default). |
+| `len` | integer | no | Bytes in the span; to the end of the document when omitted. |
+| `start` | integer | no | First offset (0 by default). |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `best_framing` | string | no | When no length field was found, the best framing found instead. |
+| `coverage` | number | yes | Share of the span those frames cover, 0 to 1. |
+| `description` | string | no | The field in words, such as "u16 big-endian length at +1". |
+| `frames` | integer | yes | Frames the framing that found it cuts. |
+| `length_field` | LengthFieldSpec | no | The length field, as packets.sets.create's length_field; absent when none was found. |
+
+### packets.endpoints
+
+The addresses in a set (the packets a filter keeps), busiest first, with the packets and bytes each sent and received.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `filter` | string | no | Only the packets this display filter keeps. |
+| `set` | string | yes |  |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `endpoints` | array of EndpointEntry | yes |  |
+
+### packets.extract
+
+Some of a set's packets' bytes one after another, returned or written to a path given (which needs leave to edit).
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `encoding` | `"hex"` \| `"base64"` \| `"text"` | no | How the returned bytes are written: base64 (the default) or hex. |
+| `indices` | array of integer | yes | The packets, by their index in the set, in the order wanted. |
+| `path` | string | no | Write the bytes here instead of returning them; needs leave to edit, as writing a file does. |
+| `set` | string | yes |  |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `count` | integer | yes | Packets taken. |
+| `data` | string | no | The bytes, when no path was given. |
+| `len` | integer | yes | Bytes taken. |
+| `path` | string | no | Where they were written, when a path was given. |
+
+### packets.delete
+
+Remove packets from the document (their whole capture records, so a capture stays readable), as one undoable step.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `indices` | array of integer | yes | The packets, by their index in the set. |
+| `set` | string | yes |  |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `bytes_removed` | integer | yes | Bytes removed from the document. |
+| `checksums` | array of string | yes | For packets.fix_checksums: each checksum rewritten, such as "UDP". |
+| `doc` | string | yes | Id of the document edited. |
+| `label` | string | no | What the step is called in the undo history; absent when nothing needed changing. |
+| `len` | integer | yes |  |
+| `packets` | integer | yes | Packets changed. |
+| `ranges` | array of pair | yes | The document ranges changed, as [start, len]. |
+| `version` | integer | yes | The document's version and length after the change. |
+
+### packets.fix_checksums
+
+Recompute the IPv4 header, TCP and UDP checksums of some of a set's packets, as one undoable step.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `indices` | array of integer | yes | The packets, by their index in the set. |
+| `set` | string | yes |  |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `bytes_removed` | integer | yes | Bytes removed from the document. |
+| `checksums` | array of string | yes | For packets.fix_checksums: each checksum rewritten, such as "UDP". |
+| `doc` | string | yes | Id of the document edited. |
+| `label` | string | no | What the step is called in the undo history; absent when nothing needed changing. |
+| `len` | integer | yes |  |
+| `packets` | integer | yes | Packets changed. |
+| `ranges` | array of pair | yes | The document ranges changed, as [start, len]. |
+| `version` | integer | yes | The document's version and length after the change. |
+
+### packets.apply
+
+Invert, fill or XOR some of a set's packets, or the same field of each, as one undoable step.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `field` | FieldSpan | no | Only this field of each packet; packets too short to hold it are left alone. |
+| `indices` | array of integer | yes | The packets, by their index in the set. |
+| `key` | string | no | Hex bytes for fill and XOR. |
+| `op` | `"invert"` \| `"fill"` \| `"xor"` | yes | An operation on whole packets. |
+| `set` | string | yes |  |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `bytes_removed` | integer | yes | Bytes removed from the document. |
+| `checksums` | array of string | yes | For packets.fix_checksums: each checksum rewritten, such as "UDP". |
+| `doc` | string | yes | Id of the document edited. |
+| `label` | string | no | What the step is called in the undo history; absent when nothing needed changing. |
+| `len` | integer | yes |  |
+| `packets` | integer | yes | Packets changed. |
+| `ranges` | array of pair | yes | The document ranges changed, as [start, len]. |
+| `version` | integer | yes | The document's version and length after the change. |
+
+### packets.write_field
+
+Write a value (a number, or hex bytes as wide as the field) into a field of one packet, as one undoable step.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `index` | integer | yes | The packet's index in the set. |
+| `len` | integer | yes |  |
+| `little_endian` | boolean | no | Write a number least significant byte first (big-endian, network order, by default). |
+| `offset` | integer | yes | Where the field is, from the packet's first byte. |
+| `set` | string | yes |  |
+| `value` | string | yes | A whole number (decimal or 0x hex), an IPv4 or IPv6 address, a MAC address, or exactly len hex bytes. |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `bytes_removed` | integer | yes | Bytes removed from the document. |
+| `checksums` | array of string | yes | For packets.fix_checksums: each checksum rewritten, such as "UDP". |
+| `doc` | string | yes | Id of the document edited. |
+| `label` | string | no | What the step is called in the undo history; absent when nothing needed changing. |
+| `len` | integer | yes |  |
+| `packets` | integer | yes | Packets changed. |
+| `ranges` | array of pair | yes | The document ranges changed, as [start, len]. |
+| `version` | integer | yes | The document's version and length after the change. |
+
+### packets.columns.apply
+
+Change the same columns (byte offsets) of every packet, or of some, laid out one packet per row: invert, fill, XOR, add, set, number or swap the byte order, as one undoable step.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `first` | integer | yes |  |
+| `group` | integer | no | For swap: bytes in each group reversed (2, 4 or 8). |
+| `indices` | array of integer | no |  |
+| `key` | string | no | Hex bytes for fill, XOR and add. |
+| `little_endian` | boolean | no | For set and counter: write numbers least significant byte first. |
+| `op` | `"invert"` \| `"fill"` \| `"xor"` \| `"add"` \| `"set"` \| `"counter"` \| `"swap"` | yes | What a column operation does. |
+| `record_headers` | boolean | no |  |
+| `set` | string | yes |  |
+| `shifts` | array of integer | no |  |
+| `start` | integer | no | For counter: the first packet's number (0 by default). |
+| `step` | integer | no | For counter: added for each packet after (1 by default). |
+| `value` | string | no | For set: a number, or exactly as many hex bytes as columns. |
+| `width` | integer | yes |  |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `bytes_removed` | integer | yes | Bytes removed from the document. |
+| `checksums` | array of string | yes | For packets.fix_checksums: each checksum rewritten, such as "UDP". |
+| `doc` | string | yes | Id of the document edited. |
+| `label` | string | no | What the step is called in the undo history; absent when nothing needed changing. |
+| `len` | integer | yes |  |
+| `packets` | integer | yes | Packets changed. |
+| `ranges` | array of pair | yes | The document ranges changed, as [start, len]. |
+| `version` | integer | yes | The document's version and length after the change. |
+
+### packets.columns.delete
+
+Remove the same columns (byte offsets) from every packet, or from some, as one undoable step; length fields and checksums are not changed.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `first` | integer | yes | The first column, a byte offset into each row. |
+| `indices` | array of integer | no | Only these packets, by their index in the set, in row order; every packet when omitted. |
+| `record_headers` | boolean | no | Rows start at each packet's capture record header rather than its data. |
+| `set` | string | yes |  |
+| `shifts` | array of integer | no | How far each row is shifted right to line the rows up, one per packet in `indices` (or per packet of the set); none by default. |
+| `width` | integer | yes | Columns, at least 1. |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `bytes_removed` | integer | yes | Bytes removed from the document. |
+| `checksums` | array of string | yes | For packets.fix_checksums: each checksum rewritten, such as "UDP". |
+| `doc` | string | yes | Id of the document edited. |
+| `label` | string | no | What the step is called in the undo history; absent when nothing needed changing. |
+| `len` | integer | yes |  |
+| `packets` | integer | yes | Packets changed. |
+| `ranges` | array of pair | yes | The document ranges changed, as [start, len]. |
+| `version` | integer | yes | The document's version and length after the change. |
+
+### packets.columns.read
+
+The same columns (byte offsets) of every packet, or of some, as hex lines or CSV.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `first` | integer | yes |  |
+| `format` | `"hex"` \| `"csv"` | no | How columns are written as text. |
+| `indices` | array of integer | no |  |
+| `record_headers` | boolean | no |  |
+| `set` | string | yes |  |
+| `shifts` | array of integer | no |  |
+| `width` | integer | yes |  |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `left_out` | integer | yes | Packets that reach the columns but were left out, past 16 MiB. |
+| `packets` | integer | yes | Packets written. |
+| `text` | string | yes |  |
+
+### packets.tshark_decode
+
+Have Wireshark's tshark decode some of a set's packets (run locally with -n) as a background job; the protocols it named are the job's result, and in the window its layers merge into the Packets panel's.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `filter` | string | no | Only the packets this display filter keeps. |
+| `indices` | array of integer | no | Only these packets, by their index in the set; every packet (those the filter keeps) when omitted, at most 5,000. |
+| `mode` | `"fill_gaps"` \| `"everything"` | no | How tshark's layers go with ours. |
+| `set` | string | yes |  |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `job` | string | yes | Follow it with jobs.status, or on job.progress and job.finished. |
 
 ### analysis.overview
 

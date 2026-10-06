@@ -10,10 +10,13 @@ use std::sync::Arc;
 
 use eframe::egui::{self, Align2, Color32, FontId, Key, Modifiers, Rect, RichText, Sense, Stroke, TextWrapMode, Ui, vec2};
 
-use crate::app::{DialogKind, FileAction, ViewerApp};
+use base64::Engine;
+
+use crate::api::packet_sets::{FieldSpan, PacketEditResult, PacketOp};
+use crate::app::ViewerApp;
 use crate::packets::edit::{self, ByteOperation};
 use crate::packets::dissect::WiresharkNames;
-use crate::packets::{self, ConversationKey, ExportPacket, Layer};
+use crate::packets::{self, ConversationKey, Layer};
 use crate::plugin::Field;
 use crate::panel_packets::{self as panel, FieldEdit, PacketsState, PacketsView, Statistics};
 use crate::panel_packets_grid::{self as grid, PacketLayout};
@@ -190,32 +193,37 @@ pub(crate) fn click_row(state: &mut PacketsState, app: &mut ViewerApp, index: us
     } else {
         state.selected = BTreeSet::from([index]);
     }
-    focus_packet(state, app, index);
     if state.selected.len() > 1 {
+        focus_packet_only(state, index);
         select_packets_in_document(state, app);
+    } else {
+        focus_packet(state, app, index);
     }
 }
 
-/// Several packets are selected: select all their bytes in the document as
-/// one multi-range selection, the focused packet being the primary range.
-fn select_packets_in_document(state: &mut PacketsState, app: &mut ViewerApp) {
-    let Some(set) = &state.set else { return };
-    let range = |index: usize| set.packets.get(index).map(|packet| (packet.offset, packet.len));
-    let ranges = state.selected.iter().filter_map(|&index| range(index)).collect();
-    app.select_ranges(ranges, state.focus.and_then(range));
-    panel::claim_main_selection(app);
-}
-
-/// Make `index` the packet shown in detail and select its bytes.
-fn focus_packet(state: &mut PacketsState, app: &mut ViewerApp, index: usize) {
+/// Make `index` the packet shown in detail, leaving the selection be.
+fn focus_packet_only(state: &mut PacketsState, index: usize) {
     if state.focus != Some(index) {
         state.selected_field = None;
         state.field_edit = None;
         state.hex = panel::HexCursor::default();
     }
     state.focus = Some(index);
+}
+
+/// Several packets are selected: select all their bytes in the document as
+/// one multi-range selection.
+fn select_packets_in_document(state: &mut PacketsState, app: &mut ViewerApp) {
+    let Some(set) = &state.set else { return };
+    let ranges = state.selected.iter().filter_map(|&index| set.packets.get(index)).map(|packet| (packet.offset, packet.len)).collect();
+    panel::select_ranges_in_document(state, app, ranges);
+}
+
+/// Make `index` the packet shown in detail and select its bytes.
+fn focus_packet(state: &mut PacketsState, app: &mut ViewerApp, index: usize) {
+    focus_packet_only(state, index);
     if let Some(packet) = state.set.as_ref().and_then(|set| set.packets.get(index)).cloned() {
-        panel::select_in_document(app, packet.offset, packet.len, format!("Packet {}", index + 1));
+        panel::select_in_document(state, app, packet.offset, packet.len, format!("Packet {}", index + 1));
     }
 }
 
@@ -283,110 +291,70 @@ fn show_operations(state: &mut PacketsState, app: &mut ViewerApp, ui: &mut Ui) {
     });
 }
 
-/// The document ranges an operation acts on: each target packet, or the
-/// chosen field within each.
-fn operation_ranges(state: &PacketsState) -> Vec<(usize, usize)> {
-    let Some(set) = &state.set else { return Vec::new() };
-    let field = if state.operation_on_field { state.selected_field } else { None };
-    targets(state)
-        .into_iter()
-        .filter_map(|index| set.packets.get(index))
-        .filter_map(|packet| match field {
-            None => Some((packet.offset, packet.len)),
-            Some((offset, len)) if offset < packet.len => Some((packet.offset + offset, len.min(packet.len - offset))),
-            Some(_) => None,
-        })
-        .collect()
+/// Carry out `method` on the set shown, with `params` (the set's id is
+/// added), and return its result; a failure is said in the viewer.
+fn on_set<R: serde::de::DeserializeOwned>(state: &mut PacketsState, app: &mut ViewerApp, method: &str, mut params: serde_json::Value) -> Option<R> {
+    let set = panel::api_set_id(state, app)?;
+    params["set"] = serde_json::json!(set);
+    match app.perform_typed::<R>(method, params) {
+        Ok(result) => Some(result),
+        Err(_) => {
+            state.note = Some(panel::Note { text: app.status.clone(), is_error: true });
+            None
+        }
+    }
 }
 
-/// Invert, fill or XOR every target packet (or the chosen field in each).
+/// Invert, fill or XOR every target packet (or the chosen field in each),
+/// as `packets.apply`.
 pub fn apply_operation(state: &mut PacketsState, app: &mut ViewerApp, operation: &ByteOperation) {
-    let ranges = operation_ranges(state);
-    if ranges.is_empty() {
-        state.note = Some(panel::Note { text: "Nothing to change: no packet holds the chosen field.".to_string(), is_error: true });
-        return;
+    let (op, key) = match operation {
+        ByteOperation::Invert => (PacketOp::Invert, None),
+        ByteOperation::Fill(key) => (PacketOp::Fill, Some(crate::ops::to_compact_hex(key))),
+        ByteOperation::Xor(key) => (PacketOp::Xor, Some(crate::ops::to_compact_hex(key))),
+    };
+    let field = if state.operation_on_field { state.selected_field.map(|(offset, len)| FieldSpan { offset, len }) } else { None };
+    let mut params = serde_json::json!({ "indices": targets(state), "op": op });
+    if let Some(key) = key {
+        params["key"] = serde_json::json!(key);
     }
-    let Some((start, len)) = edit::covering_span(&ranges) else { return };
-    if len <= SINGLE_EDIT_LIMIT {
-        let mut span = app.document.read_range(start, len);
-        edit::apply_to_ranges(&mut span, start, &ranges, operation);
-        let span_len = span.len();
-        app.document.replace(start, span_len, &span);
-    } else {
-        for &(offset, len) in &ranges {
-            let mut bytes = app.document.read_range(offset, len);
-            operation.apply(&mut bytes);
-            app.document.overwrite(offset, &bytes);
-        }
+    if let Some(field) = field {
+        params["field"] = serde_json::json!(field);
     }
-    let what = if state.operation_on_field { "the chosen field of" } else { "" };
-    state.note = Some(panel::Note { text: format!("{} {what} {} packets. Undo with Cmd+Z.", operation.label(), ranges.len()), is_error: false });
+    let Some(result) = on_set::<PacketEditResult>(state, app, "packets.apply", params) else { return };
+    let what = if field.is_some() { "the chosen field of" } else { "" };
+    state.note = Some(panel::Note { text: format!("{} {what} {} packets. Undo with Cmd+Z.", operation.label(), result.packets), is_error: false });
 }
 
-/// Write `(offset, bytes)` patches as one undoable edit when they are close
-/// together, else one edit each.
-fn write_patches(app: &mut ViewerApp, patches: &[(usize, Vec<u8>)]) {
-    let ranges: Vec<(usize, usize)> = patches.iter().map(|(offset, bytes)| (*offset, bytes.len())).collect();
-    let Some((start, len)) = edit::covering_span(&ranges) else { return };
-    if len <= SINGLE_EDIT_LIMIT {
-        let mut span = app.document.read_range(start, len);
-        for (offset, bytes) in patches {
-            let at = offset - start;
-            let end = (at + bytes.len()).min(span.len());
-            if at < end {
-                span[at..end].copy_from_slice(&bytes[..end - at]);
-            }
-        }
-        let span_len = span.len();
-        app.document.replace(start, span_len, &span);
-    } else {
-        for (offset, bytes) in patches {
-            app.document.overwrite(*offset, bytes);
-        }
-    }
-}
-
-/// Recompute the IPv4, TCP and UDP checksums of every target packet.
+/// Recompute the IPv4, TCP and UDP checksums of every target packet, as
+/// `packets.fix_checksums`.
 pub fn fix_checksums(state: &mut PacketsState, app: &mut ViewerApp) {
-    let Some(set) = state.set.clone() else { return };
-    let mut patches = Vec::new();
-    let mut kinds: Vec<&'static str> = Vec::new();
-    for index in targets(state) {
-        let Some(packet) = set.packets.get(index) else { continue };
-        let bytes = app.document.read_range(packet.offset, packet.len.min(panel::PACKET_READ_LIMIT));
-        let dissection = packets::dissect_with(&bytes, state.link_choice.apply(packet.link), &state.raw);
-        for repair in edit::checksum_repairs(&bytes, &dissection) {
-            if !kinds.contains(&repair.what) {
-                kinds.push(repair.what);
-            }
-            patches.push((packet.offset + repair.offset, repair.bytes.to_vec()));
-        }
-    }
-    let text = if patches.is_empty() {
+    let params = serde_json::json!({ "indices": targets(state) });
+    let Some(result) = on_set::<PacketEditResult>(state, app, "packets.fix_checksums", params) else { return };
+    let text = if result.checksums.is_empty() {
         "Every checksum is already correct.".to_string()
     } else {
-        write_patches(app, &patches);
-        format!("Fixed {} checksums ({}). Undo with Cmd+Z.", patches.len(), kinds.join(", "))
+        let mut kinds: Vec<&str> = Vec::new();
+        for kind in &result.checksums {
+            if !kinds.contains(&kind.as_str()) {
+                kinds.push(kind);
+            }
+        }
+        format!("Fixed {} checksums ({}). Undo with Cmd+Z.", result.checksums.len(), kinds.join(", "))
     };
     state.note = Some(panel::Note { text, is_error: false });
 }
 
 /// Remove the target packets' bytes (their whole capture records) from the
-/// document.
+/// document, as `packets.delete`.
 pub fn delete_selected_packets(state: &mut PacketsState, app: &mut ViewerApp) {
     let Some(set) = state.set.clone() else { return };
     let chosen = targets(state);
     let removed = edit::merge_ranges(chosen.iter().filter_map(|&index| set.packets.get(index)).map(|packet| packet.removal_range()).collect());
-    let Some((start, len)) = edit::covering_span(&removed) else { return };
+    let Some((start, _)) = edit::covering_span(&removed) else { return };
     let built = state.built;
-    if len <= SINGLE_EDIT_LIMIT {
-        let span = app.document.read_range(start, len);
-        let kept = edit::without_ranges(&span, start, &removed);
-        app.document.replace(start, span.len(), &kept);
-    } else {
-        for &(offset, len) in removed.iter().rev() {
-            app.document.delete(offset, len);
-        }
+    if on_set::<PacketEditResult>(state, app, "packets.delete", serde_json::json!({ "indices": chosen })).is_none() {
+        return;
     }
     app.set_cursor(start.min(app.document.len()), false);
     panel::claim_main_selection(app);
@@ -413,57 +381,41 @@ pub fn delete_selected_packets(state: &mut PacketsState, app: &mut ViewerApp) {
     }
 }
 
-/// The target packets' bytes, one after another.
-fn selected_bytes(state: &PacketsState, app: &mut ViewerApp) -> Vec<u8> {
-    let Some(set) = &state.set else { return Vec::new() };
-    let mut bytes = Vec::new();
-    for index in targets(state) {
-        if let Some(packet) = set.packets.get(index) {
-            bytes.extend(app.document.read_range(packet.offset, packet.len.min(panel::PACKET_READ_LIMIT)));
-        }
-    }
-    bytes
-}
-
 /// Save the target packets' bytes, or open them as a document.
 fn extract_selected(state: &mut PacketsState, app: &mut ViewerApp, open: bool) {
     let count = targets(state).len();
-    let bytes = selected_bytes(state, app);
     let name = if count == 1 { format!("packet {}", state.focus.map_or(0, |i| i + 1)) } else { format!("{count} packets") };
     if open {
-        app.open_derived(bytes, name);
-        state.foreign_document = true;
-    } else {
-        let dialog = rfd::AsyncFileDialog::new().set_title("Save packet bytes").set_file_name(format!("{}.bin", name.replace(' ', "-")));
-        app.ask_for_file(DialogKind::Save, dialog, FileAction::SaveBytes { name, bytes: Arc::new(bytes) });
+        let Some(set) = &state.set else { return };
+        let ranges: Vec<(usize, usize)> = targets(state).into_iter().filter_map(|index| set.packets.get(index)).map(|packet| (packet.offset, packet.len.min(panel::PACKET_READ_LIMIT))).collect();
+        open_as_document(state, app, serde_json::json!({ "ranges": ranges, "name": name }));
+    } else if let Some(set) = panel::api_set_id(state, app) {
+        let params = serde_json::json!({ "set": set, "indices": targets(state) });
+        app.save_dialog_then_call("Save packet bytes", &format!("{}.bin", name.replace(' ', "-")), "packets.extract", params, "path");
     }
 }
 
-/// Save packets as a pcap file: the selected ones, or every shown one.
-fn export_pcap(state: &mut PacketsState, app: &mut ViewerApp, selected_only: bool) {
-    let Some(set) = state.set.clone() else { return };
-    let indices: Vec<usize> = if selected_only { targets(state) } else { state.visible.clone() };
-    let contents: Vec<(Vec<u8>, usize)> = indices
-        .iter()
-        .filter_map(|&index| set.packets.get(index).map(|packet| (index, packet)))
-        .map(|(index, packet)| (app.document.read_range(packet.offset, packet.len.min(panel::PACKET_READ_LIMIT)), index))
-        .collect();
-    let export: Vec<ExportPacket> = contents
-        .iter()
-        .map(|(bytes, index)| {
-            let packet = &set.packets[*index];
-            let link = state.rows.get(*index).map_or_else(|| state.link_choice.apply(packet.link), |row| row.link);
-            ExportPacket { bytes, original_len: packet.len, timestamp: packet.timestamp, link }
-        })
-        .collect();
-    match packets::write_pcap(&export) {
-        Ok(file) => {
-            let name = format!("{} packets as pcap", export.len());
-            let dialog = rfd::AsyncFileDialog::new().set_title("Export packets as pcap").set_file_name("packets.pcap");
-            app.ask_for_file(DialogKind::Save, dialog, FileAction::SaveBytes { name, bytes: Arc::new(file) });
-        }
-        Err(error) => state.note = Some(panel::Note { text: error.to_string(), is_error: true }),
+/// Open bytes as a document derived from the one shown, through
+/// `documents.derive` with `params`; the packets then describe a document
+/// not shown.
+fn open_as_document(state: &mut PacketsState, app: &mut ViewerApp, params: serde_json::Value) {
+    if app.perform("documents.derive", params).is_ok() {
+        state.foreign_document = true;
+    } else {
+        state.note = Some(panel::Note { text: app.status.clone(), is_error: true });
     }
+}
+
+/// Save packets as a pcap file through `packets.export_pcap`, once a path
+/// is chosen: the selected ones, or every shown one.
+fn export_pcap(state: &mut PacketsState, app: &mut ViewerApp, selected_only: bool) {
+    let Some(set) = panel::api_set_id(state, app) else { return };
+    let params = match (selected_only, state.visible.len() == state.rows.len()) {
+        (true, _) => serde_json::json!({ "set": set, "indices": targets(state) }),
+        (false, false) => serde_json::json!({ "set": set, "indices": state.visible }),
+        (false, true) => serde_json::json!({ "set": set }),
+    };
+    app.save_dialog_then_call("Export packets as pcap", "packets.pcap", "packets.export_pcap", params, "path");
 }
 
 // ---------------------------------------------------------------------------
@@ -493,8 +445,8 @@ fn show_detail(state: &mut PacketsState, app: &mut ViewerApp, ui: &mut Ui) {
         let time = packet.timestamp.map_or(String::new(), |t| format!(" · t={t:.6}"));
         ui.label(RichText::new(format!("Packet {} · {} · {:#x} · {} bytes{time}", detail.index + 1, packet.origin, packet.offset, packet.len)).strong());
         if ui.small_button("Open packet as document").clicked() {
-            app.open_derived(detail.bytes.clone(), format!("packet {}", detail.index + 1));
-            state.foreign_document = true;
+            let params = serde_json::json!({ "start": packet.offset, "len": detail.bytes.len(), "name": format!("packet {}", detail.index + 1) });
+            open_as_document(state, app, params);
         }
         if let Some(flow) = detail.dissection.flow
             && ui.small_button("Follow stream").clicked()
@@ -504,7 +456,7 @@ fn show_detail(state: &mut PacketsState, app: &mut ViewerApp, ui: &mut Ui) {
         if crate::panel_packets_tshark::can_decode_one(state, app)
             && ui.small_button("Decode with tshark").on_hover_text("Have Wireshark's tshark decode this packet alone (run locally with -n)").clicked()
         {
-            crate::panel_packets_tshark::start(state, app, Some(detail.index));
+            crate::panel_packets_tshark::ask_to_decode(state, app, Some(detail.index));
         }
     });
     for note in &detail.dissection.notes {
@@ -555,7 +507,7 @@ fn act_on_tree(state: &mut PacketsState, app: &mut ViewerApp, action: TreeAction
             state.selected_field = Some((offset, len));
             state.hex.position = offset;
             state.hex.pending_low_nibble = false;
-            panel::select_in_document(app, packet_offset + offset, len, name);
+            panel::select_in_document(state, app, packet_offset + offset, len, name);
         }
         TreeAction::Reference { offset, len, name } => {
             act_on_tree(state, app, TreeAction::Select { offset, len, name: name.clone() }, packet_offset);
@@ -567,14 +519,16 @@ fn act_on_tree(state: &mut PacketsState, app: &mut ViewerApp, action: TreeAction
         }
         TreeAction::CancelEdit => state.field_edit = None,
         TreeAction::ApplyEdit => {
-            let Some(field_edit) = &mut state.field_edit else { return };
-            match edit::encode_value(&field_edit.text, field_edit.len, field_edit.little_endian) {
-                Ok(bytes) => {
-                    app.document.overwrite(packet_offset + field_edit.offset, &bytes);
-                    state.note = Some(panel::Note { text: format!("Wrote {} bytes at {:#x}. Undo with Cmd+Z.", bytes.len(), packet_offset + field_edit.offset), is_error: false });
-                    state.field_edit = None;
-                }
-                Err(reason) => field_edit.error = Some(reason),
+            let (Some(field_edit), Some(index)) = (&mut state.field_edit, state.focus) else { return };
+            if let Err(reason) = edit::encode_value(&field_edit.text, field_edit.len, field_edit.little_endian) {
+                field_edit.error = Some(reason);
+                return;
+            }
+            let (offset, len) = (field_edit.offset, field_edit.len);
+            let params = serde_json::json!({ "index": index, "offset": offset, "len": len, "value": field_edit.text, "little_endian": field_edit.little_endian });
+            if on_set::<PacketEditResult>(state, app, "packets.write_field", params).is_some() {
+                state.note = Some(panel::Note { text: format!("Wrote {len} bytes at {:#x}. Undo with Cmd+Z.", packet_offset + offset), is_error: false });
+                state.field_edit = None;
             }
         }
     }
@@ -713,7 +667,7 @@ fn show_hex_editor(state: &mut PacketsState, app: &mut ViewerApp, ui: &mut Ui, b
     {
         state.hex = panel::HexCursor { position, pending_low_nibble: false };
         response.request_focus();
-        panel::select_in_document(app, packet_offset + position, 1, format!("Byte +{position}"));
+        panel::select_in_document(state, app, packet_offset + position, 1, format!("Byte +{position}"));
     }
     if response.has_focus() {
         ui.memory_mut(|memory| {
@@ -795,19 +749,24 @@ fn handle_hex_keys(state: &mut PacketsState, app: &mut ViewerApp, ui: &Ui, bytes
     }
 }
 
-/// Overwrite one nibble at the hex cursor. The two digits of a byte become
-/// one undo step, as in the main hex view.
+/// Overwrite one nibble at the hex cursor, as `bytes.write`. The second
+/// digit coalesces with the first, so a typed byte is one undo step, as in
+/// the main hex view.
 fn type_hex_digit(state: &mut PacketsState, app: &mut ViewerApp, bytes: &[u8], packet_offset: usize, digit: u8) {
     let position = state.hex.position.min(bytes.len() - 1);
     let at = packet_offset + position;
     let current = app.document.byte_at(at).unwrap_or(0);
     if state.hex.pending_low_nibble {
-        app.document.overwrite_byte_coalescing(at, (current & 0xF0) | digit);
-        state.hex.pending_low_nibble = false;
-        state.hex.position = (position + 1).min(bytes.len() - 1);
+        let data = crate::ops::to_compact_hex(&[(current & 0xF0) | digit]);
+        if app.perform("bytes.write", serde_json::json!({ "start": at, "data": data, "coalesce": true })).is_ok() {
+            state.hex.pending_low_nibble = false;
+            state.hex.position = (position + 1).min(bytes.len() - 1);
+        }
     } else {
-        app.document.overwrite(at, &[(digit << 4) | (current & 0x0F)]);
-        state.hex.pending_low_nibble = true;
+        let data = crate::ops::to_compact_hex(&[(digit << 4) | (current & 0x0F)]);
+        if app.perform("bytes.write", serde_json::json!({ "start": at, "data": data })).is_ok() {
+            state.hex.pending_low_nibble = true;
+        }
     }
 }
 
@@ -970,10 +929,9 @@ pub fn show_stream(state: &mut PacketsState, app: &mut ViewerApp, ui: &mut Ui) {
         }
     });
     if open {
-        let name = format!("stream {}", stream.key);
-        let bytes = stream.bytes.clone();
-        app.open_derived(bytes, name);
-        state.foreign_document = true;
+        // The stream's bytes are reassembled, not a range of the document.
+        let params = serde_json::json!({ "data": base64::engine::general_purpose::STANDARD.encode(&stream.bytes), "encoding": "base64", "name": format!("stream {}", stream.key) });
+        open_as_document(state, app, params);
     }
 }
 
@@ -1006,8 +964,16 @@ mod tests {
     fn typing_two_hex_digits_overwrites_one_byte_as_one_undo_step() {
         let (mut state, mut app, at, packet) = one_packet();
         state.hex.position = 9; // the protocol byte
+        crate::actions::take_performed();
         type_hex_digit(&mut state, &mut app, &packet, at, 0x0);
         type_hex_digit(&mut state, &mut app, &packet, at, 0x6);
+        assert_eq!(
+            crate::actions::take_performed(),
+            [
+                ("bytes.write".to_string(), serde_json::json!({ "start": at + 9, "data": "01" })),
+                ("bytes.write".to_string(), serde_json::json!({ "start": at + 9, "data": "06", "coalesce": true })),
+            ]
+        );
         assert_eq!(app.document.byte_at(at + 9), Some(6));
         assert_eq!(state.hex.position, 10, "the cursor moves on after a whole byte");
         app.document.undo();
@@ -1017,19 +983,55 @@ mod tests {
     #[test]
     fn a_typed_field_value_is_written_in_network_order_and_checksums_can_then_be_fixed() {
         let (mut state, mut app, at, _) = one_packet();
+        crate::actions::take_performed();
         act_on_tree(&mut state, &mut app, TreeAction::StartEdit { offset: 22, len: 2, little_endian: false, text: "123".to_string() }, at);
         act_on_tree(&mut state, &mut app, TreeAction::ApplyEdit, at);
         assert!(state.field_edit.is_none());
         assert_eq!(app.document.read_range(at + 22, 2), vec![0, 123]);
+        assert_eq!(
+            crate::actions::take_performed(),
+            [("packets.write_field".to_string(), serde_json::json!({ "set": "set-1", "index": 0, "offset": 22, "len": 2, "value": "123", "little_endian": false }))]
+        );
         let edited = app.document.read_range(at, 64);
         assert_eq!(edit::checksum_repairs(&edited, &packets::dissect(&edited, LinkKind::RawIp)).len(), 1, "the UDP checksum is now wrong");
 
         fix_checksums(&mut state, &mut app);
+        assert_eq!(crate::actions::take_performed(), [("packets.fix_checksums".to_string(), serde_json::json!({ "set": "set-1", "indices": [0] }))]);
+        assert_eq!(state.note.as_ref().map(|note| note.text.as_str()), Some("Fixed 1 checksums (UDP). Undo with Cmd+Z."));
         let fixed = app.document.read_range(at, 64);
         assert!(edit::checksum_repairs(&fixed, &packets::dissect(&fixed, LinkKind::RawIp)).is_empty());
+        assert_eq!(app.document.undo_label(), Some("Fix checksums"));
 
         act_on_tree(&mut state, &mut app, TreeAction::StartEdit { offset: 22, len: 2, little_endian: false, text: "70000".to_string() }, at);
         act_on_tree(&mut state, &mut app, TreeAction::ApplyEdit, at);
         assert!(state.field_edit.as_ref().and_then(|e| e.error.as_ref()).is_some_and(|e| e.contains("65535")));
+        assert!(crate::actions::take_performed().is_empty(), "a value that does not fit is not written");
+    }
+
+    #[test]
+    fn inverting_the_chosen_field_of_each_packet_is_one_call_and_one_undo_step() {
+        let (mut state, mut app, at, _) = one_packet();
+        state.selected_field = Some((22, 2));
+        state.operation_on_field = true;
+        crate::actions::take_performed();
+        apply_operation(&mut state, &mut app, &ByteOperation::Xor(vec![0xFF]));
+        assert_eq!(
+            crate::actions::take_performed(),
+            [("packets.apply".to_string(), serde_json::json!({ "set": "set-1", "indices": [0], "op": "xor", "key": "ff", "field": { "offset": 22, "len": 2 } }))]
+        );
+        assert_eq!(app.document.read_range(at + 22, 2), [0xFF, 0xCA], "port 53 XORed");
+        assert_eq!(state.note.as_ref().map(|note| note.text.as_str()), Some("XORed the chosen field of 1 packets. Undo with Cmd+Z."));
+        app.document.undo();
+        assert_eq!(app.document.read_range(at + 22, 2), [0, 53]);
+    }
+
+    #[test]
+    fn opening_the_chosen_packets_as_a_document_derives_one_from_their_bytes() {
+        let (mut state, mut app, at, packet) = one_packet();
+        crate::actions::take_performed();
+        extract_selected(&mut state, &mut app, true);
+        assert_eq!(crate::actions::take_performed(), [("documents.derive".to_string(), serde_json::json!({ "ranges": [[at, packet.len()]], "name": "packet 1" }))]);
+        assert_eq!(app.document.read_range(0, packet.len()), packet);
+        assert!(state.foreign_document, "the packets describe the document left behind");
     }
 }

@@ -19,27 +19,22 @@
 
 use eframe::egui::{self, Align2, Color32, ColorImage, FontId, Modifiers, Pos2, Rect, RichText, Sense, Stroke, TextureHandle, TextureOptions, Ui, Vec2, pos2, vec2};
 
+use crate::api::packet_sets::{ColumnFormat, ColumnOp, ColumnsText, LengthFieldFound, LengthFieldSpec, PacketEditResult, PatternPlace};
 use crate::app::ViewerApp;
 use crate::columns::ColumnKind;
 use crate::packets::edit;
-use crate::packets::grid::{self, Alignment, ColumnOperation, ColumnSlice, ColumnText, RowPlacement};
-use crate::packets::sources::{self, Recipe};
+use crate::packets::grid::{self, Alignment, ColumnOperation, ColumnSlice, RowPlacement};
+use crate::packets::sources::Recipe;
 use crate::packets::split::{self, BytePattern, LengthCounts, LengthEncoding, LengthField, PatternMode};
-use crate::packets::{self, Layer, LinkKind};
-use crate::panel_packets::{self as panel, Note, PacketsState};
-use crate::panel_packets_view::{self as view, SINGLE_EDIT_LIMIT};
+use crate::packets::{self, Layer};
+use crate::panel_packets::{self as panel, Expected, Note, PacketsState};
+use crate::panel_packets_view as view;
 use crate::plugin::Category;
 use crate::raster::{Palette, byte_class_colour};
 use crate::theme;
 
 /// Most bytes read for the grid's rows altogether.
 const GRID_READ_LIMIT: usize = 128 * 1024 * 1024;
-/// Most bytes read from the document to split it by a rule.
-const SPLIT_READ_LIMIT: usize = 64 * 1024 * 1024;
-/// Most bytes of the selected columns copied as text.
-const COPY_LIMIT: usize = 16 * 1024 * 1024;
-/// Candidates asked of the framing detection.
-const DETECT_CANDIDATES: usize = 8;
 /// Share of the pane's height the grid takes.
 const GRID_SHARE: f32 = 0.6;
 const MIN_GRID_HEIGHT: f32 = 160.0;
@@ -376,65 +371,63 @@ fn form_field(form: &SplitForm) -> LengthField {
     field
 }
 
-/// Split the selection or the document by the form's rule and show the frames.
+/// `packets.sets.create` splitting `start`, `len` by the form's rule, or a
+/// note saying why the form cannot be split by.
+fn split_rule_call(state: &PacketsState, app: &ViewerApp, start: usize, len: usize) -> Result<serde_json::Value, String> {
+    let form = &state.grid.split;
+    let params = match form.rule {
+        SplitRule::FixedWidth => serde_json::json!({ "from": "split_fixed", "start": start, "len": len, "record_len": form.row_width }),
+        SplitRule::LengthField => serde_json::json!({ "from": "length_field", "start": start, "len": len, "length_field": LengthFieldSpec::of(&form_field(form)) }),
+        SplitRule::Pattern => {
+            BytePattern::parse(&form.pattern_text).map_err(|reason| format!("The pattern could not be read: {reason}."))?;
+            serde_json::json!({ "from": "pattern", "start": start, "len": len, "pattern": form.pattern_text, "pattern_mode": PatternPlace::of(form.pattern_mode) })
+        }
+    };
+    let mut params = params;
+    params.as_object_mut().expect("an object").extend(panel::current_decoding(state, app));
+    Ok(params)
+}
+
+/// Split the selection or the document by the form's rule and show the
+/// frames, as `packets.sets.create` once the viewer is drawn.
 pub fn split_now(state: &mut PacketsState, app: &mut ViewerApp) {
     let Some((start, len)) = split_range(state, app) else {
         state.note = Some(Note { text: "There are no bytes to split: the range is empty.".to_string(), is_error: true });
         return;
     };
-    let link = state.link_choice.apply(LinkKind::Unknown);
-    let form = &state.grid.split;
-    let result = match form.rule {
-        SplitRule::FixedWidth => sources::split_fixed(start, len, form.row_width, link),
-        SplitRule::LengthField => {
-            let bytes = app.document.read_range(start, len.min(SPLIT_READ_LIMIT));
-            split::split_by_length_field(&bytes, start, &form_field(form), link)
-        }
-        SplitRule::Pattern => match BytePattern::parse(&form.pattern_text) {
-            Ok(pattern) => {
-                let bytes = app.document.read_range(start, len.min(SPLIT_READ_LIMIT));
-                split::split_by_pattern(&bytes, start, &pattern, form.pattern_mode, link)
-            }
-            Err(reason) => {
-                state.note = Some(Note { text: format!("The pattern could not be read: {reason}."), is_error: true });
-                return;
-            }
-        },
-    };
-    match result {
-        Ok(set) => {
-            let summary = split::frame_lengths(&set).map(|lengths| lengths.to_string()).unwrap_or_default();
-            state.load(set);
-            state.grid.columns = None;
-            state.grid.block_rows = None;
-            state.note = Some(Note { text: format!("Split {len} bytes at {start:#x}: {summary}."), is_error: false });
-        }
-        Err(error) => state.note = Some(Note { text: error.to_string(), is_error: true }),
+    match split_rule_call(state, app, start, len) {
+        Ok(params) => panel::ask_after_drawing(state, app, "packets.sets.create", params, Expected::Split { start, len }),
+        Err(note) => state.note = Some(Note { text: note, is_error: true }),
     }
 }
 
-/// Fill the length-field form from the protocol tool's framing detection.
+/// Fill the length-field form from the protocol tool's framing detection,
+/// asked of `packets.detect_length_field`.
 pub fn detect_length_field(state: &mut PacketsState, app: &mut ViewerApp) {
     let Some((start, len)) = split_range(state, app) else {
         state.note = Some(Note { text: "There are no bytes to look at: the range is empty.".to_string(), is_error: true });
         return;
     };
-    let bytes = app.document.read_range(start, len.min(SPLIT_READ_LIMIT));
-    let candidates = crate::protocol::detect_framing(&bytes, DETECT_CANDIDATES);
-    let found = candidates.iter().find_map(|candidate| split::length_field_from_framing(&candidate.framing).map(|field| (field, candidate)));
-    let text = match found {
-        Some((field, candidate)) => {
-            let form = &mut state.grid.split;
-            form.field = LengthField { max_frame: form.field.max_frame, ..field };
-            form.rule = SplitRule::LengthField;
-            format!("Found a {} ({} frames, {:.0}% of the bytes). Press Split to use it.", field.describe(), candidate.messages, candidate.coverage * 100.0)
+    let found = match app.perform_typed::<LengthFieldFound>("packets.detect_length_field", serde_json::json!({ "start": start, "len": len })) {
+        Ok(found) => found,
+        Err(_) => {
+            state.note = Some(Note { text: app.status.clone(), is_error: true });
+            return;
         }
-        None => match candidates.first() {
-            Some(best) => format!("No length field found; the best framing is {}.", best.framing.describe()),
+    };
+    let text = match (&found.length_field, &found.description) {
+        (Some(spec), Some(description)) => {
+            let form = &mut state.grid.split;
+            form.field = LengthField { max_frame: form.field.max_frame, ..spec.field() };
+            form.rule = SplitRule::LengthField;
+            format!("Found a {description} ({} frames, {:.0}% of the bytes). Press Split to use it.", found.frames, found.coverage * 100.0)
+        }
+        _ => match &found.best_framing {
+            Some(best) => format!("No length field found; the best framing is {best}."),
             None => "No framing found in these bytes.".to_string(),
         },
     };
-    state.note = Some(Note { is_error: found.is_none(), text });
+    state.note = Some(Note { is_error: found.length_field.is_none(), text });
 }
 
 /// The "Split into frames" controls.
@@ -1097,7 +1090,7 @@ fn handle_pointer(state: &mut PacketsState, app: &mut ViewerApp, ui: &Ui, respon
         if let Some(Drag::Bytes { .. }) = state.grid.drag
             && let Some((start, len)) = app.selection()
         {
-            panel::select_in_document(app, start, len, format!("{len} bytes"));
+            panel::select_in_document(state, app, start, len, format!("{len} bytes"));
         }
         state.grid.drag = None;
     }
@@ -1186,10 +1179,11 @@ fn click_cell(state: &mut PacketsState, app: &mut ViewerApp, row: usize, column:
     if modifiers.shift {
         let anchor = app.anchor.unwrap_or(app.cursor);
         let (start, end) = (anchor.min(offset), (anchor.max(offset + 1)));
-        panel::select_in_document(app, start, end - start, format!("{} bytes", end - start));
+        panel::select_in_document(state, app, start, end - start, format!("{} bytes", end - start));
     } else {
         state.selected = std::collections::BTreeSet::from([packet]);
-        panel::select_in_document(app, offset, 1, format!("Packet {} +{}", packet + 1, offset - state.grid.rows.placements[row].offset));
+        let title = format!("Packet {} +{}", packet + 1, offset - state.grid.rows.placements[row].offset);
+        panel::select_in_document(state, app, offset, 1, title);
     }
     state.focus = Some(packet);
     state.cursor_in_packet = Some(offset - state.grid.rows.placements[row].offset);
@@ -1204,64 +1198,94 @@ fn click_cell(state: &mut PacketsState, app: &mut ViewerApp, row: usize, column:
 fn target_slices(state: &PacketsState) -> Vec<ColumnSlice> {
     let Some((first, width)) = state.grid.columns else { return Vec::new() };
     let rows = &state.grid.rows;
+    let targets: Vec<(usize, RowPlacement)> = target_rows(state).into_iter().map(|row| (row, rows.placements[row])).collect();
+    grid::column_slices(&targets, first, width)
+}
+
+/// The grid rows a column operation acts on: those of the block, or every
+/// row, or only the selected packets' when asked.
+fn target_rows(state: &PacketsState) -> Vec<usize> {
+    let rows = &state.grid.rows;
     let only_selected = state.grid.only_selected && !state.selected.is_empty();
     let in_block = |row: usize| state.grid.block_rows.is_none_or(|(first_row, count)| row >= first_row && row < first_row + count);
-    let targets: Vec<(usize, RowPlacement)> = rows
-        .placements
-        .iter()
-        .enumerate()
-        .filter(|(row, _)| in_block(*row))
-        .filter(|(row, _)| !only_selected || state.selected.contains(&rows.packets[*row]))
-        .map(|(row, placement)| (row, *placement))
-        .collect();
-    grid::column_slices(&targets, first, width)
+    (0..rows.placements.len()).filter(|&row| in_block(row)).filter(|&row| !only_selected || state.selected.contains(&rows.packets[row])).collect()
 }
 
 fn show_error(state: &mut PacketsState, text: impl Into<String>) {
     state.note = Some(Note { text: text.into(), is_error: true });
 }
 
-/// Apply `operation` to the selected columns of every targeted packet, as one
-/// undoable edit.
+/// The selected columns as the column methods take them: the targeted
+/// packets, in row order, each row's shift when the rows are lined up, and
+/// whether rows start at their record headers. Every packet is left
+/// unnamed when every one is targeted in set order.
+fn columns_params(state: &PacketsState) -> Option<serde_json::Value> {
+    let (first, width) = state.grid.columns?;
+    let rows = &state.grid.rows;
+    let targets = target_rows(state);
+    let indices: Vec<usize> = targets.iter().map(|&row| rows.packets[row]).collect();
+    let shifts: Vec<usize> = targets.iter().map(|&row| rows.placements[row].shift).collect();
+    let mut params = serde_json::json!({ "first": first, "width": width, "record_headers": state.grid.include_record_headers });
+    let every_packet = state.set.as_ref().is_some_and(|set| indices.len() == set.len() && indices.iter().enumerate().all(|(position, &index)| position == index));
+    if !every_packet {
+        params["indices"] = serde_json::json!(indices);
+    }
+    if shifts.iter().any(|&shift| shift > 0) {
+        params["shifts"] = serde_json::json!(shifts);
+    }
+    Some(params)
+}
+
+/// Carry out a column method on the set shown, with the selected columns;
+/// a failure is said in the viewer.
+fn on_columns<R: serde::de::DeserializeOwned>(state: &mut PacketsState, app: &mut ViewerApp, method: &str, extra: serde_json::Value) -> Option<R> {
+    let mut params = columns_params(state)?;
+    let set = panel::api_set_id(state, app)?;
+    params["set"] = serde_json::json!(set);
+    params.as_object_mut().expect("an object").extend(extra.as_object().cloned().unwrap_or_default());
+    match app.perform_typed::<R>(method, params) {
+        Ok(result) => Some(result),
+        Err(_) => {
+            show_error(state, app.status.clone());
+            None
+        }
+    }
+}
+
+/// `operation` as `packets.columns.apply` takes it, the value to set as the
+/// person typed it.
+fn operation_params(operation: &ColumnOperation, typed: &str, little_endian: bool) -> serde_json::Value {
+    let hex = crate::ops::to_compact_hex;
+    match operation {
+        ColumnOperation::Invert => serde_json::json!({ "op": ColumnOp::Invert }),
+        ColumnOperation::Fill(key) => serde_json::json!({ "op": ColumnOp::Fill, "key": hex(key) }),
+        ColumnOperation::Xor(key) => serde_json::json!({ "op": ColumnOp::Xor, "key": hex(key) }),
+        ColumnOperation::Add(key) => serde_json::json!({ "op": ColumnOp::Add, "key": hex(key) }),
+        ColumnOperation::Set(_) => serde_json::json!({ "op": ColumnOp::Set, "value": typed, "little_endian": little_endian }),
+        ColumnOperation::Counter { start, step, little_endian } => serde_json::json!({ "op": ColumnOp::Counter, "start": start, "step": step, "little_endian": little_endian }),
+        ColumnOperation::SwapByteOrder { group } => serde_json::json!({ "op": ColumnOp::Swap, "group": group }),
+    }
+}
+
+/// Apply `operation` to the selected columns of every targeted packet, as
+/// `packets.columns.apply`: one undoable edit.
 pub fn apply_column_operation(state: &mut PacketsState, app: &mut ViewerApp, operation: &ColumnOperation) {
     let Some((first, width)) = state.grid.columns else {
         show_error(state, "Select columns first: click the ruler above the grid.");
         return;
     };
-    let slices = target_slices(state);
-    let ranges: Vec<(usize, usize)> = slices.iter().map(|slice| (slice.offset, slice.len)).collect();
-    let Some((start, len)) = edit::covering_span(&ranges) else {
-        show_error(state, "No packet reaches the selected columns.");
-        return;
-    };
-    if len > SINGLE_EDIT_LIMIT {
-        show_error(state, format!("The packets span {}, more than one edit may cover; select fewer packets.", crate::compress::human_bytes(len)));
-        return;
-    }
-    let mut span = app.document.read_range(start, len);
-    grid::apply_to_columns(&mut span, start, &slices, width, operation);
-    let span_len = span.len();
-    app.document.replace(start, span_len, &span);
-    state.note = Some(Note { text: format!("{} columns +{first}..+{} of {} packets. Undo with Cmd+Z.", operation.label(), first + width, slices.len()), is_error: false });
+    let extra = operation_params(operation, &state.grid.operation_text, state.grid.little_endian);
+    let Some(result) = on_columns::<PacketEditResult>(state, app, "packets.columns.apply", extra) else { return };
+    state.note = Some(Note { text: format!("{} columns +{first}..+{} of {} packets. Undo with Cmd+Z.", operation.label(), first + width, result.packets), is_error: false });
 }
 
-/// Remove the selected columns from every targeted packet, as one undoable
-/// edit. Fixed-width records shrink with them; length fields are not changed.
+/// Remove the selected columns from every targeted packet, as
+/// `packets.columns.delete`: one undoable edit. Fixed-width records shrink
+/// with them; length fields are not changed.
 pub fn delete_columns(state: &mut PacketsState, app: &mut ViewerApp) {
     let Some((first, width)) = state.grid.columns else { return };
     let slices = target_slices(state);
-    let removed = grid::deletion_ranges(&slices);
-    let Some((start, len)) = edit::covering_span(&removed) else {
-        show_error(state, "No packet reaches the selected columns.");
-        return;
-    };
-    if len > SINGLE_EDIT_LIMIT {
-        show_error(state, format!("The packets span {}, more than one edit may cover; select fewer packets.", crate::compress::human_bytes(len)));
-        return;
-    }
-    let span = app.document.read_range(start, len);
-    let kept = edit::without_ranges(&span, start, &removed);
-    app.document.replace(start, span.len(), &kept);
+    let Some(result) = on_columns::<PacketEditResult>(state, app, "packets.columns.delete", serde_json::json!({})) else { return };
     let packet_count = state.set.as_ref().map_or(0, |set| set.len());
     let every_row_whole = slices.len() == packet_count && slices.iter().all(|slice| slice.len == width);
     if let Some(set) = &mut state.set
@@ -1271,11 +1295,15 @@ pub fn delete_columns(state: &mut PacketsState, app: &mut ViewerApp) {
     {
         *record_len = record_len.saturating_sub(width).max(1);
     }
-    let bytes: usize = removed.iter().map(|&(_, len)| len).sum();
     state.grid.columns = None;
     state.grid.block_rows = None;
     state.note = Some(Note {
-        text: format!("Deleted columns +{first}..+{} from {} packets ({bytes} bytes). Length fields and checksums are not updated; fix them if the format has them. Undo with Cmd+Z.", first + width, slices.len()),
+        text: format!(
+            "Deleted columns +{first}..+{} from {} packets ({} bytes). Length fields and checksums are not updated; fix them if the format has them. Undo with Cmd+Z.",
+            first + width,
+            result.packets,
+            result.bytes_removed
+        ),
         is_error: false,
     });
     if let Some(built) = state.built {
@@ -1283,24 +1311,15 @@ pub fn delete_columns(state: &mut PacketsState, app: &mut ViewerApp) {
     }
 }
 
-/// Copy the selected columns of the targeted packets as hex lines or CSV.
+/// Copy the selected columns of the targeted packets as hex lines or CSV,
+/// read by `packets.columns.read`.
 pub fn copy_columns(state: &mut PacketsState, app: &mut ViewerApp, ctx: &egui::Context, as_csv: bool) {
     let Some((first, width)) = state.grid.columns else { return };
-    let slices = target_slices(state);
-    let mut contents = Vec::new();
-    let mut total = 0usize;
-    for slice in &slices {
-        if total + slice.len > COPY_LIMIT {
-            break;
-        }
-        total += slice.len;
-        contents.push((state.grid.rows.packets[slice.row] + 1, slice.offset, app.document.read_range(slice.offset, slice.len)));
-    }
-    let rows: Vec<ColumnText<'_>> = contents.iter().map(|(packet, offset, bytes)| ColumnText { packet: *packet, offset: *offset, bytes }).collect();
-    let text = if as_csv { grid::columns_as_csv(&rows, first, width) } else { grid::columns_as_hex(&rows) };
-    ctx.copy_text(text);
-    let cut = if rows.len() < slices.len() { format!(" (the first {}; the rest pass the copy limit)", rows.len()) } else { String::new() };
-    state.note = Some(Note { text: format!("Copied columns +{first}..+{} of {} packets{cut}.", first + width, rows.len()), is_error: false });
+    let format = if as_csv { ColumnFormat::Csv } else { ColumnFormat::Hex };
+    let Some(read) = on_columns::<ColumnsText>(state, app, "packets.columns.read", serde_json::json!({ "format": format })) else { return };
+    ctx.copy_text(read.text);
+    let cut = if read.left_out > 0 { format!(" (the first {}; the rest pass the copy limit)", read.packets) } else { String::new() };
+    state.note = Some(Note { text: format!("Copied columns +{first}..+{} of {} packets{cut}.", first + width, read.packets), is_error: false });
 }
 
 /// Makes a column operation from the typed hex key.
