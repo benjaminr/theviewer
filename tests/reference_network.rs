@@ -25,7 +25,11 @@ const FIELDS_WITH_FREE_NAMED_CHILDREN: [&str; 1] = ["Headers"];
 
 /// Fields of the newer dissectors that the notes do not describe yet, by
 /// layer. A field listed here that gains a note should leave the list.
-const FIELDS_AWAITING_NOTES: [(&str, &[&str]); 1] = [("SNMP", &["Object name", "Value"])];
+const FIELDS_AWAITING_NOTES: [(&str, &[&str]); 3] = [
+    ("SNMP", &["Object name", "Value"]),
+    ("NetBIOS Session Service", &["Message type", "Length"]),
+    ("SMB2", &["Header length", "Chain offset", "Process ID"]),
+];
 
 /// An etherparse builder that has reached its UDP header.
 type UdpBuilder = etherparse::PacketBuilderStep<etherparse::UdpHeader>;
@@ -150,6 +154,19 @@ fn dhcp_offer() -> Vec<u8> {
     build(PacketBuilder::ipv4(SERVER_IPV4, [255, 255, 255, 255], 64).udp(67, 68), &message)
 }
 
+/// An SMB2 Negotiate request behind the four-byte framing of port 445.
+fn smb2_negotiate() -> Vec<u8> {
+    let mut smb2 = vec![0u8; 64];
+    smb2[..4].copy_from_slice(b"\xFESMB");
+    smb2[4] = 64;
+    smb2.extend_from_slice(&[0x24, 0, 1, 0, 1, 0, 0, 0, 0x7F, 0, 0, 0]);
+    smb2.extend_from_slice(&[0; 16]);
+    smb2.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0x02, 0x02]);
+    let mut payload = vec![0, 0, 0, smb2.len() as u8];
+    payload.extend_from_slice(&smb2);
+    ipv4_tcp(445, &payload)
+}
+
 fn dns_over_tcp() -> Vec<u8> {
     let query = dns_query();
     let mut payload = (query.len() as u16).to_be_bytes().to_vec();
@@ -172,6 +189,7 @@ fn sample_dissections() -> Vec<(&'static str, Dissection)> {
         ("IPv4/TCP/DNS", dissect(&dns_over_tcp(), LinkKind::RawIp)),
         ("IPv4/UDP/SNMP", dissect(&snmp_get_request(), LinkKind::RawIp)),
         ("IPv4/UDP/DHCP", dissect(&dhcp_offer(), LinkKind::RawIp)),
+        ("IPv4/TCP/NBSS/SMB2", dissect(&smb2_negotiate(), LinkKind::RawIp)),
     ]
 }
 
@@ -225,6 +243,8 @@ fn every_layer_of_common_traffic_has_reference_notes_explaining_each_field() {
         "MQTT",
         "SNMP",
         "DHCP",
+        "NetBIOS Session Service",
+        "SMB2",
     ] {
         assert!(expected_layers.contains(layer), "the sample traffic should include a '{layer}' layer, found {expected_layers:?}");
     }
@@ -238,6 +258,9 @@ fn wireshark_field_names_reach_the_fields_of_the_newer_dissectors_through_the_no
     let dhcp = dissect(&dhcp_offer(), LinkKind::RawIp);
     assert_eq!(wireshark_values(&dhcp, "dhcp.ip.your"), ["10.0.0.2"]);
     assert_eq!(dhcp.summary.info, "DHCP Offer - Transaction ID 0x3d1d");
+    let smb2 = dissect(&smb2_negotiate(), LinkKind::RawIp);
+    assert_eq!(wireshark_values(&smb2, "smb2.cmd"), ["0 (Negotiate Protocol)"]);
+    assert_eq!(smb2.summary.info, "SMB2 Negotiate Protocol Request");
 }
 
 #[test]

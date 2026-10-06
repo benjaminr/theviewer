@@ -29,7 +29,7 @@ const fn layer(ours: &'static str, tshark: &'static [&'static str]) -> LayerMapp
     LayerMapping { ours, tshark, spans_all: false }
 }
 
-pub const LAYER_MAP: [LayerMapping; 28] = [
+pub const LAYER_MAP: [LayerMapping; 31] = [
     // tshark names the cooked header of a netlink device `netlink`.
     layer("Linux cooked capture", &["sll", "netlink"]),
     layer("Linux cooked capture v2", &["sll", "netlink"]),
@@ -61,10 +61,13 @@ pub const LAYER_MAP: [LayerMapping; 28] = [
     layer("MQTT", &["mqtt"]),
     layer("SNMP", &["snmp"]),
     layer("DHCP", &["dhcp"]),
+    layer("NetBIOS Session Service", &["nbss"]),
+    layer("SMB", &["smb"]),
+    layer("SMB2", &["smb2"]),
 ];
 
 /// `(our layer, our field, tshark filter name)` for fields both sides name.
-pub const FIELD_MAP: [(&str, &str, &str); 104] = [
+pub const FIELD_MAP: [(&str, &str, &str); 111] = [
     ("Linux cooked capture", "Packet type", "sll.pkttype"),
     ("Linux cooked capture", "ARPHRD type", "sll.hatype"),
     ("Linux cooked capture", "Link-layer address length", "sll.halen"),
@@ -169,6 +172,13 @@ pub const FIELD_MAP: [(&str, &str, &str); 104] = [
     ("DHCP", "Message type", "dhcp.type"),
     ("DHCP", "Transaction ID", "dhcp.id"),
     ("DHCP", "Magic cookie", "dhcp.cookie"),
+    ("NetBIOS Session Service", "Message type", "nbss.type"),
+    ("SMB", "Command", "smb.cmd"),
+    ("SMB", "Multiplex ID", "smb.mid"),
+    ("SMB2", "Command", "smb2.cmd"),
+    ("SMB2", "Message ID", "smb2.msg_id"),
+    ("SMB2", "Session ID", "smb2.sesid"),
+    ("SMB2", "Tree ID", "smb2.tid"),
 ];
 
 /// The mapping for one of our layers, if we compare it.

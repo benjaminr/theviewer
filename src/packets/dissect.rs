@@ -833,17 +833,24 @@ impl Walk<'_> {
             return;
         }
         let payload = &self.bytes[start..end];
-        match application::dissect_application(transport, source_port, destination_port, payload) {
-            Some(AppLayer { name, key, len, mut fields, info }) => {
-                shift_fields(&mut fields, start);
-                let len = len.min(payload.len());
-                self.push_layer(name, start, len, fields);
-                self.out.protocols.push(key);
-                self.set_top(name, info);
-                self.data_layer(start + len, end, "Trailing data");
-            }
-            None => self.data_layer(start, end, "Payload"),
+        let layers = application::dissect_application(transport, source_port, destination_port, payload);
+        if layers.is_empty() {
+            self.data_layer(start, end, "Payload");
+            return;
         }
+        // Each layer starts where the one before it ends.
+        let mut at = start;
+        for AppLayer { name, key, len, mut fields, info } in layers {
+            shift_fields(&mut fields, start);
+            let len = len.min(end - at);
+            self.push_layer(name, at, len, fields);
+            if !self.out.protocols.contains(&key) {
+                self.out.protocols.push(key);
+            }
+            self.set_top(name, info);
+            at += len;
+        }
+        self.data_layer(at, end, "Trailing data");
     }
 
     // -- Frames of unknown format ------------------------------------------

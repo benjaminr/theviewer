@@ -1,11 +1,12 @@
 //! Small, defensive parsers for application protocols carried over TCP and
-//! UDP: DNS, HTTP, NTP, Modbus/TCP and MQTT here, and SNMP and DHCP in
-//! their own modules.
+//! UDP: DNS, HTTP, NTP, Modbus/TCP and MQTT here, and SNMP, DHCP and the
+//! NetBIOS session service with SMB in their own modules.
 //!
 //! Each parser takes a transport payload and returns an [`AppLayer`] whose
 //! field offsets are relative to the payload's first byte, or `None` when the
-//! bytes do not look like that protocol. None of them can panic, and every
-//! loop is bounded.
+//! bytes do not look like that protocol. Protocols carried inside others
+//! (SMB in the NetBIOS session service) give several layers, one after
+//! another. None of them can panic, and every loop is bounded.
 
 use crate::patterns::format_unix_seconds;
 use crate::plugin::Field;
@@ -13,6 +14,7 @@ use crate::plugin::Field;
 use super::flows::Transport;
 
 mod dhcp;
+mod smb;
 mod snmp;
 
 /// Well-known ports.
@@ -27,6 +29,8 @@ const PORT_SNMP: u16 = 161;
 const PORT_SNMP_TRAP: u16 = 162;
 const PORT_DHCP_SERVER: u16 = 67;
 const PORT_DHCP_CLIENT: u16 = 68;
+const PORT_NETBIOS_SESSION: u16 = 139;
+const PORT_SMB: u16 = 445;
 
 /// A parsed application layer.
 #[derive(Clone, Debug, PartialEq)]
@@ -44,12 +48,22 @@ pub struct AppLayer {
 }
 
 /// Parse `payload` by the ports it travels between, falling back to content
-/// sniffing for HTTP on any TCP port.
-pub fn dissect_application(transport: Transport, source_port: u16, destination_port: u16, payload: &[u8]) -> Option<AppLayer> {
+/// sniffing for HTTP on any TCP port. Returns the layers found, outermost
+/// first, each starting where the one before it ends; none when the bytes
+/// are not a protocol known here.
+pub fn dissect_application(transport: Transport, source_port: u16, destination_port: u16, payload: &[u8]) -> Vec<AppLayer> {
     if payload.is_empty() {
-        return None;
+        return Vec::new();
     }
     let uses = |port: u16| source_port == port || destination_port == port;
+    let stacked = match transport {
+        Transport::Tcp if uses(PORT_NETBIOS_SESSION) => smb::dissect_netbios_session(payload, false),
+        Transport::Tcp if uses(PORT_SMB) => smb::dissect_netbios_session(payload, true),
+        _ => Vec::new(),
+    };
+    if !stacked.is_empty() {
+        return stacked;
+    }
     let parsed = match transport {
         Transport::Udp if uses(PORT_DNS) || uses(PORT_MDNS) => dissect_dns(payload),
         Transport::Tcp if uses(PORT_DNS) => dissect_dns_over_tcp(payload),
@@ -61,7 +75,7 @@ pub fn dissect_application(transport: Transport, source_port: u16, destination_p
         Transport::Tcp if uses(PORT_HTTP) || PORT_HTTP_ALTERNATIVES.iter().any(|&port| uses(port)) => dissect_http(payload),
         _ => None,
     };
-    parsed.or_else(|| if transport == Transport::Tcp { dissect_http(payload) } else { None })
+    parsed.or_else(|| if transport == Transport::Tcp { dissect_http(payload) } else { None }).into_iter().collect()
 }
 
 fn u16_at(bytes: &[u8], at: usize) -> Option<u16> {
@@ -910,7 +924,7 @@ mod tests {
             b"ttp-equiv=\"refresh\" content=\"0\">\r\nHTTP/1.1 200 OK\r\n",
         ] {
             assert!(dissect_http(payload).is_none(), "{}", String::from_utf8_lossy(payload));
-            assert_eq!(dissect_application(Transport::Tcp, 40000, 80, payload), None);
+            assert_eq!(dissect_application(Transport::Tcp, 40000, 80, payload), Vec::new());
         }
         assert!(dissect_http(b"HTTP/1.0 404\r\n\r\n").is_some(), "a reason phrase may be left out");
         assert!(dissect_http(b"PROPFIND /dav/ HTTP/1.1\r\nDepth: 1\r\n\r\n").is_some());
@@ -1054,20 +1068,40 @@ mod tests {
         }
     }
 
+    /// The innermost layer found in `payload` between the two ports.
+    fn innermost(transport: Transport, source_port: u16, destination_port: u16, payload: &[u8]) -> Option<AppLayer> {
+        dissect_application(transport, source_port, destination_port, payload).pop()
+    }
+
     #[test]
     fn ports_choose_the_parser_and_http_is_sniffed_on_any_tcp_port() {
         let query = dns_query("a.b");
-        assert_eq!(dissect_application(Transport::Udp, 40000, 53, &query).map(|l| l.key), Some("dns"));
-        assert_eq!(dissect_application(Transport::Tcp, 40000, 9999, b"GET / HTTP/1.1\r\n\r\n").map(|l| l.key), Some("http"));
-        assert_eq!(dissect_application(Transport::Udp, 1, 2, &query), None);
-        assert_eq!(dissect_application(Transport::Udp, 40000, 161, &[0x30, 0x03, 0x02, 0x01, 0x01]), None, "a message without a PDU is not SNMP");
+        assert_eq!(innermost(Transport::Udp, 40000, 53, &query).map(|l| l.key), Some("dns"));
+        assert_eq!(innermost(Transport::Tcp, 40000, 9999, b"GET / HTTP/1.1\r\n\r\n").map(|l| l.key), Some("http"));
+        assert_eq!(innermost(Transport::Udp, 1, 2, &query), None);
+        assert_eq!(innermost(Transport::Udp, 40000, 161, &[0x30, 0x03, 0x02, 0x01, 0x01]), None, "a message without a PDU is not SNMP");
         // A v1 get-next-request with no bindings, from the trap port.
         let snmp = [0x30, 0x12, 0x02, 0x01, 0x00, 0x04, 0x00, 0xA1, 0x0B, 0x02, 0x01, 0x01, 0x02, 0x01, 0x00, 0x02, 0x01, 0x00, 0x30, 0x00];
-        assert_eq!(dissect_application(Transport::Udp, 162, 40000, &snmp).map(|l| l.info), Some("get-next-request".to_string()));
+        assert_eq!(innermost(Transport::Udp, 162, 40000, &snmp).map(|l| l.info), Some("get-next-request".to_string()));
         let mut over_tcp = (query.len() as u16).to_be_bytes().to_vec();
         over_tcp.extend_from_slice(&query);
-        let layer = dissect_application(Transport::Tcp, 53, 40000, &over_tcp).expect("DNS over TCP");
+        let layer = innermost(Transport::Tcp, 53, 40000, &over_tcp).expect("DNS over TCP");
         assert_eq!(layer.fields[0].name, "Length");
         assert_eq!(layer.fields[1].offset, 2);
+    }
+
+    #[test]
+    fn the_netbios_session_service_on_port_139_and_its_framing_on_port_445_carry_smb_layers() {
+        let mut smb2 = vec![0u8; 64];
+        smb2[..4].copy_from_slice(b"\xFESMB");
+        smb2[4] = 64;
+        let mut payload = vec![0, 0, 0, 64];
+        payload.extend_from_slice(&smb2);
+        for port in [139, 445] {
+            let layers = dissect_application(Transport::Tcp, 50000, port, &payload);
+            let names: Vec<&str> = layers.iter().map(|layer| layer.name).collect();
+            assert_eq!(names, ["NetBIOS Session Service", "SMB2"], "port {port}");
+        }
+        assert_eq!(innermost(Transport::Tcp, 50000, 445, b"GET / HTTP/1.1\r\n\r\n").map(|l| l.key), Some("http"), "other bytes fall through to sniffing");
     }
 }

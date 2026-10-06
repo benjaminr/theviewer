@@ -338,7 +338,7 @@ meaning = "The option a WILL, WON'T, DO, DON'T or SB refers to, such as 1 echo, 
 [[format]]
 id = "smb"
 name = "Server Message Block version 1 (CIFS)"
-keys = ["SMB", "SMB1", "SMBv1", "CIFS", "Common Internet File System", "Server Message Block version 1"]
+keys = ["SMB", "SMB1", "SMBv1", "CIFS", "Common Internet File System", "Server Message Block version 1", "NBSS", "NetBIOS Session Service"]
 wireshark = "smb"
 summary = "The original Windows file and printer sharing protocol, also used to carry named pipes for remote procedure calls; deprecated and disabled in current Windows, but still met on older and embedded systems."
 group = "File sharing and remote access"
