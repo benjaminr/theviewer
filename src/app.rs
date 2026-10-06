@@ -1960,7 +1960,7 @@ impl ViewerApp {
             }
             if ui.button("Apply template here").clicked() {
                 let source = self.bench.template_source.clone();
-                self.apply_template_source(&source);
+                self.apply_template_here(&source);
                 ui.close();
             }
             if ui.add_enabled(self.selection().is_some(), egui::Button::new("Infer template from selection")).clicked() {

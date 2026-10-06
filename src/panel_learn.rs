@@ -231,8 +231,7 @@ fn show_learning(state: &mut LearnState, app: &mut ViewerApp, ui: &mut Ui) {
     }
     if apply && let Some(learned) = &state.learned {
         let template = learned.template.clone();
-        app.jump_to_offset(0);
-        app.apply_template_source(&template);
+        app.apply_template_from_tool(&template, 0);
     }
 }
 

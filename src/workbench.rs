@@ -647,31 +647,71 @@ impl ViewerApp {
         self.selection().map(|(start, _)| start).unwrap_or(self.cursor)
     }
 
-    /// Parse and apply template source at the cursor (or selection start).
+    /// Apply template source at the selection start (else the cursor)
+    /// because the person asked to, through `templates.apply`, pinning it
+    /// and showing it in the Template tool. Source that does not parse is
+    /// said in the tool, as before.
+    pub fn apply_template_here(&mut self, source: &str) {
+        if let Err(error) = Template::parse(source) {
+            self.show_template_error(source, &error.to_string());
+            return;
+        }
+        let at = self.template_origin();
+        let _ = self.perform("templates.apply", serde_json::json!({ "source": source, "at": at, "pin": true }));
+    }
+
+    /// Put the cursor at `at` and apply template source there because the
+    /// person asked a tool to (Columns, Protocol, Learn), through
+    /// `cursor.set` and `templates.apply`.
+    pub fn apply_template_from_tool(&mut self, source: &str, at: usize) {
+        let at = at.min(self.document.len());
+        if self.perform("cursor.set", serde_json::json!({ "offset": at })).is_ok() {
+            self.apply_template_here(source);
+        }
+    }
+
+    /// Parse and apply template source at the cursor (or selection start),
+    /// for a template someone asked for on the bus.
     pub fn apply_template_source(&mut self, source: &str) {
-        self.bench.template_source = source.to_string();
-        self.dock.open = true;
-        self.dock.tab = DockTab::Template;
         match Template::parse(source) {
             Ok(template) => {
                 let origin = self.template_origin();
-                let applied = self.apply_template_at(&template, source, origin);
-                self.bench.template_applied_source = source.to_string();
-                self.cursor_structure = Some(applied.finding.clone());
-                self.status = format!(
-                    "{} applied at {origin:#x}: {} records{}",
-                    template.name(),
-                    applied.records.len(),
-                    if applied.warnings.is_empty() { String::new() } else { format!(", {} warnings", applied.warnings.len()) }
-                );
-                self.bench.template_error = None;
-                self.bench.template_result = Some(applied);
+                let bytes = self.document.read_range(origin, TEMPLATE_READ);
+                let applied = template.apply(&bytes, origin);
+                self.show_applied_template(&template, source, applied);
             }
-            Err(error) => {
-                self.bench.template_error = Some(error.to_string());
-                self.status = format!("Template error: {error}");
-            }
+            Err(error) => self.show_template_error(source, &error.to_string()),
         }
+    }
+
+    /// Say in the Template tool that `source` does not parse.
+    fn show_template_error(&mut self, source: &str, error: &str) {
+        self.bench.template_source = source.to_string();
+        self.dock.open = true;
+        self.dock.tab = DockTab::Template;
+        self.bench.template_error = Some(error.to_string());
+        self.status = format!("Template error: {error}");
+    }
+
+    /// Show `template` (written as `source`) applied in the Template tool,
+    /// and pin its parse: what `templates.apply {pin}` does in the window.
+    pub fn show_applied_template(&mut self, template: &Template, source: &str, applied: Applied) {
+        self.bench.template_source = source.to_string();
+        self.dock.open = true;
+        self.dock.tab = DockTab::Template;
+        let origin = applied.finding.start;
+        let pinned = TemplateApplied { name: template.name().to_string(), source: source.to_string(), records: applied.records.len(), structure: applied.finding.clone() };
+        self.pin_template_parse(pinned);
+        self.bench.template_applied_source = source.to_string();
+        self.cursor_structure = Some(applied.finding.clone());
+        self.status = format!(
+            "{} applied at {origin:#x}: {} records{}",
+            template.name(),
+            applied.records.len(),
+            if applied.warnings.is_empty() { String::new() } else { format!(", {} warnings", applied.warnings.len()) }
+        );
+        self.bench.template_error = None;
+        self.bench.template_result = Some(applied);
     }
 
     /// Apply `template` (written as `source`) at `origin`, pinning the
@@ -705,18 +745,26 @@ impl ViewerApp {
         self.bench.template_result = Some(applied);
     }
 
-    /// Clear the applied template: its records are no longer outlined, and
-    /// it is withdrawn from `template.applied`.
+    /// Clear the applied template because the person asked to, through
+    /// `templates.clear`.
     pub fn clear_template(&mut self) {
-        pin_template_finding(self, None);
-        if let Some(applied) = self.bench.template_result.take() {
-            let withdrawn = TemplateApplied { name: String::new(), source: String::new(), records: 0, structure: applied.finding.clone() };
-            self.bus.publish(self.draft(TEMPLATES, Payload::TemplateApplied(withdrawn)).retraction());
-            self.bus.publish(self.draft(TEMPLATES, Payload::StructureIdentified(crate::app::structure_of(&applied.finding))).retraction());
-        }
+        let _ = self.perform("templates.clear", serde_json::json!({}));
     }
 
-    /// Propose a struct for the selected records.
+    /// Clear the applied template: its records are no longer outlined, and
+    /// it is withdrawn from `template.applied`. Returns whether there was
+    /// one. What `templates.clear` does in the window.
+    pub fn withdraw_template(&mut self) -> bool {
+        pin_template_finding(self, None);
+        let Some(applied) = self.bench.template_result.take() else { return false };
+        let withdrawn = TemplateApplied { name: String::new(), source: String::new(), records: 0, structure: applied.finding.clone() };
+        self.bus.publish(self.draft(TEMPLATES, Payload::TemplateApplied(withdrawn)).retraction());
+        self.bus.publish(self.draft(TEMPLATES, Payload::StructureIdentified(crate::app::structure_of(&applied.finding))).retraction());
+        true
+    }
+
+    /// Propose a struct for the selected records and apply it, through
+    /// `templates.infer`.
     pub fn infer_template(&mut self) {
         let Some((start, len)) = self.selection() else {
             self.status = "Select a few records first".to_string();
@@ -724,10 +772,7 @@ impl ViewerApp {
         };
         let bytes = self.document.read_range(start, len);
         let record_len = templates::guess_record_length(&bytes).unwrap_or(self.shape.row_stride()).max(1);
-        let records = (len / record_len).max(1);
-        let source = templates::infer_struct(&bytes, record_len, records, self.document.len());
-        self.status = format!("Inferred a {record_len}-byte record from {records} examples");
-        self.apply_template_source(&source);
+        let _ = self.perform("templates.infer", serde_json::json!({ "start": start, "len": len, "record_len": record_len, "pin": true }));
     }
 
     fn show_template_tab(&mut self, ui: &mut Ui) {
@@ -754,7 +799,7 @@ impl ViewerApp {
                 });
             if ui.button("Apply at cursor").on_hover_text("Applies at the selection start when there is a selection").clicked() {
                 let source = self.bench.template_source.clone();
-                self.apply_template_source(&source);
+                self.apply_template_here(&source);
             }
             if ui.button("Infer from selection").on_hover_text("Select several records; the app proposes a struct from what varies").clicked() {
                 self.infer_template();
@@ -818,10 +863,7 @@ impl ViewerApp {
             }
         });
         if let Some((offset, len)) = chosen {
-            self.anchor = Some(offset);
-            self.cursor = offset + len.max(1);
-            self.reveal_cursor_centred();
-            self.reveal_cursor_in_hex(true);
+            self.select_from_tool(offset, len.max(1));
         }
     }
 
@@ -1450,5 +1492,88 @@ mod tests {
         let opened = app.perform("unpack.open", json!({"path": [0]})).unwrap();
         assert_eq!(opened["len"], 300);
         assert_eq!(app.document.len(), 300, "the node is the document shown");
+    }
+
+    use serde_json::json;
+
+    use crate::actions::take_performed;
+    use crate::app::Launch;
+
+    const RECORDS: &str = "endian little\nstruct R { n: u16 }\nroot R[until_end]";
+
+    fn app_with(bytes: &[u8]) -> ViewerApp {
+        let mut app = ViewerApp::new(Launch::default());
+        app.open_bytes(bytes.to_vec(), "test.bin".to_string());
+        app.run_bus();
+        take_performed();
+        app
+    }
+
+    #[test]
+    fn applying_a_template_at_the_cursor_is_a_pinned_templates_apply_that_fills_the_template_tool() {
+        let mut app = app_with(&[1, 0, 2, 0, 3, 0, 4, 0]);
+        app.restore_selection(2, 4);
+        app.apply_template_here(RECORDS);
+        assert_eq!(take_performed(), [("templates.apply".to_string(), json!({"source": RECORDS, "at": 2, "pin": true}))], "applied at the selection start");
+        let applied = app.bench.template_result.as_ref().expect("the Template tool shows the records");
+        assert_eq!((applied.finding.start, applied.records.len()), (2, 3));
+        assert_eq!(app.bench.template_applied_source, RECORDS);
+        assert_eq!(app.dock.tab, DockTab::Template);
+        assert_eq!(app.status, "R applied at 0x2: 3 records");
+        assert!(app.bench.pinned.iter().any(|pinned| pinned.id.starts_with("template:")));
+        app.run_bus();
+        assert!(app.bus.facts().any(|fact| fact.topic() == crate::bus::Topic::TemplateApplied), "published as before");
+    }
+
+    #[test]
+    fn a_template_that_does_not_parse_is_said_in_the_tool_without_a_call() {
+        let mut app = app_with(&[0; 8]);
+        app.apply_template_here("struct {");
+        assert!(take_performed().is_empty());
+        assert!(app.bench.template_error.is_some());
+        assert!(app.status.starts_with("Template error:"), "{}", app.status);
+    }
+
+    #[test]
+    fn a_tool_s_apply_as_template_moves_the_cursor_and_applies_there() {
+        let mut app = app_with(&[1, 0, 2, 0, 3, 0, 4, 0]);
+        app.apply_template_from_tool(RECORDS, 4);
+        assert_eq!(take_performed(), [("cursor.set".to_string(), json!({"offset": 4})), ("templates.apply".to_string(), json!({"source": RECORDS, "at": 4, "pin": true}))]);
+        assert_eq!(app.bench.template_result.as_ref().map(|applied| applied.records.len()), Some(2));
+    }
+
+    #[test]
+    fn inferring_a_template_from_the_selection_is_a_pinned_templates_infer() {
+        let records: Vec<u8> = (0..32u32).flat_map(|index| [vec![0xA5, 0x5A], (index as u16).to_le_bytes().to_vec(), index.wrapping_mul(2_654_435_761).to_le_bytes().to_vec()].concat()).collect();
+        let mut app = app_with(&records);
+        app.infer_template();
+        assert!(take_performed().is_empty(), "nothing selected");
+        assert_eq!(app.status, "Select a few records first");
+        app.restore_selection(0, 256);
+        app.infer_template();
+        let guessed = templates::guess_record_length(&records[..256]).expect("a repeating length");
+        assert_eq!(take_performed(), [("templates.infer".to_string(), json!({"start": 0, "len": 256, "record_len": guessed, "pin": true}))], "the record length is in the step");
+        assert_eq!(app.bench.template_result.as_ref().map(|applied| applied.finding.start), Some(0), "the inferred struct is applied and shown");
+    }
+
+    #[test]
+    fn clearing_the_template_is_templates_clear() {
+        let mut app = app_with(&[1, 0, 2, 0]);
+        app.apply_template_here(RECORDS);
+        take_performed();
+        app.clear_template();
+        assert_eq!(take_performed(), [("templates.clear".to_string(), json!({}))]);
+        assert!(app.bench.template_result.is_none());
+        assert!(!app.bench.pinned.iter().any(|pinned| pinned.id.starts_with("template:")));
+    }
+
+    #[test]
+    fn a_template_record_clicked_is_selected_through_the_api() {
+        let mut app = app_with(&[0; 16]);
+        app.select_from_tool(4, 2);
+        assert_eq!(take_performed(), [("selection.set".to_string(), json!({"selection": {"range": [4, 2]}}))]);
+        assert_eq!(app.selection(), Some((4, 2)));
+        app.jump_from_tool(100);
+        assert_eq!(take_performed(), [("cursor.set".to_string(), json!({"offset": 16}))], "a jump past the end goes to the end");
     }
 }

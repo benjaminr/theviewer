@@ -7,9 +7,10 @@ use serde::{Deserialize, Serialize};
 use super::values::{self, NoParams};
 use super::workspace::{self, Workspace};
 use super::{ApiError, MAX_CALL_BYTES};
-use crate::bus::topics::TemplateApplied;
+use crate::bus::topics::{FindingsPublished, TemplateApplied};
+use crate::bus::{Draft, Payload, Topic};
 use crate::plugin::Finding;
-use crate::templates::{self, Template};
+use crate::templates::{self, Applied, Template};
 
 /// This module's methods, in the order `api.describe` lists them within
 /// their namespace. A new method is added here, and only here.
@@ -18,6 +19,8 @@ pub(super) const METHODS: &[super::Method] = &[
     method!("structure.parsers", Read, parsers, super::values::NoParams, ParsersResult, "The structure parsers available, built in and from plugins."),
     method!("templates.list", Read, list_templates, super::values::NoParams, TemplateList, "The binary templates available: the built-in ones and the user's own."),
     method!("templates.apply", Read, apply_template, ApplyParams, ApplyResult, "Apply a binary template, by name or as source text, at an offset and return its field tree and records; with pin, also show it as the template tool does."),
+    method!("templates.infer", Read, infer_template, InferParams, InferResult, "Propose a template struct from several example records, from what varies between them; with pin, also apply it at the first record and show it as the template tool does."),
+    method!("templates.clear", View, clear_template, ClearParams, ClearResult, "Withdraw the template pinned over a document: its records are no longer outlined, and it leaves template.applied."),
 ];
 
 /// An example call of each of [`METHODS`], run in order on a fresh
@@ -30,14 +33,19 @@ pub(super) fn examples() -> Vec<(&'static str, serde_json::Value)> {
         ("structure.parsers", json!({})),
         ("templates.list", json!({})),
         ("templates.apply", json!({"name": "Fixed-size records", "limit": 2})),
+        ("templates.infer", json!({"start": 0, "len": 400, "record_len": 45})),
+        ("templates.clear", json!({})),
     ]
 }
 
 /// What a call to one of this module's methods would do, in plain words,
 /// for the window that asks the person to confirm it; `None` leaves it to
 /// the general "Call method with params".
-pub(super) fn describe_call(_workspace: &mut dyn Workspace, _method: &str, _params: &serde_json::Value) -> Option<String> {
-    None
+pub(super) fn describe_call(_workspace: &mut dyn Workspace, method: &str, _params: &serde_json::Value) -> Option<String> {
+    match method {
+        "templates.clear" => Some("Clear the applied template".to_string()),
+        _ => None,
+    }
 }
 
 /// Parameters of `structure.parse`.
@@ -217,6 +225,118 @@ pub fn list_templates(_workspace: &mut dyn Workspace, _params: NoParams) -> Resu
     Ok(TemplateList { templates })
 }
 
+/// Pin `applied`, the parse of `template` (written as `source`), over
+/// document `doc` as the template tool does: in the window the Template
+/// tool shows it too.
+fn pin(workspace: &mut dyn Workspace, doc: &str, template: &Template, source: String, applied: &Applied) {
+    if let Some(app) = workspace.window()
+        && app.document_id() == doc
+    {
+        return app.show_applied_template(template, &source, applied.clone());
+    }
+    let pinned = TemplateApplied { name: template.name().to_string(), source, records: applied.records.len(), structure: applied.finding.clone() };
+    workspace.pin_template(doc, pinned);
+}
+
+/// Parameters of `templates.infer`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct InferParams {
+    /// Document id, path or "current" (the default).
+    #[serde(default)]
+    pub doc: Option<String>,
+    /// First offset of the example records.
+    pub start: u64,
+    /// Bytes of example records, several of them.
+    pub len: u64,
+    /// Bytes per record; guessed from what repeats when omitted.
+    #[serde(default)]
+    pub record_len: Option<usize>,
+    /// Also apply the struct at `start` and pin it, as templates.apply with
+    /// pin does.
+    #[serde(default)]
+    pub pin: bool,
+}
+
+/// The result of `templates.infer`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct InferResult {
+    /// The struct proposed, as template source for templates.apply.
+    pub source: String,
+    pub record_len: usize,
+    /// Example records it was inferred from.
+    pub records: usize,
+}
+
+/// Parameters of `templates.clear`.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ClearParams {
+    /// Document id, path or "current" (the default).
+    #[serde(default)]
+    pub doc: Option<String>,
+}
+
+/// The result of `templates.clear`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct ClearResult {
+    /// Id of the document.
+    pub doc: String,
+    /// Whether a template was pinned there.
+    pub cleared: bool,
+}
+
+pub fn infer_template(workspace: &mut dyn Workspace, params: InferParams) -> Result<InferResult, ApiError> {
+    let (doc, document) = workspace::document(workspace, params.doc.as_deref())?;
+    let document_len = document.len();
+    let (start, len) = values::span_within(document_len, params.start, Some(params.len))?;
+    values::check_call_size(len)?;
+    if len == 0 {
+        return Err(ApiError::invalid_params("give the example records' len; a struct is inferred from several records"));
+    }
+    let bytes = document.read_range(start, len);
+    let record_len = match params.record_len {
+        Some(0) => return Err(ApiError::invalid_params("a record_len of 0 holds nothing")),
+        Some(record_len) => record_len,
+        None => templates::guess_record_length(&bytes).ok_or_else(|| ApiError::invalid_params("no record length repeats in these bytes; give record_len"))?,
+    };
+    let records = (len / record_len).max(1);
+    let source = templates::infer_struct(&bytes, record_len, records, document_len);
+    if params.pin {
+        let template = Template::parse(&source).map_err(|error| ApiError::invalid_params(format!("the inferred struct does not parse: {error}")))?;
+        let (_, document) = workspace::document(workspace, Some(&doc))?;
+        let bytes = document.read_range(start, (document_len - start).min(MAX_CALL_BYTES));
+        let applied = template.apply(&bytes, start);
+        pin(workspace, &doc, &template, source.clone(), &applied);
+    }
+    Ok(InferResult { source, record_len, records })
+}
+
+/// `templates.clear`: in the window the Template tool clears its template;
+/// elsewhere the pinned template's facts are withdrawn.
+pub fn clear_template(workspace: &mut dyn Workspace, params: ClearParams) -> Result<ClearResult, ApiError> {
+    let doc = workspace::resolve(workspace, params.doc.as_deref())?;
+    if let Some(app) = workspace.window()
+        && app.document_id() == doc
+    {
+        let cleared = app.withdraw_template();
+        return Ok(ClearResult { doc, cleared });
+    }
+    let version = workspace::info(workspace, &doc)?.version;
+    let bus = workspace.bus();
+    let cleared = bus.facts().any(|fact| fact.producer() == workspace::TEMPLATES_PRODUCER && fact.draft.document.as_deref() == Some(doc.as_str()) && fact.topic() == Topic::TemplateApplied);
+    let empty = Finding::new("template", "templates", crate::plugin::Category::Structure, 0, 0);
+    let withdrawn = [
+        Payload::TemplateApplied(TemplateApplied { name: String::new(), source: String::new(), records: 0, structure: empty.clone() }),
+        Payload::StructureIdentified(crate::app::structure_of(&empty)),
+        Payload::FindingsPublished(FindingsPublished { findings: Vec::new() }),
+    ];
+    for payload in withdrawn {
+        bus.publish(Draft::new(workspace::TEMPLATES_PRODUCER, payload).about(doc.clone(), version).retraction());
+    }
+    Ok(ClearResult { doc, cleared })
+}
+
 pub fn apply_template(workspace: &mut dyn Workspace, params: ApplyParams) -> Result<ApplyResult, ApiError> {
     let (template, source) = match (&params.name, &params.source) {
         (Some(name), None) => {
@@ -235,8 +355,7 @@ pub fn apply_template(workspace: &mut dyn Workspace, params: ApplyParams) -> Res
     let bytes = document.read_range(at, available.min(MAX_CALL_BYTES));
     let applied = template.apply(&bytes, at);
     if params.pin {
-        let pinned = TemplateApplied { name: template.name().to_string(), source, records: applied.records.len(), structure: applied.finding.clone() };
-        workspace.pin_template(&doc, pinned);
+        pin(workspace, &doc, &template, source, &applied);
     }
     let columns = applied.columns();
     let total_records = applied.records.len() as u64;
@@ -303,6 +422,53 @@ mod tests {
         assert_eq!(call(&mut workspace, "templates.apply", json!({})).unwrap_err().code, ErrorCode::InvalidParams);
         assert_eq!(call(&mut workspace, "templates.apply", json!({"source": "struct {"})).unwrap_err().code, ErrorCode::InvalidParams);
         assert_eq!(call(&mut workspace, "templates.apply", json!({"name": "no such"})).unwrap_err().code, ErrorCode::NotFound);
+    }
+
+    /// Records of 8 bytes: a constant tag, a counter and a varying value.
+    fn records() -> Vec<u8> {
+        (0..32u32).flat_map(|index| {
+            let mut record = vec![0xA5, 0x5A];
+            record.extend((index as u16).to_le_bytes());
+            record.extend((index.wrapping_mul(2_654_435_761)).to_le_bytes());
+            record
+        }).collect()
+    }
+
+    #[test]
+    fn a_struct_is_inferred_from_example_records_and_can_be_pinned() {
+        let mut workspace = workspace_with("records.bin", &records());
+        let inferred = call(&mut workspace, "templates.infer", json!({"start": 0, "len": 256})).unwrap();
+        let guessed = crate::templates::guess_record_length(&records()).unwrap();
+        assert_eq!(inferred["record_len"], guessed, "the record length is guessed from what repeats");
+        assert_eq!(inferred["records"], 256 / guessed);
+        let source = inferred["source"].as_str().unwrap().to_string();
+        assert!(call(&mut workspace, "templates.apply", json!({"source": source})).is_ok(), "the struct is template source:\n{source}");
+        let none = call(&mut workspace, "events.facts", json!({"producer": "tool:templates"})).unwrap();
+        assert!(none["facts"].as_array().unwrap().is_empty(), "inferring alone pins nothing");
+        call(&mut workspace, "templates.infer", json!({"start": 0, "len": 256, "pin": true})).unwrap();
+        let pinned = call(&mut workspace, "events.facts", json!({"topic": "template.applied", "producer": "tool:templates"})).unwrap();
+        assert_eq!(pinned["facts"][0]["payload"]["source"], json!(source));
+    }
+
+    #[test]
+    fn inferring_needs_records_to_look_at() {
+        let mut workspace = workspace_with("records.bin", &records());
+        assert_eq!(call(&mut workspace, "templates.infer", json!({"start": 0, "len": 0})).unwrap_err().code, ErrorCode::InvalidParams);
+        assert_eq!(call(&mut workspace, "templates.infer", json!({"start": 0, "len": 16, "record_len": 0})).unwrap_err().code, ErrorCode::InvalidParams);
+        assert_eq!(call(&mut workspace, "templates.infer", json!({"start": 200, "len": 100})).unwrap_err().code, ErrorCode::OutOfRange);
+    }
+
+    #[test]
+    fn clearing_withdraws_the_pinned_template() {
+        let mut workspace = workspace_with("a.bin", &[1, 0, 2, 0]);
+        let cleared = call(&mut workspace, "templates.clear", json!({})).unwrap();
+        assert_eq!(cleared["cleared"], false, "nothing was pinned");
+        call(&mut workspace, "templates.apply", json!({"source": "endian little\nstruct R { n: u16 }\nroot R[until_end]", "pin": true})).unwrap();
+        let cleared = call(&mut workspace, "templates.clear", json!({})).unwrap();
+        assert_eq!(cleared, json!({"doc": "doc-1", "cleared": true}));
+        let left = call(&mut workspace, "events.facts", json!({"producer": "tool:templates"})).unwrap();
+        assert!(left["facts"].as_array().unwrap().is_empty(), "{left}");
+        assert_eq!(call(&mut workspace, "templates.clear", json!({"doc": "doc-7"})).unwrap_err().code, ErrorCode::NotFound);
     }
 
     #[test]

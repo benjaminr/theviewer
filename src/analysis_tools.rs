@@ -24,6 +24,37 @@ const LISTED_MESSAGES: usize = 1000;
 /// Messages outlined on the raster.
 const PINNED_MESSAGES: usize = 5000;
 
+impl ViewerApp {
+    /// Select `len` bytes at `start` because the person clicked them in a
+    /// tool (a record, a field, a message, a region), through
+    /// `selection.set`, and bring them into view; a span of no bytes puts
+    /// the cursor there instead.
+    pub fn select_from_tool(&mut self, start: usize, len: usize) {
+        let start = start.min(self.document.len());
+        let len = len.min(self.document.len() - start);
+        let done = if len == 0 {
+            self.perform("cursor.set", serde_json::json!({ "offset": start }))
+        } else {
+            self.perform("selection.set", serde_json::json!({ "selection": { "range": [start, len] } }))
+        };
+        if done.is_ok() {
+            self.reveal_cursor_centred();
+            self.reveal_cursor_in_hex(true);
+        }
+    }
+
+    /// Put the cursor at `offset` because the person clicked it in a tool
+    /// (a link, a point on a chart, a cell), through `cursor.set`, and
+    /// bring it into view.
+    pub fn jump_from_tool(&mut self, offset: usize) {
+        let offset = offset.min(self.document.len());
+        if self.perform("cursor.set", serde_json::json!({ "offset": offset })).is_ok() {
+            self.reveal_cursor_centred();
+            self.reveal_cursor_in_hex(true);
+        }
+    }
+}
+
 /// State for this module's tabs.
 #[derive(Default)]
 pub struct ToolsState {
@@ -202,9 +233,7 @@ pub fn show_columns(app: &mut ViewerApp, ui: &mut Ui) {
         ui.label(RichText::new("Fields").strong());
         if ui.button("Apply as template").on_hover_text("Turn these fields into a template and decode every record").clicked() {
             let source = columns::to_template(record_len, &fields);
-            app.anchor = None;
-            app.set_cursor(origin, false);
-            app.apply_template_source(&source);
+            app.apply_template_from_tool(&source, origin);
         }
     });
     let mut chosen = None;
@@ -442,8 +471,7 @@ pub fn show_protocol(app: &mut ViewerApp, ui: &mut Ui) {
                 if let Some(source) = protocol::to_template(&report)
                     && ui.button("Apply as template").clicked()
                 {
-                    app.set_cursor(base + report.messages[0].offset, false);
-                    app.apply_template_source(&source);
+                    app.apply_template_from_tool(&source, base + report.messages[0].offset);
                 }
             });
             egui::ScrollArea::vertical().id_salt("protocol-fields").show(ui, |ui| {

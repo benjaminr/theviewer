@@ -9,8 +9,6 @@ use eframe::egui::{self, RichText, Sense, Ui, vec2};
 
 use crate::app::ViewerApp;
 use crate::assistant::{self, Segment, Turn};
-use crate::bus::Payload;
-use crate::bus::topics::{TemplateApplyRequested, ViewJump};
 use crate::theme;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
@@ -196,10 +194,8 @@ pub fn show_tool(app: &mut ViewerApp, ui: &mut Ui, tool: DockTab) {
     }
 }
 
-/// What links in reports and answers ask for things as.
-const LINKS: &str = "panel:links";
-
-/// Text with clickable `0x…` offsets.
+/// Text with clickable `0x…` offsets, which move the cursor, and template
+/// offers, which apply the template, both as the person's steps.
 pub fn linked_text(app: &mut ViewerApp, ui: &mut Ui, text: &str) {
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing.x = 0.0;
@@ -211,7 +207,7 @@ pub fn linked_text(app: &mut ViewerApp, ui: &mut Ui, text: &str) {
                 Segment::Offset(offset, label) => {
                     let link = ui.add(egui::Label::new(RichText::new(label).color(theme::ACCENT).underline()).sense(Sense::click()));
                     if link.on_hover_text("Jump here").clicked() {
-                        app.publish(LINKS, Payload::ViewJump(ViewJump { offset }));
+                        app.jump_from_tool(offset);
                     }
                 }
                 Segment::Template(source) => {
@@ -235,7 +231,7 @@ fn template_offer(app: &mut ViewerApp, ui: &mut Ui, source: &str) {
                 ui.horizontal(|ui| {
                     ui.label(RichText::new("Template").strong());
                     if ui.button("Apply at cursor").clicked() {
-                        app.publish(LINKS, Payload::TemplateApplyRequested(TemplateApplyRequested { source: source.to_string() }));
+                        app.apply_template_here(source);
                     }
                     if ui.button("Copy").clicked() {
                         ui.ctx().copy_text(source.to_string());
