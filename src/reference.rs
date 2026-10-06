@@ -528,7 +528,7 @@ impl FormatReference {
     /// The note for a field called `name`, if there is one.
     pub fn field(&self, name: &str) -> Option<&FieldNote> {
         let name = name.trim();
-        self.fields.iter().find(|note| note.matches(name))
+        self.fields.iter().find(|note| note.matches(name)).or_else(|| shared_field_note(name))
     }
 
     /// The specification a field's section refers to: the first one listed.
@@ -621,6 +621,21 @@ impl FieldNote {
             None => pattern.eq_ignore_ascii_case(name),
         })
     }
+}
+
+/// Notes on fields every format can have, used when an entry has no note of
+/// its own by that name: the undecoded body of a protocol the app knows only
+/// by its notes, and what is left of a layer whose header could not be read.
+fn shared_field_note(name: &str) -> Option<&'static FieldNote> {
+    static SHARED: std::sync::OnceLock<[FieldNote; 2]> = std::sync::OnceLock::new();
+    let shared = SHARED.get_or_init(|| {
+        let note = |name: &str, meaning: &str| FieldNote { name: name.to_string(), aliases: Vec::new(), meaning: meaning.to_string(), section: None, wireshark: None };
+        [
+            note("Data", "The rest of the message as raw bytes: the app does not decode this protocol's fields, but the notes above describe how they are laid out."),
+            note("Bytes", "What is left of a layer whose header could not be read in full: the packet ends early, or a length field points past its end."),
+        ]
+    });
+    shared.iter().find(|note| note.matches(name))
 }
 
 /// Where the plain text of RFC `number` can be downloaded.
