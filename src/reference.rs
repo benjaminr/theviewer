@@ -11,6 +11,7 @@
 //! [`rfc_text_url`] and [`rfc_section`]).
 
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use serde::Deserialize;
@@ -135,6 +136,18 @@ impl Library {
     pub fn by_id(&self, id: &str) -> Option<&FormatReference> {
         self.entries.iter().find(|entry| entry.id == id)
     }
+
+    /// An entry's notes as plain text for the assistant, looked up by id or
+    /// any of its keys; when nothing matches, the ids that are known.
+    pub fn describe_for_assistant(&self, name: &str) -> String {
+        match self.lookup(name) {
+            Some(entry) => entry.to_plain_text(),
+            None => {
+                let ids: Vec<&str> = self.entries.iter().map(|entry| entry.id.as_str()).collect();
+                format!("No reference notes for '{}'. Known ids: {}.", name.trim(), ids.join(", "))
+            }
+        }
+    }
 }
 
 /// The embedded library, parsed once.
@@ -168,6 +181,37 @@ impl FormatReference {
     /// The specification a field's section refers to: the first one listed.
     pub fn primary_spec(&self) -> Option<&Specification> {
         self.specs.first()
+    }
+
+    /// Where a field is defined, such as "RFC 791 §3.1": the primary
+    /// specification, at the field's own section or else the entry's.
+    pub fn citation(&self, note: &FieldNote) -> Option<String> {
+        let spec = self.primary_spec()?;
+        Some(match note.section.as_deref().or(spec.section.as_deref()) {
+            Some(section) => format!("{} §{section}", spec.document),
+            None => spec.document.clone(),
+        })
+    }
+
+    /// What a field means, with its citation on a line of its own, for
+    /// tooltips wherever the field is shown.
+    pub fn explain_field(&self, name: &str) -> Option<String> {
+        let note = self.field(name)?;
+        Some(match self.citation(note) {
+            Some(citation) => format!("{}\n\n{citation}", note.meaning),
+            None => note.meaning.clone(),
+        })
+    }
+
+    /// A short name for breadcrumbs, such as "UDP" for "User Datagram
+    /// Protocol": the shortest key written with a capital letter that is not
+    /// a MIME type or stream id.
+    pub fn short_name(&self) -> &str {
+        self.keys
+            .iter()
+            .filter(|key| key.chars().any(|c| c.is_ascii_uppercase()) && !key.contains(['/', ':']))
+            .min_by_key(|key| key.len())
+            .map_or(self.name.as_str(), String::as_str)
     }
 
     /// The whole entry as plain text, for the assistant's context.
@@ -210,6 +254,28 @@ pub fn rfc_html_url(number: u32, section: Option<&str>) -> String {
         Some(section) => format!("{RFC_TEXT_BASE}/rfc{number}.html#section-{section}"),
         None => format!("{RFC_TEXT_BASE}/rfc{number}.html"),
     }
+}
+
+/// Where fetched RFC text is kept: `$HOME/.cache/theviewer/rfc`.
+pub fn rfc_cache_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache/theviewer/rfc"))
+}
+
+/// The plain text of RFC `number`, from the cache in `cache_dir` when it is
+/// there, otherwise from `fetch` (given the download URL), which is then
+/// cached. Only called when the user asks for an RFC's text.
+pub fn load_rfc_text(cache_dir: Option<&Path>, number: u32, fetch: impl FnOnce(&str) -> Result<String, String>) -> Result<String, String> {
+    let cached = cache_dir.map(|dir| dir.join(format!("rfc{number}.txt")));
+    if let Some(text) = cached.as_ref().and_then(|path| std::fs::read_to_string(path).ok()).filter(|text| !text.trim().is_empty()) {
+        return Ok(text);
+    }
+    let text = fetch(&rfc_text_url(number))?;
+    if let Some(path) = &cached {
+        // A cache that cannot be written only means fetching again next time.
+        let _ = path.parent().map(std::fs::create_dir_all);
+        let _ = std::fs::write(path, &text);
+    }
+    Ok(text)
 }
 
 /// The text of `section` (such as "3.1") from an RFC's plain text, including
@@ -434,6 +500,38 @@ RFC 791                                                   September 1981
         let algorithm = rfc_section(OLDER_RFC_TEXT, "4.1.1.2").unwrap();
         assert!(algorithm.contains("The algorithm."));
         assert!(!algorithm.contains("signatureValue"));
+    }
+
+    #[test]
+    fn a_field_is_explained_with_its_citation() {
+        let library = sample();
+        let udp = library.lookup("udp").unwrap();
+        assert_eq!(udp.explain_field("Length").unwrap(), "Header plus data, in bytes.\n\nRFC 768");
+        assert_eq!(udp.short_name(), "UDP");
+        assert!(udp.explain_field("Checksum").is_none());
+    }
+
+    #[test]
+    fn the_assistant_gets_notes_by_name_or_the_ids_it_could_ask_for() {
+        let library = sample();
+        assert!(library.describe_for_assistant("User Datagram Protocol").starts_with("User Datagram Protocol\nDatagrams between ports."));
+        assert_eq!(library.describe_for_assistant("gopher"), "No reference notes for 'gopher'. Known ids: udp.");
+    }
+
+    #[test]
+    fn rfc_text_is_fetched_once_and_then_read_from_the_cache() {
+        let cache = std::env::temp_dir().join(format!("theviewer-rfc-cache-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&cache);
+        let fetched = load_rfc_text(Some(&cache), 768, |url| {
+            assert_eq!(url, "https://www.rfc-editor.org/rfc/rfc768.txt");
+            Ok("User Datagram Protocol".to_string())
+        });
+        assert_eq!(fetched.unwrap(), "User Datagram Protocol");
+        let cached = load_rfc_text(Some(&cache), 768, |_| panic!("the cached copy should be used"));
+        assert_eq!(cached.unwrap(), "User Datagram Protocol");
+        let failed = load_rfc_text(Some(&cache), 791, |_| Err("offline".to_string()));
+        assert_eq!(failed.unwrap_err(), "offline");
+        let _ = std::fs::remove_dir_all(&cache);
     }
 
     #[test]

@@ -403,6 +403,7 @@ fn show_hex_dump(app: &mut ViewerApp, ui: &mut Ui) {
         Vec::new()
     };
     let emphasised = app.emphasised_layer().map(|kind| app.layer_ranges(kind, start, end));
+    let pointed: Vec<(usize, usize)> = app.pointed_bytes().into_iter().collect();
 
     for (row_index, row_bytes) in bytes.chunks(BYTES_PER_ROW).enumerate() {
         let y = body.min.y + row_index as f32 * row_height;
@@ -453,6 +454,11 @@ fn show_hex_dump(app: &mut ViewerApp, ui: &mut Ui) {
             if in_ranges(&packets, offset) {
                 let band = Rect::from_min_max(pos2(hex_cell.min.x, hex_cell.min.y), pos2(hex_cell.min.x + 2.0, hex_cell.max.y));
                 painter.rect_filled(band, 0.0, legend::PACKET_SELECTION_COLOUR);
+            }
+            if in_ranges(&pointed, offset) {
+                painter.rect_filled(hex_cell, 0.0, theme::POINTED_FILL);
+                painter.rect_filled(ascii_cell, 0.0, theme::POINTED_FILL);
+                painter.rect_stroke(hex_cell, 2.0, Stroke::new(1.0, theme::CURSOR), StrokeKind::Inside);
             }
             if hover == Some(offset) && offset != cursor {
                 painter.rect_stroke(hex_cell, 2.0, Stroke::new(1.0, theme::ACCENT_DIM), StrokeKind::Inside);

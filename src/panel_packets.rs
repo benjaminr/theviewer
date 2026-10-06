@@ -33,7 +33,7 @@ use crate::analysis_tools;
 use crate::app::ViewerApp;
 use crate::dock::DockTab;
 use crate::packets::sources::{self, CaptureLocation, MarkerMode, Recipe};
-use crate::packets::{self, Dissection, Flow, LinkKind, PacketSet, RawFrames, Summary};
+use crate::packets::{self, Dissection, Flow, Layer, LinkKind, PacketSet, RawFrames, Summary};
 use crate::panel_packets_grid::{self as grid, GridState};
 use crate::panel_packets_view as view;
 use crate::plugin::{Category, Finding};
@@ -711,6 +711,40 @@ fn follow_main_selection(state: &mut PacketsState, app: &ViewerApp) {
             state.scroll_to_row = Some(index);
         }
     }
+}
+
+/// A dissected packet: where it lies in the document and its layers, whose
+/// field offsets are relative to the packet's first byte.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PacketLayers {
+    pub offset: usize,
+    pub len: usize,
+    pub layers: Vec<Layer>,
+}
+
+/// The layers of the viewer's packet holding document offset `position`:
+/// the selected packet's dissection when it is current, otherwise that
+/// packet dissected afresh. `None` when the viewer holds no such packet.
+pub(crate) fn layers_at(app: &mut ViewerApp, position: usize) -> Option<PacketLayers> {
+    let state = &app.bench.panels.packets;
+    if state.foreign_document {
+        return None;
+    }
+    let index = state.packet_at(position)?;
+    let packet = state.set.as_ref()?.packets.get(index)?.clone();
+    let version = app.document.version();
+    if let Some(detail) = &state.detail
+        && detail.index == index
+        && detail.version == version
+        && detail.link_choice == state.link_choice
+        && detail.raw_generation == state.raw_generation
+    {
+        return Some(PacketLayers { offset: packet.offset, len: packet.len, layers: detail.dissection.layers.clone() });
+    }
+    let link = state.link_choice.apply(packet.link);
+    let raw = state.raw.clone();
+    let bytes = app.document.read_range(packet.offset, packet.len.min(PACKET_READ_LIMIT));
+    Some(PacketLayers { offset: packet.offset, len: packet.len, layers: packets::dissect_with(&bytes, link, &raw).layers })
 }
 
 /// Note the main view's selection as one the panel made, so it is not

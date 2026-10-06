@@ -120,6 +120,7 @@ pub fn show_raster(app: &mut ViewerApp, ui: &mut Ui) {
     draw_search_matches(app, &painter, &geometry);
     draw_packet_selection(app, &painter, &geometry);
     draw_selection(app, &painter, &geometry);
+    draw_pointed_bytes(app, &painter, &geometry);
     if app.layer_visible(LayerKind::Bookmarks) {
         let mut drawn = 0;
         for bookmark in app.bookmarks.bookmarks.clone() {
@@ -652,6 +653,16 @@ fn draw_selection(app: &mut ViewerApp, painter: &egui::Painter, geometry: &Geome
         }
     }
     note_drawn(app, LayerKind::Selection, drawn);
+}
+
+/// Outline the bytes a panel's row is pointing at, such as a field in the
+/// Reference tab.
+fn draw_pointed_bytes(app: &ViewerApp, painter: &egui::Painter, geometry: &Geometry) {
+    let Some((start, len)) = app.pointed_bytes() else { return };
+    for rect in geometry.rects(start, len) {
+        painter.rect_filled(rect, 0.0, theme::POINTED_FILL);
+        painter.rect_stroke(rect.expand(1.0), 0.0, Stroke::new(1.5, theme::CURSOR), StrokeKind::Outside);
+    }
 }
 
 /// While the legend points at a layer, darken the picture and outline only

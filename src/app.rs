@@ -294,6 +294,11 @@ pub struct ViewerApp {
     emphasis: Option<LayerKind>,
     /// The layer the legend pointed at during this frame, for the next one.
     emphasis_next: Option<LayerKind>,
+    /// Bytes a panel points at (a field row under the pointer), as
+    /// `(start, len)`, outlined in both views this frame.
+    pointed: Option<(usize, usize)>,
+    /// The bytes pointed at during this frame, for the next one.
+    pointed_next: Option<(usize, usize)>,
     /// Overlay rectangles the raster drew last frame, per layer; read by
     /// tests and handy when checking what a toggle does.
     pub overlays_drawn: std::collections::BTreeMap<LayerKind, usize>,
@@ -564,6 +569,8 @@ impl ViewerApp {
             layers: LayerVisibility::default(),
             emphasis: None,
             emphasis_next: None,
+            pointed: None,
+            pointed_next: None,
             overlays_drawn: std::collections::BTreeMap::new(),
             search_highlight: None,
             texture: None,
@@ -1561,6 +1568,17 @@ impl ViewerApp {
     /// The layer being picked out this frame, if the legend points at one.
     pub fn emphasised_layer(&self) -> Option<LayerKind> {
         self.emphasis
+    }
+
+    /// Outline `len` bytes at `start` in both views on the next frame, while
+    /// a panel's row for them is under the pointer.
+    pub fn point_at_bytes(&mut self, start: usize, len: usize) {
+        self.pointed_next = Some((start, len.max(1)));
+    }
+
+    /// The bytes a panel is pointing at this frame, as `(start, len)`.
+    pub fn pointed_bytes(&self) -> Option<(usize, usize)> {
+        self.pointed
     }
 
     // ------------------------------------------------------------------
@@ -3012,6 +3030,7 @@ impl ViewerApp {
             });
             ui.menu_button("Tools", |ui| {
                 if ui.button("Explain this file").clicked() { self.dock.open = true; self.dock.tab = DockTab::Report; self.start_report(); ui.close(); }
+                if ui.button("Reference for the format at the cursor").clicked() { self.dock.toggle(DockTab::Reference); ui.close(); }
                 if ui.button("Structure map: segments, find similar, feature tracks").clicked() { self.dock.toggle(DockTab::StructureMap); ui.close(); }
                 if ui.button("Dot plot (self-similarity)").clicked() { self.dock.toggle(DockTab::DotPlot); ui.close(); }
                 if ui.button("Trigram cube").clicked() { self.dock.toggle(DockTab::Trigrams); ui.close(); }
@@ -3655,6 +3674,8 @@ impl eframe::App for ViewerApp {
         self.hover = None;
         // The legend sets the layer to pick out while it is pointed at.
         self.emphasis = self.emphasis_next.take();
+        // Panels set the bytes they point at during the frame (see the end).
+        self.pointed = self.pointed_next.take();
         egui::Panel::top("menu").show(ui, |ui| self.show_menu_bar(ui));
         egui::Panel::top("toolbar").show(ui, |ui| self.show_toolbar(ui));
         egui::Panel::bottom("status").show(ui, |ui| self.show_status_bar(ui));
@@ -3672,6 +3693,11 @@ impl eframe::App for ViewerApp {
         self.show_bookmark_prompt(&ctx);
         crate::selection_menu::show_insert_dialog(self, &ctx);
         commands::show_palette(self, &ctx);
+        // Draw once more when a panel starts or stops pointing at bytes, so
+        // the views catch up without waiting for the pointer to move.
+        if self.pointed_next != self.pointed {
+            ctx.request_repaint();
+        }
     }
 }
 

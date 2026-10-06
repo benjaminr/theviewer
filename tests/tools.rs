@@ -743,3 +743,55 @@ fn the_packet_viewer_finds_an_embedded_capture_filters_it_and_selects_a_packet_i
     assert_eq!(app.selection_ranges(), vec![(packets[1].offset, packets[1].len), (packets[2].offset, packets[2].len)]);
     std::fs::remove_file(path).ok();
 }
+
+/// Step until a label containing `text` is shown, or ten seconds pass.
+fn wait_for_label(harness: &mut Harness<'static, ViewerApp>, text: &str) {
+    let started = Instant::now();
+    while harness.query_by_label_contains(text).is_none() && started.elapsed() < Duration::from_secs(10) {
+        std::thread::sleep(Duration::from_millis(20));
+        harness.step();
+    }
+}
+
+#[test]
+fn the_reference_tab_explains_the_udp_header_under_the_cursor() {
+    let path = temp_path("reference-udp.pcap");
+    std::fs::write(&path, pcap_of(&[ethernet_udp(4000, 9999, b"telemetry one")])).unwrap();
+    let mut harness = harness_for(path.clone());
+    wait_for(&mut harness, |app| app.patterns.iter().any(|finding| finding.id == "pcap"));
+
+    // File header, record header, Ethernet and IPv4, then the UDP header,
+    // whose destination port is its second field.
+    let udp_at = 24 + 16 + 14 + 20;
+    harness.state_mut().set_cursor(udp_at + 2, false);
+    harness.state_mut().dock.toggle(DockTab::Reference);
+    wait_for_label(&mut harness, "Destination port");
+    steps(&mut harness, 2);
+    let reference = &harness.state().bench.panels.reference;
+    let labels: Vec<&str> = reference.stack().iter().map(|entry| entry.label.as_str()).collect();
+    // Capture, Ethernet, IPv4 and UDP; the middle two are named by whatever
+    // notes exist for them.
+    assert_eq!(labels.len(), 4, "{labels:?}");
+    assert_eq!((labels[0], labels[3]), ("pcap capture", "UDP"), "outermost first: {labels:?}");
+    let chosen = reference.chosen_entry().expect("a format is shown");
+    assert_eq!((chosen.label.as_str(), chosen.start, chosen.len), ("UDP", udp_at, 8));
+    assert!(harness.query_all_by_label("User Datagram Protocol").next().is_some(), "the notes' name is the heading");
+    let udp = theviewer::reference::lookup("udp").unwrap();
+    if let Some(note) = udp.field("Destination port") {
+        assert!(harness.query_all_by_label(&note.meaning).next().is_some(), "the field's meaning is listed");
+    }
+
+    // Pointing at a field's row outlines its bytes; clicking selects them.
+    // Scrolling the row into view is animated: let it settle first.
+    harness.get_by_label("Destination port").scroll_to_me();
+    steps(&mut harness, 10);
+    harness.get_by_label("Destination port").hover();
+    steps(&mut harness, 3);
+    assert_eq!(harness.state().pointed_bytes(), Some((udp_at + 2, 2)));
+    harness.get_by_label("Destination port").click();
+    steps(&mut harness, 3);
+    assert_eq!(harness.state().selection(), Some((udp_at + 2, 2)));
+    let chosen = harness.state().bench.panels.reference.chosen_entry().map(|entry| entry.label.clone());
+    assert_eq!(chosen.as_deref(), Some("UDP"), "the tab stays on the format the field belongs to");
+    std::fs::remove_file(path).ok();
+}

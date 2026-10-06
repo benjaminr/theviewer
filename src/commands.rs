@@ -109,6 +109,7 @@ pub fn commands() -> Vec<Command> {
         Command { id: "tools.columns", title: "Profile record columns", keys: "", run: |app, _| { app.dock.open = true; app.dock.tab = crate::dock::DockTab::Columns; } },
         Command { id: "tools.protocol", title: "Analyse a message stream (protocol)", keys: "", run: |app, _| { app.dock.open = true; app.dock.tab = crate::dock::DockTab::Protocol; crate::analysis_tools::start_protocol(app); } },
         Command { id: "tools.packets", title: "Packet viewer: dissect, filter and export packets", keys: "", run: |app, _| app.dock.toggle(crate::dock::DockTab::Packets) },
+        Command { id: "tools.reference", title: "Reference for the format at the cursor", keys: "", run: |app, _| app.dock.toggle(crate::dock::DockTab::Reference) },
         Command { id: "tools.packets_framing", title: "Packets from the protocol framing", keys: "", run: |app, _| crate::panel_packets::open_protocol_messages(app) },
         Command { id: "tools.packets_selection", title: "Add the selection as a packet", keys: "", run: |app, _| crate::panel_packets::add_selection_as_packet(app) },
         Command { id: "tools.packets_rows", title: "Split the selection into packets by row width", keys: "", run: |app, _| crate::panel_packets::split_selection_by_row_width(app) },

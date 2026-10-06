@@ -20,6 +20,7 @@ use crate::panel_firmware::FirmwareState;
 use crate::panel_image_finder::ImageFinderState;
 use crate::panel_learn::LearnState;
 use crate::panel_packets::PacketsState;
+use crate::panel_reference::ReferenceState;
 use crate::panel_structure_map::StructureMapState;
 use crate::panel_treemap::TreemapState;
 use crate::panel_trigram::TrigramState;
@@ -43,6 +44,7 @@ pub struct PanelStates {
     pub characterise: CharacteriseState,
     pub learn: LearnState,
     pub packets: PacketsState,
+    pub reference: ReferenceState,
 }
 
 /// Draw a panel, lending it its state from `app` for the frame. The state is
