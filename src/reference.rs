@@ -17,9 +17,12 @@ use std::sync::OnceLock;
 use serde::Deserialize;
 
 /// The embedded reference files, by name.
-const SOURCES: [(&str, &str); 2] = [
+const SOURCES: [(&str, &str); 5] = [
     ("network.toml", include_str!("../reference/network.toml")),
+    ("network-infrastructure.toml", include_str!("../reference/network-infrastructure.toml")),
+    ("network-applications.toml", include_str!("../reference/network-applications.toml")),
     ("files.toml", include_str!("../reference/files.toml")),
+    ("files-catalogue.toml", include_str!("../reference/files-catalogue.toml")),
 ];
 
 /// Where RFC plain text is fetched from.
@@ -43,10 +46,55 @@ pub struct FormatReference {
     /// Ids of formats commonly carried inside this one.
     #[serde(default)]
     pub carries: Vec<String>,
+    /// A heading to list the entry under when browsing, such as "Routing"
+    /// or "Industrial control".
+    #[serde(default)]
+    pub group: Option<String>,
+    /// Transport ports the protocol is registered on or commonly found on,
+    /// as `tcp/502`, `udp/53` or `sctp/2905`, so a payload that is not
+    /// dissected can be named by its port.
+    #[serde(default)]
+    pub ports: Vec<String>,
+    /// EtherTypes that announce this protocol in an Ethernet frame.
+    #[serde(default)]
+    pub ethertypes: Vec<u16>,
+    /// IP protocol numbers that announce this protocol in an IP header.
+    #[serde(default)]
+    pub ip_protocols: Vec<u8>,
     #[serde(default)]
     pub specs: Vec<Specification>,
     #[serde(default)]
     pub fields: Vec<FieldNote>,
+}
+
+/// A transport the ports of [`FormatReference::ports`] belong to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Transport {
+    Tcp,
+    Udp,
+    Sctp,
+}
+
+impl Transport {
+    pub fn name(self) -> &'static str {
+        match self {
+            Transport::Tcp => "tcp",
+            Transport::Udp => "udp",
+            Transport::Sctp => "sctp",
+        }
+    }
+}
+
+/// Parse `tcp/502` into its transport and port.
+pub fn parse_port(text: &str) -> Option<(Transport, u16)> {
+    let (transport, port) = text.trim().split_once('/')?;
+    let transport = match transport.to_ascii_lowercase().as_str() {
+        "tcp" => Transport::Tcp,
+        "udp" => Transport::Udp,
+        "sctp" => Transport::Sctp,
+        _ => return None,
+    };
+    Some((transport, port.parse().ok()?))
 }
 
 /// A document that defines a format.
@@ -87,10 +135,14 @@ struct ReferenceFile {
     format: Vec<FormatReference>,
 }
 
-/// Every embedded entry, with an index from lower-case key to entry.
+/// Every embedded entry, with indexes from lower-case key, port, EtherType
+/// and IP protocol number to entries.
 pub struct Library {
     entries: Vec<FormatReference>,
     by_key: HashMap<String, usize>,
+    by_port: HashMap<(Transport, u16), Vec<usize>>,
+    by_ethertype: HashMap<u16, Vec<usize>>,
+    by_ip_protocol: HashMap<u8, Vec<usize>>,
 }
 
 impl Library {
@@ -118,7 +170,37 @@ impl Library {
                 by_key.insert(key, index);
             }
         }
-        Ok(Library { entries, by_key })
+        let mut by_port: HashMap<(Transport, u16), Vec<usize>> = HashMap::new();
+        let mut by_ethertype: HashMap<u16, Vec<usize>> = HashMap::new();
+        let mut by_ip_protocol: HashMap<u8, Vec<usize>> = HashMap::new();
+        for (index, entry) in entries.iter().enumerate() {
+            for text in &entry.ports {
+                let port = parse_port(text).ok_or_else(|| format!("reference '{}' lists port '{text}'; write ports as tcp/N, udp/N or sctp/N", entry.id))?;
+                by_port.entry(port).or_default().push(index);
+            }
+            for &ethertype in &entry.ethertypes {
+                by_ethertype.entry(ethertype).or_default().push(index);
+            }
+            for &protocol in &entry.ip_protocols {
+                by_ip_protocol.entry(protocol).or_default().push(index);
+            }
+        }
+        Ok(Library { entries, by_key, by_port, by_ethertype, by_ip_protocol })
+    }
+
+    /// Entries registered on, or commonly found on, a transport port.
+    pub fn by_port(&self, transport: Transport, port: u16) -> Vec<&FormatReference> {
+        self.by_port.get(&(transport, port)).map_or_else(Vec::new, |indexes| indexes.iter().map(|&index| &self.entries[index]).collect())
+    }
+
+    /// Entries an EtherType announces.
+    pub fn by_ethertype(&self, ethertype: u16) -> Vec<&FormatReference> {
+        self.by_ethertype.get(&ethertype).map_or_else(Vec::new, |indexes| indexes.iter().map(|&index| &self.entries[index]).collect())
+    }
+
+    /// Entries an IP protocol number announces.
+    pub fn by_ip_protocol(&self, protocol: u8) -> Vec<&FormatReference> {
+        self.by_ip_protocol.get(&protocol).map_or_else(Vec::new, |indexes| indexes.iter().map(|&index| &self.entries[index]).collect())
     }
 
     pub fn entries(&self) -> &[FormatReference] {
@@ -417,6 +499,29 @@ meaning = "One numbered option."
         assert_eq!(library.lookup_finding("compressed-streams", "UDP").unwrap().id, "udp");
         assert_eq!(library.lookup_finding("udp", "").unwrap().id, "udp");
         assert!(library.lookup_finding("compressed-streams", "").is_none());
+    }
+
+    #[test]
+    fn a_payload_can_be_named_by_its_port_ethertype_or_ip_protocol() {
+        let extra = r#"
+[[format]]
+id = "dhcp"
+name = "Dynamic Host Configuration Protocol"
+keys = ["DHCP"]
+summary = "Hands out addresses."
+organisation = "A BOOTP message with options."
+ports = ["udp/67", "UDP/68"]
+ethertypes = [0x88cc]
+ip_protocols = [47]
+"#;
+        let library = Library::parse(&[("sample.toml", SAMPLE), ("extra.toml", extra)]).unwrap();
+        assert_eq!(library.by_port(Transport::Udp, 68)[0].id, "dhcp");
+        assert!(library.by_port(Transport::Tcp, 67).is_empty());
+        assert_eq!(library.by_ethertype(0x88cc)[0].id, "dhcp");
+        assert_eq!(library.by_ip_protocol(47)[0].id, "dhcp");
+        let bad = extra.replace("udp/67", "port 67");
+        let error = Library::parse(&[("bad.toml", &bad)]).err().unwrap();
+        assert!(error.contains("tcp/N"), "{error}");
     }
 
     #[test]
