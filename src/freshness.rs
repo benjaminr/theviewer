@@ -8,13 +8,18 @@
 //! tree, image finder, comparison and the like) show an "Out of date —
 //! Refresh" chip instead, and their tab is marked, so stale results are
 //! never shown silently. The packet viewer follows the document itself.
+//!
+//! Edits are heard of through the bus's `document.edited`, whether or not
+//! any tool is showing.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use eframe::egui::{self, RichText, Ui};
 
 use crate::app::ViewerApp;
+use crate::bus::Message;
 use crate::dock::DockTab;
 use crate::theme;
 
@@ -37,7 +42,6 @@ pub enum Refresh {
 #[derive(Debug, Default)]
 pub struct Freshness {
     described: HashMap<DockTab, u64>,
-    seen_version: u64,
     changed_at: Option<Instant>,
 }
 
@@ -63,12 +67,9 @@ impl Freshness {
         self.described.get(&tab).copied()
     }
 
-    /// Note the document's version each frame, remembering when it changed.
-    fn watch(&mut self, version: u64) {
-        if version != self.seen_version {
-            self.seen_version = version;
-            self.changed_at = Some(Instant::now());
-        }
+    /// The document was just edited.
+    fn edited(&mut self) {
+        self.changed_at = Some(Instant::now());
     }
 
     /// How long until the edits count as settled, or `None` once they do.
@@ -139,8 +140,6 @@ impl ViewerApp {
     /// Once the document has been still for a moment after an edit, bring
     /// the cheap views up to date. Called every frame.
     pub fn follow_edits(&mut self, ctx: &egui::Context) {
-        let version = self.document.version();
-        self.bench.freshness.watch(version);
         if let Some(wait) = self.bench.freshness.time_to_settle() {
             ctx.request_repaint_after(wait);
             return;
@@ -153,6 +152,11 @@ impl ViewerApp {
             self.refresh_tool(tab);
         }
     }
+}
+
+/// The reaction to `document.edited`: start waiting for the edits to settle.
+pub fn note_edit(app: &mut ViewerApp, _message: &Arc<Message>) {
+    app.bench.freshness.edited();
 }
 
 /// Above a tool whose result is older than the document: a chip saying so,
@@ -205,11 +209,25 @@ mod tests {
     fn edits_count_as_settled_once_the_document_has_been_still_for_a_moment() {
         let mut freshness = Freshness::default();
         assert_eq!(freshness.time_to_settle(), None, "nothing edited yet");
-        freshness.watch(1);
+        freshness.edited();
         assert!(freshness.time_to_settle().is_some_and(|wait| wait <= SETTLE_TIME));
         freshness.changed_at = Instant::now().checked_sub(SETTLE_TIME);
         assert_eq!(freshness.time_to_settle(), None);
-        freshness.watch(1);
-        assert_eq!(freshness.time_to_settle(), None, "the same version is not a new edit");
+    }
+
+    #[test]
+    fn an_edit_heard_of_on_the_bus_starts_the_wait_whether_or_not_a_tool_is_showing() {
+        let mut app = ViewerApp::new(crate::app::Launch::default());
+        app.document = crate::document::Document::from_bytes(vec![0; 16]);
+        app.run_bus();
+        assert_eq!(app.bench.freshness.time_to_settle(), None);
+        app.document.overwrite(0, b"x");
+        assert_eq!(app.bench.freshness.time_to_settle(), None, "not heard of until the bus is delivered");
+        app.run_bus();
+        assert!(app.bench.freshness.time_to_settle().is_some(), "document.edited was heard");
+        app.run_bus();
+        app.bench.freshness.changed_at = Instant::now().checked_sub(SETTLE_TIME);
+        app.run_bus();
+        assert_eq!(app.bench.freshness.time_to_settle(), None, "no new edit, so still settled");
     }
 }
