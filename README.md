@@ -615,7 +615,7 @@ theviewer mcp firmware.bin               # serve it to an MCP client on stdin an
 | `--report` | Print the file's report as text and exit, without opening a window |
 | `--json` | Print the report as JSON and exit: the summary, regions, likely record widths and confident findings, for scripts and CI |
 | `api METHOD ['{JSON}'] [FILE]` | Run one method of the data API on FILE and print its JSON result; an error is printed as JSON on stderr with a non-zero exit code. `api --describe` lists every method. The methods are described in [docs/api.md](docs/api.md) |
-| `mcp [--plugins DIR]… [FILE…]` | Serve the files over MCP on standard input and output until the client closes it; see [above](#use-theviewer-from-claude-code-and-other-mcp-clients). `--plugins` loads plugins from DIR instead of the usual directories |
+| `mcp [--plugins DIR]… [--output-schemas] [FILE…]` | Serve the files over MCP on standard input and output until the client closes it; see [above](#use-theviewer-from-claude-code-and-other-mcp-clients). `--plugins` loads plugins from DIR instead of the usual directories. `--output-schemas` lists each tool's result schema as well, which roughly doubles the tool list a client keeps in its model's context |
 
 ## Extending it
 

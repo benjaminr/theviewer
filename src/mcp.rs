@@ -39,6 +39,8 @@ pub struct Options {
     pub files: Vec<PathBuf>,
     /// Where to load plugins from, instead of the usual directories.
     pub plugin_dirs: Option<Vec<PathBuf>>,
+    /// List tools with their output schemas (`--output-schemas`).
+    pub output_schemas: bool,
 }
 
 /// A server with the plugins loaded and the files open. A file that cannot
@@ -56,7 +58,7 @@ pub fn start(options: &Options) -> Result<Server, String> {
     for file in &options.files {
         workspace.open_path(file).map_err(|error| error.message)?;
     }
-    Ok(Server::new(workspace, plugins))
+    Ok(Server::new(workspace, plugins).with_output_schemas(options.output_schemas))
 }
 
 /// Serve on standard input and output until the input closes.

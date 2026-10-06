@@ -63,8 +63,10 @@ fn output_schema(method: &MethodRef) -> Option<Value> {
     (schema["type"] == "object").then_some(schema)
 }
 
-/// One method as an MCP tool, for a client speaking `version`.
-pub fn describe(method: &MethodRef, version: &str) -> Value {
+/// One method as an MCP tool, for a client speaking `version`. Output
+/// schemas are optional in MCP and double the size of the tool list, which a
+/// client keeps in its model's context, so they are given only on request.
+pub fn describe(method: &MethodRef, version: &str, output_schemas: bool) -> Value {
     let name = method.name();
     let mut description = method.summary().to_string();
     if let MethodRef::Registered(registered) = method {
@@ -81,7 +83,7 @@ pub fn describe(method: &MethodRef, version: &str) -> Value {
     }
     if has_structured_output(version) {
         tool["title"] = Value::String(title(name));
-        if let Some(schema) = output_schema(method) {
+        if let Some(schema) = output_schema(method).filter(|_| output_schemas) {
             tool["outputSchema"] = schema;
         }
     }
@@ -90,8 +92,8 @@ pub fn describe(method: &MethodRef, version: &str) -> Value {
 
 /// Every tool, in the method table's order and then the plugins', for a
 /// client speaking `version`.
-pub fn list(workspace: &dyn Workspace, version: &str) -> Vec<Value> {
-    api::all_methods(workspace).iter().map(|method| describe(method, version)).collect()
+pub fn list(workspace: &dyn Workspace, version: &str, output_schemas: bool) -> Vec<Value> {
+    api::all_methods(workspace).iter().map(|method| describe(method, version, output_schemas)).collect()
 }
 
 /// The method a tool name stands for.
@@ -156,7 +158,7 @@ mod tests {
     #[test]
     fn every_method_is_a_tool_named_with_underscores() {
         let workspace = workspace_with("a.bin", b"abc");
-        let tools = list(&workspace, MODERN_VERSION);
+        let tools = list(&workspace, MODERN_VERSION, true);
         assert_eq!(tools.len(), api::METHODS.len());
         let names: Vec<&str> = tools.iter().map(|tool| tool["name"].as_str().unwrap()).collect();
         assert!(names.contains(&"bytes_read") && names.contains(&"analysis_text_encoding"));
@@ -166,7 +168,7 @@ mod tests {
     #[test]
     fn tools_say_whether_they_read_edit_or_destroy() {
         let workspace = workspace_with("a.bin", b"abc");
-        let tools = list(&workspace, MODERN_VERSION);
+        let tools = list(&workspace, MODERN_VERSION, true);
         let tool = |name: &str| tools.iter().find(|tool| tool["name"] == name).unwrap().clone();
         let read = tool("bytes_read");
         assert_eq!((read["annotations"]["readOnlyHint"].clone(), read["title"].clone()), (json!(true), json!("Bytes › read")));
@@ -183,11 +185,11 @@ mod tests {
     #[test]
     fn older_revisions_get_no_output_schema_or_structured_content() {
         let mut workspace = workspace_with("a.bin", b"abc");
-        let tools = list(&workspace, "2025-03-26");
+        let tools = list(&workspace, "2025-03-26", true);
         let read = tools.iter().find(|tool| tool["name"] == "bytes_read").unwrap();
         assert!(read.get("outputSchema").is_none() && read.get("title").is_none());
         assert_eq!(read["annotations"]["readOnlyHint"], true);
-        assert!(list(&workspace, "2024-11-05")[0].get("annotations").is_none(), "2024-11-05 had no annotations");
+        assert!(list(&workspace, "2024-11-05", true)[0].get("annotations").is_none(), "2024-11-05 had no annotations");
         let result = call(&mut workspace, &context("2025-03-26"), &arguments(json!({ "name": "bytes_read", "arguments": { "start": 0, "len": 2 } }))).unwrap();
         assert!(result.get("structuredContent").is_none());
         assert_eq!(serde_json::from_str::<Value>(result["content"][0]["text"].as_str().unwrap()).unwrap()["data"], "6162");

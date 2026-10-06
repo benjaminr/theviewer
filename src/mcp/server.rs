@@ -69,9 +69,17 @@ pub struct Server {
     document_ids: Vec<String>,
     page_size: usize,
     plugins_checked: Instant,
+    /// Whether tools carry their output schemas (see [`tools::describe`]).
+    output_schemas: bool,
 }
 
 impl Server {
+    /// Give tools their output schemas in listings.
+    pub fn with_output_schemas(mut self, output_schemas: bool) -> Self {
+        self.output_schemas = output_schemas;
+        self
+    }
+
     pub fn new(workspace: HeadlessWorkspace, plugins: PluginRuntime) -> Self {
         let mut server = Server {
             workspace,
@@ -83,6 +91,7 @@ impl Server {
             document_ids: Vec::new(),
             page_size: PAGE_SIZE,
             plugins_checked: Instant::now(),
+            output_schemas: false,
         };
         // What happened while starting (files opening) is nobody's news.
         plugins::drain(&mut server.workspace, &mut server.plugins, &mut server.bus_cursor);
@@ -247,7 +256,7 @@ impl Server {
         match method {
             "server/discover" => Ok(json!({ "supportedVersions": protocol::supported_versions(), "capabilities": protocol::capabilities(), "instructions": protocol::INSTRUCTIONS })),
             "tools/list" => {
-                let (tools, next) = page(tools::list(&self.workspace, context.version), params, self.page_size)?;
+                let (tools, next) = page(tools::list(&self.workspace, context.version, self.output_schemas), params, self.page_size)?;
                 Ok(with_next(json!({ "tools": tools }), next))
             }
             "tools/call" => tools::call(&mut self.workspace, context, params),
@@ -564,7 +573,7 @@ mod tests {
         assert_eq!(discover["_meta"][protocol::META_SERVER_INFO]["name"], "theviewer");
         assert!(discover["ttlMs"].is_u64() && discover["cacheScope"] == "private");
         let tools = &response(&messages, 2)["result"];
-        assert!(tools["tools"].as_array().unwrap().iter().any(|tool| tool["name"] == "bytes_read" && tool["outputSchema"].is_object()));
+        assert!(tools["tools"].as_array().unwrap().iter().any(|tool| tool["name"] == "bytes_read" && tool.get("outputSchema").is_none()), "output schemas only on request");
         assert_eq!(tools["ttlMs"], 0);
     }
 
