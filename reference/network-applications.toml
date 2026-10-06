@@ -336,9 +336,82 @@ name = "Option"
 meaning = "The option a WILL, WON'T, DO, DON'T or SB refers to, such as 1 echo, 24 terminal type or 31 negotiate about window size."
 
 [[format]]
+id = "nbss"
+name = "NetBIOS Session Service"
+keys = ["NBSS", "NetBIOS Session Service", "NetBIOS-SSN", "NetBIOS session"]
+wireshark = "nbss"
+summary = "The connection service of NetBIOS over TCP/IP: a 4-byte header that frames each message on TCP port 139, used to carry SMB, and the same framing in shortened form on port 445."
+group = "File sharing and remote access"
+ports = ["tcp/139"]
+carries = ["smb", "smb2"]
+organisation = """
+On TCP port 139 a client first sends a session request naming the server it wants (the called name) and itself (the calling name), each a 16-byte NetBIOS name encoded as 32 letters as in the name service. The server answers with a positive response, a negative response giving a reason, or a retarget response pointing to another address and port. After a positive response every SMB message travels in a session message.
+
+Every packet starts with a 4-byte header: a type byte (0x00 session message, 0x81 session request, 0x82 positive response, 0x83 negative response, 0x84 retarget response, 0x85 keep-alive), a flags byte whose lowest bit extends the length, and a 16-bit big-endian length of what follows, so a message can be up to 131,071 bytes.
+
+SMB over TCP port 445 ("direct hosting") has no session request: each message is preceded by a zero byte and a 24-bit big-endian length, the same shape as a session message header with the flags byte taken into the length.
+"""
+
+[[format.specs]]
+document = "RFC 1002"
+title = "Protocol standard for a NetBIOS service on a TCP/UDP transport: Detailed specifications"
+url = "https://www.rfc-editor.org/rfc/rfc1002"
+rfc = 1002
+section = "4.3"
+
+[[format.specs]]
+document = "RFC 1001"
+title = "Protocol standard for a NetBIOS service on a TCP/UDP transport: Concepts and methods"
+url = "https://www.rfc-editor.org/rfc/rfc1001"
+rfc = 1001
+
+[[format.specs]]
+document = "[MS-SMB2]"
+title = "Server Message Block (SMB) Protocol Versions 2 and 3"
+url = "https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-smb2/5606ad47-5ee0-437a-817e-70c366052962"
+section = "2.1"
+
+[[format.fields]]
+name = "Message type"
+wireshark = "nbss.type"
+aliases = ["Type"]
+meaning = "0x00 session message (carrying SMB), 0x81 session request, 0x82 positive session response, 0x83 negative session response, 0x84 retarget session response, 0x85 keep-alive."
+section = "4.3.1"
+
+[[format.fields]]
+name = "Flags"
+wireshark = "nbss.flags"
+meaning = "Port 139 only: all bits zero except the lowest, which adds a 17th, top bit to the length."
+section = "4.3.1"
+
+[[format.fields]]
+name = "Length"
+wireshark = "nbss.length"
+meaning = "Bytes after this 4-byte header: 16 bits plus the flags' extension bit on port 139, 24 bits on port 445."
+section = "4.3.1"
+
+[[format.fields]]
+name = "Called name"
+wireshark = "nbss.called_name"
+meaning = "Session request: the NetBIOS name of the server being asked for, such as FILESERVER<20>, whose last byte names the service (0x20 file server); *SMBSERVER<20> asks for whatever server is listening."
+section = "4.3.2"
+
+[[format.fields]]
+name = "Calling name"
+wireshark = "nbss.calling_name"
+meaning = "Session request: the client's own NetBIOS name, usually its workstation name with suffix 0x00."
+section = "4.3.2"
+
+[[format.fields]]
+name = "Error code"
+wireshark = "nbss.error_code"
+meaning = "Negative session response: 0x80 not listening on the called name, 0x81 not listening for the calling name, 0x82 called name not present, 0x83 called name present but short of resources, 0x8F unspecified error."
+section = "4.3.4"
+
+[[format]]
 id = "smb"
 name = "Server Message Block version 1 (CIFS)"
-keys = ["SMB", "SMB1", "SMBv1", "CIFS", "Common Internet File System", "Server Message Block version 1", "NBSS", "NetBIOS Session Service"]
+keys = ["SMB", "SMB1", "SMBv1", "CIFS", "Common Internet File System", "Server Message Block version 1"]
 wireshark = "smb"
 summary = "The original Windows file and printer sharing protocol, also used to carry named pipes for remote procedure calls; deprecated and disabled in current Windows, but still met on older and embedded systems."
 group = "File sharing and remote access"
@@ -382,6 +455,38 @@ section = "2.2.3.1"
 name = "Status"
 wireshark = "smb.nt_status"
 meaning = "A 32-bit NTSTATUS in responses: 0 success, 0xC0000022 access denied, 0xC0000034 object name not found, 0xC000006D logon failure, 0xC0000016 more processing required (during authentication)."
+section = "2.2.3.1"
+
+[[format.fields]]
+name = "Flags"
+wireshark = "smb.flags"
+meaning = "Bit 7 marks a reply from the server; others say whether path names are case-insensitive or canonical and whether the client asks for oplocks."
+section = "2.2.3.1"
+
+[[format.fields]]
+name = "Flags2"
+wireshark = "smb.flags2"
+meaning = "Sixteen more flag bits: 0x8000 strings are Unicode, 0x4000 the status is a 32-bit NTSTATUS rather than a DOS error class and code, 0x0800 extended security (SPNEGO), 0x0004 the message is signed, 0x0001 long file names are understood."
+section = "2.2.3.1"
+
+[[format.fields]]
+name = "Process ID high"
+wireshark = "smb.pid.high"
+meaning = "The top 16 bits of the client's process ID, for systems whose process IDs do not fit in the 16-bit Process ID field; usually zero."
+section = "2.2.3.1"
+
+[[format.fields]]
+name = "Security features"
+wireshark = "smb.signature"
+aliases = ["Security signature"]
+meaning = "Eight bytes that hold the message signature when signing is in use (the first 8 bytes of a keyed MD5 over the message and a sequence number), otherwise zero."
+section = "2.2.3.1"
+
+[[format.fields]]
+name = "Process ID"
+wireshark = "smb.pid"
+aliases = ["PID"]
+meaning = "The low 16 bits of the client process's ID; together with the multiplex ID it matches a response to its request, and file locks and opens belong to it."
 section = "2.2.3.1"
 
 [[format.fields]]
@@ -437,6 +542,13 @@ meaning = "0xFE 'S' 'M' 'B' for a normal SMB2 header, 0xFD 'S' 'M' 'B' for an en
 section = "2.2.1"
 
 [[format.fields]]
+name = "Header length"
+wireshark = "smb2.header_len"
+aliases = ["Structure size"]
+meaning = "The header's StructureSize, always 64."
+section = "2.2.1"
+
+[[format.fields]]
 name = "Command"
 wireshark = "smb2.cmd"
 meaning = "The operation: 0 negotiate, 1 session setup, 2 logoff, 3 tree connect, 4 tree disconnect, 5 create (open), 6 close, 7 flush, 8 read, 9 write, 10 lock, 11 ioctl, 12 cancel, 13 echo, 14 query directory, 15 change notify, 16 query info, 17 set info, 18 oplock break."
@@ -456,6 +568,13 @@ meaning = "Bit 0 server to client (a response), bit 1 asynchronous, bit 2 relate
 section = "2.2.1"
 
 [[format.fields]]
+name = "Chain offset"
+wireshark = "smb2.chain_offset"
+aliases = ["Next command"]
+meaning = "NextCommand: in a compound, the offset from the start of this header to the next one, a multiple of 8; zero in the last or only message."
+section = "2.2.1"
+
+[[format.fields]]
 name = "Message ID"
 wireshark = "smb2.msg_id"
 meaning = "A 64-bit number the client gives each request; the response carries the same value."
@@ -465,6 +584,17 @@ section = "2.2.1"
 name = "Credits"
 aliases = ["Credit request", "Credit response", "Credit charge"]
 meaning = "Flow control: the client asks for credits and the server grants them; each request spends credits in proportion to its size."
+section = "2.2.1"
+
+[[format.fields]]
+name = "Process ID"
+meaning = "Synchronous messages: once the client's process ID, now a reserved field the client should set to zero (Windows sends 0xFEFF) and the server ignores."
+section = "2.2.1"
+
+[[format.fields]]
+name = "Async ID"
+wireshark = "smb2.aid"
+meaning = "Asynchronous messages (flag bit 1 set): the identifier the server returned with STATUS_PENDING for an operation that will finish later; the final response and any cancel refer to it. It takes the place of the process ID and tree ID."
 section = "2.2.1"
 
 [[format.fields]]
@@ -482,8 +612,27 @@ section = "2.2.1"
 [[format.fields]]
 name = "Signature"
 wireshark = "smb2.signature"
-meaning = "16 bytes: a keyed hash of the message when the signed flag is set, otherwise zero."
+meaning = "16 bytes: a keyed hash of the message when the signed flag is set, otherwise zero. In a transform header (0xFD 'S' 'M' 'B') it is the authentication tag of the encrypted message instead."
 section = "2.2.1"
+
+[[format.fields]]
+name = "Nonce"
+wireshark = "smb2.header.transform.nonce"
+meaning = "Transform header: the nonce used to encrypt this message, 11 bytes for AES-CCM or 12 for AES-GCM in a 16-byte field; it must never repeat under one key."
+section = "2.2.41"
+
+[[format.fields]]
+name = "Original message size"
+wireshark = "smb2.header.transform.msg_size"
+meaning = "Transform header: the size of the SMB2 message before encryption, which is also the size of the encrypted data that follows."
+section = "2.2.41"
+
+[[format.fields]]
+name = "Encryption flags"
+wireshark = "smb2.header.transform.flags"
+aliases = ["Flags/Encryption algorithm"]
+meaning = "Transform header: 0x0001 means the message is encrypted (SMB 3.1.1); in SMB 3.0 and 3.0.2 the same field names the algorithm, 0x0001 AES-128-CCM."
+section = "2.2.41"
 
 [[format]]
 id = "onc-rpc"

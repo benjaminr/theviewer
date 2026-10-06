@@ -26,9 +26,7 @@ const FIELDS_WITH_FREE_NAMED_CHILDREN: [&str; 1] = ["Headers"];
 
 /// Fields of the newer dissectors that the notes do not describe yet, by
 /// layer. A field listed here that gains a note should leave the list.
-const FIELDS_AWAITING_NOTES: [(&str, &[&str]); 7] = [
-    ("NetBIOS Session Service", &["Message type", "Length"]),
-    ("SMB2", &["Header length", "Chain offset", "Process ID"]),
+const FIELDS_AWAITING_NOTES: [(&str, &[&str]); 5] = [
     ("TPKT", &["Reserved"]),
     ("RTP", &["Padding", "Extension", "CSRC count", "Payload"]),
     ("RTCP", &["Receiver Report", "Sender SSRC"]),
