@@ -2,7 +2,9 @@
 //! Protocol over standard input and output, so Claude Code, Claude Desktop
 //! and other MCP clients can inspect and edit the files it was given.
 //!
-//! Every API method, the plugins' included, is a tool. It is hand-written,
+//! Every API method, the plugins' included, is a tool; documents, their
+//! bytes, findings and facts, and the reference notes are resources, whose
+//! subscribers hear of changes from the workspace bus. It is hand-written,
 //! synchronous JSON-RPC: one thread handles messages in turn, another
 //! reads them.
 //!
@@ -16,6 +18,7 @@
 
 pub mod jsonrpc;
 pub mod protocol;
+pub mod resources;
 pub mod server;
 pub mod tools;
 

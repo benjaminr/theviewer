@@ -147,7 +147,10 @@ pub fn server_info() -> Value {
 
 /// What the server offers, the same in every revision.
 pub fn capabilities() -> Value {
-    json!({ "tools": { "listChanged": false } })
+    json!({
+        "tools": { "listChanged": false },
+        "resources": { "subscribe": true, "listChanged": true },
+    })
 }
 
 /// Guidance for the model on how to use the server.
@@ -155,7 +158,8 @@ pub const INSTRUCTIONS: &str = "theviewer inspects and edits binary files: the o
 Documents are named by id (doc-1), by path, or \"current\". Start with analysis_overview for a map of a file, then findings_query, \
 structure_parse and templates_apply for detail; bytes_read and bytes_hexdump show bytes. Edits (bytes_write, bytes_insert, \
 bytes_delete, bytes_replace, transform_apply) are each one undoable step: history_undo reverses them, and documents_save writes them \
-to disk, which nothing else does.";
+to disk, which nothing else does. Resources under theviewer://doc/{id} give a document's info, bytes, findings and facts; \
+theviewer://reference/{id} gives notes on formats and protocols.";
 
 #[cfg(test)]
 mod tests {

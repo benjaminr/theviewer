@@ -626,6 +626,30 @@ impl FormatReference {
         }
         text
     }
+
+    /// The whole entry as Markdown, for MCP clients reading it as a resource.
+    pub fn to_markdown(&self) -> String {
+        let mut text = format!("# {}\n\n{}\n", self.name, self.summary);
+        if let Some(name) = &self.wireshark {
+            text.push_str(&format!("\nWireshark display filter: `{name}`\n"));
+        }
+        text.push_str(&format!("\n{}\n", self.organisation.trim()));
+        if !self.specs.is_empty() {
+            text.push_str("\n## Specifications\n\n");
+            for spec in &self.specs {
+                let section = spec.section.as_deref().map(|section| format!(" §{section}")).unwrap_or_default();
+                text.push_str(&format!("- [{}{section}]({}): {}\n", spec.document, spec.url, spec.title));
+            }
+        }
+        if !self.fields.is_empty() {
+            text.push_str("\n## Fields\n\n");
+            for note in &self.fields {
+                let wireshark = note.wireshark.as_ref().map(|name| format!(" (Wireshark `{name}`)")).unwrap_or_default();
+                text.push_str(&format!("- **{}**{wireshark}: {}\n", note.name.trim_end_matches('*').trim(), note.meaning));
+            }
+        }
+        text
+    }
 }
 
 impl FieldNote {

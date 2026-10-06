@@ -32,6 +32,8 @@ struct Client {
     child: Child,
     stdin: Option<ChildStdin>,
     lines: Receiver<String>,
+    /// Notifications seen while waiting for answers.
+    notifications: Vec<Value>,
     next_id: i64,
 }
 
@@ -55,7 +57,7 @@ impl Client {
             }
         });
         let stdin = child.stdin.take();
-        Client { child, stdin, lines, next_id: 1 }
+        Client { child, stdin, lines, notifications: Vec::new(), next_id: 1 }
     }
 
     fn send(&mut self, message: &Value) {
@@ -71,7 +73,7 @@ impl Client {
         Some(serde_json::from_str(&line).unwrap_or_else(|error| panic!("the server wrote a line that is not JSON ({error}): {line}")))
     }
 
-    /// Send a request and wait for its answer.
+    /// Send a request and wait for its answer, keeping notifications.
     fn request(&mut self, method: &str, params: Value) -> Value {
         let id = self.next_id;
         self.next_id += 1;
@@ -83,6 +85,7 @@ impl Client {
                 return message;
             }
             assert!(message.get("id").is_none(), "an answer to another request: {message}");
+            self.notifications.push(message);
         }
     }
 
@@ -92,6 +95,18 @@ impl Client {
         let result = answer["result"].clone();
         assert_eq!(result["isError"], false, "{name}: {answer}");
         result["structuredContent"].clone()
+    }
+
+    /// Wait for a notification of `method`, among those seen or to come.
+    fn wait_for_notification(&mut self, method: &str, within: Duration) -> Option<Value> {
+        let deadline = Instant::now() + within;
+        loop {
+            if let Some(index) = self.notifications.iter().position(|message| message["method"] == method) {
+                return Some(self.notifications.remove(index));
+            }
+            let message = self.receive(deadline)?;
+            self.notifications.push(message);
+        }
     }
 
     /// Close standard input and wait for the server to exit.
@@ -113,7 +128,7 @@ fn tool_names(answer: &Value) -> Vec<String> {
 }
 
 #[test]
-fn a_client_lists_calls_edits_and_disconnects() {
+fn a_client_lists_calls_edits_reads_subscribes_and_disconnects() {
     let file = temp_path("sample.bin");
     std::fs::write(&file, b"\x89PNG\r\n\x1a\nsome more bytes").unwrap();
     let plugins = temp_path("plugins");
@@ -135,9 +150,20 @@ fn a_client_lists_calls_edits_and_disconnects() {
     let read = client.call_tool("bytes_read", json!({ "start": 0, "len": 4 }));
     assert_eq!(read["data"], "89504e47");
 
+    let subscribed = client.request("resources/subscribe", json!({ "uri": "theviewer://doc/doc-1/bytes/0-4" }));
+    assert_eq!(subscribed["result"], json!({}));
     let written = client.call_tool("bytes_write", json!({ "start": 0, "data": "cafe" }));
     assert_eq!(written["version"], 1);
+    let updated = client.wait_for_notification("notifications/resources/updated", PATIENCE).expect("the subscriber hears of the edit");
+    assert_eq!(updated["params"]["uri"], "theviewer://doc/doc-1/bytes/0-4");
     assert_eq!(client.call_tool("bytes_read", json!({ "start": 0, "len": 4 }))["data"], "cafe4e47", "the edit is there to read");
+
+    let resource = client.request("resources/read", json!({ "uri": "theviewer://doc/doc-1/bytes/0-4" }));
+    assert_eq!(resource["result"]["contents"][0]["blob"], "yv5ORw==");
+    let info = client.request("resources/read", json!({ "uri": "theviewer://doc/doc-1" }));
+    let info: Value = serde_json::from_str(info["result"]["contents"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!((info["modified"].clone(), info["name"].clone()), (json!(true), json!(file.file_name().unwrap().to_str().unwrap())));
+
     assert_eq!(client.call_tool("probe_echo", json!({ "text": "hi" }))["echoed"], "hi", "the plugin's method runs");
 
     let modern = client.request(
