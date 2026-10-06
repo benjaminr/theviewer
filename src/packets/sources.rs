@@ -15,6 +15,7 @@ use crate::parsers::guarded;
 use crate::protocol::{self, Framing, Message};
 
 pub mod erf;
+pub mod gzip;
 pub mod netmon;
 pub mod snoop;
 
@@ -355,13 +356,18 @@ pub struct CaptureLocation {
     /// The link type of the first interface.
     pub link: LinkKind,
     pub packets: usize,
-    /// Bytes from the header to the end of the last readable record.
+    /// Bytes from the header to the end of the last readable record, or of
+    /// the gzip stream.
     pub len: usize,
+    /// The capture is compressed with gzip, so its packets are read from a
+    /// decompressed copy ([`gzip`]).
+    pub gzipped: bool,
 }
 
 impl CaptureLocation {
     pub fn describe(&self) -> String {
-        format!("{} at {:#x} · {} · {} packets", self.format.label(), self.offset, self.link.label(), self.packets)
+        let compressed = if self.gzipped { " (gzip)" } else { "" };
+        format!("{}{compressed} at {:#x} · {} · {} packets", self.format.label(), self.offset, self.link.label(), self.packets)
     }
 }
 
@@ -555,6 +561,13 @@ pub fn find_captures(bytes: &[u8], base: usize) -> Vec<CaptureLocation> {
             0xD4 | 0xA1 | 0x4D | 0x0A | b's' | b'G' => format_by_magic(&bytes[at..]),
             _ => None,
         };
+        if format.is_none()
+            && let Some(capture) = find_gzipped_capture(&bytes[at..], base + at)
+        {
+            at += capture.len.max(1);
+            found.push(capture);
+            continue;
+        }
         let Some(format) = format else {
             at += 1;
             continue;
@@ -562,13 +575,25 @@ pub fn find_captures(bytes: &[u8], base: usize) -> Vec<CaptureLocation> {
         match read_capture(&bytes[at..], base + at) {
             Ok((set, extent)) => {
                 let link = set.packets.first().map_or(LinkKind::Unknown, |p| p.link);
-                found.push(CaptureLocation { offset: base + at, format, link, packets: set.len(), len: extent });
+                found.push(CaptureLocation { offset: base + at, format, link, packets: set.len(), len: extent, gzipped: false });
                 at += extent.max(1);
             }
             Err(_) => at += 1,
         }
     }
     found
+}
+
+/// The gzip-compressed capture at `bytes[0]` (document offset `offset`),
+/// when it decompresses to one with at least one packet.
+fn find_gzipped_capture(bytes: &[u8], offset: usize) -> Option<CaptureLocation> {
+    if !gzip::looks_like(bytes) {
+        return None;
+    }
+    let capture = gzip::gunzip(bytes, offset).ok()?;
+    let (set, _) = read_capture(&capture.data, 0).ok()?;
+    let link = set.packets.first().map_or(LinkKind::Unknown, |p| p.link);
+    Some(CaptureLocation { offset, format: capture.format, link, packets: set.len(), len: capture.compressed_len, gzipped: true })
 }
 
 #[cfg(test)]
@@ -725,6 +750,21 @@ mod tests {
         assert!(find_captures(&records, 0x100).is_empty(), "a region that does not start the document");
         let set = from_capture(&document[13..], 13).expect("read when asked for");
         assert_eq!(&document[set.packets[1].offset..set.packets[1].end()], b"frame two");
+    }
+
+    #[test]
+    fn a_gzipped_capture_inside_a_document_is_found_with_its_compressed_extent() {
+        let capture = pcap_file(1, &[(b"one", 1, 0), (b"two", 2, 0)]);
+        let compressed = crate::compress::compress(crate::compress::Codec::Gzip, &capture).expect("compresses");
+        let mut document = vec![0x1F, 0x8B, 0x08, 0x00];
+        let at = document.len();
+        document.extend_from_slice(&compressed);
+        document.extend_from_slice(b"trailing bytes");
+        let found = find_captures(&document, 0x20);
+        assert_eq!(found.len(), 1, "{found:?}");
+        let location = &found[0];
+        assert_eq!((location.offset, location.format, location.packets, location.len, location.gzipped), (0x20 + at, CaptureFormat::Pcap, 2, compressed.len(), true));
+        assert!(location.describe().starts_with("pcap (gzip) at"), "{}", location.describe());
     }
 
     #[test]
