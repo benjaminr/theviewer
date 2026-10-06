@@ -1113,7 +1113,8 @@ mod tests {
         assert_eq!(innermost(Transport::Udp, 40000, 53, &query).map(|l| l.key), Some("dns"));
         assert_eq!(innermost(Transport::Tcp, 40000, 9999, b"GET / HTTP/1.1\r\n\r\n").map(|l| l.key), Some("http"));
         assert_eq!(innermost(Transport::Udp, 1, 2, &query), None);
-        assert_eq!(innermost(Transport::Udp, 40000, 161, &[0x30, 0x03, 0x02, 0x01, 0x01]), None, "a message without a PDU is not SNMP");
+        assert_eq!(innermost(Transport::Udp, 40000, 161, &[0x30, 0x03, 0x02, 0x01, 0x01]).map(|l| l.info), Some("Malformed SNMPv2c message".to_string()), "a message without a PDU");
+        assert_eq!(innermost(Transport::Udp, 40000, 161, b"hello"), None);
         // A v1 get-next-request with no bindings, from the trap port.
         let snmp = [0x30, 0x12, 0x02, 0x01, 0x00, 0x04, 0x00, 0xA1, 0x0B, 0x02, 0x01, 0x01, 0x02, 0x01, 0x00, 0x02, 0x01, 0x00, 0x30, 0x00];
         assert_eq!(innermost(Transport::Udp, 162, 40000, &snmp).map(|l| l.info), Some("get-next-request".to_string()));

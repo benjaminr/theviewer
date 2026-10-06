@@ -255,7 +255,14 @@ fn integer_field(name: &str, tlv: &Tlv, bytes: &[u8]) -> Option<(Field, i64)> {
 }
 
 /// An SNMP message, or `None` when the bytes are not one.
+/// Bytes on an SNMP port that start like a message but do not parse in full
+/// (test suites send many) are still named, with what can be read of them.
 pub fn dissect_snmp(payload: &[u8]) -> Option<AppLayer> {
+    whole_message(payload).or_else(|| malformed_message(payload))
+}
+
+/// A message that parses from its first byte to its last.
+fn whole_message(payload: &[u8]) -> Option<AppLayer> {
     let message = expect(payload, 0, payload.len(), TAG_SEQUENCE)?;
     let end = message.end();
     let version_tlv = expect(payload, message.content_at, end, TAG_INTEGER)?;
@@ -267,6 +274,27 @@ pub fn dissect_snmp(payload: &[u8]) -> Option<AppLayer> {
         _ => return None,
     };
     Some(AppLayer { name: "SNMP", key: "snmp", len: end, fields, info })
+}
+
+/// A message whose outer SEQUENCE and version can be read, but nothing
+/// whole after them: its version, and the rest marked malformed.
+fn malformed_message(payload: &[u8]) -> Option<AppLayer> {
+    if payload.first() != Some(&TAG_SEQUENCE) {
+        return None;
+    }
+    // The outer length may be what is wrong, so only its size is read.
+    let first_length_byte = *payload.get(1)?;
+    let header_len = if first_length_byte < 0x80 { 2 } else { 2 + (first_length_byte & 0x7F) as usize };
+    let version_tlv = expect(payload, header_len, payload.len(), TAG_INTEGER)?;
+    let version = integer(version_tlv.content(payload))?;
+    if !matches!(version, VERSION_1 | VERSION_2C | VERSION_3) {
+        return None;
+    }
+    let fields = vec![
+        Field::new("version", version_tlv.content_at, version_tlv.content_len, format!("{version} ({})", version_name(version))),
+        Field::new("Bytes", version_tlv.end(), payload.len() - version_tlv.end(), "the rest of the message, which does not parse"),
+    ];
+    Some(AppLayer { name: "SNMP", key: "snmp", len: payload.len(), fields, info: format!("Malformed {} message", version_name(version)) })
 }
 
 /// The community and PDU of a v1 or v2c message, added to `fields`.
@@ -557,13 +585,17 @@ mod tests {
     }
 
     #[test]
-    fn truncated_or_foreign_bytes_are_not_snmp() {
+    fn truncated_messages_are_named_malformed_and_foreign_bytes_are_not_snmp() {
         let message = get_request(1, "public");
         for cut in 0..message.len() {
-            assert!(dissect_snmp(&message[..cut]).is_none(), "cut at {cut}");
+            let info = dissect_snmp(&message[..cut]).map(|layer| layer.info);
+            let expected = if cut >= 5 { Some("Malformed SNMPv2c message".to_string()) } else { None };
+            assert_eq!(info, expected, "cut at {cut}");
         }
         assert!(dissect_snmp(&get_request(2, "public")).is_none(), "version 2 does not exist");
-        assert!(dissect_snmp(b"\x30\x03\x02\x01\x01").is_none());
+        assert!(dissect_snmp(b"\x31\x03\x02\x01\x01").is_none(), "a SET, not a SEQUENCE");
+        let malformed = dissect_snmp(b"\x30\x03\x02\x01\x01").expect("a message without a PDU");
+        assert_eq!(malformed.fields[1].name, "Bytes");
         assert!(object_identifier(&[0x2B, 0x86]).is_none(), "an unfinished arc");
         assert!(object_identifier(&[0xFF; 12]).is_none(), "an arc too large for 64 bits");
     }
