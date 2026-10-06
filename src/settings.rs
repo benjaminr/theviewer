@@ -309,6 +309,10 @@ impl ViewerApp {
             ui.checkbox(&mut edited.findings_list_open, "Show the list of findings");
             ui.end_row();
 
+            ui.label("Pixel values");
+            ui.checkbox(&mut edited.pixel_values, "Show values inside pixels when zoomed in");
+            ui.end_row();
+
             ui.label("Width");
             ui.horizontal(|ui| {
                 ui.add(egui::DragValue::new(&mut edited.width).range(1..=MAX_WIDTH).suffix(" px"));
@@ -379,6 +383,7 @@ impl ViewerApp {
         let mut preferences = Preferences {
             highlight_patterns: self.highlight_patterns,
             findings_list_open: self.pattern_list_open,
+            pixel_values: self.show_pixel_values,
             format: self.shape.format.short_name().to_string(),
             palette: self.shape.palette.label().to_string(),
             width: self.shape.width,

@@ -95,6 +95,9 @@ with its shortcut, or right-click a byte for the actions that apply to it.
   choosing a width, coloured by bytes, entropy, region type or byte class,
   and arrows from values that look like offsets to the bytes they point at.
 - Optional pattern highlights over the view and hex dump (`H`).
+- Zoomed right in, template fields are outlined and named, and *View › Show
+  values inside pixels* writes each byte's hex value inside its pixel. It is
+  off by default; Settings can turn it on for every start.
 - Zoomed in far enough, every pixel shows its value in hex, and template
   and structure fields are outlined and named.
 - A row difference (XOR or subtract the row above) that turns the constant

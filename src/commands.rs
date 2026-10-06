@@ -96,6 +96,7 @@ pub fn commands() -> Vec<Command> {
         Command { id: "view.hilbert", title: "Toggle Hilbert-curve layout", keys: "", run: |app, _| app.bench.toggle_layout(crate::workbench::Layout::Hilbert) },
         Command { id: "view.morton", title: "Toggle Morton (Z-order) curve layout", keys: "", run: |app, _| app.bench.toggle_layout(crate::workbench::Layout::Morton) },
         Command { id: "view.curve_colours", title: "Cycle curve colours: bytes, entropy, region type, byte class", keys: "", run: |app, _| app.bench.curve_colour = app.bench.curve_colour.next() },
+        Command { id: "view.pixel_values", title: "Toggle values inside pixels when zoomed in", keys: "", run: |app, _| app.show_pixel_values = !app.show_pixel_values },
         Command { id: "view.zoomed_out_regions", title: "Toggle colouring by region when zoomed out", keys: "", run: |app, _| app.colour_regions_when_zoomed_out = !app.colour_regions_when_zoomed_out },
         Command { id: "view.row_difference", title: "Cycle row difference: off, XOR or subtract the row above", keys: "", run: |app, _| app.cycle_row_difference() },
         Command { id: "view.pointers", title: "Toggle pointer arrows", keys: "", run: |app, _| app.bench.analysis.show_pointers = !app.bench.analysis.show_pointers },

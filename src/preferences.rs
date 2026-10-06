@@ -27,6 +27,8 @@ pub struct Preferences {
     pub hidden_pattern_kinds: Vec<String>,
     /// Whether the Findings pane starts with its list expanded.
     pub findings_list_open: bool,
+    /// Write byte values inside pixels when zoomed in far enough.
+    pub pixel_values: bool,
     /// Pixel format, by its command-line short name (e.g. "gray8").
     pub format: String,
     /// Palette for single-channel formats, by label (e.g. "Grey").
@@ -44,6 +46,7 @@ impl Default for Preferences {
             highlight_patterns: false,
             hidden_pattern_kinds: Vec::new(),
             findings_list_open: true,
+            pixel_values: false,
             format: PixelFormat::Gray8.short_name().to_string(),
             palette: Palette::Grey.label().to_string(),
             width: DEFAULT_WIDTH,
@@ -95,6 +98,7 @@ mod tests {
     #[test]
     fn pattern_highlights_start_off() {
         assert!(!Preferences::default().highlight_patterns);
+        assert!(!Preferences::default().pixel_values, "values inside pixels start off too");
     }
 
     #[test]

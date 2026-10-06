@@ -136,7 +136,9 @@ pub fn show_raster(app: &mut ViewerApp, ui: &mut Ui) {
     }
     if zoom >= HEX_LABEL_MIN_ZOOM {
         let mut budget = MAX_TEXT_SHAPES_PER_FRAME;
-        app.hex_labels_drawn = draw_pixel_labels(app, &painter, image_rect, origin, drawn_rows, &mut budget);
+        if app.show_pixel_values {
+            app.hex_labels_drawn = draw_pixel_labels(app, &painter, image_rect, origin, drawn_rows, &mut budget);
+        }
         app.field_outlines_drawn = draw_field_outlines(app, &painter, origin, &mut budget);
     }
 

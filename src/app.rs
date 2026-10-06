@@ -281,6 +281,9 @@ pub struct ViewerApp {
     /// the raster by region (or block class and entropy) rather than showing
     /// raw subsampled bytes.
     pub colour_regions_when_zoomed_out: bool,
+    /// Write each byte's value inside its pixel when zoomed in far enough.
+    /// Off unless asked for, so the picture stays a picture.
+    pub show_pixel_values: bool,
     /// Hex values the raster drew inside pixels last frame (zero when zoomed
     /// out or over the per-frame limit); read by tests and the status bar.
     pub hex_labels_drawn: usize,
@@ -506,6 +509,7 @@ impl ViewerApp {
             row_difference: RowDifference::None,
             value_range: None,
             colour_regions_when_zoomed_out: true,
+            show_pixel_values: false,
             hex_labels_drawn: 0,
             field_outlines_drawn: 0,
             last_raster_ms: 0.0,
@@ -608,6 +612,7 @@ impl ViewerApp {
             self.pattern_kinds[category.index()] = preferences.shows_kind(category);
         }
         self.pattern_list_open = preferences.findings_list_open;
+        self.show_pixel_values = preferences.pixel_values;
         self.shape.format = preferences.pixel_format();
         self.shape.palette = preferences.palette();
         self.set_width(preferences.width);
@@ -2588,6 +2593,8 @@ impl ViewerApp {
                         }
                     }
                 });
+                ui.checkbox(&mut self.show_pixel_values, "Show values inside pixels when zoomed in")
+                    .on_hover_text("Write each byte's hex value inside its pixel once pixels are large enough");
                 ui.checkbox(&mut self.colour_regions_when_zoomed_out, "Colour by region when zoomed out")
                     .on_hover_text("Below 1×, show what each part of the file is (report regions, or block class and entropy) instead of subsampled bytes");
                 ui.menu_button("Row difference", |ui| {

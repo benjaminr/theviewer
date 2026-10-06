@@ -1142,6 +1142,14 @@ fn zooming_in_far_writes_each_byte_in_hex_and_outlines_template_fields() {
         .title("Record")
         .fields(vec![Field::new("marker", 0, 2, "AA 55"), Field::new("counter", 2, 1, "0")]);
     harness.state_mut().bench.pinned.push(header);
+
+    // Values inside pixels are off by default, even zoomed right in.
+    harness.state_mut().zoom = 48.0;
+    steps(&mut harness, 2);
+    assert_eq!(harness.state().hex_labels_drawn, 0, "values are only written when asked for");
+    assert_eq!(harness.state().field_outlines_drawn, 2, "template fields are still outlined");
+
+    harness.state_mut().show_pixel_values = true;
     for format in [PixelFormat::Gray8, PixelFormat::Bit1Msb, PixelFormat::Nibble4, PixelFormat::Rgba8] {
         let app = harness.state_mut();
         app.shape.format = format;
