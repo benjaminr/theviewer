@@ -343,6 +343,9 @@ pub struct PacketsState {
     pub(crate) pane_height: f32,
     /// The raster and hex grids, the splitting rules and column selection.
     pub grid: GridState,
+    /// The id of the API's packet set shown (`set-1`), when the packets
+    /// came from `packets.sets.create`; the methods on a set take it.
+    pub(crate) api_set: Option<String>,
 }
 
 impl PacketsState {
@@ -350,6 +353,7 @@ impl PacketsState {
     /// read and dissected the next time the panel is drawn.
     pub fn load(&mut self, set: PacketSet) {
         self.incoming = Some(set);
+        self.api_set = None;
         self.selected.clear();
         self.focus = None;
         self.detail = None;
@@ -500,6 +504,7 @@ pub fn show_api_set(app: &mut ViewerApp, id: &str) {
         (None, false) => FrameChoice::Raw,
     };
     state.raw.decode_as = info.decode_as;
+    state.api_set = Some(id.to_string());
     if let Some(source) = template
         && let Ok(parsed) = Template::parse(&source)
     {
@@ -536,11 +541,46 @@ pub fn add_selection_as_packet(app: &mut ViewerApp) {
     app.dock.toggle(DockTab::Packets);
 }
 
-/// Cut the selection into packets one raster row long.
+/// Cut the selection into packets one raster row long, as
+/// `packets.sets.create`, decoded as the viewer decodes frames now.
 pub fn split_selection_by_row_width(app: &mut ViewerApp) {
-    let stride = app.shape.row_stride();
-    with_state(app, |state, app| split_selection_by_length(state, app, stride));
+    let Some((start, len)) = app.selection() else {
+        app.bench.panels.packets.show_note("Select the records first.", true);
+        app.dock.toggle(DockTab::Packets);
+        return;
+    };
+    let mut params = serde_json::json!({ "from": "split_fixed", "start": start, "len": len, "record_len": app.shape.row_stride() });
+    params.as_object_mut().expect("an object").extend(current_decoding(app));
+    if app.perform("packets.sets.create", params).is_err() {
+        // Said in the panel too, where the packets were expected.
+        app.bench.panels.packets.show_note(app.status.clone(), true);
+    }
     app.dock.toggle(DockTab::Packets);
+}
+
+/// How the viewer reads and decodes packets now, as `packets.sets.create`
+/// and `packets.decode_as` take it: the link chosen, the protocol frames of
+/// unknown format are decoded as or whether to detect it, and the template
+/// for frames no protocol reads. A set made with it decodes as the one
+/// shown did, and the step says so.
+pub(crate) fn current_decoding(app: &ViewerApp) -> serde_json::Map<String, serde_json::Value> {
+    let state = &app.bench.panels.packets;
+    let mut decoding = serde_json::Map::new();
+    if state.link_choice != LinkChoice::Auto {
+        decoding.insert("link".into(), serde_json::json!(state.link_choice.apply(LinkKind::Unknown)));
+    }
+    match state.frame_choice {
+        FrameChoice::Protocol(protocol) => drop(decoding.insert("decode_as".into(), serde_json::json!(protocol))),
+        FrameChoice::Detect => drop(decoding.insert("detect".into(), serde_json::json!(true))),
+        FrameChoice::Default => drop(decoding.insert("detect".into(), serde_json::json!(app.preferences.detect_frame_protocols))),
+        FrameChoice::Raw => drop(decoding.insert("detect".into(), serde_json::json!(false))),
+    }
+    if state.raw.template.is_some()
+        && let Some(source) = &state.raw_template_source
+    {
+        decoding.insert("template".into(), serde_json::json!(source));
+    }
+    decoding
 }
 
 /// For `--tool packets`: load the first capture in the document, else the
@@ -2175,6 +2215,35 @@ mod tests {
         app.run_bus();
         let (fact, _) = app.bus.latest_from::<FieldsDecoded>(&app.document_id(), PACKETS_PRODUCER).unwrap();
         assert!(!app.bus.is_stale(fact), "said again for the edited bytes");
+    }
+
+    #[test]
+    fn splitting_the_selection_by_row_width_makes_an_api_packet_set_the_viewer_shows() {
+        let mut app = ViewerApp::new(Launch::default());
+        app.open_bytes(vec![0x42; 96], "records.bin".to_string());
+        app.set_width(16);
+        app.restore_selection(16, 64);
+        crate::actions::take_performed();
+        let split = crate::commands::commands().into_iter().find(|command| command.id == "tools.packets_rows").unwrap();
+        (split.run)(&mut app, &egui::Context::default());
+        let performed = crate::actions::take_performed();
+        assert_eq!(performed.len(), 1);
+        assert_eq!(performed[0].0, "packets.sets.create");
+        assert_eq!(performed[0].1, serde_json::json!({"from": "split_fixed", "start": 16, "len": 64, "record_len": 16, "detect": true}), "the step says how to split and decode");
+        let state = &app.bench.panels.packets;
+        assert_eq!(state.incoming.as_ref().map(|set| set.len()), Some(4));
+        assert_eq!(state.api_set.as_deref(), Some("set-1"), "the viewer knows the set's id for the methods on it");
+        let listed = crate::api::call(&mut app, &crate::api::Caller::Panel, "packets.sets.list", serde_json::json!({})).unwrap();
+        assert_eq!(listed["sets"][0]["count"], 4);
+    }
+
+    #[test]
+    fn splitting_with_nothing_selected_says_so_in_the_viewer() {
+        let mut app = ViewerApp::new(Launch::default());
+        app.open_bytes(vec![0x42; 96], "records.bin".to_string());
+        split_selection_by_row_width(&mut app);
+        assert_eq!(app.bench.panels.packets.note.as_ref().map(|note| note.text.as_str()), Some("Select the records first."));
+        assert!(crate::actions::take_performed().is_empty());
     }
 
     #[test]
