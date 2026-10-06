@@ -1303,3 +1303,78 @@ fn cmd_click_builds_a_multi_range_selection_and_all_matches_selects_every_match(
     let at_record_starts = ranges.iter().filter(|&&(at, _)| at % 64 == 0).count();
     assert_eq!(at_record_starts, SAMPLE_LEN / 64, "every record's marker is selected");
 }
+
+#[test]
+fn filling_a_column_selection_changes_that_column_in_every_record_and_undoes_in_one_step() {
+    let mut harness = harness(sample_file("column-fill"));
+    let original = harness.state_mut().document.read_range(0, SAMPLE_LEN);
+    let start = raster_point(&harness);
+    let zoom = harness.state().zoom;
+    drag_with(&mut harness, start, pos2(start.x + 3.0 * zoom, start.y + 8.0 * zoom), Modifiers::ALT);
+    let ranges = harness.state().selection_ranges();
+    assert!(ranges.len() >= 8);
+
+    harness.get_by_label("Fill").click();
+    steps(&mut harness, 2);
+    let filled = harness.state_mut().document.read_range(0, SAMPLE_LEN);
+    for (index, (&before, &after)) in original.iter().zip(&filled).enumerate() {
+        let selected = ranges.iter().any(|&(at, len)| index >= at && index < at + len);
+        assert_eq!(after, if selected { 0x00 } else { before }, "byte {index:#x}");
+    }
+    assert!(harness.state().column_selection.is_some(), "the column stays selected");
+
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+    steps(&mut harness, 2);
+    assert_eq!(harness.state_mut().document.read_range(0, SAMPLE_LEN), original, "one undo restores every record");
+}
+
+#[test]
+fn inverting_a_multi_range_selection_inverts_every_range_as_one_step() {
+    let mut harness = harness(sample_file("multi-invert"));
+    harness.state_mut().pattern_kinds = [false; Category::ALL.len()];
+    let original = harness.state_mut().document.read_range(0, SAMPLE_LEN);
+    let first = raster_point(&harness);
+    for step in 0..3 {
+        let offset = step as f32 * 24.0;
+        click_with(&mut harness, pos2(first.x + offset, first.y + offset), Modifiers::COMMAND);
+    }
+    let ranges = harness.state().selection_ranges();
+    assert_eq!(ranges.len(), 3);
+
+    // The floating toolbar beside the selection offers the operation.
+    harness.get_by_label("Invert bits").click();
+    steps(&mut harness, 2);
+    for &(at, _) in &ranges {
+        assert_eq!(harness.state_mut().document.byte_at(at), Some(!original[at]), "range at {at:#x}");
+    }
+    assert_eq!(harness.state().selection_ranges(), ranges, "the ranges stay selected");
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+    steps(&mut harness, 2);
+    assert_eq!(harness.state_mut().document.read_range(0, SAMPLE_LEN), original);
+}
+
+#[test]
+fn skipping_a_range_folds_it_out_of_the_raster_and_unfolding_brings_it_back() {
+    let mut harness = harness(sample_file("skip"));
+    let rows = harness.state().total_view_rows();
+    harness.state_mut().restore_selection(0x100, 0x400);
+    steps(&mut harness, 2);
+    harness.get_by_label("Skip").click();
+    steps(&mut harness, 3);
+    let app = harness.state();
+    assert_eq!(app.folds.ranges(), &[(0x100, 0x400)]);
+    assert_eq!(app.document.len(), SAMPLE_LEN, "skipping deletes nothing");
+    assert_eq!(app.total_view_rows(), rows - 0x400 / 64);
+    assert_eq!(app.fold_markers_drawn, 1, "a marker shows where the bytes were");
+    // Row 4 of the raster now holds the bytes after the skipped range.
+    let shown = app.raster_bytes()[4 * 64..4 * 64 + 4].to_vec();
+    assert_eq!(shown, harness.state_mut().document.read_range(0x500, 4));
+
+    harness.get_by_label_contains("skipped").click();
+    steps(&mut harness, 3);
+    let app = harness.state();
+    assert!(app.folds.is_empty());
+    assert_eq!(app.total_view_rows(), rows);
+    let shown = app.raster_bytes()[4 * 64..4 * 64 + 4].to_vec();
+    assert_eq!(shown, harness.state_mut().document.read_range(0x100, 4));
+}

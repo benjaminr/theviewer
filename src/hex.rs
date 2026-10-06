@@ -255,7 +255,9 @@ fn show_hex_dump(app: &mut ViewerApp, ui: &mut Ui) {
     let body = Rect::from_min_max(pos2(rect.min.x, rect.min.y + header_height), rect.max);
     app.hex_body_rect = Some(body);
     let rows = (body.height() / row_height).floor().max(1.0) as usize;
-    let total_rows = app.document.len().div_ceil(BYTES_PER_ROW).max(1);
+    // Rows are laid out in view offsets: skipped bytes are left out.
+    let view_len = app.view_len();
+    let total_rows = view_len.div_ceil(BYTES_PER_ROW).max(1);
 
     // The raster and this dump are kept in step by explicit sync calls (see
     // `ViewerApp::sync_hex_to_raster` and friends); here only the wheel over
@@ -279,7 +281,7 @@ fn show_hex_dump(app: &mut ViewerApp, ui: &mut Ui) {
     let hex_cell_x = |col: usize| hex_x + col as f32 * cell_width + if col >= 8 { group_gap } else { 0.0 };
     let ascii_x = hex_cell_x(BYTES_PER_ROW) + char_width;
 
-    let byte_at_pointer = |pointer: egui::Pos2, hex_top_row: usize, document_len: usize| {
+    let view_at_pointer = |pointer: egui::Pos2, hex_top_row: usize| {
         let row = ((pointer.y - body.min.y) / row_height).floor().max(0.0) as usize + hex_top_row;
         let col = if pointer.x >= ascii_x {
             ((pointer.x - ascii_x) / char_width).floor().max(0.0) as usize
@@ -288,19 +290,20 @@ fn show_hex_dump(app: &mut ViewerApp, ui: &mut Ui) {
             let x = if x > 8.0 * cell_width + group_gap * 0.5 { x - group_gap } else { x };
             (x / cell_width).floor().max(0.0) as usize
         };
-        (row * BYTES_PER_ROW + col.min(BYTES_PER_ROW - 1)).min(document_len.saturating_sub(1))
+        (row * BYTES_PER_ROW + col.min(BYTES_PER_ROW - 1)).min(view_len.saturating_sub(1))
     };
+    let byte_at_pointer = |pointer: egui::Pos2, app: &ViewerApp| app.document_offset(view_at_pointer(pointer, app.hex_top_row)).min(app.document.len().saturating_sub(1));
     if let Some(pointer) = response.hover_pos()
         && pointer.y >= body.min.y
         && !app.document.is_empty()
     {
-        app.hover = Some(byte_at_pointer(pointer, app.hex_top_row, app.document.len()));
+        app.hover = Some(byte_at_pointer(pointer, app));
     }
 
     if let Some(pointer) = response.interact_pointer_pos()
         && response.secondary_clicked()
     {
-        let byte = byte_at_pointer(pointer, app.hex_top_row, app.document.len());
+        let byte = byte_at_pointer(pointer, app);
         app.set_cursor(byte, false);
     }
     if !app.document.is_empty() {
@@ -312,12 +315,12 @@ fn show_hex_dump(app: &mut ViewerApp, ui: &mut Ui) {
     if let Some(pointer) = response.interact_pointer_pos()
         && !response.secondary_clicked()
     {
-        let byte = byte_at_pointer(pointer, app.hex_top_row, app.document.len());
+        let byte = byte_at_pointer(pointer, app);
         let modifiers = ui.input(|i| i.modifiers);
         if response.drag_started() {
             // Start where the button went down, not where the drag was noticed.
             let press = ui.input(|i| i.pointer.press_origin()).filter(|press| press.y >= body.min.y);
-            let origin_byte = press.map_or(byte, |press| byte_at_pointer(press, app.hex_top_row, app.document.len()));
+            let origin_byte = press.map_or(byte, |press| byte_at_pointer(press, app));
             crate::view::begin_drag(app, origin_byte, modifiers);
             app.drag_selection_to(byte);
         } else if response.dragged() {
@@ -349,7 +352,18 @@ fn show_hex_dump(app: &mut ViewerApp, ui: &mut Ui) {
         Stroke::new(1.0, theme::OUTLINE),
     );
 
-    let selection = if app.layer_visible(LayerKind::Selection) { app.selection_ranges_in(app.hex_top_row * BYTES_PER_ROW, (app.hex_top_row + rows) * BYTES_PER_ROW) } else { Vec::new() };
+    if response.is_pointer_button_down_on() {
+        app.selection_view = crate::selection_menu::SelectionView::Hex;
+    }
+    let view_start = app.hex_top_row * BYTES_PER_ROW;
+    let mut bytes = vec![0u8; (rows * BYTES_PER_ROW).min(view_len.saturating_sub(view_start))];
+    let folds = app.folds.clone();
+    folds.read_view(&mut app.document, view_start, &mut bytes);
+    // The document offset of each byte shown.
+    let offsets: Vec<usize> = (0..bytes.len()).map(|index| folds.to_document(view_start + index)).collect();
+    let start = offsets.first().copied().unwrap_or_else(|| folds.to_document(view_start));
+    let end = offsets.last().map_or(start, |&last| last + 1);
+    let selection = if app.layer_visible(LayerKind::Selection) { app.selection_ranges_in(start, end) } else { Vec::new() };
     let show_cursor = app.layer_visible(LayerKind::Cursor);
     let cursor = app.cursor;
     let pending = app.pending_low_nibble;
@@ -359,10 +373,9 @@ fn show_hex_dump(app: &mut ViewerApp, ui: &mut Ui) {
         let stride = app.shape.row_stride();
         first..(first + app.visible_rows * stride).min(app.document.len())
     };
-    let start = app.hex_top_row * BYTES_PER_ROW;
-    let bytes = app.document.read_range(start, rows * BYTES_PER_ROW);
-    let cursor_column_x = hex_cell_x(cursor % BYTES_PER_ROW) - char_width * 0.5;
-    let end = start + bytes.len();
+    let cursor_view = folds.to_view(cursor);
+    let cursor_column_x = hex_cell_x(cursor_view % BYTES_PER_ROW) - char_width * 0.5;
+    let mut selection_outline: Option<Rect> = None;
     let nearby: Vec<(usize, usize, Color32)> = app
         .patterns
         .iter()
@@ -386,12 +399,13 @@ fn show_hex_dump(app: &mut ViewerApp, ui: &mut Ui) {
 
     for (row_index, row_bytes) in bytes.chunks(BYTES_PER_ROW).enumerate() {
         let y = body.min.y + row_index as f32 * row_height;
-        let row_offset = start + row_index * BYTES_PER_ROW;
+        let row_view = view_start + row_index * BYTES_PER_ROW;
+        let row_offset = offsets[row_index * BYTES_PER_ROW];
         let row_rect = Rect::from_min_size(pos2(rect.min.x, y), vec2(rect.width(), row_height));
         if row_index % 2 == 1 {
             painter.rect_filled(row_rect, 0.0, theme::PANEL.gamma_multiply(1.25));
         }
-        let is_cursor_row = row_offset / BYTES_PER_ROW == cursor / BYTES_PER_ROW;
+        let is_cursor_row = row_view / BYTES_PER_ROW == cursor_view / BYTES_PER_ROW;
         let in_raster = raster_range.contains(&row_offset);
         let offset_colour = if is_cursor_row {
             theme::TEXT
@@ -407,11 +421,12 @@ fn show_hex_dump(app: &mut ViewerApp, ui: &mut Ui) {
         painter.text(pos2(offset_x, y + 1.0), Align2::LEFT_TOP, format!("{row_offset:08X}"), font.clone(), offset_colour);
 
         for (col, &byte) in row_bytes.iter().enumerate() {
-            let offset = row_offset + col;
+            let offset = offsets[row_index * BYTES_PER_ROW + col];
             let hex_cell = Rect::from_min_size(pos2(hex_cell_x(col) - char_width * 0.5, y), vec2(cell_width, row_height));
             let ascii_cell = Rect::from_min_size(pos2(ascii_x + col as f32 * char_width, y), vec2(char_width, row_height));
 
             if in_ranges(&selection, offset) {
+                selection_outline = Some(selection_outline.map_or(hex_cell, |outline| outline.union(hex_cell)));
                 painter.rect_filled(hex_cell, 0.0, theme::SELECTION);
                 painter.rect_filled(ascii_cell, 0.0, theme::SELECTION);
             }
@@ -464,6 +479,31 @@ fn show_hex_dump(app: &mut ViewerApp, ui: &mut Ui) {
                 }
             }
         }
+    }
+
+    // Bars where skipped bytes were taken out, with a chip to show them again.
+    let mut unfold = None;
+    for (view, (fold_start, fold_len)) in folds.markers_in(view_start, view_start + bytes.len()) {
+        let row_index = (view - view_start) / BYTES_PER_ROW;
+        if row_index >= rows {
+            continue;
+        }
+        let col = view % BYTES_PER_ROW;
+        let y = body.min.y + row_index as f32 * row_height;
+        let x = hex_cell_x(col) - char_width * 0.5;
+        painter.rect_filled(Rect::from_min_max(pos2(x - 1.0, y), pos2(x + 1.0, y + row_height)), 0.0, theme::FOLD);
+        let ascii_bar = ascii_x + col as f32 * char_width;
+        painter.rect_filled(Rect::from_min_max(pos2(ascii_bar - 1.0, y), pos2(ascii_bar + 1.0, y + row_height)), 0.0, theme::FOLD);
+        let chip_x = (ascii_x + BYTES_PER_ROW as f32 * char_width + 4.0).min(rect.max.x - 96.0);
+        if crate::selection_menu::fold_chip(ui, ui.id().with(("hex-fold", fold_start)), pos2(chip_x, y + 1.0), fold_len, theme::FOLD) {
+            unfold = Some(fold_start);
+        }
+    }
+    if let Some(fold_start) = unfold {
+        app.unfold(fold_start);
+    }
+    if let Some(outline) = selection_outline {
+        crate::selection_menu::show_floating_toolbar(app, ui.ctx(), crate::selection_menu::SelectionView::Hex, outline, body);
     }
 
     // Faint column guide through the cursor column.

@@ -20,6 +20,8 @@ pub const CURSOR: Color32 = Color32::from_rgb(255, 184, 56);
 pub const SELECTION: Color32 = Color32::from_rgba_premultiplied(30, 100, 94, 120);
 pub const CURSOR_FILL: Color32 = Color32::from_rgba_premultiplied(80, 58, 18, 80);
 pub const DANGER: Color32 = Color32::from_rgb(235, 96, 88);
+/// Markers where bytes are skipped (folded out of the views).
+pub const FOLD: Color32 = Color32::from_rgb(214, 132, 255);
 
 /// Colours used for the hex dump and the "byte class" pixel format.
 pub const CLASS_NULL: Color32 = Color32::from_rgb(70, 76, 88);

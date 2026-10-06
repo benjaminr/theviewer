@@ -120,6 +120,11 @@ pub fn show_findings_panel(app: &mut ViewerApp, ui: &mut Ui) {
                     chosen = Some(finding.clone());
                     ui.close();
                 }
+                // The operations act on the finding (or on the selection it is part of).
+                if !app.is_selected(finding.start) {
+                    app.select_pattern(finding);
+                }
+                crate::selection_menu::menu_button(app, ui);
                 if finding.category == Category::Compressed && ui.button("Decompress").clicked() {
                     decompress = Some(finding.clone());
                     ui.close();

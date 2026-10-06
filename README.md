@@ -138,6 +138,16 @@ with its shortcut, or right-click a byte for the actions that apply to it.
   viewer show and change the same selection.
 - Overwrite or insert hex, delete, fill, invert, reverse, mirror bits, shift
   a selection's bits across byte boundaries, and move blocks.
+- One *Selection* menu, in the right-click menus of the view and the hex
+  dump, the findings list, the packet viewer and the small toolbar that
+  floats beside a selection: insert before or after, delete, fill, invert,
+  XOR, add or subtract a key, reverse, mirror, shift or rotate bits, swap
+  byte order, number records as a counter, move, duplicate, copy as hex, a
+  C array or Base64, extract, open as a document, compress and decompress.
+  Each works on a range, on every record of a column and on every range of
+  a multi-range selection, as one undo step.
+- *Skip* folds bytes out of the view and the hex dump without deleting
+  them; a marker shows where they were, and clicking it shows them again.
 - Unlimited undo, on files of any size: edits are recorded, not copied.
 - Bookmarks and the view settings are saved beside the file, in
   `name.theviewer.toml`, so you can pick up where you left off.
@@ -390,6 +400,7 @@ never your Keychain.
 | `assistant.rs` | *Ask*: a streaming Claude API client with tools, on a background thread. |
 | `layout.rs` `packing.rs` | Dockable panels and presets; toolbar packing and reordering. |
 | `legend.rs` | The legend bar: the colouring in effect and each highlight layer, with toggles. |
+| `selection.rs` `selection_ops.rs` `selection_menu.rs` `folds.rs` | Range, column and multi-range selections; the byte operations on them; the Selection menu and floating toolbar; skipped (folded) ranges. |
 | `search.rs` `bookmarks.rs` `findings.rs` `commands.rs` | Search, bookmarks and the sidecar file, the findings list, the command palette. |
 | `settings.rs` `preferences.rs` `config.rs` | The settings window and API key storage; startup defaults; where settings live. |
 | `theme.rs` `logo.rs` | Colours and shared widgets; the logo, drawn in code. |

@@ -24,8 +24,11 @@ use crate::settings::{KeySource, SettingsWindow};
 use crate::dock::{DockState, DockTab};
 use crate::layout::{self, Pane, Preset};
 use crate::findings::FindingsFilter;
+use crate::folds::Folds;
 use crate::legend::{LayerKind, LayerVisibility};
 use crate::selection::{self, ColumnSelection, Selection};
+use crate::selection_menu::{OperationInputs, SelectionView};
+use crate::selection_ops::Operation;
 use crate::plot::PlotWindow;
 use crate::workbench::{CurveColour, Layout, Workbench};
 use crate::media::{self, MediaFormat};
@@ -161,6 +164,8 @@ struct RasterKey {
     /// Fingerprint of the report's regions when the zoomed-out view is
     /// coloured by region (zero when there is no report), `None` otherwise.
     zoomed_out_colours: Option<u64>,
+    /// Which ranges were folded out of the layout.
+    folds_generation: u64,
 }
 
 pub struct ViewerApp {
@@ -184,6 +189,9 @@ pub struct ViewerApp {
     pub column_selection: Option<ColumnSelection>,
     /// Ranges selected besides the anchor-to-cursor one (Cmd-click adds).
     pub extra_ranges: Vec<(usize, usize)>,
+    /// Ranges skipped (folded) out of the raster and the hex dump. View
+    /// state, not edits: the bytes are still in the document.
+    pub folds: Folds,
     pub clipboard: Vec<u8>,
     /// Set by the toolbar; the view resolves it once it knows its own size.
     pub fit_width_requested: bool,
@@ -312,6 +320,8 @@ pub struct ViewerApp {
     pub hex_labels_drawn: usize,
     /// Template and structure field outlines the raster drew last frame.
     pub field_outlines_drawn: usize,
+    /// Markers for skipped ranges the raster drew last frame.
+    pub fold_markers_drawn: usize,
     pub last_raster_ms: f32,
     pub last_raster_pixels: usize,
 
@@ -321,11 +331,15 @@ pub struct ViewerApp {
     /// and cursor reveals know how much fits.
     pub hex_visible_rows: usize,
     goto_text: String,
-    insert_count: usize,
-    insert_value_text: String,
-    fill_value_text: String,
-    shift_amount: i64,
+    pub(crate) insert_count: usize,
+    pub(crate) insert_value_text: String,
+    pub(crate) fill_value_text: String,
+    pub(crate) shift_amount: i64,
     move_amount: i64,
+    /// Values typed into the Selection menu's fields.
+    pub inputs: OperationInputs,
+    /// The view the person last pointed into, which shows the floating toolbar.
+    pub selection_view: SelectionView,
     scroll_accumulator: f32,
 }
 
@@ -483,6 +497,7 @@ impl ViewerApp {
             drag_column: false,
             column_selection: None,
             extra_ranges: Vec::new(),
+            folds: Folds::default(),
             clipboard: Vec::new(),
             fit_width_requested: false,
             hover: None,
@@ -553,6 +568,7 @@ impl ViewerApp {
             show_pixel_values: false,
             hex_labels_drawn: 0,
             field_outlines_drawn: 0,
+            fold_markers_drawn: 0,
             last_raster_ms: 0.0,
             last_raster_pixels: 0,
             status: "Open a file (Cmd+O) or drop one onto the window".to_string(),
@@ -564,6 +580,8 @@ impl ViewerApp {
             fill_value_text: "00".to_string(),
             shift_amount: 1,
             move_amount: 1,
+            inputs: OperationInputs::default(),
+            selection_view: SelectionView::default(),
             scroll_accumulator: 0.0,
         };
         if launch.restore_layout {
@@ -690,6 +708,7 @@ impl ViewerApp {
                 self.cursor = 0;
                 self.anchor = None;
                 self.clear_secondary_selection();
+                self.folds.clear();
                 self.top_row = 0;
                 self.pan_x = 0.0;
                 self.shape.byte_offset = 0;
@@ -1057,6 +1076,11 @@ impl ViewerApp {
         self.drag_selection_to(byte);
     }
 
+    /// Whether a mouse drag is selecting bytes right now.
+    pub fn is_dragging(&self) -> bool {
+        self.drag_grab.is_some()
+    }
+
     /// Start a drag that adds a range to what is already selected (Cmd held).
     pub fn begin_adding_drag(&mut self, byte: usize) {
         let kept = self.selection_ranges();
@@ -1108,14 +1132,16 @@ impl ViewerApp {
     }
 
     fn move_cursor_by(&mut self, delta: i64, extend: bool) {
-        let target = (self.cursor as i64 + delta).clamp(0, self.document.len() as i64) as usize;
+        // Steps are taken in the layout, so the cursor hops over skipped bytes.
+        let view = (self.folds.to_view(self.cursor) as i64 + delta).clamp(0, self.view_len() as i64) as usize;
+        let target = self.folds.to_document(view).min(self.document.len());
         self.set_cursor(target, extend);
         self.scroll_cursor_into_view();
         self.reveal_cursor_in_hex(false);
     }
 
     pub fn scroll_cursor_into_view(&mut self) {
-        let Some((row, _)) = self.shape.pixel_of_byte(self.cursor) else {
+        let Some((row, _)) = self.shape.pixel_of_byte(self.folds.to_view(self.cursor)) else {
             return;
         };
         let visible = self.visible_rows.max(1);
@@ -1129,7 +1155,7 @@ impl ViewerApp {
     /// Scroll the raster so the cursor sits a third of the way down, used when
     /// the cursor jumps from the hex dump or a pattern rather than by keys.
     pub fn reveal_cursor_centred(&mut self) {
-        let Some((row, _)) = self.shape.pixel_of_byte(self.cursor) else {
+        let Some((row, _)) = self.shape.pixel_of_byte(self.folds.to_view(self.cursor)) else {
             return;
         };
         let visible = self.visible_rows.max(1);
@@ -1147,18 +1173,18 @@ impl ViewerApp {
     pub const HEX_ROW: usize = 16;
 
     fn hex_max_top(&self) -> usize {
-        let total = self.document.len().div_ceil(Self::HEX_ROW).max(1);
+        let total = self.view_len().div_ceil(Self::HEX_ROW).max(1);
         total.saturating_sub(self.hex_visible_rows.max(1) / 2)
     }
 
     /// Align the hex dump with the raster's top-left byte (after the raster scrolled).
     pub fn sync_hex_to_raster(&mut self) {
-        self.hex_top_row = (self.raster_first_byte() / Self::HEX_ROW).min(self.hex_max_top());
+        self.hex_top_row = (self.raster_first_view_byte() / Self::HEX_ROW).min(self.hex_max_top());
     }
 
     /// Scroll the raster so its first row holds the hex dump's first byte (after the hex scrolled).
     pub fn sync_raster_to_hex(&mut self) {
-        if let Some(row) = self.raster_row_of(self.hex_top_row * Self::HEX_ROW) {
+        if let Some((row, _)) = self.shape.pixel_of_byte(self.hex_top_row * Self::HEX_ROW) {
             self.top_row = row;
             self.clamp_top_row();
         }
@@ -1175,25 +1201,80 @@ impl ViewerApp {
     /// the dump only scrolls when the cursor leaves it (keyboard navigation).
     pub fn reveal_cursor_in_hex(&mut self, centre: bool) {
         let rows = self.hex_visible_rows.max(1);
-        let cursor_row = self.cursor / Self::HEX_ROW;
+        let cursor_row = self.folds.to_view(self.cursor) / Self::HEX_ROW;
         let visible = cursor_row >= self.hex_top_row && cursor_row < self.hex_top_row + rows;
         if centre || !visible {
             self.hex_top_row = cursor_row.saturating_sub(rows / 3).min(self.hex_max_top());
         }
     }
 
-    /// Document offset of the raster's top-left pixel.
-    pub fn raster_first_byte(&self) -> usize {
-        (self.shape.byte_offset + self.top_row * self.shape.row_stride()).min(self.document.len())
+    /// View offset of the raster's top-left pixel (see [`Folds`]).
+    pub fn raster_first_view_byte(&self) -> usize {
+        (self.shape.byte_offset + self.top_row * self.shape.row_stride()).min(self.view_len())
     }
 
-    /// Row of the raster that contains `offset`, if it lies after the origin.
+    /// Document offset of the raster's top-left pixel.
+    pub fn raster_first_byte(&self) -> usize {
+        self.folds.to_document(self.raster_first_view_byte()).min(self.document.len())
+    }
+
+    /// Row of the raster that contains document offset `offset`, if it lies
+    /// after the origin.
     pub fn raster_row_of(&self, offset: usize) -> Option<usize> {
-        self.shape.pixel_of_byte(offset).map(|(row, _)| row)
+        self.shape.pixel_of_byte(self.folds.to_view(offset)).map(|(row, _)| row)
+    }
+
+    /// Bytes the raster and the hex dump lay out: the document less what is
+    /// skipped.
+    pub fn view_len(&self) -> usize {
+        self.folds.view_len(self.document.len())
+    }
+
+    /// Rows the raster has, skipped bytes left out.
+    pub fn total_view_rows(&self) -> usize {
+        self.shape.total_rows(self.view_len())
+    }
+
+    /// The document offset shown at view offset `view`.
+    pub fn document_offset(&self, view: usize) -> usize {
+        self.folds.to_document(view).min(self.document.len())
+    }
+
+    /// Skip the selected ranges (or the byte at the cursor): fold them out of
+    /// the raster and the hex dump without deleting anything. A marker shows
+    /// where they were; clicking it unfolds them.
+    pub fn skip_selection(&mut self) {
+        let ranges = self.operation_ranges();
+        if ranges.is_empty() {
+            self.status = "Select the bytes to skip first".to_string();
+            return;
+        }
+        for &(start, len) in &ranges {
+            self.folds.fold(start, len);
+        }
+        let hidden: usize = ranges.iter().map(|&(_, len)| len).sum();
+        let after = ranges.last().map_or(self.cursor, |&(start, len)| start + len).min(self.document.len());
+        self.set_cursor(after, false);
+        self.clamp_top_row();
+        self.sync_hex_to_raster();
+        self.status = format!("Skipped {hidden} bytes in {} places; click a marker to show them again", ranges.len());
+    }
+
+    /// Show the bytes of the fold starting at `start` again.
+    pub fn unfold(&mut self, start: usize) {
+        if self.folds.unfold(start) {
+            self.status = format!("Showing the skipped bytes at {start:#x} again");
+        }
+    }
+
+    /// Show every skipped range again.
+    pub fn unfold_all(&mut self) {
+        self.folds.clear();
+        self.status = "Showing every skipped range again".to_string();
     }
 
     pub fn clamp_top_row(&mut self) {
-        let total = self.shape.total_rows(self.document.len());
+        let total = self.total_view_rows();
         let max_top = total.saturating_sub(self.visible_rows.max(1) / 2);
         self.top_row = self.top_row.min(max_top);
     }
@@ -1248,7 +1329,7 @@ impl ViewerApp {
 
     /// Make the cursor the top-left pixel of the view.
     pub fn align_view_to_cursor(&mut self) {
-        self.shape.byte_offset = self.cursor.min(self.document.len());
+        self.shape.byte_offset = self.folds.to_view(self.cursor.min(self.document.len()));
         self.shape.bit_offset = 0;
         self.top_row = 0;
         self.sync_hex_to_raster();
@@ -1283,16 +1364,17 @@ impl ViewerApp {
         }
     }
 
+    /// Delete every selected range (or the byte at the cursor) as one step.
     pub fn delete_target(&mut self) {
-        if let Some((start, len)) = self.target_range() {
-            self.document.delete(start, len);
-            self.after_edit(start);
-            self.status = format!("Deleted {len} bytes at {start:#x}");
+        if self.target_range().is_some() {
+            self.apply_operation(Operation::Delete);
+            self.scroll_cursor_into_view();
+            self.reveal_cursor_in_hex(false);
         }
     }
 
     fn backspace(&mut self) {
-        if self.selection().is_some() {
+        if self.current_selection().is_some() {
             self.delete_target();
         } else if self.cursor > 0 {
             self.document.delete(self.cursor - 1, 1);
@@ -1317,38 +1399,22 @@ impl ViewerApp {
         self.insert_bytes_at_cursor(&bytes);
     }
 
+    /// Fill every selected range (or the cursor byte) with the Fill pattern.
     pub fn fill_target(&mut self) {
-        let Some(pattern) = ops::parse_hex(&self.fill_value_text).filter(|p| !p.is_empty()) else {
-            self.status = "Fill value must be hex".to_string();
-            return;
-        };
-        if let Some((start, len)) = self.target_range() {
-            let bytes: Vec<u8> = pattern.iter().cycle().take(len).copied().collect();
-            self.document.overwrite(start, &bytes);
-            self.status = format!("Filled {len} bytes at {start:#x}");
-            self.restore_selection(start, len);
-        }
+        self.fill_selection();
     }
 
-    /// Apply a same-length transformation to the selection (or cursor byte).
+    /// Flip every bit of the selection (or the cursor byte).
     pub fn invert_target(&mut self) {
-        self.transform_target("Inverted", |bytes| {
-            let mut out = bytes.to_vec();
-            ops::invert_bits(&mut out);
-            out
-        });
+        self.apply_operation(Operation::Invert);
     }
 
     pub fn reverse_target(&mut self) {
-        self.transform_target("Reversed bytes", |bytes| bytes.iter().rev().copied().collect());
+        self.apply_operation(Operation::Reverse);
     }
 
     pub fn mirror_target(&mut self) {
-        self.transform_target("Mirrored bits", |bytes| {
-            let mut out = bytes.to_vec();
-            ops::reverse_bits_in_bytes(&mut out);
-            out
-        });
+        self.apply_operation(Operation::MirrorBits);
     }
 
     pub fn reset_origin(&mut self) {
@@ -1438,9 +1504,9 @@ impl ViewerApp {
     /// raster's visible rows and the hex dump's, capped.
     fn search_highlight_window(&self) -> (usize, usize) {
         let raster_start = self.raster_first_byte();
-        let raster_end = raster_start + self.visible_rows.max(1) * self.shape.row_stride();
-        let hex_start = self.hex_top_row * Self::HEX_ROW;
-        let hex_end = hex_start + self.hex_visible_rows.max(1) * Self::HEX_ROW;
+        let raster_end = self.document_offset(self.raster_first_view_byte() + self.visible_rows.max(1) * self.shape.row_stride());
+        let hex_start = self.document_offset(self.hex_top_row * Self::HEX_ROW);
+        let hex_end = self.document_offset((self.hex_top_row + self.hex_visible_rows.max(1)) * Self::HEX_ROW);
         let start = raster_start.min(hex_start).min(self.document.len());
         let end = raster_end.max(hex_end).min(self.document.len()).min(start + PATTERN_WINDOW_MAX);
         (start, end.saturating_sub(start))
@@ -1684,38 +1750,18 @@ impl ViewerApp {
             }
             ui.separator();
         }
-        if self.selection().is_some() {
-            if ui.button("Copy as hex").clicked() {
-                let ctx = ui.ctx().clone();
-                self.copy(&ctx);
+        crate::selection_menu::menu_button(self, ui);
+        if let Some((start, _)) = self.folds.fold_containing(offset).or_else(|| self.folds.ranges().first().copied()) {
+            if ui.button("Show skipped bytes again").clicked() {
+                self.unfold(start);
                 ui.close();
             }
-            if ui.button("Extract to file…").clicked() {
-                self.export_dialog(false);
+            if self.folds.ranges().len() > 1 && ui.button("Show every skipped range").clicked() {
+                self.unfold_all();
                 ui.close();
             }
-            if ui.button("Fill…").on_hover_text("Uses the Fill pattern in the toolbar").clicked() {
-                self.fill_target();
-                ui.close();
-            }
-            if ui.button("Invert bits").clicked() {
-                self.invert_target();
-                ui.close();
-            }
-            if ui.button("Delete").clicked() {
-                self.delete_target();
-                ui.close();
-            }
-            ui.menu_button("Compress as", |ui| {
-                for codec in Codec::COMPRESSIBLE {
-                    if ui.button(codec.label()).clicked() {
-                        self.compress_selection(codec);
-                        ui.close();
-                    }
-                }
-            });
-            ui.separator();
         }
+        ui.separator();
         ui.menu_button("Analyse", |ui| {
             if ui.add_enabled(self.assistant_available(), egui::Button::new("Ask about this…")).on_disabled_hover_text(crate::assistant::NO_KEY_MESSAGE).clicked() {
                 self.dock.open = true;
@@ -1869,16 +1915,6 @@ impl ViewerApp {
         };
     }
 
-    fn transform_target(&mut self, label: &str, transform: impl FnOnce(&[u8]) -> Vec<u8>) {
-        if let Some((start, len)) = self.target_range() {
-            let original = self.document.read_range(start, len);
-            let transformed = transform(&original);
-            self.document.overwrite(start, &transformed);
-            self.status = format!("{label}: {len} bytes at {start:#x}");
-            self.restore_selection(start, len);
-        }
-    }
-
     pub fn restore_selection(&mut self, start: usize, len: usize) {
         self.pending_low_nibble = false;
         self.clear_secondary_selection();
@@ -1900,19 +1936,21 @@ impl ViewerApp {
         if destination == start {
             return;
         }
-        // Two undo records; acceptable for an explicit move.
-        self.document.delete(start, len);
-        self.document.insert(destination, &bytes);
+        self.document.grouped(|document| {
+            document.delete(start, len);
+            document.insert(destination, &bytes);
+        });
         self.restore_selection(destination, len);
         self.scroll_cursor_into_view();
         self.status = format!("Moved {len} bytes from {start:#x} to {destination:#x}");
     }
 
+    /// Copy the selected bytes (every range, one after another) as hex.
     pub fn copy(&mut self, ctx: &Context) {
-        if let Some((start, len)) = self.target_range() {
-            self.clipboard = self.document.read_range(start, len);
+        if self.target_range().is_some() {
+            self.clipboard = self.selected_bytes();
             ctx.copy_text(ops::to_hex_string(&self.clipboard));
-            self.status = format!("Copied {len} bytes");
+            self.status = format!("Copied {} bytes", self.clipboard.len());
         }
     }
 
@@ -2111,6 +2149,7 @@ impl ViewerApp {
         self.cursor = 0;
         self.anchor = None;
         self.clear_secondary_selection();
+        self.folds.clear();
         self.top_row = 0;
         self.pan_x = 0.0;
         self.shape.byte_offset = 0;
@@ -2390,7 +2429,7 @@ impl ViewerApp {
         }
         let stride = self.shape.row_stride();
         let visible_bytes = (self.visible_rows.max(1) * stride).max(4096);
-        let first = (self.shape.byte_offset + self.top_row * stride).min(len);
+        let first = self.raster_first_byte().min(len);
         let start = (first.saturating_sub(visible_bytes) / PATTERN_ALIGN) * PATTERN_ALIGN;
         let end = (first + 2 * visible_bytes).div_ceil(PATTERN_ALIGN) * PATTERN_ALIGN;
         let end = end.min(len).min(start + PATTERN_WINDOW_MAX);
@@ -2448,7 +2487,7 @@ impl ViewerApp {
         self.anchor = Some(start);
         self.cursor = end;
         self.pending_low_nibble = false;
-        if let Some((row, _)) = self.shape.pixel_of_byte(start)
+        if let Some(row) = self.raster_row_of(start)
             && (row < self.top_row || row >= self.top_row + self.visible_rows)
         {
             self.top_row = row.saturating_sub(self.visible_rows / 3);
@@ -2497,7 +2536,8 @@ impl ViewerApp {
         let rows = rows.clamp(1, (MAX_TEXTURE_PIXELS / shape.width.max(1)).max(1));
         let row_difference = self.row_difference;
         let zoomed_out_colours = self.colours_regions_now().then(|| crate::region_colours::regions_fingerprint(&self.bench.regions));
-        let key = RasterKey { version: self.document.version(), shape, top_row: self.top_row, rows, row_difference, zoomed_out_colours };
+        let folds_generation = self.folds.generation();
+        let key = RasterKey { version: self.document.version(), shape, top_row: self.top_row, rows, row_difference, zoomed_out_colours, folds_generation };
         if self.raster_key == Some(key) && self.texture.is_some() {
             return self.texture.as_ref();
         }
@@ -2533,15 +2573,17 @@ impl ViewerApp {
 
     /// Colour `rows` rows from the top row by the report's regions, or by
     /// each block's byte class and entropy when no report has been run.
+    /// With skipped ranges the layout no longer matches document offsets, so
+    /// blocks are coloured from the laid-out bytes rather than the regions.
     fn colour_pixels_by_region(&mut self, rows: usize, pixels: &mut [Color32]) {
-        let len = self.document.len();
-        if !self.bench.regions.is_empty() {
+        let len = self.view_len();
+        if !self.bench.regions.is_empty() && self.folds.is_empty() {
             crate::region_colours::region_pixels(&self.shape, self.top_row, len, &self.bench.regions, pixels);
             return;
         }
-        let start = self.raster_first_byte();
+        let start = self.raster_first_view_byte();
         let mut window = vec![0u8; (self.shape.row_stride() * rows + 1).min(len - start)];
-        self.document.read_into(start, &mut window);
+        self.folds.read_view(&mut self.document, start, &mut window);
         crate::region_colours::block_pixels(&self.shape, self.top_row, len, start, &window, pixels);
     }
 
@@ -2560,7 +2602,7 @@ impl ViewerApp {
         self.byte_buffer.resize(needed, 0);
         let read_from = if self.top_row > 0 { start - prefix } else { start };
         let skipped = if self.top_row > 0 { 0 } else { prefix };
-        self.document.read_into(read_from, &mut self.byte_buffer[skipped..]);
+        self.folds.read_view(&mut self.document, read_from, &mut self.byte_buffer[skipped..]);
         if shape.bit_offset != 0 {
             raster::shift_left_bits(&mut self.byte_buffer[skipped..], shape.bit_offset);
         }
@@ -3182,10 +3224,7 @@ impl ViewerApp {
         });
 
         let has_target = self.target_range().is_some();
-        let selection_caption = match self.selection() {
-            Some((_, len)) => format!("Selection ({len} B)"),
-            None => "Byte at cursor".to_string(),
-        };
+        let selection_caption = crate::selection_menu::menu_title(self);
         packer.captioned(ui, "selection", &selection_caption, |ui| {
             ui.add_enabled_ui(has_target, |ui| {
                 if ui.button(RichText::new("Delete").color(theme::DANGER)).on_hover_text("Backspace / Del").clicked() {
@@ -3197,35 +3236,28 @@ impl ViewerApp {
                     self.fill_target();
                 }
                 if ui.button("Invert").on_hover_text("Flip every bit").clicked() {
-                    self.transform_target("Inverted", |bytes| {
-                        let mut out = bytes.to_vec();
-                        ops::invert_bits(&mut out);
-                        out
-                    });
+                    self.invert_target();
                 }
                 if ui.button("Reverse").on_hover_text("Reverse byte order").clicked() {
-                    self.transform_target("Reversed bytes", |bytes| bytes.iter().rev().copied().collect());
+                    self.reverse_target();
                 }
                 if ui.button("Mirror bits").on_hover_text("Reverse the bits within each byte").clicked() {
-                    self.transform_target("Mirrored bits", |bytes| {
-                        let mut out = bytes.to_vec();
-                        ops::reverse_bits_in_bytes(&mut out);
-                        out
-                    });
+                    self.mirror_target();
                 }
+                ui.menu_button("More", |ui| crate::selection_menu::show_selection_menu(self, ui))
+                    .response
+                    .on_hover_text("Every operation: insert, XOR, add, shift and rotate bits, swap byte order, number, move, duplicate, skip, copy as…");
             });
         });
 
         packer.captioned(ui, "shift", "Shift bits", |ui| {
             ui.add_enabled_ui(has_target, |ui| {
                 if ui.button("◀").on_hover_text("Shift bits towards the start").clicked() {
-                    let amount = self.shift_amount;
-                    self.transform_target("Shifted bits left", |bytes| ops::shift_bits(bytes, amount));
+                    self.apply_operation(Operation::ShiftBits(self.shift_amount));
                 }
                 ui.add(egui::DragValue::new(&mut self.shift_amount).range(1..=i64::MAX / 4).suffix(" bits"));
                 if ui.button("▶").on_hover_text("Shift bits towards the end").clicked() {
-                    let amount = self.shift_amount;
-                    self.transform_target("Shifted bits right", |bytes| ops::shift_bits(bytes, -amount));
+                    self.apply_operation(Operation::ShiftBits(-self.shift_amount));
                 }
             });
         });
@@ -3418,7 +3450,14 @@ impl ViewerApp {
             }
             ui.separator();
             ui.label(RichText::new("row").color(dim));
-            ui.monospace(format!("{} / {}", self.top_row, self.shape.total_rows(self.document.len())));
+            ui.monospace(format!("{} / {}", self.top_row, self.total_view_rows()));
+            if !self.folds.is_empty() {
+                ui.separator();
+                let label = format!("{} skipped", human_size(self.folds.hidden_bytes()));
+                if ui.button(RichText::new(label).color(theme::FOLD)).on_hover_text("Bytes folded out of the views. Click to show them all again.").clicked() {
+                    self.unfold_all();
+                }
+            }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.label(RichText::new(format!("{:.2} ms", self.last_raster_ms)).color(dim))
                     .on_hover_text(format!("Last raster: {} pixels", self.last_raster_pixels));
@@ -3556,6 +3595,7 @@ impl eframe::App for ViewerApp {
         self.poll_file_request(ctx);
         self.poll_analysis(ctx);
         self.handle_shortcuts(ctx);
+        self.folds.clamp_to(self.document.len());
         self.poll_workbench(ctx);
         self.refresh_cursor_structure();
         self.update_title(ctx);

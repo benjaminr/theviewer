@@ -64,6 +64,10 @@ impl EditRecord {
     }
 }
 
+/// Everything one undo or redo reverses or repeats: usually one edit, or
+/// every edit made inside a group.
+type UndoStep = Vec<EditRecord>;
+
 pub struct Document {
     original: Backing,
     added: Vec<u8>,
@@ -74,8 +78,12 @@ pub struct Document {
     prefix_dirty: bool,
     len: usize,
     path: Option<PathBuf>,
-    undo_stack: Vec<EditRecord>,
-    redo_stack: Vec<EditRecord>,
+    undo_stack: Vec<UndoStep>,
+    redo_stack: Vec<UndoStep>,
+    /// Edits made since [`Document::begin_group`], undone together.
+    open_group: Option<UndoStep>,
+    /// How many groups are open; the step is recorded when the last closes.
+    group_depth: usize,
     /// Incremented on every mutation so caches can detect staleness.
     version: u64,
 }
@@ -105,6 +113,8 @@ impl Document {
             path: None,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
+            open_group: None,
+            group_depth: 0,
             version: 0,
         }
     }
@@ -136,6 +146,8 @@ impl Document {
             path: Some(path.to_path_buf()),
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
+            open_group: None,
+            group_depth: 0,
             version: 0,
         })
     }
@@ -331,8 +343,37 @@ impl Document {
 
     fn commit(&mut self, record: EditRecord) {
         self.apply(&record);
-        self.undo_stack.push(record);
+        match &mut self.open_group {
+            Some(group) => group.push(record),
+            None => self.undo_stack.push(vec![record]),
+        }
         self.redo_stack.clear();
+    }
+
+    /// Start a group: every edit until the matching [`Document::end_group`]
+    /// becomes one undo step. Groups may nest; the outermost decides.
+    pub fn begin_group(&mut self) {
+        self.group_depth += 1;
+        self.open_group.get_or_insert_with(Vec::new);
+    }
+
+    /// Close a group opened by [`Document::begin_group`].
+    pub fn end_group(&mut self) {
+        self.group_depth = self.group_depth.saturating_sub(1);
+        if self.group_depth == 0
+            && let Some(group) = self.open_group.take()
+            && !group.is_empty()
+        {
+            self.undo_stack.push(group);
+        }
+    }
+
+    /// Run `edits` as one undo step.
+    pub fn grouped<R>(&mut self, edits: impl FnOnce(&mut Document) -> R) -> R {
+        self.begin_group();
+        let result = edits(self);
+        self.end_group();
+        result
     }
 
     // ----------------------------------------------------------------------
@@ -373,12 +414,14 @@ impl Document {
     /// edit put a single byte at the same position. Typing the two hex digits
     /// of a byte therefore becomes one undo step.
     pub fn overwrite_byte_coalescing(&mut self, pos: usize, byte: u8) {
-        let folds = self
-            .undo_stack
-            .last()
-            .is_some_and(|last| last.pos == pos && last.inserted.len() == 1);
+        let folds = self.open_group.is_none()
+            && self
+                .undo_stack
+                .last()
+                .is_some_and(|last| matches!(last.as_slice(), [only] if only.pos == pos && only.inserted.len() == 1));
         if folds {
-            let previous = self.undo_stack.pop().expect("checked above");
+            let mut step = self.undo_stack.pop().expect("checked above");
+            let previous = step.pop().expect("a step of one edit");
             self.apply(&previous.inverse());
             self.commit(EditRecord { pos, removed: previous.removed, inserted: vec![byte] });
         } else {
@@ -396,21 +439,27 @@ impl Document {
         self.commit(EditRecord { pos, removed, inserted: bytes.to_vec() });
     }
 
+    /// Undo the last step (one edit or a whole group). Returns where the
+    /// earliest of its edits was.
     pub fn undo(&mut self) -> Option<usize> {
-        let record = self.undo_stack.pop()?;
-        let inverse = record.inverse();
-        self.apply(&inverse);
-        let pos = record.pos;
-        self.redo_stack.push(record);
-        Some(pos)
+        let step = self.undo_stack.pop()?;
+        for record in step.iter().rev() {
+            self.apply(&record.inverse());
+        }
+        let pos = step.iter().map(|record| record.pos).min();
+        self.redo_stack.push(step);
+        pos
     }
 
+    /// Redo the last undone step. Returns where the earliest of its edits was.
     pub fn redo(&mut self) -> Option<usize> {
-        let record = self.redo_stack.pop()?;
-        self.apply(&record);
-        let pos = record.pos;
-        self.undo_stack.push(record);
-        Some(pos)
+        let step = self.redo_stack.pop()?;
+        for record in &step {
+            self.apply(record);
+        }
+        let pos = step.iter().map(|record| record.pos).min();
+        self.undo_stack.push(step);
+        pos
     }
 
     // ----------------------------------------------------------------------
@@ -507,6 +556,30 @@ mod tests {
         assert_eq!(document.read_range(0, 4), [b'a', b'b', b'c', 0xA5]);
         document.undo();
         assert_eq!(document.read_range(0, 4), b"abc");
+    }
+
+    #[test]
+    fn edits_made_in_a_group_undo_and_redo_as_one_step() {
+        let mut document = doc(b"abcdef");
+        document.grouped(|document| {
+            document.delete(1, 2);
+            document.insert(3, b"XY");
+            document.overwrite(0, b"Z");
+        });
+        assert_eq!(document.read_range(0, 10), b"ZdeXYf");
+        assert_eq!(document.undo(), Some(0));
+        assert_eq!(document.read_range(0, 10), b"abcdef");
+        assert!(!document.can_undo());
+        document.redo();
+        assert_eq!(document.read_range(0, 10), b"ZdeXYf");
+    }
+
+    #[test]
+    fn an_empty_group_leaves_no_undo_step() {
+        let mut document = doc(b"abc");
+        document.begin_group();
+        document.end_group();
+        assert!(!document.can_undo());
     }
 
     #[test]

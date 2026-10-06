@@ -4,6 +4,7 @@
 use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, Ui, Vec2, pos2, vec2};
 
 use crate::app::{Shape, ViewerApp};
+use crate::folds::Folds;
 use crate::legend::{self, LayerKind, PinnedGroup};
 use crate::plugin::{Category, Field, Finding};
 use crate::raster::{self, PixelFormat};
@@ -76,7 +77,7 @@ pub fn show_raster(app: &mut ViewerApp, ui: &mut Ui) {
     let painter = ui.painter_at(image_rect);
     let shape = app.shape;
     let top_row = app.top_row;
-    let total_rows = shape.total_rows(app.document.len());
+    let total_rows = app.total_view_rows();
     let data_rows_visible = total_rows.saturating_sub(top_row);
 
     let texture = app.ensure_texture(ui.ctx(), visible_rows).map(|texture| (texture.id(), texture.size()));
@@ -106,7 +107,7 @@ pub fn show_raster(app: &mut ViewerApp, ui: &mut Ui) {
     }
 
     draw_hex_window(app, &painter, origin, zoom);
-    let geometry = Geometry { shape, top_row, visible_rows, origin, zoom };
+    let geometry = Geometry { shape, top_row, visible_rows, origin, zoom, folds: app.folds.clone() };
     draw_pattern_overlays(app, &painter, &geometry);
     draw_pinned_overlays(app, &painter, &geometry);
     {
@@ -146,9 +147,16 @@ pub fn show_raster(app: &mut ViewerApp, ui: &mut Ui) {
         if app.show_pixel_values {
             app.hex_labels_drawn = draw_pixel_labels(app, &painter, image_rect, origin, drawn_rows, &mut budget);
         }
-        app.field_outlines_drawn = draw_field_outlines(app, &painter, origin, &mut budget);
+        app.field_outlines_drawn = draw_field_outlines(app, &painter, &geometry, &mut budget);
     }
     draw_emphasis(app, &painter, &geometry, image_rect);
+    draw_fold_markers(app, ui, &geometry, image_rect);
+    if image_response.is_pointer_button_down_on() {
+        app.selection_view = crate::selection_menu::SelectionView::Raster;
+    }
+    if let Some(anchor) = selection_outline(app, &geometry) {
+        crate::selection_menu::show_floating_toolbar(app, ui.ctx(), crate::selection_menu::SelectionView::Raster, anchor, image_rect);
+    }
 
     draw_scrollbar(app, ui, &bar_response, bar_rect);
     if strip_width > 0.0 {
@@ -261,7 +269,7 @@ fn draw_pixel_labels(
     let first_byte = aligned_col * bits / 8;
     let segment_bytes = shape.format.bytes_for_pixels(columns);
     let raster_bytes = app.raster_bytes();
-    let document_len = app.document.len();
+    let document_len = app.view_len();
     let font = FontId::monospace(PIXEL_LABEL_FONT_SIZE);
     let mut colours = vec![Color32::BLACK; columns];
     let mut drawn = 0;
@@ -289,12 +297,8 @@ fn draw_pixel_labels(
 /// Outline every template and structure field on screen and name it where
 /// the name fits: fields of pinned findings (applied templates) and of the
 /// structure at the cursor. Returns how many fields were outlined.
-fn draw_field_outlines(app: &ViewerApp, painter: &egui::Painter, origin: Pos2, budget: &mut usize) -> usize {
-    let shape = app.shape;
-    let zoom = app.zoom;
-    let stride = shape.row_stride();
-    let visible_start = shape.byte_offset + app.top_row * stride;
-    let visible_end = visible_start + app.visible_rows * stride + 1;
+fn draw_field_outlines(app: &ViewerApp, painter: &egui::Painter, geometry: &Geometry, budget: &mut usize) -> usize {
+    let (visible_start, visible_end) = geometry.visible_bytes();
     let mut structures: Vec<&Finding> = app.bench.pinned.iter().filter(|finding| !finding.fields.is_empty() && app.pinned_visible(finding)).collect();
     if app.show_structure_fields
         && let Some(structure) = app.cursor_structure.as_ref()
@@ -308,7 +312,7 @@ fn draw_field_outlines(app: &ViewerApp, painter: &egui::Painter, origin: Pos2, b
     }
     let font = FontId::proportional(FIELD_LABEL_FONT_SIZE);
     for field in &fields {
-        let rects = byte_range_rects(&shape, field.offset, field.len, app.top_row, app.visible_rows, origin, zoom);
+        let rects = geometry.rects(field.offset, field.len);
         let leaf = field.children.is_empty();
         let stroke = if leaf { Stroke::new(1.5, FIELD_OUTLINE) } else { Stroke::new(1.0, FIELD_OUTLINE.gamma_multiply(0.6)) };
         for rect in &rects {
@@ -428,7 +432,7 @@ fn draw_entropy_strip(app: &mut ViewerApp, ui: &Ui, strip_rect: Rect) {
         ));
         if response.clicked() {
             app.set_cursor(offset, false);
-            if let Some((row, _)) = app.shape.pixel_of_byte(offset) {
+            if let Some(row) = app.raster_row_of(offset) {
                 app.top_row = row.saturating_sub(app.visible_rows / 3);
                 app.clamp_top_row();
             }
@@ -465,19 +469,69 @@ pub struct Geometry {
     pub visible_rows: usize,
     pub origin: Pos2,
     pub zoom: f32,
+    /// Skipped ranges, which the rows leave out.
+    pub folds: Folds,
 }
 
 impl Geometry {
-    /// Screen rectangles covering bytes `[start, start + len)`, one per row.
+    /// Screen rectangles covering document bytes `[start, start + len)`,
+    /// one per row, leaving out skipped bytes.
     pub fn rects(&self, start: usize, len: usize) -> Vec<Rect> {
+        if self.folds.is_empty() {
+            return self.view_rects(start, len);
+        }
+        self.folds.view_ranges(start, len).into_iter().flat_map(|(view_start, view_len)| self.view_rects(view_start, view_len)).collect()
+    }
+
+    /// Screen rectangles covering view bytes `[start, start + len)`.
+    pub fn view_rects(&self, start: usize, len: usize) -> Vec<Rect> {
         byte_range_rects(&self.shape, start, len, self.top_row, self.visible_rows, self.origin, self.zoom)
+    }
+
+    /// The view bytes the visible rows cover, as `(start, end)`.
+    pub fn visible_view_bytes(&self) -> (usize, usize) {
+        let stride = self.shape.row_stride();
+        let start = self.shape.byte_offset + self.top_row * stride;
+        (start, start + self.visible_rows * stride + 1)
     }
 
     /// The document bytes the visible rows cover, as `(start, end)`.
     pub fn visible_bytes(&self) -> (usize, usize) {
-        let stride = self.shape.row_stride();
-        let start = self.shape.byte_offset + self.top_row * stride;
-        (start, start + self.visible_rows * stride + 1)
+        let (start, end) = self.visible_view_bytes();
+        (self.folds.to_document(start), self.folds.to_document(end))
+    }
+}
+
+/// The outline around the selected bytes on screen, if any are visible.
+fn selection_outline(app: &ViewerApp, geometry: &Geometry) -> Option<Rect> {
+    let (start, end) = geometry.visible_bytes();
+    app.selection_ranges_in(start, end).into_iter().flat_map(|(range_start, len)| geometry.rects(range_start, len)).reduce(|a, b| a.union(b))
+}
+
+/// A bar where each skipped range was taken out, with a chip naming how
+/// much is skipped; clicking the chip shows the bytes again.
+fn draw_fold_markers(app: &mut ViewerApp, ui: &Ui, geometry: &Geometry, image_rect: Rect) {
+    let (view_start, view_end) = geometry.visible_view_bytes();
+    let markers = app.folds.markers_in(view_start, view_end);
+    let painter = ui.painter_at(image_rect);
+    let mut unfold = None;
+    for (view, (start, len)) in &markers {
+        let Some((row, col)) = geometry.shape.pixel_of_byte(*view) else { continue };
+        if row < geometry.top_row {
+            continue;
+        }
+        let x = geometry.origin.x + col as f32 * geometry.zoom;
+        let y = geometry.origin.y + (row - geometry.top_row) as f32 * geometry.zoom;
+        let bar = Rect::from_min_max(pos2(x - 1.0, y - 1.0), pos2(x + 1.0, y + geometry.zoom.max(4.0) + 1.0));
+        painter.rect_filled(bar, 0.0, theme::FOLD);
+        let chip_at = pos2(x + 3.0, y + geometry.zoom.max(4.0) * 0.5 - 7.0).max(image_rect.min);
+        if crate::selection_menu::fold_chip(ui, ui.id().with(("fold", *start)), chip_at, *len, theme::FOLD) {
+            unfold = Some(*start);
+        }
+    }
+    app.fold_markers_drawn = markers.len();
+    if let Some(start) = unfold {
+        app.unfold(start);
     }
 }
 
@@ -675,7 +729,7 @@ fn byte_under(app: &ViewerApp, pointer: Pos2, origin: Pos2, zoom: f32) -> usize 
     let shape = app.shape;
     let col = (((pointer.x - origin.x) / zoom).floor().max(0.0) as usize).min(shape.width.saturating_sub(1));
     let row = ((pointer.y - origin.y) / zoom).floor().max(0.0) as usize + app.top_row;
-    shape.byte_of_pixel(row, col).min(app.document.len().saturating_sub(1))
+    app.document_offset(shape.byte_of_pixel(row, col)).min(app.document.len().saturating_sub(1))
 }
 
 fn handle_pointer(app: &mut ViewerApp, response: &egui::Response, origin: Pos2, zoom: f32) {
@@ -785,7 +839,7 @@ fn draw_scrollbar(app: &mut ViewerApp, ui: &Ui, response: &egui::Response, bar_r
     let painter = ui.painter_at(bar_rect);
     painter.rect_filled(bar_rect, 0.0, theme::PANEL);
 
-    let total_rows = app.shape.total_rows(app.document.len()).max(1) as f64;
+    let total_rows = app.total_view_rows().max(1) as f64;
     let visible = (app.visible_rows as f64).min(total_rows);
     let track_height = bar_rect.height() as f64;
     let thumb_height = ((visible / total_rows) * track_height).max(24.0).min(track_height);

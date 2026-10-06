@@ -255,6 +255,7 @@ fn show_operations(state: &mut PacketsState, app: &mut ViewerApp, ui: &mut Ui) {
         if ui.small_button("Fix checksums").on_hover_text("Recompute the IPv4 header, TCP and UDP checksums of the selected packets").clicked() {
             fix_checksums(state, app);
         }
+        crate::selection_menu::menu_button(app, ui);
     });
     ui.horizontal_wrapped(|ui| {
         ui.add(egui::TextEdit::singleline(&mut state.operation_text).hint_text("hex for fill or XOR").desired_width(120.0));
