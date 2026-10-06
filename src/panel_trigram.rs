@@ -374,7 +374,9 @@ pub fn show_trigram(state: &mut TrigramState, app: &mut ViewerApp, ui: &mut Ui) 
         ui.label(RichText::new("Too few bytes to plot; select at least three.").color(theme::TEXT_DIM));
         return;
     }
-    ui.label(RichText::new(caption(cloud)).small().color(theme::TEXT_DIM));
+    // Wrapped, so a long caption cannot widen the panel and push the
+    // controls after it out of reach.
+    ui.add(egui::Label::new(RichText::new(caption(cloud)).small().color(theme::TEXT_DIM)).wrap());
 
     let mut hovered = None;
     let jump = show_cube(state, ui, &mut hovered);
@@ -394,11 +396,13 @@ fn show_toolbar(state: &mut TrigramState, app: &mut ViewerApp, ui: &mut Ui) {
         if ui.button(format!("Plot {what} ({})", human_bytes(len))).clicked() {
             start_counting(state, app);
         }
+        start_row_unless_fits(ui, combo_width(ui));
         egui::ComboBox::from_id_salt("trigram-labels").selected_text(state.label_source.label()).show_ui(ui, |ui| {
             for source in LabelSource::ALL {
                 ui.selectable_value(&mut state.label_source, source, source.label());
             }
         });
+        start_row_unless_fits(ui, combo_width(ui));
         egui::ComboBox::from_id_salt("trigram-colouring").selected_text(state.colouring.label()).show_ui(ui, |ui| {
             for colouring in PointColouring::ALL {
                 ui.selectable_value(&mut state.colouring, colouring, colouring.label());
@@ -434,6 +438,20 @@ fn show_toolbar(state: &mut TrigramState, app: &mut ViewerApp, ui: &mut Ui) {
     }
 }
 
+/// Width a combo box takes: its set width plus the arrow beside it.
+fn combo_width(ui: &Ui) -> f32 {
+    ui.spacing().combo_width + ui.spacing().icon_width + ui.spacing().button_padding.x * 2.0
+}
+
+/// In a wrapping row, start a new row unless `width` fits on this one. Combo
+/// boxes do not wrap by themselves, so without this they run off the edge.
+fn start_row_unless_fits(ui: &mut Ui, width: f32) {
+    let at_row_start = ui.cursor().min.x <= ui.max_rect().min.x + 1.0;
+    if !at_row_start && width > ui.available_size_before_wrap().x {
+        ui.end_row();
+    }
+}
+
 fn caption(cloud: &TrigramCloud) -> String {
     let sampled = if cloud.is_sampled() { format!(", sampled {}", human_bytes(cloud.bytes_read)) } else { String::new() };
     format!(
@@ -454,8 +472,10 @@ fn is_visible(state: &TrigramState, point: &TrigramPoint) -> bool {
 /// Draw the cube and handle rotation, zoom and hovering. Returns the point
 /// clicked, if any, and notes the region type under the pointer.
 fn show_cube(state: &mut TrigramState, ui: &mut Ui, hovered_group: &mut Option<u8>) -> Option<TrigramPoint> {
-    let side = ui.available_width().min(ui.available_height() - LEGEND_HEIGHT).max(MIN_VIEW_SIDE);
-    let (response, painter) = ui.allocate_painter(vec2(ui.available_width().max(side), side), Sense::click_and_drag());
+    // Never wider than the pane, so nothing after the cube is pushed out of reach.
+    let width = ui.available_width();
+    let side = width.min(ui.available_height() - LEGEND_HEIGHT).max(MIN_VIEW_SIDE.min(width));
+    let (response, painter) = ui.allocate_painter(vec2(width, side), Sense::click_and_drag());
     let rect = response.rect;
     painter.rect_filled(rect, 4.0, theme::BACKGROUND);
 
@@ -744,17 +764,23 @@ fn describe_point(point: &TrigramPoint, total: u64, groups: &[RegionGroup]) -> S
 fn show_legend(state: &mut TrigramState, ui: &mut Ui, hovered_group: &mut Option<u8>) {
     if state.colouring == PointColouring::Region && !state.groups.is_empty() {
         ui.horizontal_wrapped(|ui| {
+            // One widget per entry, so entries wrap whole and stay clickable
+            // however narrow the pane is.
             for (index, group) in state.groups.iter().enumerate() {
-                let row = ui
-                    .horizontal(|ui| {
-                        let mut shown = !state.hidden[index];
-                        if ui.checkbox(&mut shown, "").changed() {
-                            state.hidden[index] = !shown;
-                        }
-                        theme::swatch(ui, group.colour, &format!("{} ({}, {})", group.label, group.spans.len(), human_bytes(group.bytes)));
-                    })
-                    .response;
-                if row.hovered() {
+                let mut shown = !state.hidden[index];
+                let job = legend_entry(ui, group);
+                // Start a new row when the entry would not fit on this one.
+                let text_width = ui.painter().layout_job(job.clone()).size().x;
+                let entry_width = text_width + ui.spacing().icon_width + ui.spacing().icon_spacing;
+                let at_row_start = ui.cursor().min.x <= ui.max_rect().min.x + 1.0;
+                if !at_row_start && entry_width > ui.available_size_before_wrap().x {
+                    ui.end_row();
+                }
+                let entry = ui.checkbox(&mut shown, job).on_hover_text("Show or hide this region type");
+                if entry.changed() {
+                    state.hidden[index] = !shown;
+                }
+                if entry.hovered() {
                     *hovered_group = Some(index as u8);
                 }
             }
@@ -782,8 +808,26 @@ fn show_legend(state: &mut TrigramState, ui: &mut Ui, hovered_group: &mut Option
         "Machine code: diagonal planes and streaks along a few opcode values.",
         "Compressed or random: a uniform cloud filling the cube.",
     ] {
-        ui.label(RichText::new(shape).small().color(theme::TEXT_DIM));
+        ui.add(egui::Label::new(RichText::new(shape).small().color(theme::TEXT_DIM)).wrap());
     }
+}
+
+/// A legend entry's text: a square in the type's colour, then its name, how
+/// many regions it has and their size.
+fn legend_entry(ui: &Ui, group: &RegionGroup) -> egui::text::LayoutJob {
+    let font = egui::TextStyle::Body.resolve(ui.style());
+    let mut job = egui::text::LayoutJob::default();
+    // A layout job does not wrap unless told to. Wrap at a whole row (less the
+    // tick box), so an entry moves to a new row first and only wraps its own
+    // text when it is wider than the pane.
+    job.wrap.max_width = (ui.max_rect().width() - ui.spacing().icon_width - ui.spacing().icon_spacing).max(1.0);
+    job.append("■ ", 0.0, egui::TextFormat { font_id: font.clone(), color: group.colour, ..Default::default() });
+    job.append(
+        &format!("{} ({}, {})", group.label, group.spans.len(), human_bytes(group.bytes)),
+        0.0,
+        egui::TextFormat { font_id: font, color: theme::TEXT, ..Default::default() },
+    );
+    job
 }
 
 /// A strip of the plotted range with each region coloured by type; the
@@ -1134,5 +1178,29 @@ mod tests {
         }
         assert!(placed[0].right() <= cube.left(), "a cluster left of centre is labelled on the left");
         assert!(placed[2].left() >= cube.right(), "one right of centre on the right");
+    }
+
+    #[test]
+    fn in_a_narrow_pane_every_legend_entry_wraps_into_reach_and_can_be_ticked() {
+        let (bytes, _) = three_part_file();
+        let mut app = ViewerApp::new(Launch::default());
+        app.document = Document::from_bytes(bytes);
+        let pane_width = 300.0;
+        let mut harness = Harness::builder().with_size(vec2(pane_width, 1400.0)).build_ui_state(
+            |ui, (state, app): &mut (TrigramState, ViewerApp)| show_trigram(state, app, ui),
+            (TrigramState::default(), app),
+        );
+        plot_whole_file(&mut harness);
+        let groups: Vec<RegionGroup> = harness.state().0.groups.clone();
+        assert!(groups.len() >= 2);
+        for (index, group) in groups.iter().enumerate() {
+            let needle = format!("{} (", group.label);
+            let entry = harness.get_by_label_contains(&needle);
+            let rect = entry.rect();
+            assert!(rect.right() <= pane_width + 1.0, "{} reaches {} in a {pane_width} pane", group.label, rect.right());
+            entry.click();
+            harness.step();
+            assert!(harness.state().0.hidden[index], "ticking {} hides it", group.label);
+        }
     }
 }
