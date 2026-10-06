@@ -16,7 +16,7 @@ use crate::packing::RowPacker;
 use crate::preferences::{self, Preferences};
 use crate::parsers;
 use crate::plugins::{self, ActionHost, LoadReport, LuaHost};
-use crate::bookmarks::{self, Bookmark, Sidecar};
+use crate::bookmarks::{self, Sidecar};
 use crate::bus::topics::{FindingsPublished, RecordWidthEstimated, StructureIdentified};
 use crate::bus::{Draft, Payload};
 use crate::commands::{self, PaletteState};
@@ -1362,15 +1362,15 @@ impl ViewerApp {
 
     /// Skip the selected ranges (or the byte at the cursor): fold them out of
     /// the raster and the hex dump without deleting anything. A marker shows
-    /// where they were; clicking it unfolds them.
+    /// where they were; clicking it unfolds them. Carried out as `view.fold`.
     pub fn skip_selection(&mut self) {
         let ranges = self.operation_ranges();
         if ranges.is_empty() {
             self.status = "Select the bytes to skip first".to_string();
             return;
         }
-        for &(start, len) in &ranges {
-            self.folds.fold(start, len);
+        if self.perform("view.fold", serde_json::json!({ "ranges": ranges })).is_err() {
+            return;
         }
         let hidden: usize = ranges.iter().map(|&(_, len)| len).sum();
         let after = ranges.last().map_or(self.cursor, |&(start, len)| start + len).min(self.document.len());
@@ -1380,17 +1380,18 @@ impl ViewerApp {
         self.status = format!("Skipped {hidden} bytes in {} places; click a marker to show them again", ranges.len());
     }
 
-    /// Show the bytes of the fold starting at `start` again.
+    /// Show the bytes of the fold starting at `start` again, as `view.unfold`.
     pub fn unfold(&mut self, start: usize) {
-        if self.folds.unfold(start) {
+        if self.perform("view.unfold", serde_json::json!({ "start": start })).is_ok() {
             self.status = format!("Showing the skipped bytes at {start:#x} again");
         }
     }
 
-    /// Show every skipped range again.
+    /// Show every skipped range again, as `view.unfold`.
     pub fn unfold_all(&mut self) {
-        self.folds.clear();
-        self.status = "Showing every skipped range again".to_string();
+        if self.perform("view.unfold", serde_json::json!({ "all": true })).is_ok() {
+            self.status = "Showing every skipped range again".to_string();
+        }
     }
 
     pub fn clamp_top_row(&mut self) {
@@ -1740,26 +1741,29 @@ impl ViewerApp {
         self.bookmark_prompt = Some((offset, len, suggested));
     }
 
+    /// Bookmark a byte or span, as `bookmarks.add`.
     pub fn add_bookmark(&mut self, offset: usize, len: usize, name: String) {
-        self.bookmarks.set(Bookmark { offset, len, name: name.clone(), note: String::new() });
-        self.save_sidecar();
-        self.status = format!("Bookmarked {name} at {offset:#x}");
-    }
-
-    pub fn remove_bookmark(&mut self, offset: usize) {
-        if self.bookmarks.remove(offset) {
-            self.save_sidecar();
+        if self.perform("bookmarks.add", serde_json::json!({ "start": offset, "len": len, "name": name })).is_ok() {
+            self.status = format!("Bookmarked {name} at {offset:#x}");
         }
     }
 
+    /// Remove the bookmark at `offset`, as `bookmarks.remove`.
+    pub fn remove_bookmark(&mut self, offset: usize) {
+        let _ = self.perform("bookmarks.remove", serde_json::json!({ "start": offset }));
+    }
+
+    /// Select the bookmark at `offset` (or put the cursor on it), as
+    /// `selection.set` or `cursor.set`.
     pub fn jump_to_bookmark(&mut self, offset: usize) {
         if let Some(bookmark) = self.bookmarks.at(offset).cloned() {
-            if bookmark.len > 1 {
-                self.clear_secondary_selection();
-                self.anchor = Some(bookmark.offset);
-                self.cursor = bookmark.offset + bookmark.len;
+            let moved = if bookmark.len > 1 {
+                self.perform("selection.set", serde_json::json!({ "selection": { "range": [bookmark.offset, bookmark.len] } }))
             } else {
-                self.set_cursor(bookmark.offset, false);
+                self.perform("cursor.set", serde_json::json!({ "offset": bookmark.offset }))
+            };
+            if moved.is_err() {
+                return;
             }
             self.reveal_cursor_centred();
             self.reveal_cursor_in_hex(true);

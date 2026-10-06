@@ -106,6 +106,11 @@ Errors are `{code, message, data}`, with these codes:
 | [`jobs.cancel`](#jobscancel) | read | Ask a running job to stop; it ends as cancelled, without a result, as soon as it notices. |
 | [`view.get_shape`](#viewget_shape) | read | The shape a document's bytes are drawn in: the pixel format, pixels per row, the offset of the first pixel, a bit shift and the bytes skipped after each row. |
 | [`view.set_shape`](#viewset_shape) | view | Change the shape a document's bytes are drawn in (the pixel format, pixels per row, the first pixel's offset and bit, the padding after each row); what is not given stays as it is. |
+| [`view.fold`](#viewfold) | view | Skip ranges of a document in its views (the raster and the hex dump) without deleting them; a marker shows where each was. |
+| [`view.unfold`](#viewunfold) | view | Show skipped bytes again: the skipped range starting at an offset, or all of them. |
+| [`bookmarks.list`](#bookmarkslist) | read | A document's bookmarks, in offset order. |
+| [`bookmarks.add`](#bookmarksadd) | view | Bookmark a byte or a span of a document with a name, replacing a bookmark at the same offset; the window keeps them beside the file. |
+| [`bookmarks.remove`](#bookmarksremove) | view | Remove the bookmark at an offset. |
 
 Each method's full JSON schemas are in `theviewer api --describe`.
 
@@ -1583,6 +1588,78 @@ Change the shape a document's bytes are drawn in (the pixel format, pixels per r
 | --- | --- | --- | --- |
 | `doc` | string | yes | Id of the document. |
 | `shape` | ViewShape | yes | The shape its bytes are drawn in now. |
+
+### view.fold
+
+Skip ranges of a document in its views (the raster and the hex dump) without deleting them; a marker shows where each was.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `doc` | string | no | Document id, path or "current" (the default). |
+| `ranges` | array of pair | yes | The spans to skip, as [start, len]; they join spans already skipped that they touch. |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `doc` | string | yes | Id of the document. |
+| `folds` | array of pair | yes | Every span skipped now, as [start, len] in document order. |
+
+### view.unfold
+
+Show skipped bytes again: the skipped range starting at an offset, or all of them.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `all` | boolean | no | Show every skipped range again. |
+| `doc` | string | no | Document id, path or "current" (the default). |
+| `start` | integer | no | Where the skipped range to show again starts. |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `doc` | string | yes | Id of the document. |
+| `folds` | array of pair | yes | Every span skipped now, as [start, len] in document order. |
+
+### bookmarks.list
+
+A document's bookmarks, in offset order.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `doc` | string | no | Document id, path or "current" (the default). |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `bookmarks` | array of BookmarkInfo | yes | Its bookmarks now, in offset order. |
+| `doc` | string | yes | Id of the document. |
+
+### bookmarks.add
+
+Bookmark a byte or a span of a document with a name, replacing a bookmark at the same offset; the window keeps them beside the file.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `doc` | string | no | Document id, path or "current" (the default). |
+| `len` | integer | no | Bytes the bookmark covers; 0 marks just the offset. |
+| `name` | string | yes | What to call it. |
+| `start` | integer | yes | Offset of the bookmarked byte or span. |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `bookmarks` | array of BookmarkInfo | yes | Its bookmarks now, in offset order. |
+| `doc` | string | yes | Id of the document. |
+
+### bookmarks.remove
+
+Remove the bookmark at an offset.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `doc` | string | no | Document id, path or "current" (the default). |
+| `start` | integer | yes | Offset of the bookmark to remove. |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `bookmarks` | array of BookmarkInfo | yes | Its bookmarks now, in offset order. |
+| `doc` | string | yes | Id of the document. |
 
 ## Topics
 

@@ -524,7 +524,7 @@ impl ViewerApp {
                 response.clone().on_hover_text(format!("{} at {:#x} ({}): {}", region.label, region.start, crate::compress::human_bytes(region.len), region.detail));
             }
             if response.clicked() {
-                self.jump_to_offset(offset);
+                self.go_to_offset(offset);
             }
         }
         if out_of_date && response.secondary_clicked() {
@@ -597,7 +597,7 @@ impl ViewerApp {
         if response.clicked()
             && let Some(offset) = response.interact_pointer_pos().and_then(offset_at)
         {
-            self.jump_to_offset(offset);
+            self.go_to_offset(offset);
         }
         // Cursor marker.
         let d = (self.cursor as f64 / bytes_per_cell) as u64;

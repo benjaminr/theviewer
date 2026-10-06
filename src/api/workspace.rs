@@ -18,9 +18,11 @@ use super::packet_sets::PacketSets;
 use super::view::ViewShape;
 use super::{ApiError, Effect, RegisteredMethod};
 use crate::app::ViewerApp;
+use crate::bookmarks::Bookmark;
 use crate::bus::topics::{CursorMoved, DocumentEdited, DocumentOpened, FindingsPublished, SelectionChanged, TemplateApplied};
 use crate::bus::{Bus, Draft, MessageId, Payload};
 use crate::document::Document;
+use crate::folds::Folds;
 use crate::plugin::Registry;
 use crate::selection::Selection;
 
@@ -122,6 +124,16 @@ pub trait Workspace {
     /// Draw document `id`'s bytes in `shape`, already checked against the
     /// document and the limits.
     fn set_shape(&mut self, id: &str, shape: ViewShape) -> Result<(), ApiError>;
+    /// The ranges skipped (folded) out of document `id`'s views.
+    fn folds(&self, id: &str) -> Option<Folds>;
+    /// Skip `folds` in document `id`'s views, already checked against the
+    /// document.
+    fn set_folds(&mut self, id: &str, folds: Folds) -> Result<(), ApiError>;
+    /// Document `id`'s bookmarks, in offset order.
+    fn bookmarks(&self, id: &str) -> Option<Vec<Bookmark>>;
+    /// Keep `bookmarks` for document `id` (the window keeps them beside
+    /// its file too).
+    fn set_bookmarks(&mut self, id: &str, bookmarks: Vec<Bookmark>) -> Result<(), ApiError>;
     /// The window, when this workspace is the window: for a method whose
     /// effect only the window has (a panel to show, a chart to fill), so it
     /// need not add a hook of its own here. Headless workspaces have none,
@@ -177,6 +189,8 @@ struct OpenDocument {
     document: Document,
     view: ViewState,
     shape: ViewShape,
+    folds: Folds,
+    bookmarks: Vec<Bookmark>,
     /// The version `document.edited` has been published up to.
     published_version: u64,
 }
@@ -241,7 +255,7 @@ impl HeadlessWorkspace {
         let opened = DocumentOpened { name: name.clone(), path: document.path().map(|path| path.display().to_string()), len: document.len() };
         self.bus.publish(Draft::new("workspace", Payload::DocumentOpened(opened)).about(id.clone(), document.version()));
         let published_version = document.version();
-        self.documents.push(OpenDocument { id: id.clone(), name, document, view: ViewState::default(), shape: ViewShape::default(), published_version });
+        self.documents.push(OpenDocument { id: id.clone(), name, document, view: ViewState::default(), shape: ViewShape::default(), folds: Folds::default(), bookmarks: Vec::new(), published_version });
         self.current = Some(self.documents.len() - 1);
         id
     }
@@ -292,6 +306,26 @@ impl Workspace for HeadlessWorkspace {
         let open = self.documents.iter_mut().find(|open| open.id == id).ok_or_else(|| ApiError::not_found(format!("document '{id}' has closed")))?;
         open.shape = shape;
         open.view.record_stride = Some(shape.format.bytes_for_pixels(shape.width) + shape.row_padding);
+        Ok(())
+    }
+
+    fn folds(&self, id: &str) -> Option<Folds> {
+        self.documents.iter().find(|open| open.id == id).map(|open| open.folds.clone())
+    }
+
+    fn set_folds(&mut self, id: &str, folds: Folds) -> Result<(), ApiError> {
+        let open = self.open_document(id).ok_or_else(|| ApiError::not_found(format!("document '{id}' has closed")))?;
+        open.folds = folds;
+        Ok(())
+    }
+
+    fn bookmarks(&self, id: &str) -> Option<Vec<Bookmark>> {
+        self.documents.iter().find(|open| open.id == id).map(|open| open.bookmarks.clone())
+    }
+
+    fn set_bookmarks(&mut self, id: &str, bookmarks: Vec<Bookmark>) -> Result<(), ApiError> {
+        let open = self.open_document(id).ok_or_else(|| ApiError::not_found(format!("document '{id}' has closed")))?;
+        open.bookmarks = bookmarks;
         Ok(())
     }
 
@@ -443,6 +477,41 @@ impl Workspace for ViewerApp {
 
     fn registry(&self) -> Arc<Registry> {
         Arc::clone(&self.registry)
+    }
+
+    /// The document shown has the folds; a parent waiting behind it has
+    /// none (they are dropped when a document is derived).
+    fn folds(&self, id: &str) -> Option<Folds> {
+        if id == self.document_id {
+            return Some(self.folds.clone());
+        }
+        self.parents.iter().any(|parent| parent.id == id).then(Folds::default)
+    }
+
+    /// The views lay the bytes out again without what is skipped.
+    fn set_folds(&mut self, id: &str, folds: Folds) -> Result<(), ApiError> {
+        if id != self.document_id {
+            return Err(ApiError::invalid_params(format!("{id} waits behind the document shown; go back to it (documents.open with its id) to skip parts of it")));
+        }
+        self.folds = folds;
+        self.clamp_top_row();
+        self.sync_hex_to_raster();
+        Ok(())
+    }
+
+    /// The window keeps one set of bookmarks, for the document shown.
+    fn bookmarks(&self, id: &str) -> Option<Vec<Bookmark>> {
+        (id == self.document_id).then(|| self.bookmarks.bookmarks.clone())
+    }
+
+    /// Saved beside the file, as the bookmarks made by hand always were.
+    fn set_bookmarks(&mut self, id: &str, bookmarks: Vec<Bookmark>) -> Result<(), ApiError> {
+        if id != self.document_id {
+            return Err(ApiError::invalid_params(format!("{id} waits behind the document shown; go back to it (documents.open with its id) to bookmark it")));
+        }
+        self.bookmarks.bookmarks = bookmarks;
+        self.save_sidecar();
+        Ok(())
     }
 
     fn shape(&self, id: &str) -> Option<ViewShape> {

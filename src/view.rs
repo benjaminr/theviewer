@@ -433,8 +433,7 @@ fn draw_entropy_strip(app: &mut ViewerApp, ui: &Ui, strip_rect: Rect) {
             "Entropy {:.2} bits/byte around {offset:#x}\nClick to jump there",
             map[block]
         ));
-        if response.clicked() {
-            app.set_cursor(offset, false);
+        if response.clicked() && app.perform("cursor.set", serde_json::json!({ "offset": offset.min(app.document.len()) })).is_ok() {
             if let Some(row) = app.raster_row_of(offset) {
                 app.top_row = row.saturating_sub(app.visible_rows / 3);
                 app.clamp_top_row();

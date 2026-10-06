@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 
 use super::workspace::{self, Workspace};
 use super::{ApiError, ErrorCode};
+use crate::bookmarks::{Bookmark, Sidecar};
 use crate::raster::PixelFormat;
 
 /// Most pixels per row.
@@ -23,6 +24,11 @@ pub const MAX_WIDTH: usize = crate::app::MAX_WIDTH;
 pub(super) const METHODS: &[super::Method] = &[
     method!("view.get_shape", Read, get_shape, ShapeParams, ShapeResult, "The shape a document's bytes are drawn in: the pixel format, pixels per row, the offset of the first pixel, a bit shift and the bytes skipped after each row."),
     method!("view.set_shape", View, set_shape, SetShapeParams, ShapeResult, "Change the shape a document's bytes are drawn in (the pixel format, pixels per row, the first pixel's offset and bit, the padding after each row); what is not given stays as it is."),
+    method!("view.fold", View, fold, FoldParams, FoldsResult, "Skip ranges of a document in its views (the raster and the hex dump) without deleting them; a marker shows where each was."),
+    method!("view.unfold", View, unfold, UnfoldParams, FoldsResult, "Show skipped bytes again: the skipped range starting at an offset, or all of them."),
+    method!("bookmarks.list", Read, list_bookmarks, BookmarksParams, BookmarksResult, "A document's bookmarks, in offset order."),
+    method!("bookmarks.add", View, add_bookmark, AddBookmarkParams, BookmarksResult, "Bookmark a byte or a span of a document with a name, replacing a bookmark at the same offset; the window keeps them beside the file."),
+    method!("bookmarks.remove", View, remove_bookmark, RemoveBookmarkParams, BookmarksResult, "Remove the bookmark at an offset."),
 ];
 
 /// An example call of each of [`METHODS`], run in order on a fresh
@@ -30,7 +36,15 @@ pub(super) const METHODS: &[super::Method] = &[
 #[cfg(test)]
 pub(super) fn examples() -> Vec<(&'static str, serde_json::Value)> {
     use serde_json::json;
-    vec![("view.set_shape", json!({"format": "rgb565", "width": 48, "offset": 16, "row_padding": 2})), ("view.get_shape", json!({}))]
+    vec![
+        ("view.set_shape", json!({"format": "rgb565", "width": 48, "offset": 16, "row_padding": 2})),
+        ("view.get_shape", json!({})),
+        ("view.fold", json!({"ranges": [[16, 32], [100, 8]]})),
+        ("view.unfold", json!({"start": 16})),
+        ("bookmarks.add", json!({"start": 4, "len": 2, "name": "magic"})),
+        ("bookmarks.list", json!({})),
+        ("bookmarks.remove", json!({"start": 4})),
+    ]
 }
 
 /// What a call to one of this module's methods would do, in plain words,
@@ -58,6 +72,17 @@ pub(super) fn describe_call(_workspace: &mut dyn Workspace, method: &str, params
             }
             if changes.is_empty() { "Leave the view's shape as it is".to_string() } else { format!("Draw the bytes with {}", changes.join(", ")) }
         }
+        "view.fold" => {
+            let params: FoldParams = serde_json::from_value(params.clone()).ok()?;
+            let ranges: Vec<(usize, usize)> = params.ranges.iter().map(|&(start, len)| (start as usize, len as usize)).collect();
+            format!("Skip {} in the views", super::edits::target_phrase(&ranges, false))
+        }
+        "view.unfold" => match params.get("start").and_then(serde_json::Value::as_u64) {
+            Some(start) => format!("Show the skipped bytes at {start:#x} again"),
+            None => "Show every skipped range again".to_string(),
+        },
+        "bookmarks.add" => format!("Bookmark {:#x} as \"{}\"", params.get("start")?.as_u64()?, params.get("name")?.as_str()?),
+        "bookmarks.remove" => format!("Remove the bookmark at {:#x}", params.get("start")?.as_u64()?),
         _ => return None,
     };
     Some(description)
@@ -177,6 +202,169 @@ pub fn width_for_period(format: PixelFormat, period: usize) -> (usize, usize) {
     }
 }
 
+/// Parameters of `view.fold`.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FoldParams {
+    /// Document id, path or "current" (the default).
+    #[serde(default)]
+    pub doc: Option<String>,
+    /// The spans to skip, as [start, len]; they join spans already skipped that they touch.
+    pub ranges: Vec<(u64, u64)>,
+}
+
+/// Parameters of `view.unfold`: `start` or `all`.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct UnfoldParams {
+    /// Document id, path or "current" (the default).
+    #[serde(default)]
+    pub doc: Option<String>,
+    /// Where the skipped range to show again starts.
+    #[serde(default)]
+    pub start: Option<u64>,
+    /// Show every skipped range again.
+    #[serde(default)]
+    pub all: bool,
+}
+
+/// The result of `view.fold` and `view.unfold`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct FoldsResult {
+    /// Id of the document.
+    pub doc: String,
+    /// Every span skipped now, as [start, len] in document order.
+    pub folds: Vec<(u64, u64)>,
+}
+
+/// Parameters of `bookmarks.list`.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct BookmarksParams {
+    /// Document id, path or "current" (the default).
+    #[serde(default)]
+    pub doc: Option<String>,
+}
+
+/// Parameters of `bookmarks.add`.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AddBookmarkParams {
+    /// Document id, path or "current" (the default).
+    #[serde(default)]
+    pub doc: Option<String>,
+    /// Offset of the bookmarked byte or span.
+    pub start: u64,
+    /// Bytes the bookmark covers; 0 marks just the offset.
+    #[serde(default)]
+    pub len: u64,
+    /// What to call it.
+    pub name: String,
+}
+
+/// Parameters of `bookmarks.remove`.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RemoveBookmarkParams {
+    /// Document id, path or "current" (the default).
+    #[serde(default)]
+    pub doc: Option<String>,
+    /// Offset of the bookmark to remove.
+    pub start: u64,
+}
+
+/// One bookmark.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct BookmarkInfo {
+    /// Offset of the bookmarked byte or span.
+    pub start: u64,
+    /// Bytes it covers; 0 marks just the offset.
+    pub len: u64,
+    /// What it is called.
+    pub name: String,
+}
+
+/// The result of the `bookmarks.*` methods.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct BookmarksResult {
+    /// Id of the document.
+    pub doc: String,
+    /// Its bookmarks now, in offset order.
+    pub bookmarks: Vec<BookmarkInfo>,
+}
+
+fn folds_result(workspace: &dyn Workspace, id: String) -> Result<FoldsResult, ApiError> {
+    let folds = workspace.folds(&id).ok_or_else(|| ApiError::not_found(format!("document '{id}' has closed")))?;
+    Ok(FoldsResult { folds: folds.ranges().iter().map(|&(start, len)| (start as u64, len as u64)).collect(), doc: id })
+}
+
+pub fn fold(workspace: &mut dyn Workspace, params: FoldParams) -> Result<FoldsResult, ApiError> {
+    let id = workspace::resolve(workspace, params.doc.as_deref())?;
+    let len = workspace::info(workspace, &id)?.len as usize;
+    if params.ranges.iter().all(|&(_, range_len)| range_len == 0) {
+        return Err(ApiError::invalid_params("nothing to skip: give at least one span of one byte or more"));
+    }
+    let mut folds = workspace.folds(&id).ok_or_else(|| ApiError::not_found(format!("document '{id}' has closed")))?;
+    for &(start, range_len) in &params.ranges {
+        let (start, range_len) = super::values::span_within(len, start, Some(range_len))?;
+        folds.fold(start, range_len);
+    }
+    workspace.set_folds(&id, folds)?;
+    folds_result(workspace, id)
+}
+
+pub fn unfold(workspace: &mut dyn Workspace, params: UnfoldParams) -> Result<FoldsResult, ApiError> {
+    let id = workspace::resolve(workspace, params.doc.as_deref())?;
+    let mut folds = workspace.folds(&id).ok_or_else(|| ApiError::not_found(format!("document '{id}' has closed")))?;
+    match (params.start, params.all) {
+        (Some(start), false) => {
+            if !folds.unfold(start as usize) {
+                return Err(ApiError::not_found(format!("nothing skipped starts at {start:#x}; view.fold's result lists what is")));
+            }
+        }
+        (None, true) => folds.clear(),
+        _ => return Err(ApiError::invalid_params("give the start of one skipped range, or all: true, not both")),
+    }
+    workspace.set_folds(&id, folds)?;
+    folds_result(workspace, id)
+}
+
+/// The bookmarks of document `id`, refused when it has none to show.
+fn bookmarks_of(workspace: &dyn Workspace, id: &str) -> Result<Vec<Bookmark>, ApiError> {
+    workspace.bookmarks(id).ok_or_else(|| ApiError::invalid_params(format!("{id} has no bookmarks here: the window keeps them for the document shown; go back to it (documents.open with its id) first")))
+}
+
+fn bookmarks_result(id: String, bookmarks: &[Bookmark]) -> BookmarksResult {
+    let bookmarks = bookmarks.iter().map(|bookmark| BookmarkInfo { start: bookmark.offset as u64, len: bookmark.len as u64, name: bookmark.name.clone() }).collect();
+    BookmarksResult { doc: id, bookmarks }
+}
+
+pub fn list_bookmarks(workspace: &mut dyn Workspace, params: BookmarksParams) -> Result<BookmarksResult, ApiError> {
+    let id = workspace::resolve(workspace, params.doc.as_deref())?;
+    let bookmarks = bookmarks_of(workspace, &id)?;
+    Ok(bookmarks_result(id, &bookmarks))
+}
+
+pub fn add_bookmark(workspace: &mut dyn Workspace, params: AddBookmarkParams) -> Result<BookmarksResult, ApiError> {
+    let id = workspace::resolve(workspace, params.doc.as_deref())?;
+    let len = workspace::info(workspace, &id)?.len as usize;
+    let (start, span) = super::values::span_within(len, params.start, Some(params.len))?;
+    let mut sidecar = Sidecar { bookmarks: bookmarks_of(workspace, &id)?, shape: None };
+    sidecar.set(Bookmark { offset: start, len: span, name: params.name, note: String::new() });
+    workspace.set_bookmarks(&id, sidecar.bookmarks.clone())?;
+    Ok(bookmarks_result(id, &sidecar.bookmarks))
+}
+
+pub fn remove_bookmark(workspace: &mut dyn Workspace, params: RemoveBookmarkParams) -> Result<BookmarksResult, ApiError> {
+    let id = workspace::resolve(workspace, params.doc.as_deref())?;
+    let mut sidecar = Sidecar { bookmarks: bookmarks_of(workspace, &id)?, shape: None };
+    if !sidecar.remove(params.start as usize) {
+        return Err(ApiError::not_found(format!("no bookmark starts at {:#x}; bookmarks.list shows them", params.start)));
+    }
+    workspace.set_bookmarks(&id, sidecar.bookmarks.clone())?;
+    Ok(bookmarks_result(id, &sidecar.bookmarks))
+}
+
 /// The person's changes to the view's shape in the window, each a
 /// `view.set_shape` step. Zoom, scrolling and panning stay direct.
 impl crate::app::ViewerApp {
@@ -194,6 +382,15 @@ impl crate::app::ViewerApp {
     /// Skip `row_padding` bytes after each row.
     pub fn change_row_padding(&mut self, row_padding: usize) {
         let _ = self.perform("view.set_shape", serde_json::json!({ "row_padding": row_padding }));
+    }
+
+    /// The person jumps to `offset` (a click on the file map or a curve):
+    /// the cursor moves there as `cursor.set` and both panes show it.
+    pub fn go_to_offset(&mut self, offset: usize) {
+        if self.perform("cursor.set", serde_json::json!({ "offset": offset.min(self.document.len()) })).is_ok() {
+            self.reveal_cursor_centred();
+            self.reveal_cursor_in_hex(true);
+        }
     }
 
     /// An image layout: `format` pixels, `width` to a row, nothing skipped.
@@ -237,6 +434,51 @@ mod tests {
         assert_eq!(workspace.view("doc-1").unwrap().record_stride, Some(34), "16 two-byte pixels and 2 bytes of padding");
         call(&mut workspace, "view.set_shape", json!({"format": "bit1"})).unwrap();
         assert_eq!(workspace.view("doc-1").unwrap().record_stride, Some(4), "16 one-bit pixels are 2 bytes");
+    }
+
+    #[test]
+    fn skipped_ranges_join_when_they_touch_and_show_again_one_by_one_or_all_at_once() {
+        let mut workspace = workspace_with("a.bin", &[0u8; 256]);
+        call(&mut workspace, "view.fold", json!({"ranges": [[16, 16]]})).unwrap();
+        let folded = call(&mut workspace, "view.fold", json!({"ranges": [[32, 8], [100, 4]]})).unwrap();
+        assert_eq!(folded["folds"], json!([[16, 24], [100, 4]]));
+        let shown = call(&mut workspace, "view.unfold", json!({"start": 16})).unwrap();
+        assert_eq!(shown["folds"], json!([[100, 4]]));
+        let none = call(&mut workspace, "view.unfold", json!({"all": true})).unwrap();
+        assert_eq!(none["folds"], json!([]));
+    }
+
+    #[test]
+    fn skipping_outside_the_document_nothing_or_an_unknown_range_is_refused() {
+        let mut workspace = workspace_with("a.bin", &[0u8; 16]);
+        assert_eq!(call(&mut workspace, "view.fold", json!({"ranges": [[8, 9]]})).unwrap_err().code, ErrorCode::OutOfRange);
+        assert_eq!(call(&mut workspace, "view.fold", json!({"ranges": []})).unwrap_err().code, ErrorCode::InvalidParams);
+        assert_eq!(call(&mut workspace, "view.unfold", json!({"start": 3})).unwrap_err().code, ErrorCode::NotFound);
+        assert_eq!(call(&mut workspace, "view.unfold", json!({})).unwrap_err().code, ErrorCode::InvalidParams);
+        assert_eq!(call(&mut workspace, "view.unfold", json!({"start": 3, "all": true})).unwrap_err().code, ErrorCode::InvalidParams);
+        assert!(workspace.folds("doc-1").unwrap().is_empty(), "nothing was skipped");
+    }
+
+    #[test]
+    fn bookmarks_are_kept_per_document_in_offset_order_and_replace_one_at_the_same_offset() {
+        let mut workspace = workspace_with("a.bin", &[0u8; 64]);
+        call(&mut workspace, "bookmarks.add", json!({"start": 40, "name": "footer"})).unwrap();
+        call(&mut workspace, "bookmarks.add", json!({"start": 4, "len": 2, "name": "magic"})).unwrap();
+        let renamed = call(&mut workspace, "bookmarks.add", json!({"start": 40, "len": 8, "name": "trailer"})).unwrap();
+        assert_eq!(renamed["bookmarks"], json!([{"start": 4, "len": 2, "name": "magic"}, {"start": 40, "len": 8, "name": "trailer"}]));
+        let left = call(&mut workspace, "bookmarks.remove", json!({"start": 4})).unwrap();
+        assert_eq!(left["bookmarks"].as_array().unwrap().len(), 1);
+        workspace.add_document("b.bin", crate::document::Document::from_bytes(vec![0; 8]));
+        assert_eq!(call(&mut workspace, "bookmarks.list", json!({})).unwrap()["bookmarks"], json!([]), "another document has its own");
+        assert_eq!(call(&mut workspace, "bookmarks.list", json!({"doc": "doc-1"})).unwrap()["bookmarks"][0]["name"], "trailer");
+    }
+
+    #[test]
+    fn a_bookmark_outside_the_document_or_one_not_there_is_refused() {
+        let mut workspace = workspace_with("a.bin", &[0u8; 16]);
+        assert_eq!(call(&mut workspace, "bookmarks.add", json!({"start": 12, "len": 5, "name": "x"})).unwrap_err().code, ErrorCode::OutOfRange);
+        assert_eq!(call(&mut workspace, "bookmarks.remove", json!({"start": 0})).unwrap_err().code, ErrorCode::NotFound);
+        assert_eq!(call(&mut workspace, "bookmarks.add", json!({"start": 0})).unwrap_err().code, ErrorCode::InvalidParams, "a bookmark needs a name");
     }
 
     mod window {
@@ -332,6 +574,58 @@ mod tests {
             let shape = call(&mut app, &Caller::Panel, "view.set_shape", json!({"format": "rgba8", "width": 4})).unwrap();
             assert_eq!((app.shape.format, app.shape.width), (PixelFormat::Rgba8, 4));
             assert_eq!(shape["shape"]["format"], "rgba8");
+        }
+
+        #[test]
+        fn skipping_the_selection_and_showing_it_again_are_fold_steps() {
+            let mut app = app_with(&[0u8; 256]);
+            app.set_selection(32, Some(crate::selection::Selection::Range(16, 16)));
+            app.skip_selection();
+            assert_eq!(take_performed(), [("view.fold".to_string(), json!({"ranges": [[16, 16]]}))]);
+            assert_eq!((app.folds.ranges(), app.cursor), (&[(16, 16)][..], 32));
+            assert_eq!(app.status, "Skipped 16 bytes in 1 places; click a marker to show them again");
+            app.unfold(16);
+            assert_eq!(take_performed(), [("view.unfold".to_string(), json!({"start": 16}))]);
+            assert!(app.folds.is_empty());
+            app.set_selection(8, Some(crate::selection::Selection::Ranges(vec![(0, 4), (4, 4)])));
+            app.skip_selection();
+            app.unfold_all();
+            let performed = take_performed();
+            assert_eq!(performed.last(), Some(&("view.unfold".to_string(), json!({"all": true}))));
+            assert_eq!((app.folds.is_empty(), app.status.as_str()), (true, "Showing every skipped range again"));
+        }
+
+        #[test]
+        fn a_click_on_the_file_map_or_a_curve_moves_the_cursor_as_the_person() {
+            let mut app = app_with(&[0u8; 256]);
+            app.go_to_offset(0x90);
+            app.go_to_offset(9999);
+            assert_eq!(take_performed(), [("cursor.set".to_string(), json!({"offset": 0x90})), ("cursor.set".to_string(), json!({"offset": 256}))], "past the end is the end");
+            assert_eq!(app.cursor, 256);
+        }
+
+        #[test]
+        fn bookmarking_removing_and_jumping_to_bookmarks_go_through_the_api() {
+            let mut app = app_with(&[0u8; 256]);
+            app.add_bookmark(0x20, 4, "header".to_string());
+            app.add_bookmark(0x80, 0, "mark 0x80".to_string());
+            assert_eq!(
+                take_performed(),
+                [
+                    ("bookmarks.add".to_string(), json!({"start": 0x20, "len": 4, "name": "header"})),
+                    ("bookmarks.add".to_string(), json!({"start": 0x80, "len": 0, "name": "mark 0x80"})),
+                ]
+            );
+            assert_eq!(app.status, "Bookmarked mark 0x80 at 0x80");
+            app.goto_bookmark(true);
+            assert_eq!(take_performed(), [("selection.set".to_string(), json!({"selection": {"range": [0x20, 4]}}))], "a bookmarked span is selected");
+            assert_eq!((app.selection(), app.status.as_str()), (Some((0x20, 4)), "Bookmark: header"));
+            app.goto_bookmark(true);
+            assert_eq!(take_performed(), [("cursor.set".to_string(), json!({"offset": 0x80}))]);
+            assert_eq!(app.cursor, 0x80);
+            app.remove_bookmark(0x20);
+            assert_eq!(take_performed(), [("bookmarks.remove".to_string(), json!({"start": 0x20}))]);
+            assert_eq!(app.bookmarks.bookmarks.len(), 1);
         }
     }
 }
