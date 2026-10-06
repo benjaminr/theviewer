@@ -2765,7 +2765,7 @@ impl ViewerApp {
     pub fn patterns_in(&self, start: usize, end: usize) -> impl Iterator<Item = &Finding> {
         self.patterns
             .iter()
-            .chain(self.bench.pinned.iter())
+            .chain(self.pinned_findings().into_iter().map(|(_, finding)| finding))
             .filter(move |pattern| self.pattern_kind_enabled(pattern.category) && pattern.start < end && pattern.end() > start)
     }
 

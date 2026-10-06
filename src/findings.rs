@@ -4,11 +4,57 @@
 use eframe::egui::{self, RichText, Sense, Ui, vec2};
 
 use crate::app::ViewerApp;
+use crate::bus::topics::FindingsPublished;
+use crate::legend::{LayerKind, PinnedGroup};
 use crate::plugin::{Category, Finding};
 use crate::theme;
 
 const LIST_HEIGHT: f32 = 220.0;
 const MAX_ROWS: usize = 500;
+/// How the producers of the window's own tools start. Their findings are
+/// `bench.pinned` mirrored on the bus, so they are drawn from there, once.
+const TOOL_PRODUCER_PREFIX: &str = "tool:";
+
+impl ViewerApp {
+    /// The findings callers published about the document shown with
+    /// `findings.publish`: the person's pins, plugins', Ask's, MCP clients'
+    /// and recipes'. They are read from the bus's facts, so publishing again
+    /// under a key replaces a caller's findings, `findings.retract` removes
+    /// them, and they go with the document. Oldest first, with who
+    /// published them.
+    pub fn published_findings(&self) -> Vec<(&str, &Finding)> {
+        let document = self.document_id();
+        let mut facts: Vec<_> = self
+            .bus
+            .facts()
+            .filter(|fact| fact.draft.document.as_deref() == Some(document.as_str()) && !fact.producer().starts_with(TOOL_PRODUCER_PREFIX))
+            .filter_map(|fact| fact.payload_as::<FindingsPublished>().map(|published| (fact.id, fact.producer(), published)))
+            .collect();
+        facts.sort_by_key(|(id, _, _)| *id);
+        facts.into_iter().flat_map(|(_, producer, published)| published.findings.iter().map(move |finding| (producer, finding))).collect()
+    }
+
+    /// Every pinned finding with the legend group it is drawn in: the
+    /// tools' pins, then the findings callers published. A published
+    /// finding joins the group its id names (a segment, a checksum), or
+    /// the Published group.
+    pub fn pinned_findings(&self) -> Vec<(PinnedGroup, &Finding)> {
+        let pinned = self.bench.pinned.iter().map(|finding| (PinnedGroup::of(&finding.id), finding));
+        let published = self.published_findings().into_iter().map(|(_, finding)| {
+            let group = match PinnedGroup::of(&finding.id) {
+                PinnedGroup::Other => PinnedGroup::Published,
+                group => group,
+            };
+            (group, finding)
+        });
+        pinned.chain(published).collect()
+    }
+
+    /// The pinned findings whose groups are shown.
+    pub fn shown_pinned_findings(&self) -> Vec<&Finding> {
+        self.pinned_findings().into_iter().filter(|(group, _)| self.layer_visible(LayerKind::Pinned(*group))).map(|(_, finding)| finding).collect()
+    }
+}
 
 /// Filter state kept by the app.
 pub struct FindingsFilter {
@@ -204,5 +250,80 @@ fn show_bookmarks(app: &mut ViewerApp, ui: &mut Ui) {
     }
     if let Some(offset) = remove {
         app.remove_bookmark(offset);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::{Value, json};
+
+    use super::*;
+    use crate::api::{self, Caller};
+    use crate::app::Launch;
+    use crate::bus::Topic;
+
+    fn app_with(bytes: &[u8]) -> ViewerApp {
+        let mut app = ViewerApp::new(Launch::default());
+        app.open_bytes(bytes.to_vec(), "test.bin".to_string());
+        app.run_bus();
+        app
+    }
+
+    fn finding(id: &str, start: usize, len: usize) -> Value {
+        json!({"id": id, "source": "test", "category": "custom", "start": start, "len": len, "title": id, "detail": "", "confidence": 1.0, "fields": []})
+    }
+
+    fn publish(app: &mut ViewerApp, caller: &Caller, key: &str, findings: Vec<Value>) {
+        api::call(app, caller, "findings.publish", json!({"findings": findings, "key": key})).unwrap();
+        app.run_bus();
+    }
+
+    fn outlined(app: &mut ViewerApp) -> Vec<(usize, usize)> {
+        let mut ranges = app.layer_ranges(LayerKind::Pinned(PinnedGroup::Published), 0, usize::MAX);
+        ranges.sort_unstable();
+        ranges
+    }
+
+    #[test]
+    fn findings_published_by_the_person_a_plugin_or_a_client_are_outlined_and_listed() {
+        let mut app = app_with(&[0u8; 256]);
+        publish(&mut app, &Caller::Panel, "", vec![finding("mine", 0, 4)]);
+        publish(&mut app, &Caller::Plugin("sync_word.lua".into()), "sync", vec![finding("sync", 16, 2)]);
+        publish(&mut app, &Caller::Mcp("claude-code".into()), "", vec![finding("claude", 32, 8)]);
+        assert_eq!(outlined(&mut app), [(0, 4), (16, 2), (32, 8)]);
+        let producers: Vec<&str> = app.published_findings().into_iter().map(|(producer, _)| producer).collect();
+        assert_eq!(producers, ["panel", "plugin:sync_word.lua", "mcp:claude-code"], "oldest first, with who published them");
+        assert!(app.patterns_in(0, usize::MAX).any(|listed| listed.id == "claude"), "listed with the findings");
+        assert!(app.active_layers().iter().any(|layer| layer.kind == LayerKind::Pinned(PinnedGroup::Published) && layer.count == "3"));
+    }
+
+    #[test]
+    fn publishing_again_under_a_key_replaces_and_retracting_removes() {
+        let mut app = app_with(&[0u8; 256]);
+        let plugin = Caller::Plugin("sync_word.lua".into());
+        publish(&mut app, &plugin, "sync", vec![finding("sync", 16, 2), finding("sync", 48, 2)]);
+        publish(&mut app, &plugin, "sync", vec![finding("sync", 80, 2)]);
+        publish(&mut app, &plugin, "other", vec![finding("other", 100, 1)]);
+        assert_eq!(outlined(&mut app), [(80, 2), (100, 1)], "the same key replaces, another key is kept beside it");
+        api::call(&mut app, &plugin, "findings.retract", json!({"key": "sync"})).unwrap();
+        app.run_bus();
+        assert_eq!(outlined(&mut app), [(100, 1)]);
+        app.open_bytes(vec![0; 256], "other.bin".to_string());
+        app.run_bus();
+        assert!(app.published_findings().is_empty(), "they go with the document");
+    }
+
+    #[test]
+    fn a_published_finding_joins_the_group_its_id_names_and_is_never_published_again() {
+        let mut app = app_with(&[0u8; 256]);
+        publish(&mut app, &Caller::Panel, "segment:", vec![finding("segment:0", 0, 64)]);
+        assert_eq!(app.layer_ranges(LayerKind::Pinned(PinnedGroup::Segments), 0, usize::MAX), [(0, 64)]);
+        assert!(app.bench.pinned.is_empty(), "kept apart from the tools' own pins");
+        let cursor = app.bus.cursor();
+        app.run_bus();
+        app.run_bus();
+        let again = app.bus.changed_since(cursor).messages.into_iter().filter(|message| message.topic() == Topic::FindingsPublished).count();
+        assert_eq!(again, 0, "the window does not publish them again");
+        assert_eq!(app.bus.facts().filter(|fact| fact.topic() == Topic::FindingsPublished).count(), 1);
     }
 }

@@ -399,7 +399,7 @@ fn show_hex_dump(app: &mut ViewerApp, ui: &mut Ui) {
         .patterns
         .iter()
         .filter(|finding| app.highlight_patterns && app.pattern_kind_enabled(finding.category))
-        .chain(app.bench.pinned.iter().filter(|finding| app.pinned_visible(finding)))
+        .chain(app.shown_pinned_findings())
         .filter(|finding| finding.start < end && finding.end() > start)
         .map(|finding| (finding.start, finding.end(), finding.category.colour()))
         .collect();

@@ -47,10 +47,13 @@ pub enum PinnedGroup {
     Messages,
     Checksums,
     Other,
+    /// Findings a caller published on the bus (a plugin, Ask, an MCP
+    /// client, a recipe) whose ids name no tool's group.
+    Published,
 }
 
 impl PinnedGroup {
-    pub const ALL: [PinnedGroup; 9] = [
+    pub const ALL: [PinnedGroup; 10] = [
         PinnedGroup::Templates,
         PinnedGroup::Segments,
         PinnedGroup::Similar,
@@ -60,6 +63,7 @@ impl PinnedGroup {
         PinnedGroup::Messages,
         PinnedGroup::Checksums,
         PinnedGroup::Other,
+        PinnedGroup::Published,
     ];
 
     /// The group a pinned finding belongs to, from the prefix of its id.
@@ -89,6 +93,7 @@ impl PinnedGroup {
             PinnedGroup::Messages => "Messages",
             PinnedGroup::Checksums => "Checksum",
             PinnedGroup::Other => "Pinned",
+            PinnedGroup::Published => "Published",
         }
     }
 
@@ -103,6 +108,7 @@ impl PinnedGroup {
             PinnedGroup::Messages => "Messages found by the Protocol tool",
             PinnedGroup::Checksums => "A stored checksum found by the Checksums tool",
             PinnedGroup::Other => "Other pinned findings",
+            PinnedGroup::Published => "Findings published by plugins, Ask, clients and recipes",
         }
     }
 }
@@ -194,10 +200,6 @@ impl ViewerApp {
         }
     }
 
-    /// Whether a pinned finding's group is shown.
-    pub fn pinned_visible(&self, finding: &Finding) -> bool {
-        self.layer_visible(LayerKind::Pinned(PinnedGroup::of(&finding.id)))
-    }
 
     /// Every layer with something to draw, in the order the legend lists
     /// them. Hidden layers are listed too, so they can be shown again.
@@ -243,7 +245,7 @@ impl ViewerApp {
             layers.push(layer(LayerKind::Fields, "Fields".into(), crate::view::FIELD_OUTLINE, count, "Fields of the structure at the cursor, outlined", self));
         }
         for group in PinnedGroup::ALL {
-            let members: Vec<&Finding> = self.bench.pinned.iter().filter(|finding| PinnedGroup::of(&finding.id) == group).collect();
+            let members: Vec<&Finding> = self.pinned_findings().into_iter().filter(|(of, _)| *of == group).map(|(_, finding)| finding).collect();
             if let Some(first) = members.first() {
                 let colour = first.category.colour();
                 layers.push(layer(LayerKind::Pinned(group), group.label().to_string(), colour, members.len().to_string(), group.hint(), self));
@@ -282,11 +284,10 @@ impl ViewerApp {
                 ranges
             }
             LayerKind::Pinned(group) => self
-                .bench
-                .pinned
-                .iter()
-                .filter(|finding| PinnedGroup::of(&finding.id) == group && overlapping(finding.start, finding.len))
-                .map(|finding| (finding.start, finding.len))
+                .pinned_findings()
+                .into_iter()
+                .filter(|(of, finding)| *of == group && overlapping(finding.start, finding.len))
+                .map(|(_, finding)| (finding.start, finding.len))
                 .collect(),
             LayerKind::PacketSelection => self.packet_selection_ranges().into_iter().filter(|&(s, l)| overlapping(s, l)).collect(),
         }

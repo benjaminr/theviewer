@@ -5,7 +5,7 @@ use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, Str
 
 use crate::app::{Shape, ViewerApp};
 use crate::folds::Folds;
-use crate::legend::{self, LayerKind, PinnedGroup};
+use crate::legend::{self, LayerKind};
 use crate::plugin::{Category, Field, Finding};
 use crate::raster::{self, PixelFormat};
 use crate::theme;
@@ -301,7 +301,7 @@ fn draw_pixel_labels(
 /// structure at the cursor. Returns how many fields were outlined.
 fn draw_field_outlines(app: &ViewerApp, painter: &egui::Painter, geometry: &Geometry, budget: &mut usize) -> usize {
     let (visible_start, visible_end) = geometry.visible_bytes();
-    let mut structures: Vec<&Finding> = app.bench.pinned.iter().filter(|finding| !finding.fields.is_empty() && app.pinned_visible(finding)).collect();
+    let mut structures: Vec<&Finding> = app.shown_pinned_findings().into_iter().filter(|finding| !finding.fields.is_empty()).collect();
     if app.show_structure_fields
         && let Some(structure) = app.cursor_structure.as_ref()
         && !structures.iter().any(|pinned| pinned.id == structure.id && pinned.start == structure.start)
@@ -592,8 +592,8 @@ fn draw_pattern_overlays(app: &mut ViewerApp, painter: &egui::Painter, geometry:
 fn draw_pinned_overlays(app: &mut ViewerApp, painter: &egui::Painter, geometry: &Geometry) {
     let (visible_start, visible_end) = geometry.visible_bytes();
     let mut drawn: Vec<(LayerKind, usize)> = Vec::new();
-    for finding in app.bench.pinned.iter().filter(|f| f.start < visible_end && f.end() > visible_start) {
-        let kind = LayerKind::Pinned(PinnedGroup::of(&finding.id));
+    for (group, finding) in app.pinned_findings().into_iter().filter(|(_, f)| f.start < visible_end && f.end() > visible_start) {
+        let kind = LayerKind::Pinned(group);
         if app.layer_visible(kind) {
             drawn.push((kind, draw_finding(painter, geometry, finding)));
         }
