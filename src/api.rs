@@ -29,6 +29,7 @@ pub mod analysis;
 pub mod bytes;
 pub mod codecs;
 pub mod documents;
+pub mod events;
 pub mod findings;
 pub mod numbers;
 pub mod packets;
@@ -245,6 +246,8 @@ pub static METHODS: &[Method] = &[
     method!("analysis.processor", Read, analysis::processor, analysis::SpanParams, analysis::ProcessorResult, "Test whether a span is machine code, and for which processor, by disassembling samples for each architecture."),
     method!("reference.lookup", Read, reference::lookup, reference::LookupParams, reference::LookupResult, "The reference notes on a format or protocol, by id, finding id, layer name, port (udp/67) or number (port, IP protocol or EtherType): layout, field meanings and specifications."),
     method!("reference.search", Read, reference::search, reference::SearchParams, reference::SearchResult, "Reference entries whose notes mention every word of a query, or that a port or number names."),
+    method!("events.facts", Read, events::facts, events::FactsParams, events::FactsResult, "What the tools have learnt about a document and keep: the latest fact per topic, producer and key, by topic, producer or the bytes they cover, each marked stale when the document changed under it."),
+    method!("events.poll", Read, events::poll, events::PollParams, events::PollResult, "The messages (facts and events) published after a cursor, oldest first, optionally of some topics only; pass back next to keep up."),
 ];
 
 /// The method called `name`.
@@ -620,6 +623,8 @@ mod tests {
             ("analysis.processor", json!({})),
             ("reference.lookup", json!({"name": "zlib"})),
             ("reference.search", json!({"query": "compression", "limit": 3})),
+            ("events.facts", json!({"topic": "record_width.estimated", "span": {"start": 0, "len": 16}})),
+            ("events.poll", json!({"cursor": 0, "topics": ["document.opened"], "limit": 10})),
         ];
         let named: std::collections::HashSet<&str> = examples.iter().map(|(name, _)| *name).collect();
         for method in METHODS {

@@ -55,6 +55,8 @@ Errors are `{code, message, data}`, with these codes:
 | [`analysis.processor`](#analysisprocessor) | read | Test whether a span is machine code, and for which processor, by disassembling samples for each architecture. |
 | [`reference.lookup`](#referencelookup) | read | The reference notes on a format or protocol, by id, finding id, layer name, port (udp/67) or number (port, IP protocol or EtherType): layout, field meanings and specifications. |
 | [`reference.search`](#referencesearch) | read | Reference entries whose notes mention every word of a query, or that a port or number names. |
+| [`events.facts`](#eventsfacts) | read | What the tools have learnt about a document and keep: the latest fact per topic, producer and key, by topic, producer or the bytes they cover, each marked stale when the document changed under it. |
+| [`events.poll`](#eventspoll) | read | The messages (facts and events) published after a cursor, oldest first, optionally of some topics only; pass back next to keep up. |
 
 Each method's full JSON schemas are in `theviewer api --describe`.
 
@@ -596,6 +598,37 @@ Reference entries whose notes mention every word of a query, or that a port or n
 | --- | --- | --- | --- |
 | `entries` | array of EntrySummary | yes |  |
 | `next` | string | no | Pass back as `next` for more entries; absent after the last. |
+
+### events.facts
+
+What the tools have learnt about a document and keep: the latest fact per topic, producer and key, by topic, producer or the bytes they cover, each marked stale when the document changed under it.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `doc` | string | no | Document id, path or "current" (the default). |
+| `producer` | string | no | Only facts from this producer, such as "tool:period-scan". |
+| `span` | SpanParam | no | Only facts whose span overlaps these bytes. |
+| `topic` | string | no | Only facts on this topic, such as "record_width.estimated". |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `facts` | array of MessageEntry | yes | The facts, by topic, producer and key. |
+
+### events.poll
+
+The messages (facts and events) published after a cursor, oldest first, optionally of some topics only; pass back next to keep up.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `cursor` | integer | no | The `next` of the previous poll; omitted, every message still held. |
+| `limit` | integer | no | Most messages to return (default 100, at most 1000). |
+| `topics` | array of string | no | Only messages on these topics. |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `messages` | array of MessageEntry | yes | Messages delivered after the cursor, oldest first. |
+| `missed` | integer | yes | Messages delivered after the cursor but no longer held. |
+| `next` | integer | yes | Pass back as `cursor` to get the messages after these. |
 
 ## Topics
 
