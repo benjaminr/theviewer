@@ -400,6 +400,11 @@ impl ViewerApp {
             None => (theme::DANGER, "There is no program at that path.".to_string()),
         };
         ui.label(RichText::new(status.1).small().color(status.0));
+        ui.add_space(8.0);
+        ui.label(RichText::new("Frames").heading());
+        ui.checkbox(&mut edited.detect_frame_protocols, "Detect the protocol of split frames").on_hover_text(
+            "When frames are split from the file or taken from the protocol framing, find out whether they are DNS, Modbus/TCP, MQTT or another protocol the viewer dissects, and decode them as it. Off: frames show the field guesses or a template until you pick Detect now under Decode frames as.",
+        );
         if edited != self.preferences {
             self.set_preferences(edited);
         }

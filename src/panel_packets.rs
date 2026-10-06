@@ -34,7 +34,7 @@ use crate::analysis_tools;
 use crate::app::ViewerApp;
 use crate::dock::DockTab;
 use crate::packets::sources::{self, CaptureLocation, MarkerMode, Recipe};
-use crate::packets::{self, Dissection, Flow, Layer, LinkKind, PacketSet, RawFrames, SetHints, Summary};
+use crate::packets::{self, Detection, Dissection, Flow, FrameProtocol, Layer, LinkKind, PacketSet, RawFrames, SetHints, Summary};
 use crate::parsers::captures::{CAPTURE_FINDING_IDS, GZIP_CAPTURE_FINDING_ID};
 use crate::panel_packets_grid::{self as grid, GridState};
 use crate::panel_packets_tshark::{self as tshark_view, TsharkState};
@@ -91,6 +91,42 @@ impl LinkChoice {
             LinkChoice::Ethernet => LinkKind::Ethernet,
             LinkChoice::RawIp => LinkKind::RawIp,
             LinkChoice::RawFrames => LinkKind::Unknown,
+        }
+    }
+}
+
+/// How the frames of unknown format in a set are decoded.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum FrameChoice {
+    /// Nothing chosen for this set: the protocol detected, when the
+    /// preference allows detection, else the field guesses.
+    #[default]
+    Default,
+    /// The protocol detected, whatever the preference says.
+    Detect,
+    /// This protocol, whatever was detected.
+    Protocol(FrameProtocol),
+    /// The template when one is chosen, else the field guesses; never a
+    /// protocol.
+    Raw,
+}
+
+/// What detection found for the frames of unknown format in a set.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum FrameDetection {
+    /// Detection was not run: there are no such frames, or it was not asked
+    /// for.
+    #[default]
+    NotRun,
+    Unrecognised,
+    Found(Detection),
+}
+
+impl FrameDetection {
+    pub fn protocol(self) -> Option<FrameProtocol> {
+        match self {
+            FrameDetection::Found(detection) => Some(detection.protocol),
+            _ => None,
         }
     }
 }
@@ -177,6 +213,9 @@ struct DissectionJob {
     /// What the whole set says about its flows, for dissecting one packet
     /// again later.
     hints: SetHints,
+    /// The protocol the frames of unknown format were decoded as.
+    decode_as: Option<FrameProtocol>,
+    detection: FrameDetection,
 }
 
 /// The selected packet, dissected from the document's current bytes.
@@ -252,6 +291,10 @@ pub struct PacketsState {
     pub(crate) raw_label: String,
     pub(crate) raw_generation: u64,
     pub(crate) suggested_template: Option<String>,
+    /// How this set's frames of unknown format are decoded.
+    pub(crate) frame_choice: FrameChoice,
+    /// What detection found for them, shown whether or not it is used.
+    pub(crate) frame_detection: FrameDetection,
 
     pub(crate) filter_text: String,
     filter_key: Option<(String, u64)>,
@@ -307,6 +350,14 @@ impl PacketsState {
         self.foreign_document = false;
         self.raw.guesses.clear();
         self.suggested_template = None;
+        // A choice of protocol belongs to the set it was made for; a
+        // template stays, as it did before protocols could be chosen.
+        if self.raw.template.is_none() || self.frame_choice != FrameChoice::Raw {
+            self.frame_choice = FrameChoice::Default;
+            self.raw.template = None;
+            self.raw_label.clear();
+        }
+        self.frame_detection = FrameDetection::NotRun;
         self.awaiting_protocol = false;
         self.note = None;
     }
@@ -332,6 +383,34 @@ impl PacketsState {
 
     pub fn focused_packet(&self) -> Option<usize> {
         self.focus
+    }
+
+    /// The protocol frames of unknown format are decoded as.
+    pub fn decoded_as(&self) -> Option<FrameProtocol> {
+        self.raw.decode_as
+    }
+
+    /// What detection found for the frames of unknown format.
+    pub fn frame_detection(&self) -> FrameDetection {
+        self.frame_detection
+    }
+
+    /// Decode the frames of unknown format as `choice` says, dissecting
+    /// them again.
+    pub fn choose_frame_decoding(&mut self, choice: FrameChoice) {
+        self.frame_choice = choice;
+        if choice != FrameChoice::Raw {
+            self.raw.template = None;
+            self.raw_label.clear();
+        }
+        self.raw.decode_as = match choice {
+            FrameChoice::Protocol(protocol) => Some(protocol),
+            _ => None,
+        };
+        self.raw_generation += 1;
+        if let Some(set) = self.set.clone() {
+            self.incoming.get_or_insert(set);
+        }
     }
 
     /// Whether packets are being read, dissected or waited for.
@@ -565,9 +644,13 @@ fn add_selection(state: &mut PacketsState, app: &mut ViewerApp) {
         state.show_note(set.cap_note().unwrap_or_default(), true);
         return;
     }
-    let selected = state.selected.clone();
+    let (selected, choice, template, label) = (state.selected.clone(), state.frame_choice, state.raw.template.clone(), state.raw_label.clone());
     state.load(set);
+    // The set grows rather than being replaced, so its decoding stays.
     state.selected = selected;
+    state.frame_choice = choice;
+    state.raw.template = template;
+    state.raw_label = label;
 }
 
 fn split_selection_by_length(state: &mut PacketsState, app: &mut ViewerApp, record_len: usize) {
@@ -646,9 +729,18 @@ fn start_dissection(state: &mut PacketsState, app: &mut ViewerApp, set: PacketSe
     state.requested_version = Some(snapshot.version);
     let links: Vec<LinkKind> = set.packets.iter().map(|packet| state.link_choice.apply(packet.link)).collect();
     let mut raw = state.raw.clone();
+    let detection_allowed = app.preferences.detect_frame_protocols;
+    let choice = state.frame_choice;
     let (sender, receiver) = mpsc::channel();
     thread::spawn(move || {
         raw.hints = SetHints::learn(links.iter().enumerate().map(|(index, &link)| (bytes.packet(index), link)));
+        let detection = detect_frames(&bytes, &links, choice, detection_allowed);
+        raw.decode_as = match choice {
+            FrameChoice::Protocol(protocol) => Some(protocol),
+            FrameChoice::Default if detection_allowed => detection.protocol(),
+            FrameChoice::Detect => detection.protocol(),
+            FrameChoice::Default | FrameChoice::Raw => None,
+        };
         let rows = links
             .iter()
             .enumerate()
@@ -657,9 +749,24 @@ fn start_dissection(state: &mut PacketsState, app: &mut ViewerApp, set: PacketSe
                 PacketRow::from(dissection)
             })
             .collect();
-        let _ = sender.send(DissectionJob { set, bytes: Arc::new(bytes), rows, snapshot, hints: raw.hints });
+        let _ = sender.send(DissectionJob { set, bytes: Arc::new(bytes), rows, snapshot, hints: raw.hints, decode_as: raw.decode_as, detection });
     });
     state.pending = Some(receiver);
+}
+
+/// Detect the protocol of the frames of unknown format, when there are any
+/// and detection is allowed or asked for. With the preference on, it runs
+/// even under a choice it will not override, so the panel can say what it
+/// found.
+fn detect_frames(bytes: &PacketBytes, links: &[LinkKind], choice: FrameChoice, allowed: bool) -> FrameDetection {
+    if !allowed && choice != FrameChoice::Detect {
+        return FrameDetection::NotRun;
+    }
+    let frames: Vec<&[u8]> = links.iter().enumerate().filter(|(_, link)| **link == LinkKind::Unknown).map(|(index, _)| bytes.packet(index)).collect();
+    if frames.is_empty() {
+        return FrameDetection::NotRun;
+    }
+    packets::detect_frame_protocol(&frames).map_or(FrameDetection::Unrecognised, FrameDetection::Found)
 }
 
 /// Dissect the shown packets again, for a new link type or decoding.
@@ -702,6 +809,8 @@ fn install(state: &mut PacketsState, job: DissectionJob) {
     state.bytes = job.bytes;
     state.rows = job.rows;
     state.raw.hints = job.hints;
+    state.raw.decode_as = job.decode_as;
+    state.frame_detection = job.detection;
     state.built = Some(job.snapshot);
     state.detail = None;
     state.set_generation += 1;
@@ -993,7 +1102,7 @@ fn show_body(state: &mut PacketsState, app: &mut ViewerApp, ui: &mut Ui) {
     show_status(state, app, ui);
     if state.set.is_none() {
         ui.label(
-            RichText::new("Lists packets taken from the document — the protocol framing's messages, a pcap or pcapng capture inside the file, or the selection — and dissects Ethernet, IP, TCP, UDP, DNS, HTTP, NTP, Modbus and MQTT. Edits in the document show here as you make them.")
+            RichText::new("Lists packets taken from the document — the protocol framing's messages, a pcap or pcapng capture inside the file, or the selection — and dissects Ethernet, IP, TCP, UDP, DNS, HTTP, NTP, Modbus, MQTT and more. Frames split from the file are decoded as the protocol they turn out to be. Edits in the document show here as you make them.")
                 .color(theme::TEXT_DIM),
         );
         return;
@@ -1072,25 +1181,7 @@ fn show_controls(state: &mut PacketsState, app: &mut ViewerApp, ui: &mut Ui) {
             }
         });
         view::start_row_unless_fits(ui, view::combo_width(ui));
-        let label = if state.raw_label.is_empty() { "Raw frames: field guesses" } else { state.raw_label.as_str() }.to_string();
-        egui::ComboBox::from_id_salt("packets-raw-template").selected_text(label).show_ui(ui, |ui| {
-            if ui.selectable_label(state.raw.template.is_none(), "Raw frames: field guesses").clicked() {
-                state.raw.template = None;
-                state.raw_label.clear();
-                redo = true;
-            }
-            if let Some(source) = state.suggested_template.clone()
-                && ui.selectable_label(state.raw_label == "Raw frames: protocol template", "Raw frames: protocol template").clicked()
-            {
-                redo |= choose_template(state, "Raw frames: protocol template", &source);
-            }
-            for (name, source) in available_templates() {
-                let label = format!("Raw frames: {name}");
-                if ui.selectable_label(state.raw_label == label, &label).clicked() {
-                    redo |= choose_template(state, &label, &source);
-                }
-            }
-        });
+        show_frame_decoding(state, app, ui);
     });
     if redo {
         state.raw_generation += 1;
@@ -1098,18 +1189,81 @@ fn show_controls(state: &mut PacketsState, app: &mut ViewerApp, ui: &mut Ui) {
     }
 }
 
-/// Use a template for raw frames. Returns whether it parsed.
-fn choose_template(state: &mut PacketsState, label: &str, source: &str) -> bool {
+/// The "Decode frames as" choice: detection, each protocol, the field
+/// guesses and the templates.
+fn show_frame_decoding(state: &mut PacketsState, app: &ViewerApp, ui: &mut Ui) {
+    let detection_allowed = app.preferences.detect_frame_protocols;
+    let detected_label = detection_label(state.frame_detection);
+    let mut chosen = None;
+    egui::ComboBox::from_id_salt("packets-raw-template").selected_text(frame_decoding_label(state, detection_allowed)).show_ui(ui, |ui| {
+        let detecting = matches!(state.frame_choice, FrameChoice::Detect) || (detection_allowed && state.frame_choice == FrameChoice::Default);
+        let detect_label = if detection_allowed { detected_label.as_str() } else { "Detect now" };
+        if ui.selectable_label(detecting, detect_label).on_hover_text("Find out which protocol the frames are from a sample of them, and decode them as it").clicked() {
+            chosen = Some(FrameChoice::Detect);
+        }
+        for protocol in FrameProtocol::ALL {
+            if ui.selectable_label(state.frame_choice == FrameChoice::Protocol(protocol), protocol.label()).clicked() {
+                chosen = Some(FrameChoice::Protocol(protocol));
+            }
+        }
+        ui.separator();
+        let raw_chosen = !detecting && matches!(state.frame_choice, FrameChoice::Default | FrameChoice::Raw);
+        if ui.selectable_label(raw_chosen && state.raw.template.is_none(), FIELD_GUESSES).on_hover_text("The fields the protocol analysis guessed").clicked() {
+            chosen = Some(FrameChoice::Raw);
+        }
+        if let Some(source) = state.suggested_template.clone()
+            && ui.selectable_label(raw_chosen && state.raw_label == PROTOCOL_TEMPLATE, PROTOCOL_TEMPLATE).clicked()
+        {
+            choose_template(state, PROTOCOL_TEMPLATE, &source);
+        }
+        for (name, source) in available_templates() {
+            let label = format!("Template: {name}");
+            if ui.selectable_label(raw_chosen && state.raw_label == label, &label).clicked() {
+                choose_template(state, &label, &source);
+            }
+        }
+    });
+    if let Some(choice) = chosen {
+        state.choose_frame_decoding(choice);
+    }
+}
+
+/// The "Auto" entry, naming what detection found.
+fn detection_label(detection: FrameDetection) -> String {
+    match detection {
+        FrameDetection::Found(detection) => format!("Auto ({})", detection.protocol.label()),
+        FrameDetection::Unrecognised => "Auto (nothing recognised: field guesses)".to_string(),
+        FrameDetection::NotRun => "Auto".to_string(),
+    }
+}
+
+/// The decoding shown on the closed "Decode frames as" choice.
+fn frame_decoding_label(state: &PacketsState, detection_allowed: bool) -> String {
+    let selected = match state.frame_choice {
+        FrameChoice::Default if detection_allowed => detection_label(state.frame_detection),
+        FrameChoice::Detect => detection_label(state.frame_detection),
+        FrameChoice::Protocol(protocol) => protocol.label().to_string(),
+        FrameChoice::Default | FrameChoice::Raw if state.raw_label.is_empty() => FIELD_GUESSES.to_string(),
+        FrameChoice::Default | FrameChoice::Raw => state.raw_label.clone(),
+    };
+    format!("Decode frames as: {selected}")
+}
+
+/// The choice of decoding frames with the protocol analysis's field guesses.
+const FIELD_GUESSES: &str = "Field guesses";
+/// The choice of decoding frames with the template the protocol analysis
+/// suggests.
+const PROTOCOL_TEMPLATE: &str = "Protocol template";
+
+/// Use a template for raw frames, dissecting them again.
+fn choose_template(state: &mut PacketsState, label: &str, source: &str) {
     match Template::parse(source) {
         Ok(template) => {
+            state.choose_frame_decoding(FrameChoice::Raw);
             state.raw.template = Some(template);
             state.raw_label = label.to_string();
-            true
         }
-        Err(error) => {
-            state.show_note(format!("The template could not be read: {error}"), true);
-            false
-        }
+        Err(error) => state.show_note(format!("The template could not be read: {error}"), true),
     }
 }
 
@@ -1185,12 +1339,45 @@ fn show_status(state: &mut PacketsState, app: &mut ViewerApp, ui: &mut Ui) {
         if let Some(lengths) = packets::split::frame_lengths(set) {
             caption.push_str(&format!(" · {lengths}"));
         }
+        if let Some(decoding) = frame_decoding_caption(state, set) {
+            caption.push_str(" · ");
+            caption.push_str(&decoding);
+        }
         if let Some(cap) = set.cap_note() {
             caption.push_str(" · ");
             caption.push_str(&cap);
         }
         ui.add(egui::Label::new(RichText::new(caption).small().color(theme::TEXT_DIM)).wrap());
     }
+}
+
+/// How the set's frames of unknown format were decoded, for the status
+/// line: the protocol and whether it was detected or chosen, or why the
+/// frames show their field guesses or a template.
+fn frame_decoding_caption(state: &PacketsState, set: &PacketSet) -> Option<String> {
+    let raw_frames = set.packets.iter().filter(|packet| state.link_choice.apply(packet.link) == LinkKind::Unknown).count();
+    if raw_frames == 0 || state.pending.is_some() {
+        return None;
+    }
+    let shown_raw = if state.raw.template.is_some() { "shown with the template" } else { "shown with the field guesses" };
+    let detection = state.frame_detection;
+    let text = match (state.raw.decode_as, state.frame_choice) {
+        (Some(protocol), FrameChoice::Protocol(_)) => {
+            let decoded = state.rows.iter().filter(|row| row.protocols.contains(&protocol.key())).count();
+            let suggestion = detection.protocol().filter(|&found| found != protocol).map(|found| format!("; detection suggests {}", found.label())).unwrap_or_default();
+            format!("decoded as {} (chosen; {decoded} of {raw_frames} frames read{suggestion})", protocol.label())
+        }
+        (Some(protocol), _) => match detection {
+            FrameDetection::Found(found) => format!("decoded as {} (detected, {} of {} sampled)", protocol.label(), found.matched, found.sampled),
+            _ => format!("decoded as {}", protocol.label()),
+        },
+        (None, _) => match detection {
+            FrameDetection::Found(found) => format!("{shown_raw}; detection suggests {}", found.protocol.label()),
+            FrameDetection::Unrecognised => format!("no frame protocol recognised: {shown_raw}"),
+            FrameDetection::NotRun => return None,
+        },
+    };
+    Some(text)
 }
 
 #[cfg(test)]
@@ -1400,6 +1587,91 @@ mod tests {
             stream.extend_from_slice(&payload);
         }
         (stream, starts)
+    }
+
+    /// Back-to-back Modbus/TCP read requests, which carry their own length.
+    fn modbus_stream(frames: u16) -> Vec<u8> {
+        let mut stream = Vec::new();
+        for transaction in 0..frames {
+            stream.extend_from_slice(&transaction.to_be_bytes());
+            stream.extend_from_slice(&[0, 0, 0, 6, 1, 3]);
+            stream.extend_from_slice(&(100 + transaction).to_be_bytes());
+            stream.extend_from_slice(&[0, 2]);
+        }
+        stream
+    }
+
+    /// Split the whole document by the MBAP length field.
+    fn split_modbus(harness: &mut PanelHarness) {
+        let (state, app) = harness.state_mut();
+        state.grid.split.rule = grid::SplitRule::LengthField;
+        state.grid.split.whole_document = true;
+        state.grid.split.field = packets::split::LengthField { offset: 4, ..Default::default() };
+        grid::split_now(state, app);
+        settle(harness);
+    }
+
+    fn row_protocols(harness: &PanelHarness) -> Vec<String> {
+        harness.state().0.rows().iter().map(|row| row.summary.protocol.clone()).collect()
+    }
+
+    #[test]
+    fn split_modbus_frames_are_detected_decoded_and_can_be_shown_raw_instead() {
+        let mut harness = harness_for(modbus_stream(6));
+        split_modbus(&mut harness);
+        assert_eq!(row_protocols(&harness), vec!["Modbus/TCP"; 6]);
+        assert!(harness.state().0.rows()[1].summary.info.contains("trans 1"), "{}", harness.state().0.rows()[1].summary.info);
+        assert!(harness.query_by_label_contains("decoded as Modbus/TCP (detected, 6 of 6 sampled)").is_some());
+        assert_eq!(frame_decoding_label(&harness.state().0, true), "Decode frames as: Auto (Modbus/TCP)");
+
+        harness.state_mut().0.choose_frame_decoding(FrameChoice::Raw);
+        settle(&mut harness);
+        assert_eq!(row_protocols(&harness), vec!["Data"; 6], "the user's choice is not overridden by detection");
+        assert!(harness.query_by_label_contains("shown with the field guesses; detection suggests Modbus/TCP").is_some());
+        // Editing the document dissects again under the same choice.
+        harness.state_mut().1.document.overwrite(9, &[7]);
+        settle(&mut harness);
+        assert_eq!(row_protocols(&harness), vec!["Data"; 6]);
+        assert!(harness.state().0.rows()[0].summary.info.contains("00 07"), "{:?}", harness.state().0.rows()[0].summary);
+    }
+
+    #[test]
+    fn a_chosen_protocol_decodes_the_frames_it_reads_and_leaves_the_rest_to_the_field_guesses() {
+        let mut harness = harness_for(modbus_stream(4));
+        split_modbus(&mut harness);
+        harness.state_mut().0.choose_frame_decoding(FrameChoice::Protocol(FrameProtocol::Dns));
+        settle(&mut harness);
+        assert_eq!(harness.state().0.decoded_as(), Some(FrameProtocol::Dns));
+        assert_eq!(row_protocols(&harness), vec!["Data"; 4], "Modbus frames are not DNS");
+        assert!(harness.query_by_label_contains("decoded as DNS (chosen; 0 of 4 frames read; detection suggests Modbus/TCP)").is_some());
+        let (state, app) = harness.state_mut();
+        state.focus = Some(0);
+        refresh_detail(state, app);
+        let notes = &state.detail.as_ref().expect("a detail").dissection.notes;
+        assert_eq!(notes, &["This frame does not decode as DNS, so it is shown with the field guesses instead"]);
+
+        harness.state_mut().0.choose_frame_decoding(FrameChoice::Protocol(FrameProtocol::ModbusTcp));
+        settle(&mut harness);
+        assert_eq!(row_protocols(&harness), vec!["Modbus/TCP"; 4]);
+    }
+
+    #[test]
+    fn with_detection_turned_off_frames_show_their_field_guesses_until_detection_is_asked_for() {
+        let mut harness = harness_for(modbus_stream(5));
+        harness.state_mut().1.preferences.detect_frame_protocols = false;
+        split_modbus(&mut harness);
+        assert_eq!(row_protocols(&harness), vec!["Data"; 5]);
+        assert_eq!(harness.state().0.frame_detection(), FrameDetection::NotRun);
+        assert_eq!(frame_decoding_label(&harness.state().0, false), "Decode frames as: Field guesses");
+
+        harness.state_mut().0.choose_frame_decoding(FrameChoice::Detect);
+        settle(&mut harness);
+        assert_eq!(row_protocols(&harness), vec!["Modbus/TCP"; 5]);
+        assert!(harness.query_by_label_contains("decoded as Modbus/TCP (detected, 5 of 5 sampled)").is_some());
+
+        // A new set starts again from the preference.
+        split_modbus(&mut harness);
+        assert_eq!(row_protocols(&harness), vec!["Data"; 5]);
     }
 
     fn click_at(harness: &mut PanelHarness, position: egui::Pos2) {

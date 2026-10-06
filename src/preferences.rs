@@ -49,6 +49,11 @@ pub struct Preferences {
     /// Where tshark is; empty to look for it on the PATH and in the usual
     /// install locations.
     pub tshark_path: String,
+    /// Find out which protocol a new set of frames of unknown format is
+    /// (DNS messages, Modbus/TCP frames…) and decode the frames as it,
+    /// unless a decoding was chosen for the set. When off, frames show the
+    /// field guesses or a template until detection is asked for.
+    pub detect_frame_protocols: bool,
 }
 
 impl Default for Preferences {
@@ -67,6 +72,7 @@ impl Default for Preferences {
             suggest_layouts: true,
             use_tshark: false,
             tshark_path: String::new(),
+            detect_frame_protocols: true,
         }
     }
 }
@@ -115,6 +121,7 @@ mod tests {
         assert!(!Preferences::default().highlight_patterns);
         assert!(!Preferences::default().pixel_values, "values inside pixels start off too");
         assert!(!Preferences::default().use_tshark, "tshark is never run unless the user turns it on");
+        assert!(Preferences::default().detect_frame_protocols, "split frames are decoded as the protocol they are detected as");
     }
 
     #[test]

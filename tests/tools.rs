@@ -956,3 +956,51 @@ fn the_packet_list_filters_by_wireshark_field_names() {
     }
     std::fs::remove_file(path).ok();
 }
+
+/// A DNS query for `name` with transaction ID `id`, after its two-byte
+/// length, as DNS travels over TCP.
+fn length_prefixed_dns_query(id: u16, name: &str) -> Vec<u8> {
+    let mut message = id.to_be_bytes().to_vec();
+    message.extend_from_slice(&[0x01, 0x00, 0, 1, 0, 0, 0, 0, 0, 0]);
+    for label in name.split('.') {
+        message.push(label.len() as u8);
+        message.extend_from_slice(label.as_bytes());
+    }
+    message.extend_from_slice(&[0, 0, 1, 0, 1]);
+    [(message.len() as u16).to_be_bytes().to_vec(), message].concat()
+}
+
+#[test]
+fn frames_split_by_their_length_field_are_listed_as_the_dns_messages_they_are() {
+    let names = ["www.example.com", "mail.example.org", "printer.local", "api.example.net"];
+    let file: Vec<u8> = names.iter().enumerate().flat_map(|(index, name)| length_prefixed_dns_query(0x100 + index as u16, name)).collect();
+    let path = temp_path("dns-messages.bin");
+    std::fs::write(&path, &file).unwrap();
+    let mut harness = harness_for(path.clone());
+    harness.state_mut().dock.toggle(DockTab::Packets);
+    steps(&mut harness, 2);
+    // The default rule is a big-endian u16 at the start counting what follows.
+    let split = &mut harness.state_mut().bench.panels.packets.grid.split;
+    split.rule = theviewer::panel_packets_grid::SplitRule::LengthField;
+    split.whole_document = true;
+    harness.get_by_label("Split into frames").click();
+    steps(&mut harness, 2);
+    harness.get_by_label("Split").click();
+    wait_for(&mut harness, |app| app.bench.panels.packets.rows().len() == 4 && !app.bench.panels.packets.is_busy());
+    wait_for_label(&mut harness, "decoded as DNS with a length prefix (detected, 4 of 4 sampled)");
+    assert!(harness.query_by_label_contains("decoded as DNS with a length prefix (detected, 4 of 4 sampled)").is_some());
+
+    let rows = harness.state().bench.panels.packets.rows();
+    assert!(rows.iter().all(|row| row.summary.protocol == "DNS"), "{rows:?}");
+    assert_eq!(rows[0].summary.info, "Standard query 0x0100 A www.example.com");
+    wait_for_label(&mut harness, "Standard query 0x0101 A mail.example.org");
+    assert!(harness.query_by_label_contains("Standard query 0x0101 A mail.example.org").is_some());
+
+    harness.state_mut().bench.panels.packets.set_filter("dns.qry.name~example");
+    steps(&mut harness, 3);
+    assert_eq!(harness.state().bench.panels.packets.visible_rows(), &[0, 1, 3]);
+    harness.state_mut().bench.panels.packets.set_filter("dns");
+    steps(&mut harness, 3);
+    assert_eq!(harness.state().bench.panels.packets.visible_rows().len(), 4);
+    std::fs::remove_file(path).ok();
+}
