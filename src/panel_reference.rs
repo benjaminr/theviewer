@@ -544,7 +544,9 @@ fn show_body(state: &ReferenceState, app: &mut ViewerApp, ui: &mut Ui, actions: 
         if ui.small_button("← Back to the cursor").clicked() {
             actions.push(Action::StopBrowsing);
         }
-        show_notes(state, ui, notes, actions);
+        show_heading(ui, notes);
+        ui.add_space(4.0);
+        show_background(state, ui, notes, actions);
         return;
     }
     let Some(entry) = state.chosen_entry() else {
@@ -558,23 +560,28 @@ fn show_body(state: &ReferenceState, app: &mut ViewerApp, ui: &mut Ui, actions: 
     };
     let notes = entry.reference();
     match notes {
-        Some(notes) => show_notes(state, ui, notes, actions),
+        Some(notes) => show_heading(ui, notes),
         None => {
             ui.label(RichText::new(&entry.label).heading());
             ui.label(RichText::new(format!("No notes on {} yet; its fields are listed below as the parser reads them.", entry.label)).color(theme::TEXT_DIM));
         }
     }
-    if entry.fields.is_empty() {
-        return;
+    // The live instance comes first, so a short pane still shows the bytes
+    // under the cursor; the background reading follows.
+    if !entry.fields.is_empty() {
+        let position = focus_position(app);
+        ui.add_space(6.0);
+        egui::CollapsingHeader::new(RichText::new("Layout").strong()).id_salt("reference-layout").default_open(true).show(ui, |ui| {
+            show_diagram(app, ui, entry, notes, position, actions);
+        });
+        egui::CollapsingHeader::new(RichText::new("Fields").strong()).id_salt("reference-fields").default_open(true).show(ui, |ui| {
+            show_field_table(app, ui, entry, notes, position, actions);
+        });
     }
-    let position = focus_position(app);
-    ui.add_space(6.0);
-    egui::CollapsingHeader::new(RichText::new("Layout").strong()).id_salt("reference-layout").default_open(true).show(ui, |ui| {
-        show_diagram(app, ui, entry, notes, position, actions);
-    });
-    egui::CollapsingHeader::new(RichText::new("Fields").strong()).id_salt("reference-fields").default_open(true).show(ui, |ui| {
-        show_field_table(app, ui, entry, notes, position, actions);
-    });
+    if let Some(notes) = notes {
+        ui.add_space(6.0);
+        show_background(state, ui, notes, actions);
+    }
 }
 
 /// The stack as a clickable path, outermost first.
@@ -602,11 +609,15 @@ fn show_breadcrumb(state: &ReferenceState, app: &mut ViewerApp, ui: &mut Ui, act
     });
 }
 
-/// Name, summary, organisation, carried formats and specifications.
-fn show_notes(state: &ReferenceState, ui: &mut Ui, notes: &FormatReference, actions: &mut Vec<Action>) {
+/// Name and summary.
+fn show_heading(ui: &mut Ui, notes: &FormatReference) {
     ui.label(RichText::new(&notes.name).heading());
     ui.label(RichText::new(&notes.summary).color(theme::TEXT_DIM));
-    ui.add_space(4.0);
+}
+
+/// How the format is organised, what it carries and where it is specified.
+fn show_background(state: &ReferenceState, ui: &mut Ui, notes: &FormatReference, actions: &mut Vec<Action>) {
+    ui.label(RichText::new("How it is organised").strong());
     for paragraph in notes.organisation.trim().split("\n\n") {
         ui.label(paragraph.trim());
         ui.add_space(2.0);
