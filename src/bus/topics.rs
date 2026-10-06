@@ -116,7 +116,8 @@ topics! {
     ReferenceFocus(ReferenceFocus) = "reference.focus", Event, "A tool asks the Reference tab to show a format or protocol.";
     TemplateApplyRequested(TemplateApplyRequested) = "template.apply_requested", Event, "Someone asks for a template to be applied at the cursor (one Ask offered, say), as the Template tool would.";
     JobStarted(JobStarted) = "job.started", Event, "Background work started.";
-    JobFinished(JobFinished) = "job.finished", Event, "Background work finished, with a one-line outcome.";
+    JobProgress(JobProgress) = "job.progress", Event, "How far background work that counts its work has got.";
+    JobFinished(JobFinished) = "job.finished", Event, "Background work finished, with a one-line outcome (and, for a job started through the API, its result), or was cancelled.";
     PluginLog(PluginLog) = "plugin.log", Event, "A plugin logged a line, or one of its callbacks failed (in a background scan, say).";
     Custom(CustomTopic) = "x.*", Event, "A plugin's own topic, named x.<plugin>.<name>, with a payload of its choosing.";
 }
@@ -224,6 +225,7 @@ impl Payload {
             | Payload::TemplateApplyRequested(_)
             | Payload::PaneShow(_)
             | Payload::JobStarted(_)
+            | Payload::JobProgress(_)
             | Payload::JobFinished(_)
             | Payload::PluginLog(_)
             | Payload::Custom(_) => {}
@@ -481,6 +483,23 @@ pub struct JobFinished {
     pub ok: bool,
     /// One line on what it found, or why it stopped.
     pub outcome: String,
+    /// Whether it stopped because it was cancelled.
+    #[serde(default)]
+    pub cancelled: bool,
+    /// For a job started through the API, the result the method gives.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<serde_json::Value>,
+}
+
+/// How far background work has got.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct JobProgress {
+    /// The id `job.started` gave.
+    pub job: String,
+    /// Units of work done (packets, blocks, bytes: the job's own).
+    pub done: u64,
+    /// Units in all, when known.
+    pub total: Option<u64>,
 }
 
 /// How serious a logged line is.

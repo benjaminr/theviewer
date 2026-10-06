@@ -6,7 +6,8 @@ use serde::{Deserialize, Serialize};
 
 use super::values;
 use super::workspace::{self, Workspace};
-use super::{ApiError, MAX_CALL_BYTES};
+use super::jobs::JobStartedResult;
+use super::{ApiError, Caller, MAX_CALL_BYTES};
 use crate::document::Document;
 use crate::headless::{self, FileReport};
 
@@ -215,6 +216,30 @@ pub fn overview(workspace: &mut dyn Workspace, params: OverviewParams) -> Result
         report.findings.truncate(max);
     }
     Ok(report)
+}
+
+/// `analysis.overview` as a job: the bytes are read now, mapped on a
+/// thread, and the report is the job's result.
+pub fn overview_job(workspace: &mut dyn Workspace, caller: &Caller, params: OverviewParams) -> Result<JobStartedResult, ApiError> {
+    let registry = workspace.registry();
+    let id = workspace::resolve(workspace, params.doc.as_deref())?;
+    let info = workspace::info(workspace, &id)?;
+    let (_, document) = workspace::document(workspace, Some(&id))?;
+    let bytes = whole_file(document);
+    let len = document.len();
+    let job = workspace.bus().start_job("overview", "File overview", caller.producer(), Some((id, info.version)));
+    let started = JobStartedResult { job: job.id().to_string() };
+    std::thread::spawn(move || {
+        let mut report = headless::analyse_bytes(&bytes, &info.name, &info.name, len, &registry);
+        if job.is_cancelled() {
+            return job.finish_cancelled();
+        }
+        if let Some(max) = params.max_findings {
+            report.findings.truncate(max);
+        }
+        job.finish_with(true, report.headline.clone(), serde_json::to_value(&report).ok());
+    });
+    Ok(started)
 }
 
 pub fn statistics(workspace: &mut dyn Workspace, params: SpanParams) -> Result<StatisticsResult, ApiError> {

@@ -169,6 +169,10 @@ fn summary(payload: &Payload, document_len: usize) -> String {
         Payload::ProtocolIdentified(identified) => format!("{}: {}", identified.protocol, identified.how),
         Payload::ReferenceFocus(focus) => focus.key.clone(),
         Payload::JobStarted(started) => started.title.clone(),
+        Payload::JobProgress(progress) => match progress.total {
+            Some(total) => format!("{} of {total}", progress.done),
+            None => progress.done.to_string(),
+        },
         Payload::JobFinished(finished) => format!("{}: {}", finished.title, finished.outcome),
         Payload::PluginLog(line) => format!("{}: {}", line.plugin, line.text),
         Payload::Custom(custom) => {

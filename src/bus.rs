@@ -22,6 +22,7 @@
 //! retained facts, and [`Bus::changed_since`] lists what was delivered after
 //! a cursor. See `docs/design/shared-knowledge-and-api.md`, section 1.
 
+pub mod jobs;
 pub mod topics;
 pub mod window;
 
@@ -35,6 +36,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::document::map_span_through;
+pub use jobs::{JobHandle, JobRegistry, JobState, JobStatus};
 pub use topics::{Kind, Payload, Topic, TopicPayload};
 
 /// How many reactions deep a chain of messages may go before the next
@@ -232,7 +234,7 @@ pub struct Bus {
     versions: HashMap<String, u64>,
     /// Messages dropped as loops, newest last.
     problems: VecDeque<String>,
-    jobs_started: u64,
+    jobs: JobRegistry,
 }
 
 impl Default for Bus {
@@ -246,7 +248,7 @@ impl Default for Bus {
             recent: VecDeque::new(),
             versions: HashMap::new(),
             problems: VecDeque::new(),
-            jobs_started: 0,
+            jobs: JobRegistry::default(),
         }
     }
 }
@@ -266,10 +268,23 @@ impl Bus {
         self.publisher.publish(draft);
     }
 
-    /// An id for a new background job, such as `period-scan-3`.
-    pub fn new_job_id(&mut self, kind: &str) -> String {
-        self.jobs_started += 1;
-        format!("{kind}-{}", self.jobs_started)
+    /// Start a background job of `kind` (such as `report`) for
+    /// `producer`, about `document` at a version if it works on one:
+    /// register it and publish `job.started`. The work keeps the handle.
+    pub fn start_job(&mut self, kind: &str, title: &str, producer: impl Into<String>, document: Option<(String, u64)>) -> JobHandle {
+        let (handle, started) = self.jobs.start(kind, title, producer.into(), document, self.publisher());
+        self.publish(started);
+        handle
+    }
+
+    /// The jobs started, with what was delivered about them.
+    pub fn jobs(&self) -> &JobRegistry {
+        &self.jobs
+    }
+
+    /// The jobs, to cancel one.
+    pub fn jobs_mut(&mut self) -> &mut JobRegistry {
+        &mut self.jobs
     }
 
     /// Deliver the next queued message that is not dropped, in publication
@@ -335,6 +350,7 @@ impl Bus {
             }
             _ => {}
         }
+        self.jobs.note(&draft.payload);
         if draft.payload.topic().kind() == Kind::Fact {
             if draft.retracts {
                 self.retained.remove(&message.fact_key());
@@ -631,7 +647,7 @@ mod tests {
         let mut bus = Bus::new();
         let publisher = bus.publisher();
         std::thread::spawn(move || {
-            publisher.publish(Draft::new("tool:report", Payload::JobFinished(JobFinished { job: "report-1".into(), title: "Report".into(), ok: true, outcome: "done".into() })));
+            publisher.publish(Draft::new("tool:report", Payload::JobFinished(JobFinished { job: "report-1".into(), title: "Report".into(), ok: true, outcome: "done".into(), cancelled: false, result: None })));
         })
         .join()
         .unwrap();

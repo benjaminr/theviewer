@@ -253,8 +253,13 @@ fn start_segmentation(state: &mut StructureMapState, app: &mut ViewerApp) {
     app.note_tool_result(crate::dock::DockTab::StructureMap);
     let (key, bytes) = read_scanned(app);
     let (sender, receiver) = mpsc::channel();
+    let job = app.start_job("structure-map", "Segmenting the file");
     thread::spawn(move || {
         let result = segments::segment_file(&bytes, &SegmentOptions::default());
+        if job.is_cancelled() {
+            return job.finish_cancelled();
+        }
+        job.finish(true, format!("{} segments", result.segments.len()));
         let _ = sender.send(SegmentJob { key, result });
     });
     state.segments_pending = Some(receiver);
@@ -379,8 +384,13 @@ fn start_similar(state: &mut StructureMapState, app: &mut ViewerApp, selection: 
     let (key, bytes) = read_scanned(app);
     let options = SimilarOptions { histogram_weight: state.similar_settings.histogram_weight, ..SimilarOptions::default() };
     let (sender, receiver) = mpsc::channel();
+    let job = app.start_job("similar-blocks", "Finding blocks like the selection");
     thread::spawn(move || {
         let result = similar::score_blocks(&bytes, selection, &options);
+        if job.is_cancelled() {
+            return job.finish_cancelled();
+        }
+        job.finish(true, "scored");
         let _ = sender.send(SimilarJob { key, result });
     });
     state.similar_pending = Some(receiver);
@@ -483,8 +493,13 @@ fn start_tracks(state: &mut StructureMapState, app: &mut ViewerApp) {
     app.note_tool_result(crate::dock::DockTab::StructureMap);
     let (key, bytes) = read_scanned(app);
     let (sender, receiver) = mpsc::channel();
+    let job = app.start_job("feature-tracks", "Feature tracks");
     thread::spawn(move || {
         let tracks = tracks::compute_tracks(&bytes, &TrackOptions::default());
+        if job.is_cancelled() {
+            return job.finish_cancelled();
+        }
+        job.finish(true, "computed");
         let _ = sender.send(TracksJob { key, tracks });
     });
     state.tracks_pending = Some(receiver);

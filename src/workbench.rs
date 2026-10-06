@@ -17,7 +17,6 @@ use crate::panels::{self, PanelStates};
 use crate::assistant::{self, FileContext, ToolCall, ToolReply};
 use crate::bus::{Message, Payload};
 use crate::bus::topics::{MappedRegion, RegionsMapped, TemplateApplied};
-use crate::bus::window::job_finished;
 use crate::document::Document;
 use crate::dock::{self, DockTab};
 use crate::explain::{self, Region, Report};
@@ -418,12 +417,17 @@ impl ViewerApp {
         let name = self.display_name();
         let registry = Arc::clone(&self.registry);
         let (sender, receiver) = mpsc::channel();
-        let job = self.publish_job_started("report", "Report");
-        let publisher = self.bus.publisher();
+        let job = self.start_job("report", "Report");
         thread::spawn(move || {
             let regions = explain::map_file(&bytes, &registry);
+            if job.is_cancelled() {
+                return job.finish_cancelled();
+            }
             let report = explain::explain(&bytes, &name, &regions);
-            publisher.publish(job_finished(&job, "Report", true, format!("{} regions: {}", regions.len(), report.headline)));
+            if job.is_cancelled() {
+                return job.finish_cancelled();
+            }
+            job.finish(true, format!("{} regions: {}", regions.len(), report.headline));
             let _ = sender.send((regions, report));
         });
         self.bench.pending.push(Pending::Report(receiver));
@@ -832,11 +836,13 @@ impl ViewerApp {
         let bytes = Arc::new(self.document.read_range(0, ANALYSIS_READ_LIMIT));
         let name = self.display_name();
         let (sender, receiver) = mpsc::channel();
-        let job = self.publish_job_started("unpack", "Unpack");
-        let publisher = self.bus.publisher();
+        let job = self.start_job("unpack", "Unpack");
         thread::spawn(move || {
             let tree = unpack::unpack(bytes, &name, &unpack::Limits::default());
-            publisher.publish(job_finished(&job, "Unpack", true, format!("{} items", tree.count().saturating_sub(1))));
+            if job.is_cancelled() {
+                return job.finish_cancelled();
+            }
+            job.finish(true, format!("{} items", tree.count().saturating_sub(1)));
             let _ = sender.send(tree);
         });
         self.bench.pending.push(Pending::Unpack(receiver));

@@ -66,6 +66,7 @@ Errors are `{code, message, data}`, with these codes:
 | [`packets.dissect_bytes`](#packetsdissect_bytes) | read | Dissect one packet, from a span or from hex bytes, into protocol layers and fields, a summary and its flow. |
 | [`packets.detect_frames`](#packetsdetect_frames) | read | Find the protocol a set of frames of unknown format is, by trying every frame decoder on them. |
 | [`analysis.overview`](#analysisoverview) | read | Map the whole document: a summary of what it is, its regions with offsets, likely record widths and confident findings. |
+| [`analysis.overview_job`](#analysisoverview_job) | job | Start analysis.overview as a background job and return its id at once; the report arrives as job.finished's result and from jobs.status, for large files and clients that should not wait. |
 | [`analysis.statistics`](#analysisstatistics) | read | Measure a span: entropy, chi-square, serial correlation, printable, zero and high-byte fractions, distinct values and a verdict. |
 | [`analysis.segments`](#analysissegments) | read | Split the document into regions of one kind (text, tables, code, compressed, random, padding) and group them into types. |
 | [`analysis.compressibility`](#analysiscompressibility) | read | Compress a span with several codecs and report the ratios, with a verdict: encrypted or random, already compressed, lossy media or structured. |
@@ -74,6 +75,9 @@ Errors are `{code, message, data}`, with these codes:
 | [`reference.lookup`](#referencelookup) | read | The reference notes on a format or protocol, by id, finding id, layer name, port (udp/67) or number (port, IP protocol or EtherType): layout, field meanings and specifications. |
 | [`reference.search`](#referencesearch) | read | Reference entries whose notes mention every word of a query, or that a port or number names. |
 | [`events.facts`](#eventsfacts) | read | What the tools have learnt about a document and keep: the latest fact per topic, producer and key, by topic, producer or the bytes they cover, each marked stale when the document changed under it. |
+| [`jobs.list`](#jobslist) | read | The background jobs tools and callers started (the last 100): what each does, who started it, whether it is running, how far it has got and how it ended. |
+| [`jobs.status`](#jobsstatus) | read | One job's state, progress and outcome, and once it has finished, the result of a job a method started. |
+| [`jobs.cancel`](#jobscancel) | read | Ask a running job to stop; it ends as cancelled, without a result, as soon as it notices. |
 | [`events.poll`](#eventspoll) | read | The messages (facts and events) published after a cursor, oldest first, optionally of some topics only; pass back next to keep up. |
 
 Each method's full JSON schemas are in `theviewer api --describe`.
@@ -784,6 +788,19 @@ Map the whole document: a summary of what it is, its regions with offsets, likel
 | `sentences` | array of ReportSentence | yes | What the report says about the file, each about a span of it. |
 | `size` | integer | yes | Length in bytes. |
 
+### analysis.overview_job
+
+Start analysis.overview as a background job and return its id at once; the report arrives as job.finished's result and from jobs.status, for large files and clients that should not wait.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `doc` | string | no | Document id, path or "current" (the default). |
+| `max_findings` | integer | no | Most findings to include (all of them, up to 2000, by default). |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `job` | string | yes | Follow it with jobs.status, or on job.progress and job.finished. |
+
 ### analysis.statistics
 
 Measure a span: entropy, chi-square, serial correlation, printable, zero and high-byte fractions, distinct values and a verdict.
@@ -920,6 +937,56 @@ What the tools have learnt about a document and keep: the latest fact per topic,
 | --- | --- | --- | --- |
 | `facts` | array of MessageEntry | yes | The facts, by topic, producer and key. |
 
+### jobs.list
+
+The background jobs tools and callers started (the last 100): what each does, who started it, whether it is running, how far it has got and how it ended.
+
+Parameters: None.
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `jobs` | array of JobStatus | yes | The jobs remembered (the last 100), oldest first. |
+
+### jobs.status
+
+One job's state, progress and outcome, and once it has finished, the result of a job a method started.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `job` | string | yes | The job's id, such as "report-3", as `job.started` or a job method gave it. |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `document` | string | no | The document it works on, if one. |
+| `done` | integer | no | Units of work done, when the job counts them. |
+| `job` | string | yes | Unique for the session, such as "report-3". |
+| `outcome` | string | no | One line on what it found, or why it stopped, once it has. |
+| `producer` | string | yes | Who started it, such as `tool:report` or `mcp:claude-code`. |
+| `result` | any | no | What a job started through the API gives back once finished: the result the method would have returned. |
+| `state` | `"running"` \| `"cancelling"` \| `"finished"` \| `"failed"` \| `"cancelled"` | yes | Where a job is. |
+| `title` | string | yes | What the job does, such as "Report". |
+| `total` | integer | no | Units of work in all, when known. |
+
+### jobs.cancel
+
+Ask a running job to stop; it ends as cancelled, without a result, as soon as it notices.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `job` | string | yes | The job's id, such as "report-3", as `job.started` or a job method gave it. |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `document` | string | no | The document it works on, if one. |
+| `done` | integer | no | Units of work done, when the job counts them. |
+| `job` | string | yes | Unique for the session, such as "report-3". |
+| `outcome` | string | no | One line on what it found, or why it stopped, once it has. |
+| `producer` | string | yes | Who started it, such as `tool:report` or `mcp:claude-code`. |
+| `result` | any | no | What a job started through the API gives back once finished: the result the method would have returned. |
+| `state` | `"running"` \| `"cancelling"` \| `"finished"` \| `"failed"` \| `"cancelled"` | yes | Where a job is. |
+| `title` | string | yes | What the job does, such as "Report". |
+| `total` | integer | no | Units of work in all, when known. |
+
 ### events.poll
 
 The messages (facts and events) published after a cursor, oldest first, optionally of some topics only; pass back next to keep up.
@@ -962,7 +1029,8 @@ What tools, panels and plugins publish on the workspace bus. Facts are kept, the
 | [`reference.focus`](#referencefocus) | event | A tool asks the Reference tab to show a format or protocol. |
 | [`template.apply_requested`](#templateapply_requested) | event | Someone asks for a template to be applied at the cursor (one Ask offered, say), as the Template tool would. |
 | [`job.started`](#jobstarted) | event | Background work started. |
-| [`job.finished`](#jobfinished) | event | Background work finished, with a one-line outcome. |
+| [`job.progress`](#jobprogress) | event | How far background work that counts its work has got. |
+| [`job.finished`](#jobfinished) | event | Background work finished, with a one-line outcome (and, for a job started through the API, its result), or was cancelled. |
 | [`plugin.log`](#pluginlog) | event | A plugin logged a line, or one of its callbacks failed (in a background scan, say). |
 | [`x.*`](#x*) | event | A plugin's own topic, named x.<plugin>.<name>, with a payload of its choosing. |
 
@@ -1149,15 +1217,27 @@ Background work started.
 | `job` | string | yes | Unique for the session, such as "period-scan-3". |
 | `title` | string | yes | What the job does, such as "Period scan". |
 
-### job.finished
+### job.progress
 
-Background work finished, with a one-line outcome.
+How far background work that counts its work has got.
 
 | Payload field | Type | Required | Description |
 | --- | --- | --- | --- |
+| `done` | integer | yes | Units of work done (packets, blocks, bytes: the job's own). |
+| `job` | string | yes | The id `job.started` gave. |
+| `total` | integer | no | Units in all, when known. |
+
+### job.finished
+
+Background work finished, with a one-line outcome (and, for a job started through the API, its result), or was cancelled.
+
+| Payload field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `cancelled` | boolean | no | Whether it stopped because it was cancelled. |
 | `job` | string | yes | The id `job.started` gave. |
 | `ok` | boolean | yes | Whether it produced a result. |
 | `outcome` | string | yes | One line on what it found, or why it stopped. |
+| `result` | any | no | For a job started through the API, the result the method gives. |
 | `title` | string | yes |  |
 
 ### plugin.log

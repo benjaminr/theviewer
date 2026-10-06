@@ -31,12 +31,10 @@ use std::time::{Duration, Instant};
 use eframe::egui::{self, RichText, Ui};
 
 use crate::analysis_tools;
-use crate::api::workspace::WINDOW_DOCUMENT_ID;
 use crate::app::ViewerApp;
 use crate::analysis_tools::PROTOCOL_PRODUCER;
 use crate::bus::topics::{FieldsDecoded, FieldsGuessed, FramesDefined, ProtocolIdentified, TemplateApplied};
-use crate::bus::window::job_finished;
-use crate::bus::{Draft, Message, Payload, Publisher};
+use crate::bus::{Draft, JobHandle, Message, Payload, Publisher};
 use crate::dock::DockTab;
 use crate::packets::sources::{self, CaptureLocation, MarkerMode, Recipe};
 use crate::packets::{self, Detection, Dissection, Flow, FrameProtocol, Layer, LinkKind, PacketSet, RawFrames, SetHints, Summary};
@@ -284,6 +282,8 @@ pub struct PacketsState {
     pub(crate) foreign_document: bool,
     pub(crate) bytes: Arc<PacketBytes>,
     pending: Option<Receiver<DissectionJob>>,
+    /// The dissection running, to tell a cancelled one from a failure.
+    pending_job: Option<JobHandle>,
     pub(crate) rows: Vec<PacketRow>,
     pub(crate) rows_generation: u64,
     /// Counts readings of the packets; results computed for one reading
@@ -778,8 +778,10 @@ fn start_dissection(state: &mut PacketsState, app: &mut ViewerApp, set: PacketSe
     let detection_allowed = app.preferences.detect_frame_protocols;
     let choice = state.frame_choice;
     let (sender, receiver) = mpsc::channel();
-    let job = app.publish_job_started("dissection", "Dissecting packets");
+    let job = app.start_job("dissection", "Dissecting packets");
+    state.pending_job = Some(job.clone());
     let publisher = app.bus.publisher();
+    let document = app.document_id();
     thread::spawn(move || {
         raw.hints = SetHints::learn(links.iter().enumerate().map(|(index, &link)| (bytes.packet(index), link)));
         let detection = detect_frames(&bytes, &links, choice, detection_allowed);
@@ -789,16 +791,17 @@ fn start_dissection(state: &mut PacketsState, app: &mut ViewerApp, set: PacketSe
             FrameChoice::Detect => detection.protocol(),
             FrameChoice::Default | FrameChoice::Raw => None,
         };
-        let rows = links
-            .iter()
-            .enumerate()
-            .map(|(index, &link)| {
-                let dissection = packets::dissect_with(bytes.packet(index), link, &raw);
-                PacketRow::from(dissection)
-            })
-            .collect();
-        publish_packet_facts(&publisher, &set, &links, detection, snapshot.version);
-        publisher.publish(job_finished(&job, "Dissecting packets", true, format!("{} packets from {}", set.packets.len(), set.name)));
+        let total = links.len() as u64;
+        let mut rows = Vec::with_capacity(links.len());
+        for (index, &link) in links.iter().enumerate() {
+            if job.is_cancelled() {
+                return job.finish_cancelled();
+            }
+            rows.push(PacketRow::from(packets::dissect_with(bytes.packet(index), link, &raw)));
+            job.progress(index as u64 + 1, Some(total));
+        }
+        publish_packet_facts(&publisher, &set, &links, detection, (&document, snapshot.version));
+        job.finish(true, format!("{} packets from {}", set.packets.len(), set.name));
         let _ = sender.send(DissectionJob { set, bytes: Arc::new(bytes), rows, snapshot, hints: raw.hints, decode_as: raw.decode_as, detection });
     });
     state.pending = Some(receiver);
@@ -809,10 +812,10 @@ pub(crate) const PACKETS_PRODUCER: &str = "panel:packets";
 
 /// Publish where the packets are and, when detection found one, the
 /// protocol of the frames of unknown format.
-fn publish_packet_facts(publisher: &Publisher, set: &PacketSet, links: &[LinkKind], detection: FrameDetection, version: u64) {
+fn publish_packet_facts(publisher: &Publisher, set: &PacketSet, links: &[LinkKind], detection: FrameDetection, (document, version): (&str, u64)) {
     let start = set.packets.iter().map(|packet| packet.offset).min().unwrap_or(0);
     let end = set.packets.iter().map(|packet| packet.end()).max().unwrap_or(start);
-    let draft = |payload| Draft::new(PACKETS_PRODUCER, payload).about(WINDOW_DOCUMENT_ID, version).span(start, end - start);
+    let draft = |payload| Draft::new(PACKETS_PRODUCER, payload).about(document, version).span(start, end - start);
     publisher.publish(draft(Payload::FramesDefined(FramesDefined::new(set.packets.iter().map(|packet| (packet.offset, packet.len)), set.name.clone()))));
     let unknown = set.packets.iter().zip(links).filter(|(_, link)| **link == LinkKind::Unknown).map(|(packet, _)| (packet.offset, packet.len));
     let frames = FramesDefined::new(unknown, String::new()).frames;
@@ -854,12 +857,14 @@ fn poll_dissection(state: &mut PacketsState, ctx: &egui::Context) {
     match receiver.try_recv() {
         Ok(job) => {
             state.pending = None;
+            state.pending_job = None;
             install(state, job);
         }
         Err(TryRecvError::Empty) => ctx.request_repaint_after(POLL_INTERVAL),
         Err(TryRecvError::Disconnected) => {
             state.pending = None;
-            state.show_note("Dissecting the packets stopped unexpectedly.", true);
+            let cancelled = state.pending_job.take().is_some_and(|job| job.is_cancelled());
+            state.show_note(if cancelled { "Dissecting the packets was cancelled." } else { "Dissecting the packets stopped unexpectedly." }, !cancelled);
         }
     }
 }

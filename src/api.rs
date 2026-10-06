@@ -32,6 +32,7 @@ pub mod documents;
 pub mod edits;
 pub mod events;
 pub mod findings;
+pub mod jobs;
 pub mod numbers;
 pub mod packets;
 pub mod permissions;
@@ -384,6 +385,7 @@ pub static METHODS: &[Method] = &[
     method!("packets.dissect_bytes", Read, packets::dissect_bytes, packets::DissectParams, packets::DissectionResult, "Dissect one packet, from a span or from hex bytes, into protocol layers and fields, a summary and its flow."),
     method!("packets.detect_frames", Read, packets::detect_frames, packets::DetectFramesParams, packets::DetectFramesResult, "Find the protocol a set of frames of unknown format is, by trying every frame decoder on them."),
     method!("analysis.overview", Read, analysis::overview, analysis::OverviewParams, crate::headless::FileReport, "Map the whole document: a summary of what it is, its regions with offsets, likely record widths and confident findings."),
+    method!("analysis.overview_job", Job, caller analysis::overview_job, analysis::OverviewParams, jobs::JobStartedResult, "Start analysis.overview as a background job and return its id at once; the report arrives as job.finished's result and from jobs.status, for large files and clients that should not wait."),
     method!("analysis.statistics", Read, analysis::statistics, analysis::SpanParams, analysis::StatisticsResult, "Measure a span: entropy, chi-square, serial correlation, printable, zero and high-byte fractions, distinct values and a verdict."),
     method!("analysis.segments", Read, analysis::segments, analysis::SegmentsParams, analysis::SegmentsResult, "Split the document into regions of one kind (text, tables, code, compressed, random, padding) and group them into types."),
     method!("analysis.compressibility", Read, analysis::compressibility, analysis::SpanParams, analysis::CompressibilityResult, "Compress a span with several codecs and report the ratios, with a verdict: encrypted or random, already compressed, lossy media or structured."),
@@ -392,6 +394,9 @@ pub static METHODS: &[Method] = &[
     method!("reference.lookup", Read, reference::lookup, reference::LookupParams, reference::LookupResult, "The reference notes on a format or protocol, by id, finding id, layer name, port (udp/67) or number (port, IP protocol or EtherType): layout, field meanings and specifications."),
     method!("reference.search", Read, reference::search, reference::SearchParams, reference::SearchResult, "Reference entries whose notes mention every word of a query, or that a port or number names."),
     method!("events.facts", Read, events::facts, events::FactsParams, events::FactsResult, "What the tools have learnt about a document and keep: the latest fact per topic, producer and key, by topic, producer or the bytes they cover, each marked stale when the document changed under it."),
+    method!("jobs.list", Read, jobs::list, values::NoParams, jobs::JobList, "The background jobs tools and callers started (the last 100): what each does, who started it, whether it is running, how far it has got and how it ended."),
+    method!("jobs.status", Read, jobs::status, jobs::JobParams, crate::bus::JobStatus, "One job's state, progress and outcome, and once it has finished, the result of a job a method started."),
+    method!("jobs.cancel", Read, jobs::cancel, jobs::JobParams, crate::bus::JobStatus, "Ask a running job to stop; it ends as cancelled, without a result, as soon as it notices."),
     method!("events.poll", Read, events::poll, events::PollParams, events::PollResult, "The messages (facts and events) published after a cursor, oldest first, optionally of some topics only; pass back next to keep up."),
 ];
 
@@ -844,6 +849,10 @@ mod tests {
             ("packets.dissect_bytes", json!({"start": 0, "len": 40, "link": "unknown"})),
             ("packets.detect_frames", json!({"frames": [{"start": 0, "len": 8}, {"start": 8, "len": 8}]})),
             ("analysis.overview", json!({"max_findings": 5})),
+            ("analysis.overview_job", json!({"max_findings": 1})),
+            ("jobs.list", json!({})),
+            ("jobs.status", json!({"job": "overview-1"})),
+            ("jobs.cancel", json!({"job": "overview-1"})),
             ("analysis.statistics", json!({"start": 0, "len": 100})),
             ("analysis.segments", json!({"limit": 3})),
             ("analysis.compressibility", json!({})),

@@ -9,7 +9,6 @@ use eframe::egui::{self, Color32, ColorImage, Rect, RichText, Sense, Stroke, Tex
 use crate::app::ViewerApp;
 use crate::bus::{Draft, Payload};
 use crate::bus::topics::{FieldsGuessed, FrameSpan, FramesDefined, ProtocolIdentified, RecordWidthEstimated};
-use crate::bus::window::job_finished;
 use crate::columns::{self, ColumnKind, ColumnProfile, FieldGuess};
 use crate::packets;
 use crate::plugin::{Category, Finding};
@@ -239,19 +238,25 @@ pub fn start_protocol(app: &mut ViewerApp) {
     let (start, len) = app.selection().unwrap_or((0, app.document.len()));
     let bytes = app.document.read_range(start, len.min(PROTOCOL_LIMIT));
     let (sender, receiver) = mpsc::channel();
-    let job = app.publish_job_started("protocol", "Protocol analysis");
+    let job = app.start_job("protocol", "Protocol analysis");
     let publisher = app.bus.publisher();
     let about = (app.document_id(), app.document.version());
     thread::spawn(move || {
         let candidates = protocol::detect_framing(&bytes, 8);
+        if job.is_cancelled() {
+            return job.finish_cancelled();
+        }
         let report = protocol::analyse(&bytes);
         let view = ProtocolView::new(start, bytes, report, candidates);
+        if job.is_cancelled() {
+            return job.finish_cancelled();
+        }
         // What it found is on the bus before the job is said to be done,
         // so whoever waits for the job finds the frames there.
         for draft in framing_facts(&view) {
             publisher.publish(draft.about(about.0.clone(), about.1));
         }
-        publisher.publish(job_finished(&job, "Protocol analysis", view.report.framing.is_some(), format!("{} messages", view.report.messages.len())));
+        job.finish(view.report.framing.is_some(), format!("{} messages", view.report.messages.len()));
         let _ = sender.send(view);
     });
     app.bench.tools.protocol_pending = Some(receiver);
@@ -266,10 +271,15 @@ pub fn protocol_running(app: &ViewerApp) -> bool {
 /// frame, whether or not the Protocol tab is showing.
 pub fn poll_protocol(app: &mut ViewerApp) {
     let Some(receiver) = &app.bench.tools.protocol_pending else { return };
-    if let Ok(view) = receiver.try_recv() {
-        app.bench.tools.protocol_pending = None;
-        app.bench.tools.protocol = Some(view);
-        pin_messages(app);
+    match receiver.try_recv() {
+        Ok(view) => {
+            app.bench.tools.protocol_pending = None;
+            app.bench.tools.protocol = Some(view);
+            pin_messages(app);
+        }
+        // Cancelled: the analysis ended without a result.
+        Err(mpsc::TryRecvError::Disconnected) => app.bench.tools.protocol_pending = None,
+        Err(mpsc::TryRecvError::Empty) => {}
     }
 }
 

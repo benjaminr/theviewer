@@ -67,6 +67,10 @@ pub enum AnalysisMessage {
     Periods(PeriodScan),
     Entropy { document_version: u64, map: Vec<f32> },
     Patterns { key: PatternKey, patterns: Vec<Finding> },
+    /// A period scan was cancelled.
+    PeriodsCancelled,
+    /// A pattern scan was cancelled: the region is left as it was found before.
+    PatternsCancelled { key: PatternKey },
 }
 
 /// Identifies the region and document state a pattern scan was made for.
@@ -2507,12 +2511,16 @@ impl ViewerApp {
         let window = self.document.read_range(start, SCAN_WINDOW);
         let max_period = self.scan_max_period;
         let sender = self.analysis_tx.clone();
-        let job = self.publish_job_started("period-scan", "Period scan");
-        let publisher = self.bus.publisher();
+        let job = self.start_job("period-scan", "Period scan");
         thread::spawn(move || {
             let scan = analysis::scan_periods(&window, start, max_period);
+            if job.is_cancelled() {
+                job.finish_cancelled();
+                let _ = sender.send(AnalysisMessage::PeriodsCancelled);
+                return;
+            }
             let outcome = scan.candidates.first().map_or_else(|| "no repeating period".to_string(), |best| format!("best period {} bytes", best.period));
-            publisher.publish(crate::bus::window::job_finished(&job, "Period scan", !scan.candidates.is_empty(), outcome));
+            job.finish(!scan.candidates.is_empty(), outcome);
             let _ = sender.send(AnalysisMessage::Periods(scan));
         });
         self.scan_pending = true;
@@ -2524,8 +2532,13 @@ impl ViewerApp {
         let backing = self.document.original();
         let version = self.document.version();
         let sender = self.analysis_tx.clone();
+        let job = self.start_job("entropy", "Entropy strip");
         thread::spawn(move || {
             let map = analysis::entropy_map(backing.as_slice(), ENTROPY_BLOCKS);
+            if job.is_cancelled() {
+                return job.finish_cancelled();
+            }
+            job.finish(true, format!("{} blocks", map.len()));
             let _ = sender.send(AnalysisMessage::Entropy { document_version: version, map });
         });
     }
@@ -2543,6 +2556,17 @@ impl ViewerApp {
                     self.publish_record_width();
                 }
                 AnalysisMessage::Entropy { map, .. } => self.entropy_map = Some(map),
+                AnalysisMessage::PeriodsCancelled => {
+                    self.scan_pending = false;
+                    self.status = "Period scan cancelled".to_string();
+                }
+                AnalysisMessage::PatternsCancelled { key } => {
+                    if self.pattern_pending == Some(key) {
+                        self.pattern_pending = None;
+                    }
+                    // Not scanned again until the view moves elsewhere.
+                    self.pattern_key = Some(key);
+                }
                 AnalysisMessage::Patterns { key, patterns } => {
                     if self.pattern_pending == Some(key) {
                         self.pattern_pending = None;
@@ -2593,9 +2617,16 @@ impl ViewerApp {
         let context = ScanContext { base: key.start, document_len: self.document.len(), strides };
         let sender = self.analysis_tx.clone();
         let registry = Arc::clone(&self.registry);
+        let job = self.start_job("pattern-scan", "Pattern scan");
         thread::spawn(move || {
             let mut patterns = registry.scan(&window, &context);
+            if job.is_cancelled() {
+                job.finish_cancelled();
+                let _ = sender.send(AnalysisMessage::PatternsCancelled { key });
+                return;
+            }
             patterns::resolve_overlaps(&mut patterns);
+            job.finish(true, format!("{} findings", patterns.len()));
             let _ = sender.send(AnalysisMessage::Patterns { key, patterns });
         });
         self.pattern_pending = Some(key);

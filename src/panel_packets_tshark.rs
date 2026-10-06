@@ -23,7 +23,7 @@ use std::time::Duration;
 use eframe::egui::{self, RichText, Ui};
 
 use crate::app::ViewerApp;
-use crate::bus::Payload;
+use crate::bus::{JobHandle, Payload};
 use crate::bus::topics::{FramesDefined, ProtocolIdentified};
 use crate::packets::tshark::{self, RunLimits};
 use crate::packets::tshark_layers::{self, TsharkLayers, TsharkMode};
@@ -160,20 +160,29 @@ pub fn start(state: &mut PacketsState, app: &mut ViewerApp, only: Option<usize>)
         return;
     }
     let (sender, receiver) = mpsc::channel();
-    let cancel = Arc::new(AtomicBool::new(false));
+    let job = app.start_job("tshark", "Decoding with tshark");
+    // Cancelling from the panel or through jobs.cancel stops tshark alike.
+    let cancel = job.cancel_flag();
     let done = Arc::new(AtomicUsize::new(0));
     let total = requests.len();
     let (raw, mode) = (state.raw.clone(), state.tshark.mode);
-    let (thread_cancel, thread_done) = (Arc::clone(&cancel), Arc::clone(&done));
+    let thread_done = Arc::clone(&done);
     thread::spawn(move || {
-        let _ = sender.send(decode(&program, requests, &raw, mode, &thread_cancel, &thread_done));
+        let finished = decode(&program, requests, &raw, mode, &job, &thread_done);
+        match &finished {
+            Ok(finished) => job.finish(true, format!("{} packets decoded", finished.packets.len())),
+            Err(error) => job.finish(false, error.clone()),
+        }
+        let _ = sender.send(finished);
     });
     state.tshark.error = None;
     state.tshark.job = Some(Job { receiver, cancel, done, total, set_generation: state.set_generation });
 }
 
 /// Run tshark once per link type and merge its layers into ours.
-fn decode(program: &std::path::Path, requests: Vec<Request>, raw: &RawFrames, mode: TsharkMode, cancel: &AtomicBool, done: &AtomicUsize) -> Result<Finished, String> {
+fn decode(program: &std::path::Path, requests: Vec<Request>, raw: &RawFrames, mode: TsharkMode, job: &JobHandle, done: &AtomicUsize) -> Result<Finished, String> {
+    let cancel = job.cancel_flag();
+    let total = requests.len() as u64;
     let mut by_link_type: BTreeMap<u32, Vec<&Request>> = BTreeMap::new();
     for request in &requests {
         by_link_type.entry(request.link_type).or_default().push(request);
@@ -183,7 +192,7 @@ fn decode(program: &std::path::Path, requests: Vec<Request>, raw: &RawFrames, mo
     for (link_type, group) in by_link_type {
         let export: Vec<ExportPacket> = group.iter().map(|request| ExportPacket { bytes: &request.bytes, original_len: request.original_len, timestamp: request.timestamp, link: request.link }).collect();
         let mut position = 0;
-        let outcome = tshark::decode_packets(program, &export, link_type, &limits, cancel, |decoded| {
+        let outcome = tshark::decode_packets(program, &export, link_type, &limits, &cancel, |decoded| {
             if let Some(request) = group.get(position)
                 && decoded.captured_len == request.bytes.len()
             {
@@ -193,7 +202,8 @@ fn decode(program: &std::path::Path, requests: Vec<Request>, raw: &RawFrames, mo
                 finished.packets.insert(request.index, layers);
             }
             position += 1;
-            done.fetch_add(1, Ordering::Relaxed);
+            let so_far = done.fetch_add(1, Ordering::Relaxed) + 1;
+            job.progress(so_far as u64, Some(total));
         });
         match outcome {
             Ok(outcome) => finished.warning = finished.warning.or(outcome.warning),

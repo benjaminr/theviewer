@@ -264,14 +264,21 @@ pub fn start_counting(state: &mut TrigramState, app: &mut ViewerApp) {
         LabelSource::Nothing => LabelInput::Nothing,
     };
     let (sender, receiver) = mpsc::channel();
+    let job = app.start_job("trigrams", "Counting trigrams");
     thread::spawn(move || {
         let groups = region_groups(labels);
         let spans = labelled_spans(&groups);
         let mut counter = TrigramCounter::with_labels(spans, groups.len(), selection);
-        for (offset, bytes) in &windows {
+        let total = windows.len() as u64;
+        for (index, (offset, bytes)) in windows.iter().enumerate() {
+            if job.is_cancelled() {
+                return job.finish_cancelled();
+            }
             counter.add_window(*offset, bytes);
+            job.progress(index as u64 + 1, Some(total));
         }
         let cloud = counter.finish(start, len, trigram::DEFAULT_MAX_POINTS);
+        job.finish(true, format!("{} groups", groups.len()));
         // The receiver may be gone if the panel was closed; nothing to do then.
         let _ = sender.send(Counted { cloud, groups, selection });
     });

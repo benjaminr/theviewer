@@ -26,7 +26,7 @@ use crate::plugins::Subscription;
 use crate::selection::Selection;
 
 use super::topics::*;
-use super::{Draft, Message, MessageId, Payload, Topic};
+use super::{Draft, JobHandle, Message, MessageId, Payload, Topic};
 
 /// What the window publishes its own changes as.
 pub const MAIN_VIEW: &str = "view:main";
@@ -305,18 +305,14 @@ impl ViewerApp {
         }
     }
 
-    /// Start a background job: publish `job.started`, returning its id.
-    pub fn publish_job_started(&mut self, kind: &str, title: &str) -> String {
-        let job = self.bus.new_job_id(kind);
-        self.publish(format!("tool:{kind}"), Payload::JobStarted(JobStarted { job: job.clone(), title: title.to_string() }));
-        job
+    /// Start a background job of `kind` (such as `report`) on the document
+    /// shown, as `tool:<kind>`: it is registered, `job.started` is
+    /// published, and the work keeps the handle to report progress, notice
+    /// cancellation and finish.
+    pub fn start_job(&mut self, kind: &str, title: &str) -> JobHandle {
+        let document = Some((self.document_id(), self.document.version()));
+        self.bus.start_job(kind, title, format!("tool:{kind}"), document)
     }
-}
-
-/// A finished job's message, for a background thread to publish.
-pub fn job_finished(job: &str, title: &str, ok: bool, outcome: impl Into<String>) -> Draft {
-    let kind = job.rsplit_once('-').map_or(job, |(kind, _)| kind);
-    Draft::new(format!("tool:{kind}"), Payload::JobFinished(JobFinished { job: job.to_string(), title: title.to_string(), ok, outcome: outcome.into() }))
 }
 
 /// Put the cursor where a link, a plugin or a client asked, in both views.
@@ -551,5 +547,36 @@ mod tests {
             assert_eq!(crate::layout::Pane::from_key(&pane.key()), Some(pane), "{}", pane.key());
         }
         assert_eq!(crate::layout::Pane::from_key("Packets"), Some(crate::layout::Pane::Tool(crate::dock::DockTab::Packets)));
+    }
+
+    #[test]
+    fn the_window_s_background_jobs_are_listed_followed_and_cancelled_through_the_api() {
+        use crate::api::{Caller, call};
+        use serde_json::json;
+        let mut app = app_with(b"The quick brown fox jumps over the lazy dog. ");
+        app.start_report();
+        let listed = call(&mut app, &Caller::Mcp("test".into()), "jobs.list", json!({})).unwrap();
+        let report = listed["jobs"].as_array().unwrap().iter().find(|job| job["title"] == "Report").expect("the report is a job").clone();
+        assert_eq!(report["producer"], "tool:report");
+        assert_eq!(report["document"], app.document_id());
+        let started = std::time::Instant::now();
+        let finished = loop {
+            app.run_bus();
+            let status = call(&mut app, &Caller::Panel, "jobs.status", json!({"job": report["job"]})).unwrap();
+            if status["state"] != "running" || started.elapsed() > std::time::Duration::from_secs(20) {
+                break status;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        };
+        assert_eq!(finished["state"], "finished", "{finished}");
+
+        let waiting = app.start_job("test", "Waiting");
+        let cancelled = call(&mut app, &Caller::Mcp("test".into()), "jobs.cancel", json!({"job": waiting.id()})).unwrap();
+        assert_eq!(cancelled["state"], "cancelling");
+        assert!(waiting.is_cancelled());
+        waiting.finish(true, "ignored");
+        app.run_bus();
+        let status = call(&mut app, &Caller::Panel, "jobs.status", json!({"job": waiting.id()})).unwrap();
+        assert_eq!(status["state"], "cancelled");
     }
 }
