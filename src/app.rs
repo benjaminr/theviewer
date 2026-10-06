@@ -258,8 +258,6 @@ pub struct ViewerApp {
     /// read these rather than assume.
     pub raster_rect: Option<egui::Rect>,
     pub hex_body_rect: Option<egui::Rect>,
-    /// A non-tool pane to bring forward on the next frame.
-    pub pane_request: Option<Pane>,
     /// Whether the layout is saved and restored (the app, not tests).
     pub persist_layout: bool,
     /// The panel layout came from `--layout` for this session only, so it is
@@ -575,7 +573,6 @@ impl ViewerApp {
             dock: DockState::default(),
             layout: Recommended::Overview.build(),
             layouts: layouts::Choices::default(),
-            pane_request: None,
             raster_rect: None,
             hex_body_rect: None,
             persist_layout: false,
@@ -2519,7 +2516,7 @@ impl ViewerApp {
             let _ = sender.send(AnalysisMessage::Periods(scan));
         });
         self.scan_pending = true;
-        self.pane_request = Some(Pane::PeriodChart);
+        self.show_panel(Pane::PeriodChart);
         self.status = "Scanning for periods…".to_string();
     }
 

@@ -32,6 +32,20 @@ impl Pane {
         panes
     }
 
+    /// The pane's name on the bus: its own name, or its tool's.
+    pub fn key(self) -> String {
+        let named = match self {
+            Pane::Tool(tab) => serde_json::to_value(tab),
+            pane => serde_json::to_value(pane),
+        };
+        named.ok().and_then(|value| value.as_str().map(str::to_string)).unwrap_or_default()
+    }
+
+    /// The pane called `key`.
+    pub fn from_key(key: &str) -> Option<Pane> {
+        Pane::all().into_iter().find(|pane| pane.key() == key)
+    }
+
     pub fn title(self) -> &'static str {
         match self {
             Pane::Raster => "Bits",
@@ -160,6 +174,16 @@ fn zero_missing_coordinates(value: &mut serde_json::Value) {
         }
         serde_json::Value::Array(items) => items.iter_mut().for_each(zero_missing_coordinates),
         _ => {}
+    }
+}
+
+/// Bring forward the pane a `pane.show` message names, whether it is a
+/// tool or not.
+pub fn follow_pane_request(app: &mut ViewerApp, message: &std::sync::Arc<crate::bus::Message>) {
+    let Some(pane) = message.payload_as::<crate::bus::topics::PaneShow>().and_then(|shown| Pane::from_key(&shown.pane)) else { return };
+    match pane {
+        Pane::Tool(tab) => app.dock.toggle(tab),
+        pane => show_pane(&mut app.layout, pane),
     }
 }
 
@@ -311,9 +335,6 @@ impl ViewerApp {
     /// changes: `dock.tab` names a tool to bring forward, `dock.open` asks for
     /// the tools to be visible.
     fn apply_pane_requests(&mut self) {
-        if let Some(pane) = self.pane_request.take() {
-            show_pane(&mut self.layout, pane);
-        }
         if self.dock.open && self.dock.shown != Some(self.dock.tab) {
             show_pane(&mut self.layout, Pane::Tool(self.dock.tab));
             self.dock.shown = Some(self.dock.tab);
@@ -327,7 +348,7 @@ impl ViewerApp {
             self.dock.tab = tab;
             self.dock.shown = None;
         } else {
-            self.pane_request = Some(pane);
+            self.publish(crate::bus::window::MAIN_VIEW, crate::bus::Payload::PaneShow(crate::bus::topics::PaneShow { pane: pane.key() }));
         }
     }
 

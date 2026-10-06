@@ -9,6 +9,8 @@ use eframe::egui::{self, RichText, Sense, Ui, vec2};
 
 use crate::app::ViewerApp;
 use crate::assistant::{self, Segment, Turn};
+use crate::bus::Payload;
+use crate::bus::topics::{TemplateApplyRequested, ViewJump};
 use crate::theme;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
@@ -161,10 +163,6 @@ pub struct DockState {
     pub shown: Option<DockTab>,
     pub question: String,
     pub source_text: String,
-    /// Set when a link in a tab asks to jump somewhere.
-    pub jump_to: Option<usize>,
-    /// Set when the assistant offers a template and the user applies it.
-    pub apply_template: Option<String>,
 }
 
 impl Default for DockState {
@@ -175,8 +173,6 @@ impl Default for DockState {
             shown: None,
             question: String::new(),
             source_text: String::new(),
-            jump_to: None,
-            apply_template: None,
         }
     }
 }
@@ -198,13 +194,10 @@ pub fn show_tool(app: &mut ViewerApp, ui: &mut Ui, tool: DockTab) {
         DockTab::Live => show_live(app, ui),
         other => app.show_dock_tab(other, ui),
     }
-    if let Some(offset) = app.dock.jump_to.take() {
-        app.jump_to_offset(offset);
-    }
-    if let Some(source) = app.dock.apply_template.take() {
-        app.apply_template_source(&source);
-    }
 }
+
+/// What links in reports and answers ask for things as.
+const LINKS: &str = "panel:links";
 
 /// Text with clickable `0x…` offsets.
 pub fn linked_text(app: &mut ViewerApp, ui: &mut Ui, text: &str) {
@@ -218,7 +211,7 @@ pub fn linked_text(app: &mut ViewerApp, ui: &mut Ui, text: &str) {
                 Segment::Offset(offset, label) => {
                     let link = ui.add(egui::Label::new(RichText::new(label).color(theme::ACCENT).underline()).sense(Sense::click()));
                     if link.on_hover_text("Jump here").clicked() {
-                        app.dock.jump_to = Some(offset);
+                        app.publish(LINKS, Payload::ViewJump(ViewJump { offset }));
                     }
                 }
                 Segment::Template(source) => {
@@ -242,7 +235,7 @@ fn template_offer(app: &mut ViewerApp, ui: &mut Ui, source: &str) {
                 ui.horizontal(|ui| {
                     ui.label(RichText::new("Template").strong());
                     if ui.button("Apply at cursor").clicked() {
-                        app.dock.apply_template = Some(source.to_string());
+                        app.publish(LINKS, Payload::TemplateApplyRequested(TemplateApplyRequested { source: source.to_string() }));
                     }
                     if ui.button("Copy").clicked() {
                         ui.ctx().copy_text(source.to_string());

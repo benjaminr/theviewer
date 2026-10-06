@@ -100,6 +100,8 @@ topics! {
     DocumentClosed(DocumentClosed) = "document.closed", Event, "A document was closed or replaced; what was known about it is forgotten.";
     DocumentEdited(DocumentEdited) = "document.edited", Event, "The document's bytes changed: each change's offset, bytes removed and bytes inserted, undo and redo included.";
     CursorMoved(CursorMoved) = "cursor.moved", Event, "The cursor moved in the main view.";
+    ViewJump(ViewJump) = "view.jump", Event, "Someone asks the views to put the cursor on an offset and bring it into view (a link in a report or an answer, say).";
+    PaneShow(PaneShow) = "pane.show", Event, "Someone asks the window to bring a pane forward, reopening it if it was closed.";
     ViewPointed(ViewPointed) = "view.pointed", Event, "Bytes a panel points at (a field row under the pointer), which the views outline, or that it stopped pointing; published when it changes.";
     SelectionChanged(SelectionChanged) = "selection.changed", Event, "What is selected changed, in the main view or by a tool selecting bytes in the document.";
     FindingsPublished(FindingsPublished) = "findings.published", Fact, "What one producer recognises in the document: the scan, signatures, templates, the structure map, crypto constants, a comparison, checksums or protocol messages.";
@@ -112,6 +114,7 @@ topics! {
     FieldsGuessed(FieldsGuessed) = "fields.guessed", Fact, "The fields the protocol analysis guessed in a stream's messages (constants, types, sequence numbers, lengths, checksums), with a template for them.";
     ProtocolIdentified(ProtocolIdentified) = "protocol.identified", Fact, "The protocol a set of frames or a payload is, and how that was decided.";
     ReferenceFocus(ReferenceFocus) = "reference.focus", Event, "A tool asks the Reference tab to show a format or protocol.";
+    TemplateApplyRequested(TemplateApplyRequested) = "template.apply_requested", Event, "Someone asks for a template to be applied at the cursor (one Ask offered, say), as the Template tool would.";
     JobStarted(JobStarted) = "job.started", Event, "Background work started.";
     JobFinished(JobFinished) = "job.finished", Event, "Background work finished, with a one-line outcome.";
     PluginLog(PluginLog) = "plugin.log", Event, "A plugin logged a line, or one of its callbacks failed (in a background scan, say).";
@@ -209,6 +212,7 @@ impl Payload {
             Payload::FramesDefined(defined) => defined.frames.iter_mut().for_each(|frame| moved(&mut frame.start)),
             Payload::ProtocolIdentified(identified) => identified.frames.iter_mut().for_each(|frame| moved(&mut frame.start)),
             Payload::CursorMoved(cursor) => moved(&mut cursor.offset),
+            Payload::ViewJump(jump) => moved(&mut jump.offset),
             Payload::ViewPointed(pointed) => pointed.bytes.iter_mut().for_each(|span| moved(&mut span.start)),
             Payload::DocumentOpened(_)
             | Payload::DocumentClosed(_)
@@ -217,6 +221,8 @@ impl Payload {
             | Payload::RecordWidthEstimated(_)
             | Payload::FieldsGuessed(_)
             | Payload::ReferenceFocus(_)
+            | Payload::TemplateApplyRequested(_)
+            | Payload::PaneShow(_)
             | Payload::JobStarted(_)
             | Payload::JobFinished(_)
             | Payload::PluginLog(_)
@@ -258,6 +264,28 @@ pub struct DocumentEdited {
 pub struct CursorMoved {
     /// Document offset of the cursor.
     pub offset: usize,
+}
+
+/// An offset to go to.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct ViewJump {
+    /// Document offset for the cursor.
+    pub offset: usize,
+}
+
+/// A pane to bring forward.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct PaneShow {
+    /// The pane: Raster, Inspector, Findings, HexDump, PeriodChart, or a
+    /// tool such as Packets, Reference or Template.
+    pub pane: String,
+}
+
+/// A template to apply.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct TemplateApplyRequested {
+    /// The template's source text.
+    pub source: String,
 }
 
 /// Bytes pointed at.

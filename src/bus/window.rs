@@ -114,6 +114,9 @@ pub fn builtin_reactions() -> Vec<Reaction> {
         Reaction { topic: Topic::DocumentEdited, name: "Packets dissects its chosen packet again", react: crate::panel_packets::decode_focused_after_edit },
         Reaction { topic: Topic::TemplateApplied, name: "The views outline the template applied", react: crate::workbench::follow_applied_template },
         Reaction { topic: Topic::TemplateApplied, name: "Packets decodes raw frames with the template applied again", react: crate::panel_packets::follow_applied_template },
+        Reaction { topic: Topic::ViewJump, name: "The views go to the offset asked for", react: jump_to_offset },
+        Reaction { topic: Topic::TemplateApplyRequested, name: "The Template tool applies the template asked for", react: apply_requested_template },
+        Reaction { topic: Topic::PaneShow, name: "The window brings the pane asked for forward", react: crate::layout::follow_pane_request },
         Reaction { topic: Topic::ViewPointed, name: "The views outline the bytes pointed at", react: outline_pointed_bytes },
         Reaction { topic: Topic::RegionsMapped, name: "The views colour and label by the report's regions", react: keep_mapped_regions },
         Reaction { topic: Topic::PluginLog, name: "The status bar shows plugin errors", react: show_plugin_error },
@@ -316,6 +319,21 @@ pub fn job_finished(job: &str, title: &str, ok: bool, outcome: impl Into<String>
     Draft::new(format!("tool:{kind}"), Payload::JobFinished(JobFinished { job: job.to_string(), title: title.to_string(), ok, outcome: outcome.into() }))
 }
 
+/// Put the cursor where a link, a plugin or a client asked, in both views.
+fn jump_to_offset(app: &mut ViewerApp, message: &Arc<Message>) {
+    if let Some(jump) = message.payload_as::<ViewJump>() {
+        app.jump_to_offset(jump.offset);
+    }
+}
+
+/// Apply a template someone asked for at the cursor, as the Template tool does.
+fn apply_requested_template(app: &mut ViewerApp, message: &Arc<Message>) {
+    if let Some(requested) = message.payload_as::<TemplateApplyRequested>() {
+        let source = requested.source.clone();
+        app.apply_template_source(&source);
+    }
+}
+
 /// Outline the bytes a panel, a plugin or a client points at, in both views.
 fn outline_pointed_bytes(app: &mut ViewerApp, message: &Arc<Message>) {
     if let Some(pointed) = message.payload_as::<ViewPointed>() {
@@ -505,5 +523,33 @@ mod tests {
         app.publish("plugin:acme.lua", Payload::ViewPointed(ViewPointed { bytes: Some(crate::bus::Span { start: 8, len: 4 }) }));
         app.run_bus();
         assert_eq!(app.pointed_bytes(), Some((8, 4)), "anyone may point the views at bytes");
+    }
+
+    #[test]
+    fn requests_to_jump_apply_a_template_and_show_a_pane_are_carried_out_from_the_bus() {
+        let mut app = app_with(&[1u8; 4096]);
+        app.publish("plugin:acme.lua", Payload::ViewJump(ViewJump { offset: 0x400 }));
+        app.run_bus();
+        assert_eq!(app.cursor, 0x400);
+        let source = crate::templates::builtin_templates().first().map(|(_, source)| source.to_string()).unwrap();
+        app.publish("panel:links", Payload::TemplateApplyRequested(TemplateApplyRequested { source: source.clone() }));
+        app.run_bus();
+        assert_eq!(app.bench.template_applied_source, source);
+        assert!(app.bench.pinned.iter().any(|finding| finding.id.starts_with("template:")));
+        let period_chart = crate::layout::Pane::PeriodChart;
+        if let Some(path) = app.layout.find_tab(&period_chart) {
+            app.layout.remove_tab(path);
+        }
+        app.show_panel(period_chart);
+        app.run_bus();
+        assert!(app.layout.find_tab(&period_chart).is_some(), "the closed pane is reopened");
+    }
+
+    #[test]
+    fn every_pane_is_named_on_the_bus_by_a_key_that_finds_it_again() {
+        for pane in crate::layout::Pane::all() {
+            assert_eq!(crate::layout::Pane::from_key(&pane.key()), Some(pane), "{}", pane.key());
+        }
+        assert_eq!(crate::layout::Pane::from_key("Packets"), Some(crate::layout::Pane::Tool(crate::dock::DockTab::Packets)));
     }
 }

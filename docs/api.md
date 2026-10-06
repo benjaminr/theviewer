@@ -946,6 +946,8 @@ What tools, panels and plugins publish on the workspace bus. Facts are kept, the
 | [`document.closed`](#documentclosed) | event | A document was closed or replaced; what was known about it is forgotten. |
 | [`document.edited`](#documentedited) | event | The document's bytes changed: each change's offset, bytes removed and bytes inserted, undo and redo included. |
 | [`cursor.moved`](#cursormoved) | event | The cursor moved in the main view. |
+| [`view.jump`](#viewjump) | event | Someone asks the views to put the cursor on an offset and bring it into view (a link in a report or an answer, say). |
+| [`pane.show`](#paneshow) | event | Someone asks the window to bring a pane forward, reopening it if it was closed. |
 | [`view.pointed`](#viewpointed) | event | Bytes a panel points at (a field row under the pointer), which the views outline, or that it stopped pointing; published when it changes. |
 | [`selection.changed`](#selectionchanged) | event | What is selected changed, in the main view or by a tool selecting bytes in the document. |
 | [`findings.published`](#findingspublished) | fact | What one producer recognises in the document: the scan, signatures, templates, the structure map, crypto constants, a comparison, checksums or protocol messages. |
@@ -958,6 +960,7 @@ What tools, panels and plugins publish on the workspace bus. Facts are kept, the
 | [`fields.guessed`](#fieldsguessed) | fact | The fields the protocol analysis guessed in a stream's messages (constants, types, sequence numbers, lengths, checksums), with a template for them. |
 | [`protocol.identified`](#protocolidentified) | fact | The protocol a set of frames or a payload is, and how that was decided. |
 | [`reference.focus`](#referencefocus) | event | A tool asks the Reference tab to show a format or protocol. |
+| [`template.apply_requested`](#templateapply_requested) | event | Someone asks for a template to be applied at the cursor (one Ask offered, say), as the Template tool would. |
 | [`job.started`](#jobstarted) | event | Background work started. |
 | [`job.finished`](#jobfinished) | event | Background work finished, with a one-line outcome. |
 | [`plugin.log`](#pluginlog) | event | A plugin logged a line, or one of its callbacks failed (in a background scan, say). |
@@ -997,6 +1000,22 @@ The cursor moved in the main view.
 | Payload field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `offset` | integer | yes | Document offset of the cursor. |
+
+### view.jump
+
+Someone asks the views to put the cursor on an offset and bring it into view (a link in a report or an answer, say).
+
+| Payload field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `offset` | integer | yes | Document offset for the cursor. |
+
+### pane.show
+
+Someone asks the window to bring a pane forward, reopening it if it was closed.
+
+| Payload field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `pane` | string | yes | The pane: Raster, Inspector, Findings, HexDump, PeriodChart, or a tool such as Packets, Reference or Template. |
 
 ### view.pointed
 
@@ -1112,6 +1131,14 @@ A tool asks the Reference tab to show a format or protocol.
 | Payload field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `key` | string | yes | A reference id, finding id or layer name. |
+
+### template.apply_requested
+
+Someone asks for a template to be applied at the cursor (one Ask offered, say), as the Template tool would.
+
+| Payload field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `source` | string | yes | The template's source text. |
 
 ### job.started
 
