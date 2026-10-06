@@ -89,8 +89,8 @@ Errors are `{code, message, data}`, with these codes:
 | [`jobs.list`](#jobslist) | read | The background jobs tools and callers started (the last 100): what each does, who started it, whether it is running, how far it has got and how it ended. |
 | [`jobs.status`](#jobsstatus) | read | One job's state, progress and outcome, and once it has finished, the result of a job a method started. |
 | [`jobs.cancel`](#jobscancel) | read | Ask a running job to stop; it ends as cancelled, without a result, as soon as it notices. |
-| [`view.get_shape`](#viewget_shape) | read | The shape a document's bytes are drawn in: pixels per row, the offset of the first pixel, a bit shift and the bytes skipped after each row. |
-| [`view.set_shape`](#viewset_shape) | view | Change the shape a document's bytes are drawn in (pixels per row, the first pixel's offset and bit, the padding after each row); what is not given stays as it is. |
+| [`view.get_shape`](#viewget_shape) | read | The shape a document's bytes are drawn in: the pixel format, pixels per row, the offset of the first pixel, a bit shift and the bytes skipped after each row. |
+| [`view.set_shape`](#viewset_shape) | view | Change the shape a document's bytes are drawn in (the pixel format, pixels per row, the first pixel's offset and bit, the padding after each row); what is not given stays as it is. |
 
 Each method's full JSON schemas are in `theviewer api --describe`.
 
@@ -1217,7 +1217,7 @@ Ask a running job to stop; it ends as cancelled, without a result, as soon as it
 
 ### view.get_shape
 
-The shape a document's bytes are drawn in: pixels per row, the offset of the first pixel, a bit shift and the bytes skipped after each row.
+The shape a document's bytes are drawn in: the pixel format, pixels per row, the offset of the first pixel, a bit shift and the bytes skipped after each row.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -1230,12 +1230,13 @@ The shape a document's bytes are drawn in: pixels per row, the offset of the fir
 
 ### view.set_shape
 
-Change the shape a document's bytes are drawn in (pixels per row, the first pixel's offset and bit, the padding after each row); what is not given stays as it is.
+Change the shape a document's bytes are drawn in (the pixel format, pixels per row, the first pixel's offset and bit, the padding after each row); what is not given stays as it is.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `bit_offset` | integer | no | Extra bit shift after `offset`, 0 to 7. |
 | `doc` | string | no | Document id, path or "current" (the default). |
+| `format` | `"bit1"` \| `"bit1lsb"` \| `"nibble4"` \| `"gray8"` \| `"class"` \| `"rgb565"` \| `"gray16le"` \| `"gray16be"` \| `"rgb8"` \| `"bgr8"` \| `"rgba8"` \| `"bgra8"` \| `"u16le"` \| `"u16be"` \| `"i16le"` \| `"i16be"` \| `"u32le"` \| `"u32be"` \| `"i32le"` \| `"i32be"` \| `"f32le"` \| `"f32be"` | no | How bytes are read as pixels, such as "gray8", "rgb565" or "bit1". |
 | `offset` | integer | no | Document offset of the first pixel; at most the document's length. |
 | `row_padding` | integer | no | Bytes skipped after each row's pixels. |
 | `width` | integer | no | Pixels per row, 1 to 16384. |

@@ -287,12 +287,11 @@ impl Workspace for HeadlessWorkspace {
         self.documents.iter().find(|open| open.id == id).map(|open| open.shape)
     }
 
-    /// Without pixel formats, a row's pixels are its bytes, so records are
-    /// a row and its padding apart.
+    /// Records are a row's bytes in its pixel format and its padding apart.
     fn set_shape(&mut self, id: &str, shape: ViewShape) -> Result<(), ApiError> {
         let open = self.documents.iter_mut().find(|open| open.id == id).ok_or_else(|| ApiError::not_found(format!("document '{id}' has closed")))?;
         open.shape = shape;
-        open.view.record_stride = Some(shape.width + shape.row_padding);
+        open.view.record_stride = Some(shape.format.bytes_for_pixels(shape.width) + shape.row_padding);
         Ok(())
     }
 
@@ -448,7 +447,7 @@ impl Workspace for ViewerApp {
 
     fn shape(&self, id: &str) -> Option<ViewShape> {
         let shape = if id == self.document_id { &self.shape } else { &self.parents.iter().find(|parent| parent.id == id)?.shape };
-        Some(ViewShape { width: shape.width, offset: shape.byte_offset as u64, bit_offset: shape.bit_offset, row_padding: shape.row_padding })
+        Some(ViewShape { format: shape.format, width: shape.width, offset: shape.byte_offset as u64, bit_offset: shape.bit_offset, row_padding: shape.row_padding })
     }
 
     /// The main view is drawn in the new shape, its hex dump following;
@@ -457,6 +456,7 @@ impl Workspace for ViewerApp {
         if id != self.document_id {
             return Err(ApiError::invalid_params(format!("{id} waits behind the document shown; go back to it (documents.open with its id) to change its view")));
         }
+        self.shape.format = shape.format;
         self.shape.byte_offset = (shape.offset as usize).min(self.document.len());
         self.shape.bit_offset = shape.bit_offset;
         self.shape.row_padding = shape.row_padding;

@@ -1,6 +1,7 @@
-//! The view: `view.*` (the shape bytes are drawn in: width, origin and
-//! padding), and what else the person changes about what is shown (panels,
-//! layouts, bookmarks) when it matters for repeating an analysis.
+//! The view: `view.*` (the shape bytes are drawn in: pixel format, width,
+//! origin and padding), and what else the person changes about what is
+//! shown (panels, layouts, bookmarks) when it matters for repeating an
+//! analysis.
 //!
 //! In the window these change the main view; a headless workspace keeps
 //! them per document, so a recorded analysis replays the same way from the
@@ -12,6 +13,7 @@ use serde::{Deserialize, Serialize};
 
 use super::workspace::{self, Workspace};
 use super::{ApiError, ErrorCode};
+use crate::raster::PixelFormat;
 
 /// Most pixels per row.
 pub const MAX_WIDTH: usize = crate::app::MAX_WIDTH;
@@ -19,8 +21,8 @@ pub const MAX_WIDTH: usize = crate::app::MAX_WIDTH;
 /// This module's methods, in the order `api.describe` lists them within
 /// their namespace. A new method is added here, and only here.
 pub(super) const METHODS: &[super::Method] = &[
-    method!("view.get_shape", Read, get_shape, ShapeParams, ShapeResult, "The shape a document's bytes are drawn in: pixels per row, the offset of the first pixel, a bit shift and the bytes skipped after each row."),
-    method!("view.set_shape", View, set_shape, SetShapeParams, ShapeResult, "Change the shape a document's bytes are drawn in (pixels per row, the first pixel's offset and bit, the padding after each row); what is not given stays as it is."),
+    method!("view.get_shape", Read, get_shape, ShapeParams, ShapeResult, "The shape a document's bytes are drawn in: the pixel format, pixels per row, the offset of the first pixel, a bit shift and the bytes skipped after each row."),
+    method!("view.set_shape", View, set_shape, SetShapeParams, ShapeResult, "Change the shape a document's bytes are drawn in (the pixel format, pixels per row, the first pixel's offset and bit, the padding after each row); what is not given stays as it is."),
 ];
 
 /// An example call of each of [`METHODS`], run in order on a fresh
@@ -28,7 +30,7 @@ pub(super) const METHODS: &[super::Method] = &[
 #[cfg(test)]
 pub(super) fn examples() -> Vec<(&'static str, serde_json::Value)> {
     use serde_json::json;
-    vec![("view.set_shape", json!({"width": 48, "offset": 16, "row_padding": 2})), ("view.get_shape", json!({}))]
+    vec![("view.set_shape", json!({"format": "rgb565", "width": 48, "offset": 16, "row_padding": 2})), ("view.get_shape", json!({}))]
 }
 
 /// What a call to one of this module's methods would do, in plain words,
@@ -39,6 +41,9 @@ pub(super) fn describe_call(_workspace: &mut dyn Workspace, method: &str, params
         "view.set_shape" => {
             let params: SetShapeParams = serde_json::from_value(params.clone()).ok()?;
             let mut changes = Vec::new();
+            if let Some(format) = params.format {
+                changes.push(format!("pixels as {}", format.label()));
+            }
             if let Some(width) = params.width {
                 changes.push(format!("{width} pixels per row"));
             }
@@ -61,6 +66,8 @@ pub(super) fn describe_call(_workspace: &mut dyn Workspace, method: &str, params
 /// The shape a document's bytes are drawn in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ViewShape {
+    /// How bytes are read as pixels.
+    pub format: PixelFormat,
     /// Pixels per row.
     pub width: usize,
     /// Document offset of the first pixel.
@@ -73,7 +80,7 @@ pub struct ViewShape {
 
 impl Default for ViewShape {
     fn default() -> Self {
-        ViewShape { width: crate::preferences::DEFAULT_WIDTH, offset: 0, bit_offset: 0, row_padding: 0 }
+        ViewShape { format: PixelFormat::Gray8, width: crate::preferences::DEFAULT_WIDTH, offset: 0, bit_offset: 0, row_padding: 0 }
     }
 }
 
@@ -93,6 +100,9 @@ pub struct SetShapeParams {
     /// Document id, path or "current" (the default).
     #[serde(default)]
     pub doc: Option<String>,
+    /// How bytes are read as pixels, such as "gray8", "rgb565" or "bit1".
+    #[serde(default)]
+    pub format: Option<PixelFormat>,
     /// Pixels per row, 1 to 16384.
     #[serde(default)]
     pub width: Option<usize>,
@@ -126,6 +136,9 @@ pub fn set_shape(workspace: &mut dyn Workspace, params: SetShapeParams) -> Resul
     let id = workspace::resolve(workspace, params.doc.as_deref())?;
     let len = workspace::info(workspace, &id)?.len;
     let mut shape = workspace.shape(&id).ok_or_else(|| ApiError::not_found(format!("document '{id}' has closed")))?;
+    if let Some(format) = params.format {
+        shape.format = format;
+    }
     if let Some(width) = params.width {
         if !(1..=MAX_WIDTH).contains(&width) {
             return Err(ApiError::invalid_params(format!("a width of {width} pixels is outside 1 to {MAX_WIDTH}")));
@@ -163,7 +176,7 @@ mod tests {
         let mut workspace = workspace_with("a.bin", &[0u8; 256]);
         call(&mut workspace, "view.set_shape", json!({"width": 48, "row_padding": 4})).unwrap();
         let shape = call(&mut workspace, "view.set_shape", json!({"offset": 16})).unwrap();
-        assert_eq!(shape["shape"], json!({"width": 48, "offset": 16, "bit_offset": 0, "row_padding": 4}));
+        assert_eq!(shape["shape"], json!({"format": "gray8", "width": 48, "offset": 16, "bit_offset": 0, "row_padding": 4}));
         assert_eq!(workspace.view("doc-1").unwrap().record_stride, Some(52), "columns and findings read records 52 bytes apart");
     }
 
@@ -173,6 +186,35 @@ mod tests {
         assert_eq!(call(&mut workspace, "view.set_shape", json!({"offset": 17})).unwrap_err().code, ErrorCode::OutOfRange);
         assert_eq!(call(&mut workspace, "view.set_shape", json!({"width": 0})).unwrap_err().code, ErrorCode::InvalidParams);
         assert_eq!(call(&mut workspace, "view.set_shape", json!({"bit_offset": 8})).unwrap_err().code, ErrorCode::InvalidParams);
-        assert_eq!(call(&mut workspace, "view.get_shape", json!({})).unwrap()["shape"]["offset"], 0, "nothing changed");
+        assert_eq!(call(&mut workspace, "view.set_shape", json!({"format": "rgb9"})).unwrap_err().code, ErrorCode::InvalidParams);
+        let shape = call(&mut workspace, "view.get_shape", json!({})).unwrap()["shape"].clone();
+        assert_eq!((shape["offset"].as_u64(), shape["format"].as_str()), (Some(0), Some("gray8")), "nothing changed");
+    }
+
+    #[test]
+    fn a_pixel_format_sets_how_many_bytes_a_row_reads() {
+        let mut workspace = workspace_with("a.bin", &[0u8; 256]);
+        let shape = call(&mut workspace, "view.set_shape", json!({"format": "rgb565", "width": 16, "row_padding": 2})).unwrap();
+        assert_eq!(shape["shape"]["format"], "rgb565");
+        assert_eq!(workspace.view("doc-1").unwrap().record_stride, Some(34), "16 two-byte pixels and 2 bytes of padding");
+        call(&mut workspace, "view.set_shape", json!({"format": "bit1"})).unwrap();
+        assert_eq!(workspace.view("doc-1").unwrap().record_stride, Some(4), "16 one-bit pixels are 2 bytes");
+    }
+
+    mod window {
+        use serde_json::json;
+
+        use crate::api::{Caller, call};
+        use crate::app::{Launch, ViewerApp};
+        use crate::raster::PixelFormat;
+
+        #[test]
+        fn the_window_draws_its_bytes_in_the_pixel_format_set() {
+            let mut app = ViewerApp::new(Launch::default());
+            app.open_bytes(vec![0; 64], "test.bin".to_string());
+            let shape = call(&mut app, &Caller::Panel, "view.set_shape", json!({"format": "rgba8", "width": 4})).unwrap();
+            assert_eq!((app.shape.format, app.shape.width), (PixelFormat::Rgba8, 4));
+            assert_eq!(shape["shape"]["format"], "rgba8");
+        }
     }
 }

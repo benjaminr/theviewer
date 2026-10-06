@@ -89,10 +89,13 @@ impl Palette {
     }
 }
 
-/// How bytes are interpreted as pixels.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// How bytes are interpreted as pixels. In JSON it is the short name the
+/// command line takes, such as "gray8" or "rgb565".
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "lowercase")]
 pub enum PixelFormat {
     /// One bit per pixel, most significant bit first.
+    #[serde(rename = "bit1")]
     Bit1Msb,
     /// One bit per pixel, least significant bit first.
     Bit1Lsb,
@@ -101,6 +104,7 @@ pub enum PixelFormat {
     /// One byte per pixel, greyscale.
     Gray8,
     /// One byte per pixel, coloured by byte class (null / ascii / control / high).
+    #[serde(rename = "class")]
     ByteClass,
     /// Two bytes per pixel, 5-6-5 little endian.
     Rgb565,
@@ -669,6 +673,15 @@ pub fn shift_left_bits(buffer: &mut [u8], bits: u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_pixel_format_is_written_in_json_as_its_command_line_name() {
+        for format in PixelFormat::ALL {
+            let json = serde_json::to_value(format).unwrap();
+            assert_eq!(json, format.short_name(), "{format:?}");
+            assert_eq!(serde_json::from_value::<PixelFormat>(json).unwrap(), format);
+        }
+    }
 
     #[test]
     fn one_bit_msb_maps_each_bit_to_black_or_white() {
