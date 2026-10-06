@@ -3,13 +3,12 @@
 //! and list every parameter set that fits.
 
 use std::sync::mpsc::{self, Receiver};
-use std::thread;
 use std::time::Duration;
 
 use eframe::egui::{self, RichText, Ui};
 
 use crate::app::ViewerApp;
-use crate::crc_solver::{self, CrcPosition, CrcSolution, CrcWidth, SolveError, SolveReport, SolverOptions, StoredOrder};
+use crate::crc_solver::{self, CrcSolution, CrcWidth, SolveError, SolveReport, SolverOptions, StoredOrder};
 use crate::ops;
 use crate::theme;
 
@@ -189,32 +188,52 @@ fn coverage_checkbox(ui: &mut Ui, coverage: &mut CoverageChoice) {
     }
 }
 
-/// Read the records and start the solver thread.
+/// The person asks for a solve of the records chosen with the options set:
+/// `checksums.solve_crc`, carried out once the panel is drawn.
 fn start_solve(state: &mut CrcSolverState, app: &mut ViewerApp) {
     state.input_error = None;
-    let plan = match record_plan(state, app) {
-        Ok(plan) => plan,
-        Err(message) => {
-            state.input_error = Some(message);
-            return;
-        }
+    match solve_params(state, app) {
+        Ok(params) => app.perform_later("checksums.solve_crc", params),
+        Err(message) => state.input_error = Some(message),
+    }
+}
+
+/// The parameters of `checksums.solve_crc` for the panel's inputs, or why
+/// they cannot be worked out.
+fn solve_params(state: &CrcSolverState, app: &ViewerApp) -> Result<serde_json::Value, String> {
+    let plan = record_plan(state, app)?;
+    let offset = match state.position {
+        PositionChoice::End => None,
+        PositionChoice::Offset => Some(parse_field(&state.offset_text, "CRC offset", 0)?),
     };
-    let options = match solver_options(state) {
-        Ok(options) => options,
-        Err(message) => {
-            state.input_error = Some(message);
-            return;
-        }
-    };
-    let bytes = app.document.read_range(plan.start, plan.record_len * plan.count);
+    Ok(serde_json::json!({
+        "start": plan.start,
+        "record_len": plan.record_len,
+        "count": plan.count,
+        "width": state.width.bits(),
+        "order": crate::api::tools::checksums::CrcOrder::of(state.order),
+        "offset": offset,
+        "try_skips": state.coverage == CoverageChoice::TryHeaderSkips,
+    }))
+}
+
+/// Solve the records in `bytes` (from document offset `start`), each
+/// `record_len` bytes long.
+pub(crate) fn solve_records(bytes: &[u8], start: usize, record_len: usize, options: &SolverOptions) -> SolveOutcome {
+    let records = records_from_bytes(bytes, record_len);
+    let result = crc_solver::solve(&records, options);
+    SolveOutcome { start, record_len, records: records.len(), result }
+}
+
+/// Wait for a solve `checksums.solve_crc` started, to show it in the
+/// panel; returns where the outcome is sent.
+pub(crate) fn await_solve(app: &mut ViewerApp) -> mpsc::Sender<SolveOutcome> {
     let (sender, receiver) = mpsc::channel();
-    thread::spawn(move || {
-        let records = records_from_bytes(&bytes, plan.record_len);
-        let result = crc_solver::solve(&records, &options);
-        let _ = sender.send(SolveOutcome { start: plan.start, record_len: plan.record_len, records: records.len(), result });
-    });
+    let state = &mut app.bench.panels.crc_solver;
     state.pending = Some(receiver);
     state.outcome = None;
+    state.input_error = None;
+    sender
 }
 
 /// Work out which bytes to read from the inputs.
@@ -249,18 +268,6 @@ fn record_plan(state: &CrcSolverState, app: &ViewerApp) -> Result<RecordPlan, St
         return Err(format!("Need at least 2 whole records of {record_len} bytes; found {count}."));
     }
     Ok(RecordPlan { start, record_len, count })
-}
-
-fn solver_options(state: &CrcSolverState) -> Result<SolverOptions, String> {
-    let position = match state.position {
-        PositionChoice::End => CrcPosition::End,
-        PositionChoice::Offset => CrcPosition::Offset(parse_field(&state.offset_text, "CRC offset", 0)?),
-    };
-    let max_skip = match state.coverage {
-        CoverageChoice::TryHeaderSkips => crc_solver::DEFAULT_MAX_SKIP,
-        CoverageChoice::WholeRecord => 0,
-    };
-    Ok(SolverOptions { width: state.width, position, order: state.order, max_skip, ..SolverOptions::default() })
 }
 
 /// Parse a decimal or hex field; empty gives `default`.
@@ -356,5 +363,54 @@ mod tests {
         assert_eq!(parse_field("  ", "start offset", 7), Ok(7));
         let error = parse_field("ten", "record length", 0).expect_err("not a number");
         assert!(error.contains("record length"));
+    }
+
+    /// Records of 12 bytes, each ending with its CRC-16/XMODEM, big-endian.
+    fn xmodem_records() -> Vec<u8> {
+        let params = crc_solver::CATALOGUE.iter().find(|entry| entry.name == "CRC-16/XMODEM").map(|entry| entry.params).expect("XMODEM in the catalogue");
+        (0..8u8)
+            .flat_map(|index| {
+                let mut record: Vec<u8> = (0..10).map(|byte: u8| byte.wrapping_mul(7).wrapping_add(index * 13)).collect();
+                let crc = params.compute(&record) as u16;
+                record.extend(crc.to_be_bytes());
+                record
+            })
+            .collect()
+    }
+
+    #[test]
+    fn solving_is_a_crc_solver_job_with_every_input_in_its_step_that_fills_the_panel() {
+        use serde_json::json;
+        let mut app = ViewerApp::new(crate::app::Launch::default());
+        app.open_bytes(xmodem_records(), "records.bin".to_string());
+        crate::actions::take_performed();
+        // Drawn with its state lent out, as the panel is.
+        let mut state = std::mem::take(&mut app.bench.panels.crc_solver);
+        state.source = RecordSource::FixedLength;
+        state.start_text = "0".to_string();
+        state.record_len_text = "12".to_string();
+        state.coverage = CoverageChoice::WholeRecord;
+        start_solve(&mut state, &mut app);
+        app.bench.panels.crc_solver = state;
+        assert!(crate::actions::take_performed().is_empty(), "carried out once the panel is drawn");
+        app.perform_waiting_actions();
+        let expected = json!({"start": 0, "record_len": 12, "count": 8, "width": 16, "order": "either", "offset": null, "try_skips": false});
+        assert_eq!(crate::actions::take_performed(), [("checksums.solve_crc".to_string(), expected)]);
+        let receiver = app.bench.panels.crc_solver.pending.as_ref().expect("the panel waits for the solve");
+        let outcome = receiver.recv_timeout(std::time::Duration::from_secs(30)).expect("the solve finishes");
+        let report = outcome.result.expect("solved");
+        assert!(report.solutions.iter().any(|solution| solution.named.as_ref().is_some_and(|named| named.name == "CRC-16/XMODEM")));
+    }
+
+    #[test]
+    fn records_that_cannot_be_solved_are_explained_in_the_panel_without_a_step() {
+        let mut app = ViewerApp::new(crate::app::Launch::default());
+        app.open_bytes(xmodem_records(), "records.bin".to_string());
+        crate::actions::take_performed();
+        let mut state = CrcSolverState { source: RecordSource::FixedLength, record_len_text: "60".to_string(), ..Default::default() };
+        start_solve(&mut state, &mut app);
+        app.perform_waiting_actions();
+        assert!(crate::actions::take_performed().is_empty());
+        assert_eq!(state.input_error.as_deref(), Some("Need at least 2 whole records of 60 bytes; found 1."));
     }
 }

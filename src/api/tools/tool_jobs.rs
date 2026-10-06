@@ -64,6 +64,12 @@ impl Summary {
     pub fn of(outcome: impl Into<String>, result: impl serde::Serialize) -> Summary {
         Summary { ok: true, outcome: outcome.into(), result: serde_json::to_value(result).unwrap_or(Value::Null) }
     }
+
+    /// Work that could not be done, with why.
+    pub fn failed(outcome: impl Into<String>) -> Summary {
+        let outcome = outcome.into();
+        Summary { ok: false, result: serde_json::json!({ "error": outcome }), outcome }
+    }
 }
 
 /// Start a job of `kind` (titled `title`) for `producer` about `span`'s

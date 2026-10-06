@@ -17,21 +17,24 @@ pub(crate) mod tool_jobs;
 pub mod statistics;
 pub mod strings;
 pub mod xor;
+pub mod checksums;
+pub mod diff;
+pub mod disasm;
 
 /// This module's methods, in the order `api.describe` lists them within
 /// their namespace. A new method is added here, and only here.
-pub(super) const METHODS: &[super::Method] = &join::join::<{ statistics::METHODS.len() + strings::METHODS.len() + xor::METHODS.len() }>(&[statistics::METHODS, strings::METHODS, xor::METHODS]);
+pub(super) const METHODS: &[super::Method] = &join::join::<{ statistics::METHODS.len() + strings::METHODS.len() + xor::METHODS.len() + checksums::METHODS.len() + diff::METHODS.len() + disasm::METHODS.len() }>(&[statistics::METHODS, strings::METHODS, xor::METHODS, checksums::METHODS, diff::METHODS, disasm::METHODS]);
 
 /// An example call of each of [`METHODS`], run in order on a fresh
 /// document by the API's tests, whose results must fit the result schema.
 #[cfg(test)]
 pub(super) fn examples() -> Vec<(&'static str, serde_json::Value)> {
-    [statistics::examples(), strings::examples(), xor::examples()].concat()
+    [statistics::examples(), strings::examples(), xor::examples(), checksums::examples(), diff::examples(), disasm::examples()].concat()
 }
 
 /// What a call to one of this module's methods would do, in plain words,
 /// for the window that asks the person to confirm it; `None` leaves it to
 /// the general "Call method with params".
-pub(super) fn describe_call(_workspace: &mut dyn Workspace, _method: &str, _params: &serde_json::Value) -> Option<String> {
-    None
+pub(super) fn describe_call(workspace: &mut dyn Workspace, method: &str, params: &serde_json::Value) -> Option<String> {
+    disasm::describe_call(workspace, method, params)
 }

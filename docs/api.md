@@ -110,6 +110,11 @@ Errors are `{code, message, data}`, with these codes:
 | [`statistics.analyse`](#statisticsanalyse) | job | Start the Statistics tool's measure of a span (at most 64 MiB) as a job: the ent randomness tests with a verdict, the byte histogram, entropy and compressibility along the span and the most repeated byte sequences are job.finished's result, and in the window they fill the Statistics tab. |
 | [`strings.find`](#stringsfind) | job | Start the Strings tool's search of a span (at most 64 MiB) for runs of text at least min_chars long in the encodings chosen, as a job: the strings found (at most 200000), each with its offset, length, encoding, text and what it looks like (a URL, a path, a key…), are job.finished's result, and in the window they fill the Strings tab. |
 | [`xor.recover_keys`](#xorrecover_keys) | read | Recover single-byte and repeating XOR keys for a span (at most 1 MiB) by letter frequency, index of coincidence and the key showing through zero padding, best first, with a preview of each decode and the likely key lengths; transform.apply with {"op": "xor"} applies one. |
+| [`checksums.digests`](#checksumsdigests) | read | The digests of a span (at most 64 MiB): CRC-32, Adler-32, MD5, SHA-1, SHA-256, the 8- and 16-bit sums and the XOR of every byte. |
+| [`checksums.find_stored`](#checksumsfind_stored) | read | Find a CRC, Adler or sum stored in a span (at most 64 MiB) that covers part of it, testing header and trailer fields, and the fields at the boundaries given, against the bytes before, after and around them. |
+| [`checksums.solve_crc`](#checksumssolve_crc) | job | Start the CRC solver on records of equal length that each carry a stored CRC, as a job: every polynomial, init, xorout and reflection that reproduces all the stored values (like reveng), with the closest catalogue algorithm, is job.finished's result, and in the window it fills the CRC solver. |
+| [`diff.run`](#diffrun) | job | Start a comparison of a document with another file as a job: the regions replaced, only in the document and only in the other file (inserted, deleted and changed, not just flipped bytes), with the bytes equal and changed, are job.finished's result, and in the window they fill the Diff tab and are outlined on the views. |
+| [`disasm.set_arch`](#disasmset_arch) | view | Choose the architecture the Disassembly tab decodes as, or auto (the executable header's, else a guess from the bytes); headless there is no listing to change, and the choice is only returned. |
 | [`view.get_shape`](#viewget_shape) | read | The shape a document's bytes are drawn in: the pixel format, pixels per row, the offset of the first pixel, a bit shift and the bytes skipped after each row. |
 | [`view.set_shape`](#viewset_shape) | view | Change the shape a document's bytes are drawn in (the pixel format, pixels per row, the first pixel's offset and bit, the padding after each row); what is not given stays as it is. |
 | [`view.fold`](#viewfold) | view | Skip ranges of a document in its views (the raster and the hex dump) without deleting them; a marker shows where each was. |
@@ -1667,6 +1672,91 @@ Recover single-byte and repeating XOR keys for a span (at most 1 MiB) by letter 
 | `key_lengths` | array of KeyLength | yes | The likely key lengths, best first. |
 | `len` | integer | yes | Bytes searched. |
 | `start` | integer | yes | First offset searched. |
+
+### checksums.digests
+
+The digests of a span (at most 64 MiB): CRC-32, Adler-32, MD5, SHA-1, SHA-256, the 8- and 16-bit sums and the XOR of every byte.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `doc` | string | no | Document id, path or "current" (the default). |
+| `len` | integer | no | Bytes digested, at most 64 MiB; to the end of the document (or 64 MiB) when omitted. |
+| `start` | integer | no | First offset digested (0 by default). |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `adler32` | string | yes |  |
+| `crc32` | string | yes |  |
+| `len` | integer | yes |  |
+| `md5` | string | yes |  |
+| `sha1` | string | yes |  |
+| `sha256` | string | yes |  |
+| `start` | integer | yes |  |
+| `sum16` | string | yes |  |
+| `sum8` | string | yes |  |
+| `xor8` | string | yes |  |
+
+### checksums.find_stored
+
+Find a CRC, Adler or sum stored in a span (at most 64 MiB) that covers part of it, testing header and trailer fields, and the fields at the boundaries given, against the bytes before, after and around them.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `boundaries` | array of integer | no | Document offsets where known fields start or end (the window passes those of the findings in the span), also tested as stored values and as the edges of covered ranges. |
+| `doc` | string | no | Document id, path or "current" (the default). |
+| `len` | integer | no | Bytes searched, at most 64 MiB; to the end of the document (or 64 MiB) when omitted. |
+| `start` | integer | no | First offset searched (0 by default). |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `len` | integer | yes |  |
+| `matches` | array of StoredChecksum | yes | The checksums that match, in the order found. |
+| `start` | integer | yes |  |
+
+### checksums.solve_crc
+
+Start the CRC solver on records of equal length that each carry a stored CRC, as a job: every polynomial, init, xorout and reflection that reproduces all the stored values (like reveng), with the closest catalogue algorithm, is job.finished's result, and in the window it fills the CRC solver.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `count` | integer | yes | Records, at least 2; the first 256 are solved. |
+| `doc` | string | no | Document id, path or "current" (the default). |
+| `offset` | integer | no | Offset of the CRC within each record, covering the bytes before it; the last bytes of each record when omitted. |
+| `order` | `"big"` \| `"little"` \| `"either"` | no | Byte order of the stored CRC (either, by default). |
+| `record_len` | integer | yes | Bytes in each record, CRC included. |
+| `start` | integer | yes | Document offset of the first record. |
+| `try_skips` | boolean | no | Also try leaving up to 4 leading bytes of each record out of the CRC. |
+| `width` | integer | no | Bits in the CRC: 8, 16 (the default) or 32. |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `job` | string | yes | Follow it with jobs.status, or on job.progress and job.finished. |
+
+### diff.run
+
+Start a comparison of a document with another file as a job: the regions replaced, only in the document and only in the other file (inserted, deleted and changed, not just flipped bytes), with the bytes equal and changed, are job.finished's result, and in the window they fill the Diff tab and are outlined on the views.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `doc` | string | no | Document id, path or "current" (the default). |
+| `path` | string | yes | The file to compare it with. |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `job` | string | yes | Follow it with jobs.status, or on job.progress and job.finished. |
+
+### disasm.set_arch
+
+Choose the architecture the Disassembly tab decodes as, or auto (the executable header's, else a guess from the bytes); headless there is no listing to change, and the choice is only returned.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `arch` | `"x86_64"` \| `"x86_32"` \| `"arm64"` \| `"arm32"` \| `"thumb"` \| `"riscv64"` \| `"riscv32"` \| `"mips32"` \| `"powerpc32"` \| `"auto"` | yes | The architecture, such as "thumb" or "x86_64", or "auto". |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `arch` | `"x86_64"` \| `"x86_32"` \| `"arm64"` \| `"arm32"` \| `"thumb"` \| `"riscv64"` \| `"riscv32"` \| `"mips32"` \| `"powerpc32"` \| `"auto"` | yes | The architecture chosen. |
+| `shown` | boolean | yes | Whether a Disassembly tab was there to change (only in the window). |
 
 ### view.get_shape
 

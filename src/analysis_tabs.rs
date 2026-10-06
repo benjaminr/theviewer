@@ -1,14 +1,15 @@
 //! Dock tabs for disassembly, checksums and diff, and the pointer graph drawn
 //! over the raster.
 
-use std::sync::mpsc::{self, Receiver};
-use std::thread;
+use std::sync::mpsc::{self, Receiver, Sender};
 
 use eframe::egui::{self, Color32, ColorImage, Painter, Pos2, Rect, RichText, Sense, Stroke, TextureHandle, TextureOptions, Ui, pos2, vec2};
 
 use crate::app::ViewerApp;
-use crate::checksums::{self, ChecksumMatch, Digests};
-use crate::diff::{self, DiffLimits, DiffOp, DiffResult};
+use crate::api::tools::checksums::StoredChecksum;
+use crate::checksums::{self, Digests};
+use crate::api::tools::diff::DiffOutcome;
+use crate::diff::{self, DiffOp, DiffResult};
 use crate::disasm::{self, AddressMap, Arch, Instruction};
 use crate::document::Document;
 use crate::plugin::{Category, Finding};
@@ -20,10 +21,14 @@ use crate::theme;
 const LISTING_LEN: usize = 300;
 /// Largest range hashed or searched for checksums.
 const CHECKSUM_LIMIT: usize = 64 * 1024 * 1024;
-/// Largest in-memory copy made when the open document has unsaved edits.
-const DIFF_COPY_LIMIT: usize = 512 * 1024 * 1024;
 /// Differences listed in the diff tab.
 const MAX_LISTED_OPS: usize = 2000;
+/// The key the stored checksum shown is published under.
+const CHECKSUM_KEY: &str = "checksum";
+/// The key the differences found by a comparison are published under.
+const DIFF_KEY: &str = "diff";
+/// Most differences outlined on the views.
+const MAX_OUTLINED_DIFFERENCES: usize = 5000;
 
 /// Which architecture the disassembler uses.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -45,10 +50,10 @@ pub struct AnalysisState {
     listing: Option<Listing>,
 
     pub digests: Option<(usize, usize, Digests)>,
-    pub checksum_matches: Option<Vec<ChecksumMatch>>,
+    pub checksum_matches: Option<Vec<StoredChecksum>>,
 
     pub diff_other: Option<String>,
-    diff_pending: Option<Receiver<Result<(Document, DiffResult), String>>>,
+    diff_pending: Option<Receiver<DiffOutcome>>,
     pub diff: Option<DiffResult>,
     other: Option<Document>,
     other_texture: Option<(usize, usize, TextureHandle)>,
@@ -114,19 +119,23 @@ pub fn show_disassembly(app: &mut ViewerApp, ui: &mut Ui) {
             ArchChoice::Auto => "Auto".to_string(),
             ArchChoice::Fixed(arch) => arch.label().to_string(),
         };
+        let mut chosen = app.bench.analysis.arch;
         egui::ComboBox::from_id_salt("disasm-arch").selected_text(label).show_ui(ui, |ui| {
-            ui.selectable_value(&mut app.bench.analysis.arch, ArchChoice::Auto, "Auto");
+            ui.selectable_value(&mut chosen, ArchChoice::Auto, "Auto");
             for arch in Arch::ALL {
-                ui.selectable_value(&mut app.bench.analysis.arch, ArchChoice::Fixed(arch), arch.label());
+                ui.selectable_value(&mut chosen, ArchChoice::Fixed(arch), arch.label());
             }
         });
+        if chosen != app.bench.analysis.arch {
+            set_disassembly_arch(app, chosen);
+        }
         match &header_arch {
             Some((arch, entry, why)) => {
                 ui.label(RichText::new(format!("{} from the header ({why})", arch.label())).small().color(theme::TEXT_DIM));
                 if let Some(offset) = map.as_ref().and_then(|m| m.offset_of(*entry))
                     && ui.button(format!("Entry point {entry:#x}")).clicked()
                 {
-                    app.jump_to_offset(offset);
+                    app.jump_found(offset);
                 }
             }
             None => {
@@ -210,8 +219,14 @@ pub fn show_disassembly(app: &mut ViewerApp, ui: &mut Ui) {
         });
     });
     if let Some(offset) = jump {
-        app.jump_to_offset(offset);
+        app.jump_found(offset);
     }
+}
+
+/// The person chooses the architecture to disassemble as: `disasm.set_arch`.
+pub fn set_disassembly_arch(app: &mut ViewerApp, choice: ArchChoice) -> bool {
+    let arch = crate::api::tools::disasm::DisasmArch::of_choice(choice);
+    app.perform("disasm.set_arch", serde_json::json!({ "arch": arch })).is_ok()
 }
 
 // ---------------------------------------------------------------------------
@@ -255,15 +270,7 @@ pub fn show_checksums(app: &mut ViewerApp, ui: &mut Ui) {
     ui.separator();
     ui.horizontal(|ui| {
         if ui.button("Find the checksum").on_hover_text("Look for a CRC, Adler or sum stored in the data that covers part of it").clicked() {
-            let bytes = app.document.read_range(start, len);
-            let boundaries: Vec<usize> = app
-                .patterns_in(start, start + len)
-                .filter(|f| !f.weak())
-                .flat_map(|f| [f.start.saturating_sub(start), f.end().saturating_sub(start)])
-                .filter(|&b| b > 0 && b < len)
-                .collect();
-            app.bench.analysis.checksum_matches = Some(checksums::find_checksums(&bytes, start, &[], &boundaries));
-            app.note_tool_result(crate::dock::DockTab::Checksums);
+            find_stored_checksum(app, start, len);
         }
         ui.label(RichText::new("tests header and trailer fields against the bytes before, after and around them").small().color(theme::TEXT_DIM));
     });
@@ -275,7 +282,7 @@ pub fn show_checksums(app: &mut ViewerApp, ui: &mut Ui) {
     let mut chosen = None;
     for found in &matches {
         ui.horizontal(|ui| {
-            ui.label(RichText::new(found.algorithm).strong().color(theme::ACCENT));
+            ui.label(RichText::new(&found.algorithm).strong().color(theme::ACCENT));
             ui.label(format!(
                 "{} {} at {:#x} covers {:#x}..{:#x}",
                 found.endian,
@@ -290,16 +297,37 @@ pub fn show_checksums(app: &mut ViewerApp, ui: &mut Ui) {
         });
     }
     if let Some(found) = chosen {
-        app.bench.pinned.retain(|f| f.id != "checksum");
-        app.bench.pinned.push(
-            Finding::new("checksum", "checksums", Category::Structure, found.value_offset, found.value_len)
-                .title(format!("{} checksum", found.algorithm))
-                .detail(format!("covers {:#x}..{:#x}", found.covered_start, found.covered_start + found.covered_len)),
-        );
-        app.anchor = Some(found.covered_start);
-        app.cursor = found.covered_start + found.covered_len;
-        app.reveal_cursor_centred();
-        app.reveal_cursor_in_hex(true);
+        show_stored_checksum(app, &found);
+    }
+}
+
+/// The person asks for a checksum stored in the span: `checksums.find_stored`,
+/// with the edges of the findings in it as the boundaries to try.
+fn find_stored_checksum(app: &mut ViewerApp, start: usize, len: usize) {
+    let mut boundaries: Vec<usize> = app
+        .patterns_in(start, start + len)
+        .filter(|finding| !finding.weak())
+        .flat_map(|finding| [finding.start, finding.end()])
+        .filter(|&boundary| boundary > start && boundary < start + len)
+        .collect();
+    boundaries.sort_unstable();
+    boundaries.dedup();
+    let params = serde_json::json!({ "start": start, "len": len, "boundaries": boundaries });
+    if let Ok(found) = app.perform_typed::<crate::api::tools::checksums::StoredChecksums>("checksums.find_stored", params) {
+        app.bench.analysis.checksum_matches = Some(found.matches);
+        app.note_tool_result(crate::dock::DockTab::Checksums);
+    }
+}
+
+/// Pin a stored checksum on the views (`findings.publish` under the key
+/// "checksum", replacing the one shown before) and select what it covers.
+fn show_stored_checksum(app: &mut ViewerApp, found: &StoredChecksum) {
+    let (covered_start, covered_len) = (found.covered_start as usize, found.covered_len as usize);
+    let finding = Finding::new("checksum", "checksums", Category::Structure, found.value_offset as usize, found.value_len as usize)
+        .title(format!("{} checksum", found.algorithm))
+        .detail(format!("covers {:#x}..{:#x}", covered_start, covered_start + covered_len));
+    if app.perform("findings.publish", serde_json::json!({ "findings": [finding], "key": CHECKSUM_KEY })).is_ok() {
+        app.select_found(covered_start, covered_len);
     }
 }
 
@@ -307,48 +335,48 @@ pub fn show_checksums(app: &mut ViewerApp, ui: &mut Ui) {
 // Diff
 // ---------------------------------------------------------------------------
 
-/// Compare the open document with another file on a background thread.
+/// The person compares the open document with another file: `diff.run`.
 pub fn start_diff(app: &mut ViewerApp, other_path: std::path::PathBuf) {
-    app.note_tool_result(crate::dock::DockTab::Diff);
-    let own = match app.document.path().filter(|_| !app.document.is_modified()).map(|p| p.to_path_buf()) {
-        Some(path) => DiffSide::Path(path),
-        None => DiffSide::Bytes(app.document.read_range(0, DIFF_COPY_LIMIT)),
-    };
-    let (sender, receiver) = mpsc::channel();
-    thread::spawn(move || {
-        let result = (|| {
-            let mut a = match own {
-                DiffSide::Path(path) => Document::open(&path).map_err(|e| format!("{e:#}"))?,
-                DiffSide::Bytes(bytes) => Document::from_bytes(bytes),
-            };
-            let mut b = Document::open(&other_path).map_err(|e| format!("{e:#}"))?;
-            let result = diff::diff(&mut a, &mut b, DiffLimits::default());
-            Ok((b, result))
-        })();
-        let _ = sender.send(result);
-    });
-    app.bench.analysis.diff_pending = Some(receiver);
-    app.bench.analysis.diff = None;
+    let _ = app.perform("diff.run", serde_json::json!({ "path": other_path.display().to_string() }));
 }
 
-enum DiffSide {
-    Path(std::path::PathBuf),
-    Bytes(Vec<u8>),
+/// Wait for a comparison `diff.run` started, to show it in the Diff tab;
+/// returns where its outcome is sent.
+pub(crate) fn await_diff(app: &mut ViewerApp) -> Sender<DiffOutcome> {
+    app.note_tool_result(crate::dock::DockTab::Diff);
+    let (sender, receiver) = mpsc::channel();
+    app.bench.analysis.diff_pending = Some(receiver);
+    app.bench.analysis.diff = None;
+    sender
+}
+
+/// Outline where the document differs on the views: `findings.publish`
+/// under the key "diff", replacing the last comparison's.
+fn outline_differences(app: &mut ViewerApp, result: &DiffResult) {
+    let findings: Vec<Finding> = result
+        .ops
+        .iter()
+        .filter_map(|op| match *op {
+            DiffOp::Replace { a, a_len, .. } => Some((a, a_len, "Differs")),
+            DiffOp::Delete { a, len } => Some((a, len, "Only in this file")),
+            DiffOp::Insert { .. } | DiffOp::Equal { .. } => None,
+        })
+        .take(MAX_OUTLINED_DIFFERENCES)
+        .map(|(start, len, label)| Finding::new("diff", "diff", Category::Custom, start, len.max(1)).title(label).detail(format!("{len} bytes")))
+        .collect();
+    // The comparison's own effect, not a step of the person's: published
+    // as theirs, but not performed again.
+    let params = crate::api::findings::PublishParams { doc: None, findings, key: DIFF_KEY.to_string() };
+    if let Err(error) = crate::api::findings::publish(app, &crate::api::Caller::Panel, params) {
+        app.status = format!("The differences could not be outlined: {}", error.message);
+    }
 }
 
 fn poll_diff(app: &mut ViewerApp) {
     let Some(receiver) = &app.bench.analysis.diff_pending else { return };
     match receiver.try_recv() {
         Ok(Ok((other, result))) => {
-            app.bench.pinned.retain(|f| f.id != "diff");
-            for op in result.ops.iter().take(5000) {
-                let (start, len, label) = match *op {
-                    DiffOp::Replace { a, a_len, .. } => (a, a_len, "Differs"),
-                    DiffOp::Delete { a, len } => (a, len, "Only in this file"),
-                    DiffOp::Insert { .. } | DiffOp::Equal { .. } => continue,
-                };
-                app.bench.pinned.push(Finding::new("diff", "diff", Category::Custom, start, len.max(1)).title(label).detail(format!("{len} bytes")));
-            }
+            outline_differences(app, &result);
             app.status = format!("{} bytes equal, {} differ", result.equal_bytes, result.changed_bytes);
             app.bench.analysis.diff = Some(result);
             app.bench.analysis.other = Some(other);
@@ -410,7 +438,7 @@ pub fn show_diff(app: &mut ViewerApp, ui: &mut Ui) {
         ui.vertical(|ui| show_other_side(app, ui, &result));
     });
     if let Some(offset) = jump {
-        app.jump_to_offset(offset);
+        app.jump_found(offset);
     }
 }
 
@@ -487,5 +515,84 @@ fn arrow(painter: &Painter, from: Pos2, to: Pos2, colour: Color32) {
         let back = to - direction * 7.0;
         painter.line_segment([to, back + side], stroke);
         painter.line_segment([to, back - side], stroke);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use serde_json::json;
+
+    use super::*;
+    use crate::actions::take_performed;
+    use crate::app::Launch;
+
+    fn app_with(bytes: &[u8]) -> ViewerApp {
+        let mut app = ViewerApp::new(Launch::default());
+        app.open_bytes(bytes.to_vec(), "test.bin".to_string());
+        app.run_bus();
+        take_performed();
+        app
+    }
+
+    /// A record whose last four bytes are the CRC-32 of the rest.
+    fn record_with_crc() -> Vec<u8> {
+        let mut record = b"some header and a payload worth checking".to_vec();
+        let crc = checksums::crc32(&record);
+        record.extend(crc.to_le_bytes());
+        record
+    }
+
+    #[test]
+    fn finding_the_checksum_reads_it_through_the_api_and_showing_it_pins_it_and_selects_what_it_covers() {
+        let mut app = app_with(&record_with_crc());
+        find_stored_checksum(&mut app, 0, 44);
+        assert_eq!(take_performed(), [("checksums.find_stored".to_string(), json!({"start": 0, "len": 44, "boundaries": []}))]);
+        let found = app.bench.analysis.checksum_matches.clone().expect("listed");
+        assert_eq!((found[0].algorithm.as_str(), found[0].value_offset), ("CRC-32", 40));
+        show_stored_checksum(&mut app, &found[0]);
+        let performed = take_performed();
+        assert_eq!(performed[0].0, "findings.publish");
+        assert_eq!(performed[0].1["key"], "checksum");
+        assert_eq!(performed[0].1["findings"][0]["start"], 40);
+        assert_eq!(performed[1], ("selection.set".to_string(), json!({"selection": {"range": [0, 40]}})));
+        app.run_bus();
+        assert!(app.published_findings().iter().any(|(producer, finding)| *producer == "panel" && finding.id == "checksum"), "outlined on the views");
+        assert_eq!(app.selection(), Some((0, 40)));
+    }
+
+    #[test]
+    fn comparing_with_a_file_is_a_diff_job_whose_differences_are_outlined() {
+        let original: Vec<u8> = (0..20_000u32).map(|index| (index * 31 % 251) as u8).collect();
+        let mut changed = original.clone();
+        changed[5000..5010].copy_from_slice(b"0123456789");
+        let other = std::env::temp_dir().join(format!("theviewer-diff-tab-{}.bin", std::process::id()));
+        std::fs::write(&other, &changed).unwrap();
+        let mut app = app_with(&original);
+        start_diff(&mut app, other.clone());
+        assert_eq!(take_performed(), [("diff.run".to_string(), json!({"path": other.display().to_string()}))]);
+        let receiver = app.bench.analysis.diff_pending.take().expect("the tab waits for the comparison");
+        let outcome = receiver.recv_timeout(Duration::from_secs(60)).expect("the comparison finishes");
+        std::fs::remove_file(&other).ok();
+        let (sender, receiver) = mpsc::channel();
+        sender.send(outcome).unwrap();
+        app.bench.analysis.diff_pending = Some(receiver);
+        poll_diff(&mut app);
+        assert!(take_performed().is_empty(), "the outlines are the comparison's, not another step");
+        app.run_bus();
+        let outlined: Vec<_> = app.published_findings().into_iter().filter(|(_, finding)| finding.id == "diff").map(|(producer, finding)| (producer.to_string(), finding.start)).collect();
+        assert_eq!(outlined, [("panel".to_string(), 5000)]);
+        assert_eq!(app.status, "19990 bytes equal, 10 differ");
+    }
+
+    #[test]
+    fn choosing_the_disassembly_architecture_is_a_step_of_the_person_s() {
+        let mut app = app_with(&[0x90; 64]);
+        assert!(set_disassembly_arch(&mut app, ArchChoice::Fixed(Arch::Arm64)));
+        assert_eq!(take_performed(), [("disasm.set_arch".to_string(), json!({"arch": "arm64"}))]);
+        assert_eq!(app.bench.analysis.arch, ArchChoice::Fixed(Arch::Arm64));
+        assert!(set_disassembly_arch(&mut app, ArchChoice::Auto));
+        assert_eq!(app.bench.analysis.arch, ArchChoice::Auto);
     }
 }
