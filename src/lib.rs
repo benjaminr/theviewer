@@ -79,6 +79,7 @@ pub mod panel_packets_view;
 pub mod panel_reference;
 pub mod panel_structure_map;
 pub mod panel_treemap;
+pub mod panel_workspace;
 pub mod panel_trigram;
 pub mod panels;
 pub mod parsers;

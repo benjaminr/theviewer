@@ -1555,6 +1555,28 @@ fn multi_select_mode_adds_sections_with_plain_drags_and_escape_leaves_it() {
 }
 
 #[test]
+fn the_workspace_tab_lists_the_record_width_the_period_scan_found() {
+    let mut harness = harness(sample_file("workspace.bin"));
+    harness.state_mut().start_period_scan();
+    let started = std::time::Instant::now();
+    while harness.state().scan_pending && started.elapsed().as_secs() < 10 {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        harness.step();
+    }
+    harness.state_mut().dock.toggle(theviewer::dock::DockTab::Workspace);
+    steps(&mut harness, 3);
+    assert!(harness.query_by_label_contains("record_width.estimated (1)").is_some(), "the fact's topic is listed");
+    // The fact is listed first; the log below shows its message too.
+    assert!(harness.query_all_by_label("tool:period-scan").count() >= 2, "with its producer");
+    assert!(harness.query_all_by_label_contains("64 bytes (score").count() >= 2, "and what it says");
+
+    // Its span selects the bytes the scan looked at.
+    harness.query_all_by_label("0x0–0x10000").next().expect("the fact's span").click();
+    steps(&mut harness, 2);
+    assert_eq!(harness.state().selection(), Some((0, SAMPLE_LEN)));
+}
+
+#[test]
 fn a_plugin_detector_failing_in_a_background_scan_is_shown_in_the_status_bar() {
     let mut harness = harness(sample_file("plugin-error.bin"));
     // Let the first scan, made without the plugin, finish.

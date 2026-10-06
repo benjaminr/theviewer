@@ -40,10 +40,11 @@ pub enum DockTab {
     Learn,
     Packets,
     Reference,
+    Workspace,
 }
 
 impl DockTab {
-    pub const ALL: [DockTab; 27] = [
+    pub const ALL: [DockTab; 28] = [
         DockTab::Report,
         DockTab::Assistant,
         DockTab::Template,
@@ -71,11 +72,12 @@ impl DockTab {
         DockTab::Learn,
         DockTab::Packets,
         DockTab::Reference,
+        DockTab::Workspace,
     ];
 
     /// Tabs grouped by purpose, for the tab bar.
     pub const GROUPS: [&'static [DockTab]; 5] = [
-        &[DockTab::Report, DockTab::Reference, DockTab::StructureMap, DockTab::SizeMap, DockTab::Assistant, DockTab::DotPlot, DockTab::Trigrams, DockTab::Images],
+        &[DockTab::Report, DockTab::Reference, DockTab::StructureMap, DockTab::SizeMap, DockTab::Assistant, DockTab::DotPlot, DockTab::Trigrams, DockTab::Images, DockTab::Workspace],
         &[DockTab::Template, DockTab::Columns, DockTab::Protocol, DockTab::Packets, DockTab::Bits],
         &[DockTab::Statistics, DockTab::Characterise, DockTab::Strings, DockTab::Xor, DockTab::Crypto, DockTab::Checksums, DockTab::Learn],
         &[DockTab::Disassembly, DockTab::Firmware, DockTab::Unpacked, DockTab::Forensics, DockTab::Diff, DockTab::Compare],
@@ -111,6 +113,7 @@ impl DockTab {
             DockTab::Learn => "Learn",
             DockTab::Packets => "Packets",
             DockTab::Reference => "Reference",
+            DockTab::Workspace => "Workspace",
         }
     }
 
@@ -143,6 +146,7 @@ impl DockTab {
             DockTab::Learn => "Learn a new format from samples, and fuzzy-match files and shared fragments",
             DockTab::Packets => "Packets from captures, message framing or the selection: dissect, filter, follow streams, edit and export as pcap",
             DockTab::Reference => "How the format at the cursor is organised, what each field means and which RFC or specification defines it",
+            DockTab::Workspace => "What the tools have learnt and published, by whom and why, and what just happened",
         }
     }
 }

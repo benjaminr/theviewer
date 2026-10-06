@@ -24,6 +24,7 @@ use crate::panel_reference::ReferenceState;
 use crate::panel_structure_map::StructureMapState;
 use crate::panel_treemap::TreemapState;
 use crate::panel_trigram::TrigramState;
+use crate::panel_workspace::WorkspaceState;
 
 /// The state of every self-contained tool panel.
 #[derive(Default)]
@@ -45,6 +46,7 @@ pub struct PanelStates {
     pub learn: LearnState,
     pub packets: PacketsState,
     pub reference: ReferenceState,
+    pub workspace: WorkspaceState,
 }
 
 /// Draw a panel, lending it its state from `app` for the frame. The state is
