@@ -1,5 +1,663 @@
 # Reference notes on network protocols and capture formats. See src/reference.rs
 # for the schema. Notes are written for this project; specifications are cited.
+#
+# Keys are the names the app uses: packet layer names from the dissector
+# (src/packets/dissect.rs, src/packets/application.rs), parser finding ids
+# (src/parsers/protocol.rs), signature ids and MIME types from the catalogue.
+# Field names are the exact names the dissector and parsers emit.
+
+# ---------------------------------------------------------------------------
+# Capture files
+# ---------------------------------------------------------------------------
+
+[[format]]
+id = "pcap"
+name = "pcap capture file"
+keys = [
+  "pcap",
+  "pcap capture",
+  "capture/pcap-le",
+  "capture/pcap-be",
+  "capture/pcap-le-ns",
+  "capture/pcap-be-ns",
+  "application/vnd.tcpdump.pcap",
+]
+summary = "The original libpcap/tcpdump capture file: a short file header followed by one record per captured packet, all sharing a single link-layer type."
+organisation = """
+A 24-byte file header comes first: a 4-byte magic number, a 2-byte major and minor version (2.4), two reserved 4-byte words that writers set to zero (once the time-zone offset and timestamp accuracy), the snapshot length, and the link-layer type. The magic is written in the byte order of the machine that made the file, so reading it as 0xA1B2C3D4 or 0xD4C3B2A1 tells you whether every later field is big- or little-endian; 0xA1B23C4D marks nanosecond rather than microsecond timestamps.
+
+Packet records follow back to back with no padding. Each starts with a 16-byte header (timestamp seconds, timestamp fraction, captured length, original length) and is followed by exactly the captured length of packet bytes, so the next record begins at record start + 16 + captured length. The captured length can be less than the original when the capture was truncated to the snapshot length.
+
+The link type says what the first byte of every packet is: 1 is Ethernet, 101, 228 and 229 are raw IP (no link header), 113 and 276 are Linux cooked captures, 0 is BSD loopback. Its upper bits can also record whether frames end in a frame check sequence.
+"""
+carries = ["ethernet", "ipv4", "ipv6"]
+
+[[format.specs]]
+document = "draft-ietf-opsawg-pcap-09"
+title = "PCAP Capture File Format (IETF Internet-Draft)"
+url = "https://datatracker.ietf.org/doc/html/draft-ietf-opsawg-pcap-09"
+section = "4"
+
+[[format.specs]]
+document = "tcpdump.org link types"
+title = "Link-layer header types"
+url = "https://www.tcpdump.org/linktypes.html"
+
+[[format.specs]]
+document = "pcap-savefile(5)"
+title = "libpcap savefile format manual page"
+url = "https://www.tcpdump.org/manpages/pcap-savefile.5.html"
+
+[[format.fields]]
+name = "file header"
+meaning = "The 24 bytes before the first packet record: magic, version, reserved words, snapshot length and link type."
+section = "4"
+
+[[format.fields]]
+name = "magic"
+meaning = "0xA1B2C3D4 (microsecond timestamps) or 0xA1B23C4D (nanosecond timestamps), in the writer's byte order; byte-swapped values mean the file is big-endian when read on a little-endian machine, or the reverse."
+section = "4.1"
+
+[[format.fields]]
+name = "snaplen"
+meaning = "The snapshot length: the most bytes of any packet that were kept. Longer packets are cut short, so their captured length is less than their original length."
+section = "4"
+
+[[format.fields]]
+name = "link type"
+meaning = "The link-layer header type of every packet in the file (1 Ethernet, 101 raw IP, 113 Linux cooked and so on), from the tcpdump.org registry."
+section = "4"
+
+[[format.fields]]
+name = "packets"
+meaning = "The packet records, each a 16-byte header followed by the captured bytes."
+section = "5"
+
+[[format.fields]]
+name = "packet *"
+meaning = "One packet record: timestamp seconds and fraction, captured length, original length, then the captured bytes of the packet."
+section = "5"
+
+[[format]]
+id = "pcapng"
+name = "pcapng capture file"
+keys = [
+  "pcapng",
+  "pcapng capture",
+  "capture/pcapng",
+  "capture/pcapng-be",
+  "application/vnd.tcpdump.pcapng",
+]
+summary = "The extensible successor to pcap: a sequence of typed blocks that can describe several interfaces with different link types, carry comments and name tables, and append statistics."
+organisation = """
+Everything is a block. Each block starts with a 4-byte block type and a 4-byte total length, then a body, and ends with the total length repeated, so a reader can walk forwards or backwards. Bodies are padded to a multiple of four bytes, and most blocks end with options: type-length-value entries (2-byte code, 2-byte length, padded value) closed by an end-of-options code of zero.
+
+A file is one or more sections, each opened by a Section Header Block of type 0x0A0D0D0A. Its byte-order magic 0x1A2B3C4D, read in either order, sets the byte order for the whole section; the block type was chosen to be the same in both orders and to contain CR and LF so that text-mode transfers that corrupt line endings are caught.
+
+Interface Description Blocks (type 1) follow, one per capture interface, numbered from zero in order of appearance; each gives a link type, snapshot length and options such as the timestamp resolution. Enhanced Packet Blocks (type 6) then name their interface by that number and carry a 64-bit timestamp, captured and original lengths and the packet data. Simple Packet Blocks (type 3), Name Resolution Blocks (type 4), Interface Statistics Blocks (type 5) and Decryption Secrets Blocks (type 10) may also appear.
+"""
+carries = ["ethernet", "ipv4", "ipv6"]
+
+[[format.specs]]
+document = "draft-ietf-opsawg-pcapng-06"
+title = "PCAP Now Generic (pcapng) Capture File Format (IETF Internet-Draft)"
+url = "https://datatracker.ietf.org/doc/html/draft-ietf-opsawg-pcapng-06"
+section = "3.1"
+
+[[format.specs]]
+document = "tcpdump.org link types"
+title = "Link-layer header types"
+url = "https://www.tcpdump.org/linktypes.html"
+
+[[format.fields]]
+name = "section header"
+meaning = "Section Header Block: starts a section and fixes its byte order with the magic 0x1A2B3C4D, then gives the format version (1.0) and the section length, or -1 when it is not known."
+section = "4.1"
+
+[[format.fields]]
+name = "interface description"
+meaning = "Interface Description Block: the link type and snapshot length of one capture interface. Packet blocks refer to interfaces by their order of appearance in the section, starting at zero."
+section = "4.2"
+
+[[format.fields]]
+name = "packet *"
+meaning = "An Enhanced Packet Block (interface number, 64-bit timestamp, captured and original lengths, data padded to four bytes, options) or a Simple Packet Block (original length and data only, always from the first interface)."
+section = "4.3"
+
+[[format.fields]]
+name = "name resolution"
+meaning = "Name Resolution Block: records mapping IP addresses to host names, as known when the capture was made."
+section = "4.5"
+
+[[format.fields]]
+name = "interface statistics"
+meaning = "Interface Statistics Block: counters for one interface, such as packets received and dropped, usually written at the end of a capture."
+section = "4.6"
+
+[[format.fields]]
+name = "block"
+meaning = "A block of another type, such as a Decryption Secrets Block or a custom block. Its total length still lets a reader step over it."
+section = "3.1"
+
+# ---------------------------------------------------------------------------
+# Link layer
+# ---------------------------------------------------------------------------
+
+[[format]]
+id = "ethernet"
+name = "Ethernet II"
+keys = ["Ethernet II", "Ethernet", "eth", "Ethernet frame"]
+summary = "The framing used on almost every wired local network and in most packet captures: a 14-byte header naming the destination and source stations and the type of what follows."
+organisation = """
+The header is three fields: a 6-byte destination MAC address, a 6-byte source MAC address and a 2-byte big-endian EtherType. The payload starts at byte 14. Captures normally leave out the preamble and start-of-frame delimiter, and often the 4-byte frame check sequence at the end as well.
+
+The EtherType names the payload: 0x0800 is IPv4, 0x86DD IPv6, 0x0806 ARP, and 0x8100 or 0x88A8 mean a VLAN tag comes next, with the real EtherType after it. Values of 1500 and below are instead an IEEE 802.3 length followed by an LLC header, which this app does not decode.
+
+A frame on the wire is at least 64 bytes including the check sequence, so payloads shorter than 46 bytes are padded. The IP or ARP length fields say where the real payload ends; the bytes after it appear as Padding.
+"""
+carries = ["vlan", "ipv4", "ipv6", "arp"]
+
+[[format.specs]]
+document = "IEEE 802.3-2022"
+title = "IEEE Standard for Ethernet"
+url = "https://standards.ieee.org/ieee/802.3/10422/"
+
+[[format.specs]]
+document = "RFC 894"
+title = "A Standard for the Transmission of IP Datagrams over Ethernet Networks"
+url = "https://www.rfc-editor.org/rfc/rfc894"
+rfc = 894
+
+[[format.specs]]
+document = "IANA IEEE 802 Numbers"
+title = "EtherType registry"
+url = "https://www.iana.org/assignments/ieee-802-numbers/ieee-802-numbers.xhtml"
+
+[[format.fields]]
+name = "Destination"
+meaning = "The receiving station's MAC address. If the lowest bit of the first byte is set it is a group (multicast) address; ff:ff:ff:ff:ff:ff is broadcast to every station."
+
+[[format.fields]]
+name = "Source"
+meaning = "The sending station's MAC address. The first three bytes are usually the manufacturer's identifier (OUI); the second-lowest bit of the first byte marks a locally administered address, as used by virtual machines and randomised Wi-Fi addresses."
+
+[[format.fields]]
+name = "Type"
+meaning = "The EtherType: what the payload is (0x0800 IPv4, 0x86DD IPv6, 0x0806 ARP, 0x8100 VLAN tag). Values of 1500 or less are an IEEE 802.3 length instead."
+
+[[format]]
+id = "vlan"
+name = "IEEE 802.1Q VLAN tag"
+keys = ["802.1Q VLAN", "802.1Q", "VLAN", "802.1ad QinQ", "802.1ad"]
+summary = "A four-byte tag inserted into an Ethernet frame to place it on a virtual LAN and give it a priority, so that one physical network can carry several separate ones."
+organisation = """
+The tag sits where the EtherType would be: a 2-byte tag protocol identifier (0x8100, shown as the Type of the layer before), then a 2-byte tag control word, then the frame's real EtherType. The dissector shows the control word and the following EtherType as this layer, so it is four bytes long.
+
+The control word holds a 3-bit priority code point, a 1-bit drop-eligible indicator and a 12-bit VLAN identifier, all big-endian. Identifier 0 means the frame carries only a priority, and 4095 is reserved.
+
+Tags can be stacked ("Q-in-Q"): a provider's outer service tag uses identifier 0x88A8 (or the older 0x9100) and the customer's inner tag 0x8100. Each tag appears as its own layer here, and the last one's EtherType names the payload.
+"""
+carries = ["vlan", "ipv4", "ipv6", "arp"]
+
+[[format.specs]]
+document = "IEEE 802.1Q-2022"
+title = "IEEE Standard for Local and Metropolitan Area Networks: Bridges and Bridged Networks"
+url = "https://standards.ieee.org/ieee/802.1Q/10323/"
+
+[[format.fields]]
+name = "Priority"
+meaning = "The priority code point, the top three bits of the tag: 0 (best effort) to 7 (highest), used by switches to choose a queue."
+
+[[format.fields]]
+name = "VLAN ID"
+meaning = "The 12-bit virtual LAN the frame belongs to, 1 to 4094. Zero means the tag only carries a priority."
+
+[[format.fields]]
+name = "Type"
+meaning = "The EtherType of what follows the tag: another tag, or the payload (0x0800 IPv4, 0x86DD IPv6, 0x0806 ARP)."
+
+[[format]]
+id = "arp"
+name = "Address Resolution Protocol"
+keys = ["Address Resolution Protocol", "ARP"]
+summary = "How a host on a local network finds the hardware (MAC) address that belongs to an IPv4 address: it broadcasts a request and the owner replies."
+organisation = """
+ARP travels directly in an Ethernet frame with EtherType 0x0806. An 8-byte fixed part gives the hardware type, the protocol type, the lengths of a hardware address and of a protocol address, and the operation (1 request, 2 reply). Four addresses follow: sender hardware, sender protocol, target hardware, target protocol, whose sizes come from the two length bytes.
+
+For IPv4 over Ethernet the lengths are 6 and 4, so the packet is 28 bytes and the frame is padded to the 60-byte minimum. All multi-byte fields are big-endian.
+
+A request is normally broadcast with the target hardware address left as zeros; the reply is sent directly back to the asker. A "gratuitous" ARP, where sender and target protocol addresses are the same, announces an address or detects a conflict.
+"""
+carries = []
+
+[[format.specs]]
+document = "RFC 826"
+title = "An Ethernet Address Resolution Protocol"
+url = "https://www.rfc-editor.org/rfc/rfc826"
+rfc = 826
+
+[[format.specs]]
+document = "IANA ARP Parameters"
+title = "Address Resolution Protocol (ARP) Parameters"
+url = "https://www.iana.org/assignments/arp-parameters/arp-parameters.xhtml"
+
+[[format.fields]]
+name = "Hardware type"
+meaning = "The kind of link the hardware addresses belong to; 1 is Ethernet."
+
+[[format.fields]]
+name = "Protocol type"
+meaning = "The network protocol being resolved, as an EtherType; 0x0800 is IPv4."
+
+[[format.fields]]
+name = "Hardware size"
+meaning = "Bytes in each hardware address: 6 for Ethernet MAC addresses."
+
+[[format.fields]]
+name = "Protocol size"
+meaning = "Bytes in each protocol address: 4 for IPv4."
+
+[[format.fields]]
+name = "Opcode"
+meaning = "The operation: 1 request, 2 reply (3 and 4 are the reverse-ARP request and reply)."
+
+[[format.fields]]
+name = "Sender hardware address"
+meaning = "The MAC address of the station sending this packet. Receivers may cache it against the sender protocol address."
+
+[[format.fields]]
+name = "Sender protocol address"
+meaning = "The IPv4 address of the sender."
+
+[[format.fields]]
+name = "Target hardware address"
+meaning = "In a reply, the MAC address of the station being answered. In a request it is unknown and usually all zeros."
+
+[[format.fields]]
+name = "Target protocol address"
+meaning = "The IPv4 address being asked about (in a request) or the asker's address (in a reply)."
+
+# ---------------------------------------------------------------------------
+# Network layer
+# ---------------------------------------------------------------------------
+
+[[format]]
+id = "ipv4"
+name = "Internet Protocol version 4"
+keys = ["Internet Protocol version 4", "IPv4", "IP version 4"]
+summary = "Carries datagrams between hosts across interconnected networks, addressing each end with a 32-bit address and fragmenting packets that are too big for a link."
+organisation = """
+The header is at least 20 bytes, all fields big-endian. The first byte holds the version (4) in its top four bits and the header length in 32-bit words (5 to 15, so 20 to 60 bytes) in its bottom four; anything past byte 20 is options. The transport header therefore starts at header length × 4.
+
+The total length counts the header and the data together, so the packet ends at its first byte + total length; anything after that in the frame is link padding. The protocol byte names what the data is: 1 ICMP, 6 TCP, 17 UDP, among others listed by IANA.
+
+A packet can be split into fragments that share an identification value. Each fragment's offset (in 8-byte units) says where its data belongs, and the "more fragments" flag is set on all but the last. Only the fragment at offset zero carries the transport header, so later fragments are shown here as plain Fragment data.
+"""
+carries = ["tcp", "udp", "icmp"]
+
+[[format.specs]]
+document = "RFC 791"
+title = "Internet Protocol"
+url = "https://www.rfc-editor.org/rfc/rfc791"
+rfc = 791
+section = "3.1"
+
+[[format.specs]]
+document = "RFC 2474"
+title = "Definition of the Differentiated Services Field (DS Field) in the IPv4 and IPv6 Headers"
+url = "https://www.rfc-editor.org/rfc/rfc2474"
+rfc = 2474
+section = "3"
+
+[[format.specs]]
+document = "RFC 3168"
+title = "The Addition of Explicit Congestion Notification (ECN) to IP"
+url = "https://www.rfc-editor.org/rfc/rfc3168"
+rfc = 3168
+section = "5"
+
+[[format.specs]]
+document = "IANA Protocol Numbers"
+title = "Assigned Internet Protocol Numbers"
+url = "https://www.iana.org/assignments/protocol-numbers/protocol-numbers.xhtml"
+
+[[format.fields]]
+name = "Version and header length"
+meaning = "One byte: the version (4) in the top four bits and the header length in 32-bit words in the bottom four. 0x45 is the usual 20-byte header without options."
+
+[[format.fields]]
+name = "Differentiated services"
+meaning = "Formerly the type of service. The top six bits are the DSCP, a traffic class for queueing (RFC 2474); the bottom two are the ECN bits, which routers can set to signal congestion instead of dropping the packet (RFC 3168)."
+
+[[format.fields]]
+name = "Total length"
+meaning = "Bytes in the whole packet, header and data, up to 65,535. Bytes beyond this in the frame are padding."
+
+[[format.fields]]
+name = "Identification"
+meaning = "A value chosen by the sender so that the fragments of one packet can be put back together; all fragments of a packet share it."
+
+[[format.fields]]
+name = "Flags and fragment offset"
+meaning = "Three flag bits (reserved, don't fragment, more fragments) and a 13-bit offset in 8-byte units giving where this fragment's data belongs in the original packet."
+
+[[format.fields]]
+name = "Time to live"
+meaning = "Decremented by each router; the packet is discarded at zero and an ICMP time exceeded message is sent back. Common starting values are 64, 128 and 255, which hints at the sender's operating system."
+
+[[format.fields]]
+name = "Protocol"
+meaning = "What the data is: 1 ICMP, 6 TCP, 17 UDP, 47 GRE, 50 ESP and others in the IANA registry."
+
+[[format.fields]]
+name = "Header checksum"
+meaning = "Ones' complement of the ones' complement sum of the header's 16-bit words, covering the header only. Recomputed by every router because the time to live changes."
+
+[[format.fields]]
+name = "Source address"
+meaning = "The 32-bit address of the sender."
+
+[[format.fields]]
+name = "Destination address"
+meaning = "The 32-bit address of the receiver; may be a broadcast or a multicast (224.0.0.0/4) address."
+
+[[format.fields]]
+name = "Options"
+meaning = "Rarely used extras between byte 20 and the end of the header, such as record route or timestamps, padded to a 32-bit boundary."
+
+[[format]]
+id = "ipv6"
+name = "Internet Protocol version 6"
+keys = ["Internet Protocol version 6", "IPv6", "IP version 6"]
+summary = "The successor to IPv4, with 128-bit addresses, a fixed 40-byte header and optional extension headers chained after it."
+organisation = """
+The fixed header is always 40 bytes, big-endian: 4 bits of version (6), 8 bits of traffic class, a 20-bit flow label, the payload length, the next header, the hop limit and two 16-byte addresses. There is no header checksum, and routers never fragment; only the sender does, using a fragment header.
+
+The payload length counts everything after the fixed header, extension headers included, so the packet ends at its first byte + 40 + payload length.
+
+The next header byte uses the same numbers as IPv4's protocol field. It either names the upper layer (6 TCP, 17 UDP, 58 ICMPv6) or an extension header (0 hop-by-hop options, 43 routing, 44 fragment, 60 destination options), each of which carries its own next header byte, forming a chain. Value 59 means nothing follows.
+"""
+carries = ["ipv6-extension", "ipv6-fragment", "tcp", "udp", "icmpv6"]
+
+[[format.specs]]
+document = "RFC 8200"
+title = "Internet Protocol, Version 6 (IPv6) Specification"
+url = "https://www.rfc-editor.org/rfc/rfc8200"
+rfc = 8200
+section = "3"
+
+[[format.specs]]
+document = "RFC 6437"
+title = "IPv6 Flow Label Specification"
+url = "https://www.rfc-editor.org/rfc/rfc6437"
+rfc = 6437
+
+[[format.specs]]
+document = "RFC 2474"
+title = "Definition of the Differentiated Services Field (DS Field) in the IPv4 and IPv6 Headers"
+url = "https://www.rfc-editor.org/rfc/rfc2474"
+rfc = 2474
+section = "3"
+
+[[format.fields]]
+name = "Version, traffic class and flow label"
+meaning = "The first four bytes: version 6 (4 bits), the traffic class (8 bits, DSCP and ECN as in IPv4) and the flow label (20 bits), which a sender sets to the same value for all packets of one flow so routers can keep them on one path."
+
+[[format.fields]]
+name = "Payload length"
+meaning = "Bytes after the 40-byte fixed header, including any extension headers. Zero is used with the jumbo payload option for packets over 65,535 bytes."
+
+[[format.fields]]
+name = "Next header"
+meaning = "What follows the fixed header: an extension header (0, 43, 44, 60) or the upper-layer protocol (6 TCP, 17 UDP, 58 ICMPv6); 59 means nothing."
+
+[[format.fields]]
+name = "Hop limit"
+meaning = "IPv6's time to live: decremented by each router, and the packet is discarded at zero."
+
+[[format.fields]]
+name = "Source address"
+meaning = "The sender's 128-bit address. fe80::/10 addresses are link-local and never routed."
+
+[[format.fields]]
+name = "Destination address"
+meaning = "The receiver's 128-bit address; ff00::/8 addresses are multicast (IPv6 has no broadcast)."
+
+[[format]]
+id = "ipv6-extension"
+name = "IPv6 extension headers"
+keys = [
+  "IPv6 extension headers",
+  "IPv6 extension",
+  "IPv6 hop-by-hop options",
+  "IPv6 routing header",
+  "IPv6 destination options",
+]
+summary = "Optional headers between the IPv6 header and the upper layer that carry options for routers or the destination, or a list of nodes to route through."
+organisation = """
+Each of these headers starts with two bytes: the next header (which type follows, using IP protocol numbers) and the header's length in 8-byte units not counting the first 8. So a header is (length + 1) × 8 bytes, and the next one starts right after it.
+
+Hop-by-hop options (type 0) must come first and are examined by routers on the path, for instance the router alert and jumbo payload options. Destination options (type 60) are for the receiver. Both hold options encoded as type, length and value, padded with Pad1 and PadN to a multiple of 8 bytes. The routing header (type 43) carries a routing type and a list of addresses, used today mainly by segment routing (type 4).
+"""
+carries = ["ipv6-extension", "ipv6-fragment", "tcp", "udp", "icmpv6"]
+
+[[format.specs]]
+document = "RFC 8200"
+title = "Internet Protocol, Version 6 (IPv6) Specification"
+url = "https://www.rfc-editor.org/rfc/rfc8200"
+rfc = 8200
+section = "4"
+
+[[format.fields]]
+name = "Next header"
+meaning = "The type of the header after this one: another extension header or the upper-layer protocol."
+
+[[format.fields]]
+name = "Length"
+meaning = "The size of this extension header in bytes. On the wire it is stored as the number of 8-byte units after the first 8."
+
+[[format]]
+id = "ipv6-fragment"
+name = "IPv6 fragment header"
+keys = ["IPv6 fragment header", "IPv6 fragment"]
+summary = "The eight-byte extension header a sender adds when it splits an IPv6 packet too large for the path into fragments."
+organisation = """
+The header is a fixed 8 bytes: next header, a reserved byte, a 16-bit word holding the fragment offset (13 bits, in 8-byte units), two reserved bits and the "more fragments" flag, then a 32-bit identification shared by all fragments of one packet.
+
+Only the first fragment (offset zero) holds the upper-layer header, so later fragments are shown as plain Fragment data. Routers never fragment IPv6 packets; a router that cannot forward one sends an ICMPv6 Packet Too Big message to the sender instead.
+"""
+carries = ["tcp", "udp", "icmpv6"]
+
+[[format.specs]]
+document = "RFC 8200"
+title = "Internet Protocol, Version 6 (IPv6) Specification"
+url = "https://www.rfc-editor.org/rfc/rfc8200"
+rfc = 8200
+section = "4.5"
+
+[[format.fields]]
+name = "Fragment offset"
+meaning = "Where this fragment's data belongs in the original packet, shown in bytes; stored as a 13-bit count of 8-byte units."
+
+[[format]]
+id = "icmp"
+name = "Internet Control Message Protocol"
+keys = ["Internet Control Message Protocol", "ICMP", "ICMPv4"]
+summary = "IPv4's companion for error reports and diagnostics: routers and hosts use it to say a destination is unreachable or a packet's time ran out, and ping uses its echo messages."
+organisation = """
+ICMP travels inside IPv4 with protocol number 1. Every message starts with a 1-byte type, a 1-byte code refining it, and a 2-byte checksum over the whole ICMP message. The next four bytes depend on the type: an identifier and sequence number for echo request (8) and reply (0), a gateway address for redirects, the next-hop MTU for "fragmentation needed", or unused.
+
+Error messages (destination unreachable 3, time exceeded 11, redirect 5) then quote the IPv4 header and at least the first 8 bytes of the packet that caused them, which is enough to identify the original ports. Echo messages carry arbitrary data that the reply returns unchanged.
+"""
+carries = ["ipv4"]
+
+[[format.specs]]
+document = "RFC 792"
+title = "Internet Control Message Protocol"
+url = "https://www.rfc-editor.org/rfc/rfc792"
+rfc = 792
+
+[[format.specs]]
+document = "IANA ICMP Parameters"
+title = "Internet Control Message Protocol (ICMP) Parameters"
+url = "https://www.iana.org/assignments/icmp-parameters/icmp-parameters.xhtml"
+
+[[format.fields]]
+name = "Type"
+meaning = "The kind of message: 0 echo reply, 3 destination unreachable, 5 redirect, 8 echo request, 11 time exceeded, among others."
+
+[[format.fields]]
+name = "Code"
+meaning = "Refines the type; for destination unreachable, 0 network, 1 host, 3 port unreachable, 4 fragmentation needed."
+
+[[format.fields]]
+name = "Checksum"
+meaning = "Ones' complement checksum over the ICMP message (header and data); unlike ICMPv6 it does not cover the IP addresses."
+
+[[format.fields]]
+name = "Identifier"
+meaning = "Chosen by the sender of an echo request, often the process ID, so replies can be matched to the program that sent them."
+
+[[format.fields]]
+name = "Sequence number"
+meaning = "Counts the echo requests in a series; the reply copies it so lost and reordered replies can be seen."
+
+[[format.fields]]
+name = "Rest of header"
+meaning = "Four bytes whose meaning depends on the type: unused (zero), a gateway address for a redirect, or the next-hop MTU when fragmentation was needed."
+
+[[format]]
+id = "icmpv6"
+name = "Internet Control Message Protocol for IPv6"
+keys = ["Internet Control Message Protocol v6", "ICMPv6", "Internet Control Message Protocol for IPv6"]
+summary = "IPv6's control protocol: it reports errors and runs ping like ICMP, and also carries neighbour discovery, which replaces ARP, and router advertisements."
+organisation = """
+ICMPv6 follows the IPv6 header (or its extension headers) with next header 58. Like ICMP it starts with a type, a code and a checksum, but the checksum also covers an IPv6 pseudo-header of the addresses, length and next header, so it is never optional.
+
+Types 0 to 127 are errors (1 destination unreachable, 2 packet too big, 3 time exceeded, 4 parameter problem), and they quote as much of the offending packet as fits in the minimum IPv6 MTU. Types 128 to 255 are informational: 128 and 129 are echo request and reply with an identifier and sequence number, and 133 to 137 are neighbour discovery messages (router solicitation and advertisement, neighbour solicitation and advertisement, redirect).
+"""
+carries = ["ipv6"]
+
+[[format.specs]]
+document = "RFC 4443"
+title = "Internet Control Message Protocol (ICMPv6) for the Internet Protocol Version 6 (IPv6) Specification"
+url = "https://www.rfc-editor.org/rfc/rfc4443"
+rfc = 4443
+section = "2.1"
+
+[[format.specs]]
+document = "RFC 4861"
+title = "Neighbor Discovery for IP version 6 (IPv6)"
+url = "https://www.rfc-editor.org/rfc/rfc4861"
+rfc = 4861
+section = "4"
+
+[[format.specs]]
+document = "IANA ICMPv6 Parameters"
+title = "Internet Control Message Protocol version 6 (ICMPv6) Parameters"
+url = "https://www.iana.org/assignments/icmpv6-parameters/icmpv6-parameters.xhtml"
+
+[[format.fields]]
+name = "Type"
+meaning = "The kind of message: below 128 an error (1 unreachable, 2 packet too big, 3 time exceeded), from 128 informational (128/129 echo, 133 to 137 neighbour discovery)."
+
+[[format.fields]]
+name = "Code"
+meaning = "Refines the type; for destination unreachable, 0 no route, 1 administratively prohibited, 3 address unreachable, 4 port unreachable."
+
+[[format.fields]]
+name = "Checksum"
+meaning = "Ones' complement checksum over an IPv6 pseudo-header (addresses, length, next header 58) and the whole ICMPv6 message."
+section = "2.3"
+
+[[format.fields]]
+name = "Identifier"
+meaning = "Chosen by the sender of an echo request so replies can be matched to it."
+section = "4.1"
+
+[[format.fields]]
+name = "Sequence number"
+meaning = "Counts echo requests in a series; the reply copies it."
+section = "4.1"
+
+[[format.fields]]
+name = "Rest of header"
+meaning = "Four bytes that depend on the type: the MTU for packet too big, a pointer for parameter problem, flags for neighbour advertisements, or unused."
+
+# ---------------------------------------------------------------------------
+# Transport layer
+# ---------------------------------------------------------------------------
+
+[[format]]
+id = "tcp"
+name = "Transmission Control Protocol"
+keys = ["Transmission Control Protocol", "TCP"]
+summary = "A reliable, ordered byte stream between two ports: segments are numbered by byte, acknowledged and retransmitted, and the flow is paced by the receiver's window."
+organisation = """
+The header is at least 20 bytes, big-endian: source and destination ports, a 32-bit sequence number, a 32-bit acknowledgement number, a 4-bit data offset (the header length in 32-bit words), the flag bits, the window, the checksum and the urgent pointer. Options fill the rest of the header up to the data offset, which can make it as long as 60 bytes. The payload starts at the data offset and runs to the end of the IP packet; TCP has no length field of its own.
+
+A connection opens with a three-way handshake (SYN, SYN+ACK, ACK) in which each side picks an initial sequence number, and closes with FIN or is aborted with RST. After that, the sequence number is the stream position of the segment's first byte, and the acknowledgement number is the next byte the sender expects to receive.
+
+The ports identify the conversation and, by convention, the application inside: 80 HTTP, 443 HTTPS (TLS), 22 SSH, 53 DNS, 502 Modbus/TCP, 1883 MQTT. Because TCP is a stream, one application message can span several segments and one segment can hold several messages.
+"""
+carries = ["http", "tls-record", "ssh-banner", "dns", "modbus", "mqtt"]
+
+[[format.specs]]
+document = "RFC 9293"
+title = "Transmission Control Protocol (TCP)"
+url = "https://www.rfc-editor.org/rfc/rfc9293"
+rfc = 9293
+section = "3.1"
+
+[[format.specs]]
+document = "RFC 3168"
+title = "The Addition of Explicit Congestion Notification (ECN) to IP"
+url = "https://www.rfc-editor.org/rfc/rfc3168"
+rfc = 3168
+section = "6.1"
+
+[[format.fields]]
+name = "Source port"
+meaning = "The sending application's port; a client usually picks a temporary (ephemeral) port above 1023."
+
+[[format.fields]]
+name = "Destination port"
+meaning = "The receiving application's port; for a client's segments this is the service, such as 80 for HTTP or 443 for HTTPS."
+
+[[format.fields]]
+name = "Sequence number"
+meaning = "The stream position of this segment's first data byte. In a SYN it is the initial sequence number, and the first data byte is that number plus one."
+section = "3.4"
+
+[[format.fields]]
+name = "Acknowledgement number"
+meaning = "When the ACK flag is set, the next sequence number the sender expects from the other side: every byte before it has arrived."
+
+[[format.fields]]
+name = "Header length"
+meaning = "The data offset: header length in 32-bit words (5 to 15, so 20 to 60 bytes). The payload starts this many bytes into the segment."
+
+[[format.fields]]
+name = "Flags"
+meaning = "Control bits: SYN opens a connection, ACK marks the acknowledgement number valid, FIN closes one direction, RST aborts, PSH asks for prompt delivery, URG marks urgent data, and ECE and CWR carry congestion signals (RFC 3168)."
+
+[[format.fields]]
+name = "Window"
+meaning = "How many more bytes the sender of this segment is ready to receive. It is multiplied by 2 to the power of the window scale option negotiated in the SYNs."
+
+[[format.fields]]
+name = "Checksum"
+meaning = "Ones' complement checksum over a pseudo-header (IP addresses, protocol, TCP length), the header and the data. Captures taken on the sending host often show it as wrong because the network card fills it in later."
+
+[[format.fields]]
+name = "Urgent pointer"
+meaning = "With the URG flag, the offset from the sequence number to the end of urgent data. Almost never used."
+section = "3.8.5"
+
+[[format.fields]]
+name = "Options"
+meaning = "Kind-length-value entries such as maximum segment size, window scale, selective acknowledgement permitted and timestamps, mostly exchanged in the SYN segments."
+section = "3.2"
 
 [[format]]
 id = "udp"
@@ -10,8 +668,10 @@ organisation = """
 An eight-byte header of four 16-bit big-endian fields (source port, destination port, length and checksum) followed directly by the payload.
 
 The length counts the header and the payload together, so it is never less than 8. Over IPv4 a checksum of zero means none was computed; over IPv6 the checksum is mandatory. The checksum covers a pseudo-header of the IP addresses, protocol and length as well as the datagram itself.
+
+The ports name the application by convention: 53 DNS, 5353 multicast DNS, 123 NTP. Each datagram is one application message, so unlike TCP no reassembly is needed.
 """
-carries = []
+carries = ["dns", "ntp"]
 
 [[format.specs]]
 document = "RFC 768"
@@ -34,3 +694,534 @@ meaning = "Bytes in the header and payload together; at least 8."
 [[format.fields]]
 name = "Checksum"
 meaning = "Ones' complement sum over a pseudo-header (addresses, protocol, length), the header and the payload. Zero over IPv4 means no checksum."
+
+# ---------------------------------------------------------------------------
+# Application layer
+# ---------------------------------------------------------------------------
+
+[[format]]
+id = "dns"
+name = "Domain Name System message"
+keys = ["DNS", "Domain Name System", "application/dns-message"]
+summary = "The query and response format used to look up names: a client asks for records of a given type for a name, and a server answers with resource records."
+organisation = """
+A message starts with a 12-byte header: a transaction ID that pairs the response with the query, a 16-bit flags word (query or response, opcode, authoritative answer, truncated, recursion desired and available, response code), and four 16-bit counts for the sections that follow. All numbers are big-endian.
+
+Four sections come next, in order: questions (a name, a type and a class), answers, authority records and additional records. Each resource record holds a name, type, class, 32-bit time to live, a 16-bit data length and that many bytes of data, so records must be walked one after another.
+
+Names are a sequence of labels, each a length byte (1 to 63) followed by that many characters, ending with a zero byte. To save space a name can end instead with a two-byte pointer whose top two bits are set; the remaining 14 bits are an offset from the start of the message where the rest of the name is found.
+
+DNS normally uses UDP port 53 (and multicast DNS uses port 5353 with the same format). Over TCP each message is preceded by a 2-byte length, shown here as the Length field.
+"""
+carries = []
+
+[[format.specs]]
+document = "RFC 1035"
+title = "Domain Names - Implementation and Specification"
+url = "https://www.rfc-editor.org/rfc/rfc1035"
+rfc = 1035
+section = "4.1"
+
+[[format.specs]]
+document = "RFC 7766"
+title = "DNS Transport over TCP - Implementation Requirements"
+url = "https://www.rfc-editor.org/rfc/rfc7766"
+rfc = 7766
+
+[[format.specs]]
+document = "RFC 6762"
+title = "Multicast DNS"
+url = "https://www.rfc-editor.org/rfc/rfc6762"
+rfc = 6762
+
+[[format.specs]]
+document = "IANA DNS Parameters"
+title = "Domain Name System (DNS) Parameters"
+url = "https://www.iana.org/assignments/dns-parameters/dns-parameters.xhtml"
+
+[[format.fields]]
+name = "Length"
+meaning = "Over TCP only: the length of the DNS message that follows, in bytes, since a stream has no datagram boundaries."
+section = "4.2.2"
+
+[[format.fields]]
+name = "Transaction ID"
+meaning = "Chosen by the client and copied into the response so the two can be matched. Randomising it makes forged responses harder."
+section = "4.1.1"
+
+[[format.fields]]
+name = "Flags"
+meaning = "QR (0 query, 1 response), a 4-bit opcode (0 standard query), AA authoritative answer, TC truncated, RD recursion desired, RA recursion available, and a 4-bit response code (0 no error, 2 server failure, 3 name does not exist)."
+section = "4.1.1"
+
+[[format.fields]]
+name = "Questions"
+meaning = "The number of entries in the question section; almost always 1."
+section = "4.1.1"
+
+[[format.fields]]
+name = "Answer records"
+meaning = "The number of resource records in the answer section."
+section = "4.1.1"
+
+[[format.fields]]
+name = "Authority records"
+meaning = "The number of resource records in the authority section, which names the servers responsible for the zone."
+section = "4.1.1"
+
+[[format.fields]]
+name = "Additional records"
+meaning = "The number of resource records in the additional section, such as addresses of named servers, or the EDNS(0) OPT pseudo-record."
+section = "4.1.1"
+
+[[format.fields]]
+name = "header"
+meaning = "The 12-byte header: transaction ID, flags and the four section counts."
+section = "4.1.1"
+
+[[format.fields]]
+name = "Question section"
+aliases = ["question"]
+meaning = "The questions asked: each a name, a type and a class, with no time to live or data."
+section = "4.1.2"
+
+[[format.fields]]
+name = "Answer section"
+meaning = "The resource records that answer the question."
+section = "4.1.3"
+
+[[format.fields]]
+name = "Question *"
+meaning = "One question: the name looked up, the record type wanted and the class (1 is Internet)."
+section = "4.1.2"
+
+[[format.fields]]
+name = "Answer *"
+meaning = "One resource record: name, type, class, time to live, data length and data."
+section = "4.1.3"
+
+[[format.fields]]
+name = "Name"
+meaning = "A domain name as length-prefixed labels ending in a zero byte, or ending in a two-byte compression pointer to a name earlier in the message."
+section = "4.1.4"
+
+[[format.fields]]
+name = "Type"
+meaning = "The record type: 1 A (IPv4 address), 28 AAAA (IPv6 address), 5 CNAME (alias), 15 MX (mail exchanger), 16 TXT, 2 NS, 12 PTR (reverse lookup), 33 SRV, 65 HTTPS."
+section = "3.2.2"
+
+[[format.fields]]
+name = "Class"
+meaning = "The record class; 1 is IN, the Internet. Multicast DNS uses the top bit to ask for a unicast reply or to flush caches."
+section = "3.2.4"
+
+[[format.fields]]
+name = "Time to live"
+meaning = "How many seconds the record may be cached before it must be looked up again."
+section = "4.1.3"
+
+[[format.fields]]
+name = "Data length"
+meaning = "Bytes in the record's data (RDLENGTH)."
+section = "4.1.3"
+
+[[format.fields]]
+name = "Data"
+meaning = "The record's data, whose layout depends on the type: 4 bytes for A, 16 for AAAA, a (possibly compressed) name for CNAME, NS and PTR."
+section = "4.1.3"
+
+[[format]]
+id = "http"
+name = "Hypertext Transfer Protocol (HTTP/1.x)"
+keys = ["HTTP", "HTTP/1.1", "Hypertext Transfer Protocol", "protocol/http-request", "protocol/http-response"]
+summary = "The text-based request and response protocol of the web: a client sends a method and a target, and the server answers with a status code, each followed by header fields and an optional body."
+organisation = """
+Every message begins with a start line ending in CR LF. A request line is method, target and version separated by single spaces ("GET /index.html HTTP/1.1"); a status line is version, three-digit status code and reason ("HTTP/1.1 200 OK").
+
+Header field lines follow, each "Name: value" ending in CR LF; names are case-insensitive. An empty line (CR LF alone) ends the head.
+
+The body, if any, starts after the empty line. Its length comes from Transfer-Encoding: chunked (a series of hexadecimal-sized chunks ending with a zero-sized one), otherwise from Content-Length, and for responses without either, from the server closing the connection. Several messages can follow each other on one TCP connection. HTTP/2 and HTTP/3 are binary framings of the same semantics and are not decoded here; HTTPS is HTTP inside TLS.
+"""
+carries = []
+
+[[format.specs]]
+document = "RFC 9112"
+title = "HTTP/1.1"
+url = "https://www.rfc-editor.org/rfc/rfc9112"
+rfc = 9112
+section = "2.1"
+
+[[format.specs]]
+document = "RFC 9110"
+title = "HTTP Semantics"
+url = "https://www.rfc-editor.org/rfc/rfc9110"
+rfc = 9110
+
+[[format.fields]]
+name = "Request line"
+meaning = "The method (GET, POST, PUT, DELETE, HEAD and so on), the request target (usually a path and query) and the protocol version."
+section = "3"
+
+[[format.fields]]
+name = "Status line"
+meaning = "The protocol version, a three-digit status code (2xx success, 3xx redirection, 4xx client error, 5xx server error) and a reason phrase that carries no meaning of its own."
+section = "4"
+
+[[format.fields]]
+name = "Headers"
+meaning = "The header field lines between the start line and the empty line that ends the head."
+section = "5"
+
+[[format.fields]]
+name = "header"
+meaning = "One header field line: a case-insensitive name, a colon and a value."
+section = "5"
+
+[[format.fields]]
+name = "Body"
+meaning = "The message content after the empty line. Its length is set by Transfer-Encoding or Content-Length; it may be compressed according to Content-Encoding."
+section = "6"
+
+[[format.fields]]
+name = "Host"
+meaning = "The host name (and port) the request is for, required in HTTP/1.1 so that one server address can serve many sites."
+
+[[format.fields]]
+name = "Content-Length"
+meaning = "The body's length in decimal bytes, when chunked transfer coding is not used."
+section = "6.2"
+
+[[format.fields]]
+name = "Transfer-Encoding"
+meaning = "Codings applied to the body for transport; \"chunked\" sends it as length-prefixed chunks so it can be streamed without knowing its size in advance."
+section = "6.1"
+
+[[format.fields]]
+name = "Content-Type"
+meaning = "The media type of the body, such as text/html; charset=utf-8 or application/json."
+
+[[format.fields]]
+name = "Connection"
+meaning = "Options for this connection only, such as \"close\" to end it after the response or \"keep-alive\"."
+section = "9.6"
+
+[[format.fields]]
+name = "User-Agent"
+meaning = "The client software making the request."
+
+[[format.fields]]
+name = "Server"
+meaning = "The server software that produced the response."
+
+[[format]]
+id = "tls-record"
+name = "Transport Layer Security record"
+keys = ["tls-record", "TLS", "TLS record", "Transport Layer Security", "protocol/tls-record", "protocol/tls-client-hello"]
+summary = "The framing of TLS, the encryption layer under HTTPS and many other protocols: every handshake message, alert and piece of application data travels in records with a five-byte header."
+organisation = """
+A record header is 5 bytes: a content type (20 change cipher spec, 21 alert, 22 handshake, 23 application data), a 2-byte protocol version, and a 2-byte big-endian length of the fragment that follows (at most 16,384 bytes of plaintext, a little more once encrypted). The next record starts right after the fragment, so a run of records can be walked by their lengths.
+
+The version field is a legacy value: 0x0301 to 0x0303 for TLS 1.0 to 1.2, and TLS 1.3 also writes 0x0303 (or 0x0301 in a first ClientHello), negotiating the real version in an extension instead.
+
+Handshake records carry messages that each start with a 1-byte type and a 3-byte length. A connection begins with a ClientHello and a ServerHello in plain text. In TLS 1.2 the certificate and key exchange messages that follow are also readable; in TLS 1.3 everything after the ServerHello is encrypted and sent as application data records, with the real content type hidden inside.
+"""
+carries = []
+
+[[format.specs]]
+document = "RFC 8446"
+title = "The Transport Layer Security (TLS) Protocol Version 1.3"
+url = "https://www.rfc-editor.org/rfc/rfc8446"
+rfc = 8446
+section = "5.1"
+
+[[format.specs]]
+document = "RFC 5246"
+title = "The Transport Layer Security (TLS) Protocol Version 1.2"
+url = "https://www.rfc-editor.org/rfc/rfc5246"
+rfc = 5246
+section = "6.2"
+
+[[format.specs]]
+document = "IANA TLS Parameters"
+title = "Transport Layer Security (TLS) Parameters"
+url = "https://www.iana.org/assignments/tls-parameters/tls-parameters.xhtml"
+
+[[format.fields]]
+name = "ClientHello"
+meaning = "The client's opening message: its random value, offered cipher suites and extensions such as the server name (SNI), supported versions and key shares."
+section = "4.1.2"
+
+[[format.fields]]
+name = "ServerHello"
+meaning = "The server's choice of version and cipher suite, its random value and, in TLS 1.3, its key share; after it, TLS 1.3 encrypts everything."
+section = "4.1.3"
+
+[[format.fields]]
+name = "NewSessionTicket"
+meaning = "Sent by the server after the handshake: a ticket the client can present later to resume the session."
+section = "4.6.1"
+
+[[format.fields]]
+name = "EncryptedExtensions"
+meaning = "TLS 1.3: extensions the server sends once encryption has begun, such as the chosen application protocol (ALPN)."
+section = "4.3.1"
+
+[[format.fields]]
+name = "Certificate"
+meaning = "The sender's certificate chain, starting with its own certificate. Readable in TLS 1.2, encrypted in TLS 1.3."
+section = "4.4.2"
+
+[[format.fields]]
+name = "CertificateRequest"
+meaning = "The server asks the client to authenticate with a certificate."
+section = "4.3.2"
+
+[[format.fields]]
+name = "CertificateVerify"
+meaning = "A signature over the handshake so far, proving the sender holds the private key of its certificate."
+section = "4.4.3"
+
+[[format.fields]]
+name = "Finished"
+meaning = "A keyed hash over the whole handshake, confirming both sides saw the same messages; the first message protected by the new keys in TLS 1.2."
+section = "4.4.4"
+
+[[format.fields]]
+name = "ServerKeyExchange"
+meaning = "TLS 1.2 and earlier: the server's ephemeral key exchange parameters, signed with its certificate key."
+
+[[format.fields]]
+name = "ServerHelloDone"
+meaning = "TLS 1.2 and earlier: the server has finished its part of the hello phase."
+
+[[format.fields]]
+name = "ClientKeyExchange"
+meaning = "TLS 1.2 and earlier: the client's key exchange value (its ephemeral public key, or an RSA-encrypted premaster secret)."
+
+[[format.fields]]
+name = "ChangeCipherSpec"
+meaning = "A one-byte record (content type 20) announcing that the sender switches to the negotiated keys. TLS 1.3 sends it only for compatibility with middleboxes."
+
+[[format.fields]]
+name = "Alert"
+meaning = "A record of content type 21: a severity (warning or fatal) and a description, such as close_notify at the end of a connection. Encrypted once keys are in use."
+section = "6"
+
+[[format.fields]]
+name = "ApplicationData"
+meaning = "A record of content type 23: encrypted data. In TLS 1.3 it also hides encrypted handshake messages and alerts."
+section = "5.2"
+
+[[format.fields]]
+name = "handshake"
+meaning = "A handshake record of a type not listed by name; its body starts with a 1-byte message type and a 3-byte length."
+section = "4"
+
+[[format]]
+id = "ssh-banner"
+name = "SSH protocol version exchange"
+keys = ["ssh-banner", "SSH banner", "SSH protocol banner", "protocol/ssh-banner"]
+summary = "The line of text each side of an SSH connection sends first, announcing the protocol version and the software in use, before the binary key exchange begins."
+organisation = """
+The identification line has the form "SSH-protoversion-softwareversion", optionally followed by a space and comments, and ends with CR LF; it is at most 255 characters including the line ending. The protocol version is "2.0", or "1.99" from a server that also accepts the old version 1 protocol. The software version, such as "OpenSSH_9.6", is free text without spaces or hyphens.
+
+A server may send other lines of text before its identification line; only the line starting "SSH-" counts. Immediately after the exchange both sides switch to the binary packet protocol: each packet is a 4-byte length, a 1-byte padding length, the payload, random padding and, once keys are in place, a MAC. The first packets, the key exchange initialisation (message 20), are still unencrypted and list the algorithms each side supports.
+"""
+carries = []
+
+[[format.specs]]
+document = "RFC 4253"
+title = "The Secure Shell (SSH) Transport Layer Protocol"
+url = "https://www.rfc-editor.org/rfc/rfc4253"
+rfc = 4253
+section = "4.2"
+
+[[format]]
+id = "ntp"
+name = "Network Time Protocol"
+keys = ["NTP", "Network Time Protocol"]
+summary = "Synchronises clocks over the network: a client and server exchange timestamps, from which the client works out its clock offset and the round-trip delay."
+organisation = """
+NTP runs over UDP port 123. The basic packet is 48 bytes, big-endian: a byte of leap indicator (2 bits), version (3 bits) and mode (3 bits); the stratum; the poll interval and precision as signed powers of two in seconds; root delay and root dispersion as 16.16 fixed-point seconds; a 4-byte reference ID; and four 8-byte timestamps. Extension fields and a message authentication code may follow.
+
+Timestamps are 32.32 fixed point: whole seconds since 1 January 1900 UTC and a binary fraction of a second. The 32-bit seconds field wraps in February 2036, after which the era must be inferred.
+
+In a client/server exchange the client sends its transmit time; the server records when the request arrived and when its reply left, and copies the client's time into the origin field. With the client's own arrival time, those four timestamps give both the offset and the delay.
+"""
+carries = []
+
+[[format.specs]]
+document = "RFC 5905"
+title = "Network Time Protocol Version 4: Protocol and Algorithms Specification"
+url = "https://www.rfc-editor.org/rfc/rfc5905"
+rfc = 5905
+section = "7.3"
+
+[[format.fields]]
+name = "Flags"
+meaning = "Leap indicator (0 none, 1 or 2 a leap second at the end of the day, 3 clock unsynchronised), version (usually 3 or 4) and mode (3 client, 4 server, 5 broadcast, 1 and 2 symmetric peers, 6 control)."
+
+[[format.fields]]
+name = "Stratum"
+meaning = "Distance from a reference clock: 1 is attached directly to one (GPS, atomic clock), 2 synchronises from a stratum 1 server and so on; 0 marks a kiss-o'-death packet or an unset value, 16 unsynchronised."
+
+[[format.fields]]
+name = "Poll interval"
+meaning = "The longest interval between successive messages, as a power of two in seconds (6 means 64 s)."
+
+[[format.fields]]
+name = "Precision"
+meaning = "The precision of the sender's clock, as a power of two in seconds (-20 is about a microsecond)."
+
+[[format.fields]]
+name = "Root delay"
+meaning = "The total round-trip delay to the reference clock, in seconds."
+
+[[format.fields]]
+name = "Root dispersion"
+meaning = "The total error the sender could have relative to the reference clock, in seconds."
+
+[[format.fields]]
+name = "Reference ID"
+meaning = "For stratum 1, four ASCII characters naming the reference source (such as GPS or PPS); for stratum 0, a kiss code such as RATE or DENY; above that, the IPv4 address of the upstream server, or a hash of its IPv6 address."
+
+[[format.fields]]
+name = "Reference timestamp"
+meaning = "When the sender's clock was last set or corrected."
+
+[[format.fields]]
+name = "Origin timestamp"
+meaning = "In a reply, the client's transmit time copied from the request, so the client can match the reply and compute the round trip."
+
+[[format.fields]]
+name = "Receive timestamp"
+meaning = "When the request arrived at the server."
+
+[[format.fields]]
+name = "Transmit timestamp"
+meaning = "When this packet left the sender."
+
+[[format]]
+id = "mqtt"
+name = "MQTT"
+keys = ["MQTT", "Message Queuing Telemetry Transport"]
+summary = "A lightweight publish/subscribe messaging protocol for devices and sensors: clients connect to a broker, subscribe to topics and publish messages to them."
+organisation = """
+MQTT runs over TCP, on port 1883 (8883 with TLS). Every control packet starts with a fixed header: one byte whose top four bits are the packet type (1 CONNECT, 3 PUBLISH, 8 SUBSCRIBE, 12 PINGREQ, 14 DISCONNECT and so on) and whose bottom four are flags, then the remaining length.
+
+The remaining length is a variable-length integer of one to four bytes, 7 bits per byte with the lowest-order group first; a set top bit means another byte follows. It counts the variable header and payload, so the next packet starts at 1 + length bytes + remaining length.
+
+A PUBLISH carries its quality of service (0 at most once, 1 at least once, 2 exactly once), duplicate and retain bits in the flags; its variable header is the topic name (a 2-byte length then UTF-8 text) and, for QoS 1 and 2, a 2-byte packet identifier. In MQTT 5.0 a block of properties follows before the payload. A CONNECT starts with the protocol name "MQTT" and a protocol level (4 for 3.1.1, 5 for 5.0).
+"""
+carries = []
+
+[[format.specs]]
+document = "MQTT Version 3.1.1"
+title = "MQTT Version 3.1.1, OASIS Standard"
+url = "https://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html"
+section = "2"
+
+[[format.specs]]
+document = "MQTT Version 5.0"
+title = "MQTT Version 5.0, OASIS Standard"
+url = "https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html"
+section = "2"
+
+[[format.fields]]
+name = "Header flags"
+meaning = "The first byte: packet type in the top four bits and type-specific flags in the bottom four (for PUBLISH, DUP, two QoS bits and RETAIN)."
+section = "2.2"
+
+[[format.fields]]
+name = "Remaining length"
+meaning = "Bytes in the rest of the packet, as a 1 to 4 byte variable-length integer, 7 bits per byte, low-order first."
+section = "2.2.3"
+
+[[format.fields]]
+name = "Topic"
+meaning = "The topic the message is published to, a UTF-8 string such as home/kitchen/temperature, with a 2-byte length prefix. Levels are separated by slashes."
+section = "3.3.2.1"
+
+[[format.fields]]
+name = "Message identifier"
+meaning = "The packet identifier, present only for QoS 1 and 2, used to match the acknowledgements to this publish."
+section = "3.3.2.2"
+
+[[format.fields]]
+name = "Message"
+meaning = "The application payload of a publish, in any format the clients agree on; in MQTT 5.0 it is preceded by the properties."
+section = "3.3.3"
+
+[[format.fields]]
+name = "Protocol name"
+meaning = "In a CONNECT, \"MQTT\" (or \"MQIsdp\" for the older 3.1), with a 2-byte length prefix."
+section = "3.1.2.1"
+
+[[format.fields]]
+name = "Protocol level"
+meaning = "In a CONNECT, the protocol revision: 3 for 3.1, 4 for 3.1.1, 5 for 5.0."
+section = "3.1.2.2"
+
+[[format.fields]]
+name = "Body"
+meaning = "The variable header and payload of other packet types, shown as bytes."
+
+[[format]]
+id = "modbus"
+name = "Modbus/TCP"
+keys = ["Modbus/TCP", "Modbus", "Modbus TCP"]
+summary = "The industrial request/response protocol for reading and writing coils and registers in controllers, carried over TCP with a small header in front of the classic Modbus message."
+organisation = """
+Each message (an application data unit) starts with the 7-byte MBAP header, big-endian: a transaction ID that the server copies into its response, a protocol ID that is always 0, a length counting the bytes that follow it (unit ID, function code and data), and a 1-byte unit ID. The next message on the stream starts at 6 + length.
+
+The Modbus PDU follows: a 1-byte function code and its data, at most 253 bytes in all. Read requests (functions 1 to 4) give a 2-byte starting address and a 2-byte quantity; responses give a byte count and the values. Registers are 16-bit big-endian values; coils and discrete inputs are single bits packed into bytes.
+
+If the server cannot carry out a request it answers with the function code plus 0x80 and a 1-byte exception code. Servers listen on TCP port 502.
+"""
+carries = []
+
+[[format.specs]]
+document = "Modbus Application Protocol Specification V1.1b3"
+title = "MODBUS Application Protocol Specification"
+url = "https://www.modbus.org/file/secure/modbusprotocolspecification.pdf"
+
+[[format.specs]]
+document = "Modbus Messaging on TCP/IP Implementation Guide V1.0b"
+title = "MODBUS Messaging on TCP/IP Implementation Guide"
+url = "https://www.modbus.org/file/secure/messagingimplementationguide.pdf"
+
+[[format.fields]]
+name = "Transaction ID"
+meaning = "Chosen by the client and copied into the response, so that several outstanding requests can be matched with their answers."
+
+[[format.fields]]
+name = "Protocol ID"
+meaning = "Always 0 for Modbus."
+
+[[format.fields]]
+name = "Length"
+meaning = "Bytes that follow this field: the unit ID, the function code and the data."
+
+[[format.fields]]
+name = "Unit ID"
+meaning = "The station address of a serial device behind a gateway; devices addressed directly over TCP usually ignore it (0 or 255)."
+
+[[format.fields]]
+name = "Function code"
+meaning = "The operation: 1 read coils, 2 read discrete inputs, 3 read holding registers, 4 read input registers, 5 and 6 write a single coil or register, 15 and 16 write several. 0x80 is added in an exception response."
+
+[[format.fields]]
+name = "Exception code"
+meaning = "Why a request failed: 1 illegal function, 2 illegal data address, 3 illegal data value, 4 server device failure, 6 server busy, 11 gateway target failed to respond."
+
+[[format.fields]]
+name = "Reference number"
+meaning = "The zero-based address of the first coil or register to read. Documentation often numbers registers from 1 (holding register 40001 is address 0)."
+
+[[format.fields]]
+name = "Quantity"
+meaning = "How many coils or registers to read, starting at the reference number."
+
+[[format.fields]]
+name = "Data"
+meaning = "The rest of the PDU: in a response, a byte count and the values read; in a write request, the address and values."
