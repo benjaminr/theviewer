@@ -17,6 +17,7 @@ use crate::panel_crypto_constants::CryptoConstantsState;
 use crate::panel_dotplot::DotPlotState;
 use crate::panel_firmware::FirmwareState;
 use crate::panel_image_finder::ImageFinderState;
+use crate::panel_structure_map::StructureMapState;
 
 /// The state of every self-contained tool panel.
 #[derive(Default)]
@@ -31,6 +32,7 @@ pub struct PanelStates {
     pub crypto_constants: CryptoConstantsState,
     pub crc_solver: CrcSolverState,
     pub alignment: AlignmentState,
+    pub structure_map: StructureMapState,
 }
 
 /// Draw a panel, lending it its state from `app` for the frame. The state is

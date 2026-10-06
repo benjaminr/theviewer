@@ -277,6 +277,7 @@ impl ViewerApp {
             DockTab::Bits => panels::show(self, ui, |p| &mut p.bits, crate::panel_bits::show_bits),
             DockTab::Forensics => panels::show(self, ui, |p| &mut p.forensics, crate::panel_forensics::show_forensics),
             DockTab::DotPlot => panels::show(self, ui, |p| &mut p.dot_plot, crate::panel_dotplot::show_dot_plot),
+            DockTab::StructureMap => panels::show(self, ui, |p| &mut p.structure_map, crate::panel_structure_map::show_structure_map),
             DockTab::Images => panels::show(self, ui, |p| &mut p.images, crate::panel_image_finder::show_image_finder),
             DockTab::Firmware => panels::show(self, ui, |p| &mut p.firmware, crate::panel_firmware::show_firmware),
             DockTab::Assistant | DockTab::Live => {}

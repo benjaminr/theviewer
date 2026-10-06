@@ -186,6 +186,84 @@ impl PixelFormat {
     }
 }
 
+/// A transform applied to the bytes of each row before they become pixels,
+/// so the picture shows how every row differs from the one above it.
+/// Constant fields of fixed-size records turn to zero (dark) and the fields
+/// that change stand out.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum RowDifference {
+    /// Bytes are shown as they are.
+    #[default]
+    None,
+    /// Each byte is XORed with the byte one row above.
+    Xor,
+    /// The byte one row above is subtracted, wrapping, so an unchanged byte
+    /// becomes zero, a small rise a small value and a small fall a value
+    /// just below 0x100.
+    Subtract,
+}
+
+impl RowDifference {
+    pub const ALL: [RowDifference; 3] = [RowDifference::None, RowDifference::Xor, RowDifference::Subtract];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            RowDifference::None => "Rows as they are",
+            RowDifference::Xor => "XOR with the row above",
+            RowDifference::Subtract => "Subtract the row above",
+        }
+    }
+
+    /// Compact label for the toolbar.
+    pub fn short_label(self) -> &'static str {
+        match self {
+            RowDifference::None => "Δ off",
+            RowDifference::Xor => "Δ XOR",
+            RowDifference::Subtract => "Δ −",
+        }
+    }
+
+    /// The mode after this one, wrapping round, for a single command.
+    pub fn next(self) -> RowDifference {
+        match self {
+            RowDifference::None => RowDifference::Xor,
+            RowDifference::Xor => RowDifference::Subtract,
+            RowDifference::Subtract => RowDifference::None,
+        }
+    }
+
+    pub fn is_active(self) -> bool {
+        self != RowDifference::None
+    }
+
+    fn combine(self, current: u8, above: u8) -> u8 {
+        match self {
+            RowDifference::None => current,
+            RowDifference::Xor => current ^ above,
+            RowDifference::Subtract => current.wrapping_sub(above),
+        }
+    }
+}
+
+/// Replace every row of `buffer` after the first with its difference from
+/// the row above, byte by byte. Rows are `row_stride` bytes apart; the first
+/// row only serves as the reference for the second, and any bytes after the
+/// last whole row are left alone.
+pub fn difference_rows(mode: RowDifference, buffer: &mut [u8], row_stride: usize) {
+    if !mode.is_active() || row_stride == 0 {
+        return;
+    }
+    let rows = buffer.len() / row_stride;
+    // Bottom up, so every row is compared with the original row above it.
+    for row in (1..rows).rev() {
+        let (before, from_row) = buffer.split_at_mut(row * row_stride);
+        let above = &before[(row - 1) * row_stride..];
+        for (current, &previous) in from_row[..row_stride].iter_mut().zip(above) {
+            *current = mode.combine(*current, previous);
+        }
+    }
+}
+
 /// Rasterise `rows` rows of `width` pixels from `src` into `out`.
 ///
 /// Consecutive rows start `row_stride` bytes apart, which must be at least the
@@ -398,5 +476,27 @@ mod tests {
         let mut out = vec![Color32::TRANSPARENT; 1];
         rasterise(PixelFormat::Rgb565, Palette::Grey, &src, 1, 1, PixelFormat::Rgb565.bytes_for_pixels(1), &mut out);
         assert_eq!(out[0], Color32::from_rgb(255, 255, 255));
+    }
+
+    #[test]
+    fn xor_row_difference_turns_repeated_fields_to_zero() {
+        let mut buffer = [0xAA, 0x01, 0xAA, 0x02, 0xAA, 0x04];
+        difference_rows(RowDifference::Xor, &mut buffer, 2);
+        assert_eq!(buffer, [0xAA, 0x01, 0x00, 0x03, 0x00, 0x06]);
+    }
+
+    #[test]
+    fn subtract_row_difference_wraps_so_unchanged_bytes_are_zero() {
+        let mut buffer = [10, 200, 11, 200, 10, 201, 99];
+        difference_rows(RowDifference::Subtract, &mut buffer, 2);
+        assert_eq!(buffer, [10, 200, 1, 0, 255, 1, 99], "the trailing partial row is untouched");
+    }
+
+    #[test]
+    fn rows_as_they_are_leave_bytes_alone_and_modes_cycle() {
+        let mut buffer = [1, 2, 3, 4];
+        difference_rows(RowDifference::None, &mut buffer, 2);
+        assert_eq!(buffer, [1, 2, 3, 4]);
+        assert_eq!(RowDifference::None.next().next().next(), RowDifference::None);
     }
 }

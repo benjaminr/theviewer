@@ -4,7 +4,8 @@
 use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, Ui, Vec2, pos2, vec2};
 
 use crate::app::{Shape, ViewerApp};
-use crate::plugin::Category;
+use crate::plugin::{Category, Field, Finding};
+use crate::raster::{self, PixelFormat};
 use crate::theme;
 
 const SCROLLBAR_WIDTH: f32 = 14.0;
@@ -13,6 +14,8 @@ const ENTROPY_STRIP_WIDTH: f32 = 22.0;
 const GRID_MIN_ZOOM: f32 = 8.0;
 
 pub fn show_raster(app: &mut ViewerApp, ui: &mut Ui) {
+    app.hex_labels_drawn = 0;
+    app.field_outlines_drawn = 0;
     app.show_file_map(ui);
     if app.bench.layout == crate::workbench::Layout::Hilbert {
         let (rect, _) = ui.allocate_exact_size(ui.available_size(), Sense::hover());
@@ -73,14 +76,15 @@ pub fn show_raster(app: &mut ViewerApp, ui: &mut Ui) {
     let total_rows = shape.total_rows(app.document.len());
     let data_rows_visible = total_rows.saturating_sub(top_row);
 
-    if let Some(texture) = app.ensure_texture(ui.ctx(), visible_rows) {
-        let size = texture.size();
-        let drawn_rows = size[1].min(data_rows_visible);
+    let texture = app.ensure_texture(ui.ctx(), visible_rows).map(|texture| (texture.id(), texture.size()));
+    let mut drawn_rows = 0;
+    if let Some((texture_id, size)) = texture {
+        drawn_rows = size[1].min(data_rows_visible);
         let full = Rect::from_min_size(origin, vec2(size[0] as f32 * zoom, size[1] as f32 * zoom));
         let data = Rect::from_min_size(origin, vec2(size[0] as f32 * zoom, drawn_rows as f32 * zoom));
         // Only the rows that hold real data are shown; the rest is background.
         let uv_bottom = if size[1] == 0 { 0.0 } else { drawn_rows as f32 / size[1] as f32 };
-        painter.image(texture.id(), data, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, uv_bottom)), Color32::WHITE);
+        painter.image(texture_id, data, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, uv_bottom)), Color32::WHITE);
         painter.rect_stroke(full, 0.0, Stroke::new(1.0, theme::OUTLINE), StrokeKind::Outside);
         if drawn_rows < size[1] {
             let y = data.max.y;
@@ -130,10 +134,201 @@ pub fn show_raster(app: &mut ViewerApp, ui: &mut Ui) {
             painter.rect_stroke(rect, 0.0, Stroke::new(2.0, theme::CURSOR), StrokeKind::Outside);
         }
     }
+    if zoom >= HEX_LABEL_MIN_ZOOM {
+        let mut budget = MAX_TEXT_SHAPES_PER_FRAME;
+        app.hex_labels_drawn = draw_pixel_labels(app, &painter, image_rect, origin, drawn_rows, &mut budget);
+        app.field_outlines_drawn = draw_field_outlines(app, &painter, origin, &mut budget);
+    }
 
     draw_scrollbar(app, ui, &bar_response, bar_rect);
     if strip_width > 0.0 {
         draw_entropy_strip(app, ui, strip_rect);
+    }
+}
+
+/// Font size of the values drawn inside pixels at high zoom.
+const PIXEL_LABEL_FONT_SIZE: f32 = 11.0;
+/// Advance of one monospace glyph as a fraction of the font size.
+const MONOSPACE_ADVANCE_RATIO: f32 = 0.62;
+/// Height of one line of text as a fraction of the font size.
+const LINE_HEIGHT_RATIO: f32 = 1.2;
+/// Clear space kept between a pixel's value and each edge of the pixel.
+const PIXEL_LABEL_PADDING: f32 = 4.0;
+/// Hex digits needed to write one byte.
+const HEX_DIGITS_PER_BYTE: usize = 2;
+/// Width of `chars` monospace glyphs plus the padding on both sides.
+const fn label_extent(chars: usize) -> f32 {
+    chars as f32 * PIXEL_LABEL_FONT_SIZE * MONOSPACE_ADVANCE_RATIO + 2.0 * PIXEL_LABEL_PADDING
+}
+/// Smallest zoom at which a byte's two hex digits fit inside its pixel
+/// (about 22 px). Template field outlines appear from the same zoom.
+pub const HEX_LABEL_MIN_ZOOM: f32 = label_extent(HEX_DIGITS_PER_BYTE);
+/// Most text shapes (pixel values and field names) drawn in one frame. When
+/// the visible pixels would need more, their values are skipped altogether.
+pub const MAX_TEXT_SHAPES_PER_FRAME: usize = 6000;
+/// Font size of a field's name on its outline.
+const FIELD_LABEL_FONT_SIZE: f32 = 9.0;
+/// Space between a field's name and the edge of its backing.
+const FIELD_LABEL_PADDING: f32 = 2.0;
+/// Fields outlined in one frame at most, so huge templates stay fast.
+const MAX_FIELD_OUTLINES_PER_FRAME: usize = 4000;
+/// Outline of a template or structure field at high zoom.
+const FIELD_OUTLINE: Color32 = Color32::from_rgb(255, 214, 102);
+/// Backing behind a field's name, so it reads over any pixel colour.
+const FIELD_LABEL_BACKING: Color32 = Color32::from_rgba_premultiplied(0, 0, 0, 190);
+/// Perceived brightness (0 to 255) above which dark text reads better.
+const LUMINANCE_MIDPOINT: f32 = 140.0;
+
+/// Black or white, whichever reads better on `background`, judged by its
+/// perceived (Rec. 709) luminance.
+pub fn contrasting_text_colour(background: Color32) -> Color32 {
+    let luminance = 0.2126 * background.r() as f32 + 0.7152 * background.g() as f32 + 0.0722 * background.b() as f32;
+    if luminance >= LUMINANCE_MIDPOINT { Color32::BLACK } else { Color32::WHITE }
+}
+
+/// Text written inside pixel `col` of a row whose (transformed) bytes are
+/// `row_bytes`: the bit or nibble for sub-byte formats, otherwise the pixel's
+/// bytes in hex, wrapped onto as many lines as fit. `None` when the text
+/// cannot fit in a pixel `zoom` points square.
+pub fn pixel_label(format: PixelFormat, row_bytes: &[u8], col: usize, zoom: f32) -> Option<String> {
+    let bits = format.bits_per_pixel();
+    let first_byte = col * bits / 8;
+    if bits < 8 {
+        let byte = *row_bytes.get(first_byte)?;
+        let value = match format {
+            PixelFormat::Bit1Msb => (byte >> (7 - col % 8)) & 1,
+            PixelFormat::Bit1Lsb => (byte >> (col % 8)) & 1,
+            _ if col.is_multiple_of(2) => byte >> 4,
+            _ => byte & 0x0F,
+        };
+        return (label_extent(1) <= zoom).then(|| format!("{value:X}"));
+    }
+    let bytes = row_bytes.get(first_byte..first_byte + bits / 8)?;
+    let byte_width = label_extent(HEX_DIGITS_PER_BYTE) - 2.0 * PIXEL_LABEL_PADDING;
+    let bytes_per_line = ((zoom - 2.0 * PIXEL_LABEL_PADDING) / byte_width).floor() as usize;
+    if bytes_per_line == 0 {
+        return None;
+    }
+    let lines = bytes.len().div_ceil(bytes_per_line);
+    let height = lines as f32 * PIXEL_LABEL_FONT_SIZE * LINE_HEIGHT_RATIO + 2.0 * PIXEL_LABEL_PADDING;
+    if height > zoom {
+        return None;
+    }
+    let text = bytes
+        .chunks(bytes_per_line)
+        .map(|line| line.iter().map(|byte| format!("{byte:02X}")).collect::<String>())
+        .collect::<Vec<_>>()
+        .join("\n");
+    Some(text)
+}
+
+/// Write each visible pixel's value inside it, in black or white to contrast
+/// with the pixel. Only pixels on screen are labelled, and nothing is drawn
+/// when they would need more than `budget` text shapes. Returns how many
+/// labels were drawn and takes them from `budget`.
+fn draw_pixel_labels(
+    app: &ViewerApp,
+    painter: &egui::Painter,
+    image_rect: Rect,
+    origin: Pos2,
+    drawn_rows: usize,
+    budget: &mut usize,
+) -> usize {
+    let shape = app.shape;
+    let zoom = app.zoom;
+    let bits = shape.bits_per_pixel();
+    let stride = shape.row_stride();
+    let first_col = ((image_rect.min.x - origin.x) / zoom).floor().max(0.0) as usize;
+    let last_col = (((image_rect.max.x - origin.x) / zoom).ceil().max(0.0) as usize).min(shape.width);
+    let rows = drawn_rows.min((image_rect.height() / zoom).ceil() as usize);
+    if first_col >= last_col || rows == 0 || (last_col - first_col) * rows > *budget {
+        return 0;
+    }
+    // Sub-byte formats are re-rasterised from a byte boundary.
+    let pixels_per_byte = (8 / bits).max(1);
+    let aligned_col = first_col / pixels_per_byte * pixels_per_byte;
+    let columns = last_col - aligned_col;
+    let first_byte = aligned_col * bits / 8;
+    let segment_bytes = shape.format.bytes_for_pixels(columns);
+    let raster_bytes = app.raster_bytes();
+    let document_len = app.document.len();
+    let font = FontId::monospace(PIXEL_LABEL_FONT_SIZE);
+    let mut colours = vec![Color32::BLACK; columns];
+    let mut drawn = 0;
+    for row in 0..rows {
+        let row_start = row * stride;
+        let Some(row_bytes) = raster_bytes.get(row_start..row_start + shape.row_bytes()) else { break };
+        let Some(segment) = row_bytes.get(first_byte..first_byte + segment_bytes) else { break };
+        raster::rasterise(shape.format, shape.palette, segment, columns, 1, segment_bytes, &mut colours);
+        for col in first_col..last_col {
+            if shape.byte_of_pixel(app.top_row + row, col) >= document_len {
+                break;
+            }
+            let Some(text) = pixel_label(shape.format, row_bytes, col, zoom) else { continue };
+            let centre = origin + vec2((col as f32 + 0.5) * zoom, (row as f32 + 0.5) * zoom);
+            let colour = contrasting_text_colour(colours[col - aligned_col]);
+            painter.text(centre, Align2::CENTER_CENTER, text, font.clone(), colour);
+            drawn += 1;
+        }
+    }
+    *budget -= drawn;
+    drawn
+}
+
+/// Outline every template and structure field on screen and name it where
+/// the name fits: fields of pinned findings (applied templates) and of the
+/// structure at the cursor. Returns how many fields were outlined.
+fn draw_field_outlines(app: &ViewerApp, painter: &egui::Painter, origin: Pos2, budget: &mut usize) -> usize {
+    let shape = app.shape;
+    let zoom = app.zoom;
+    let stride = shape.row_stride();
+    let visible_start = shape.byte_offset + app.top_row * stride;
+    let visible_end = visible_start + app.visible_rows * stride + 1;
+    let mut structures: Vec<&Finding> = app.bench.pinned.iter().filter(|finding| !finding.fields.is_empty()).collect();
+    if app.show_structure_fields
+        && let Some(structure) = app.cursor_structure.as_ref()
+        && !structures.iter().any(|pinned| pinned.id == structure.id && pinned.start == structure.start)
+    {
+        structures.push(structure);
+    }
+    let mut fields: Vec<&Field> = Vec::new();
+    for structure in structures {
+        collect_visible_fields(&structure.fields, visible_start, visible_end, &mut fields);
+    }
+    let font = FontId::proportional(FIELD_LABEL_FONT_SIZE);
+    for field in &fields {
+        let rects = byte_range_rects(&shape, field.offset, field.len, app.top_row, app.visible_rows, origin, zoom);
+        let leaf = field.children.is_empty();
+        let stroke = if leaf { Stroke::new(1.5, FIELD_OUTLINE) } else { Stroke::new(1.0, FIELD_OUTLINE.gamma_multiply(0.6)) };
+        for rect in &rects {
+            painter.rect_stroke(*rect, 0.0, stroke, StrokeKind::Inside);
+        }
+        // Name leaf fields only, so nested names do not pile up on one corner.
+        let Some(first) = rects.first().filter(|_| leaf && *budget > 0) else { continue };
+        let galley = painter.layout_no_wrap(field.name.clone(), font.clone(), FIELD_OUTLINE);
+        let backing = Rect::from_min_size(first.min, galley.size() + Vec2::splat(2.0 * FIELD_LABEL_PADDING));
+        if backing.width() > first.width() || backing.height() > first.height() {
+            continue;
+        }
+        painter.rect_filled(backing, 2.0, FIELD_LABEL_BACKING);
+        painter.galley(backing.min + Vec2::splat(FIELD_LABEL_PADDING), galley, FIELD_OUTLINE);
+        *budget -= 1;
+    }
+    fields.len()
+}
+
+/// Every field (and nested field) overlapping `[start, end)`, outermost
+/// first, up to the per-frame limit.
+fn collect_visible_fields<'a>(fields: &'a [Field], start: usize, end: usize, out: &mut Vec<&'a Field>) {
+    for field in fields {
+        if out.len() >= MAX_FIELD_OUTLINES_PER_FRAME {
+            return;
+        }
+        if field.len == 0 || field.offset >= end || field.end() <= start {
+            continue;
+        }
+        out.push(field);
+        collect_visible_fields(&field.children, start, end, out);
     }
 }
 
@@ -460,5 +655,42 @@ fn draw_scrollbar(app: &mut ViewerApp, ui: &Ui, response: &egui::Response, bar_r
         let background = Rect::from_center_size(pos - vec2(galley.size().x / 2.0, 0.0), galley.size() + vec2(8.0, 4.0));
         painter.rect_filled(background, 3.0, theme::SURFACE_RAISED);
         painter.galley(background.min + vec2(4.0, 2.0), galley, theme::TEXT);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn two_hex_digits_fit_from_about_twenty_two_points() {
+        assert!((20.0..=24.0).contains(&HEX_LABEL_MIN_ZOOM), "{HEX_LABEL_MIN_ZOOM}");
+        assert_eq!(pixel_label(PixelFormat::Gray8, &[0x4F], 0, HEX_LABEL_MIN_ZOOM).as_deref(), Some("4F"));
+        assert_eq!(pixel_label(PixelFormat::Gray8, &[0x4F], 0, HEX_LABEL_MIN_ZOOM - 1.0), None);
+    }
+
+    #[test]
+    fn sub_byte_pixels_show_their_bit_or_nibble() {
+        assert_eq!(pixel_label(PixelFormat::Bit1Msb, &[0b0100_0000], 1, 24.0).as_deref(), Some("1"));
+        assert_eq!(pixel_label(PixelFormat::Bit1Lsb, &[0b0000_0010], 1, 24.0).as_deref(), Some("1"));
+        assert_eq!(pixel_label(PixelFormat::Nibble4, &[0xA7], 0, 24.0).as_deref(), Some("A"));
+        assert_eq!(pixel_label(PixelFormat::Nibble4, &[0xA7], 1, 24.0).as_deref(), Some("7"));
+    }
+
+    #[test]
+    fn multi_byte_pixels_wrap_their_bytes_or_are_skipped_when_too_small() {
+        let row = [0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC, 0xDE, 0xF0];
+        assert_eq!(pixel_label(PixelFormat::Rgba8, &row, 1, 48.0).as_deref(), Some("9ABC\nDEF0"));
+        assert_eq!(pixel_label(PixelFormat::Rgba8, &row, 0, 24.0), None, "four lines do not fit in 24 points");
+        assert_eq!(pixel_label(PixelFormat::Gray16Le, &row, 1, 48.0).as_deref(), Some("5678"));
+        assert_eq!(pixel_label(PixelFormat::Gray8, &row, 8, 48.0), None, "past the row");
+    }
+
+    #[test]
+    fn text_contrasts_with_light_and_dark_pixels() {
+        assert_eq!(contrasting_text_colour(Color32::WHITE), Color32::BLACK);
+        assert_eq!(contrasting_text_colour(Color32::from_rgb(253, 231, 37)), Color32::BLACK);
+        assert_eq!(contrasting_text_colour(Color32::BLACK), Color32::WHITE);
+        assert_eq!(contrasting_text_colour(Color32::from_rgb(68, 1, 84)), Color32::WHITE);
     }
 }

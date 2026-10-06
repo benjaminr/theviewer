@@ -33,10 +33,11 @@ pub enum DockTab {
     DotPlot,
     Images,
     Firmware,
+    StructureMap,
 }
 
 impl DockTab {
-    pub const ALL: [DockTab; 20] = [
+    pub const ALL: [DockTab; 21] = [
         DockTab::Report,
         DockTab::Assistant,
         DockTab::Template,
@@ -57,11 +58,12 @@ impl DockTab {
         DockTab::DotPlot,
         DockTab::Images,
         DockTab::Firmware,
+        DockTab::StructureMap,
     ];
 
     /// Tabs grouped by purpose, for the tab bar.
     pub const GROUPS: [&'static [DockTab]; 5] = [
-        &[DockTab::Report, DockTab::Assistant, DockTab::DotPlot, DockTab::Images],
+        &[DockTab::Report, DockTab::StructureMap, DockTab::Assistant, DockTab::DotPlot, DockTab::Images],
         &[DockTab::Template, DockTab::Columns, DockTab::Protocol, DockTab::Bits],
         &[DockTab::Statistics, DockTab::Strings, DockTab::Xor, DockTab::Crypto, DockTab::Checksums],
         &[DockTab::Disassembly, DockTab::Firmware, DockTab::Unpacked, DockTab::Forensics, DockTab::Diff, DockTab::Compare],
@@ -90,6 +92,7 @@ impl DockTab {
             DockTab::DotPlot => "Dot plot",
             DockTab::Images => "Images",
             DockTab::Firmware => "Firmware",
+            DockTab::StructureMap => "Structure map",
         }
     }
 
@@ -115,6 +118,7 @@ impl DockTab {
             DockTab::DotPlot => "The file compared with itself: repeats show as diagonal lines",
             DockTab::Images => "Find uncompressed pictures, fonts and framebuffers",
             DockTab::Firmware => "Processor, load address and vector table of a raw firmware image",
+            DockTab::StructureMap => "Split the file into regions of one kind, find more like the selection, and track features along the file",
         }
     }
 }

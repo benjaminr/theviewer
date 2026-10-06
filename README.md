@@ -89,6 +89,10 @@ with its shortcut, or right-click a byte for the actions that apply to it.
 - A Hilbert-curve layout that shows structure without choosing a width, and
   arrows from values that look like offsets to the bytes they point at.
 - Optional pattern highlights over the view and hex dump (`H`).
+- Zoomed in far enough, every pixel shows its value in hex, and template
+  and structure fields are outlined and named.
+- A row difference (XOR or subtract the row above) that turns the constant
+  fields of fixed-size records dark so the fields that change stand out.
 
 **Understand it**
 - A period scan that suggests record sizes.
@@ -128,6 +132,7 @@ right-click menu. Each one is a panel you can dock anywhere.
 | Tool | What it does |
 | --- | --- |
 | **Report** | A plain-language overview of the whole file, with every sentence linked to its bytes, and a coloured map of the file above the view. |
+| **Structure map** | *Segments* splits the file into regions of one kind (text, tables, code, compressed, padding…) with boundaries on the real edges, groups similar regions into types and colours them on a strip and the file map. *Find more like this* scores every part of the file against the selection and highlights the matches. *Feature tracks* draws entropy, compressibility, printable and zero bytes, the mix of byte kinds and the best record width at each point along the file; *Use width here* applies that width. |
 | **Dot plot** | The file compared with itself on a grid: repeated sections show as diagonal lines and uniform regions as blocks, so structure shows without choosing a width. Click a point to jump to either copy. |
 | **Images** | Finds uncompressed pictures, fonts, splash screens and framebuffers by trying widths and pixel formats across the file; click a result to show it in the view at the right width and format. |
 | **Columns** | For a table of fixed-size records: a profile of each byte position (constant, counter, timestamp, a few values, text, random) and the fields it adds up to. One click applies them as a template. |

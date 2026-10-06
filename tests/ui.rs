@@ -8,7 +8,8 @@ use eframe::egui::{self, Event, Key, Modifiers, PointerButton, pos2};
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
 use theviewer::app::{EditMode, Launch, ViewerApp};
-use theviewer::raster::{Palette, PixelFormat};
+use theviewer::plugin::{Category, Field, Finding};
+use theviewer::raster::{Palette, PixelFormat, RowDifference};
 
 const SAMPLE_LEN: usize = 64 * 1024;
 
@@ -1028,4 +1029,50 @@ fn the_settings_window_shows_the_startup_defaults() {
     harness.get_by_label("Apply to this window").click();
     steps(&mut harness, 2);
     assert!(harness.state().highlight_patterns);
+}
+
+#[test]
+fn zooming_in_far_writes_each_byte_in_hex_and_outlines_template_fields() {
+    let mut harness = harness(sample_file("hex-zoom.bin"));
+    assert_eq!(harness.state().hex_labels_drawn, 0, "no labels at the launch zoom");
+    let header = Finding::new("template:record", "template", Category::Custom, 0, 3)
+        .title("Record")
+        .fields(vec![Field::new("marker", 0, 2, "AA 55"), Field::new("counter", 2, 1, "0")]);
+    harness.state_mut().bench.pinned.push(header);
+    for format in [PixelFormat::Gray8, PixelFormat::Bit1Msb, PixelFormat::Nibble4, PixelFormat::Rgba8] {
+        let app = harness.state_mut();
+        app.shape.format = format;
+        app.zoom = 48.0;
+        steps(&mut harness, 2);
+        assert!(harness.state().hex_labels_drawn > 0, "{format:?} pixels carry their values");
+        assert!(harness.state().hex_labels_drawn <= theviewer::view::MAX_TEXT_SHAPES_PER_FRAME);
+        assert_eq!(harness.state().field_outlines_drawn, 2, "{format:?} outlines both template fields");
+    }
+    harness.state_mut().zoom = 4.0;
+    steps(&mut harness, 2);
+    assert_eq!(harness.state().hex_labels_drawn, 0, "zoomed out, the values are not drawn");
+    assert_eq!(harness.state().field_outlines_drawn, 0);
+}
+
+#[test]
+fn row_difference_redraws_records_so_repeated_markers_turn_to_zero() {
+    let mut harness = harness(sample_file("row-difference.bin"));
+    // Row 1 starts with the 0xAA 0x55 marker, the same as row 0.
+    assert_eq!(&harness.state().raster_bytes()[64..66], &[0xAA, 0x55]);
+    for mode in [RowDifference::Xor, RowDifference::Subtract] {
+        harness.state_mut().set_row_difference(mode);
+        steps(&mut harness, 2);
+        let bytes = harness.state().raster_bytes();
+        assert_eq!(&bytes[64..66], &[0, 0], "{mode:?}: the marker is constant");
+        assert_eq!(bytes[66], 1, "{mode:?}: the counter rises by one per record");
+        assert_eq!(bytes[0], 0xAA, "{mode:?}: the first row is compared with nothing");
+    }
+    // Scrolled down, the top row is compared with the row above it.
+    harness.state_mut().top_row = 10;
+    steps(&mut harness, 2);
+    assert_eq!(&harness.state().raster_bytes()[..3], &[0, 0, 1]);
+    harness.state_mut().cycle_row_difference();
+    steps(&mut harness, 2);
+    assert_eq!(harness.state().row_difference, RowDifference::None);
+    assert_eq!(&harness.state().raster_bytes()[..2], &[0xAA, 0x55], "bytes are back as they are");
 }

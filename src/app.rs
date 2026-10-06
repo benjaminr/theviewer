@@ -32,7 +32,7 @@ use crate::document::Document;
 use crate::ops;
 use crate::patterns;
 use crate::plugin::{Category, Finding, Registry, ScanContext};
-use crate::raster::{self, Palette, PixelFormat};
+use crate::raster::{self, Palette, PixelFormat, RowDifference};
 use crate::search::{self, SearchMode};
 use crate::theme;
 
@@ -155,6 +155,7 @@ struct RasterKey {
     shape: Shape,
     top_row: usize,
     rows: usize,
+    row_difference: RowDifference,
 }
 
 pub struct ViewerApp {
@@ -264,6 +265,16 @@ pub struct ViewerApp {
     texture: Option<TextureHandle>,
     raster_key: Option<RasterKey>,
     byte_buffer: Vec<u8>,
+    /// Bytes at the start of `byte_buffer` that precede the top row: the row
+    /// above, kept as the reference for the row difference.
+    raster_prefix: usize,
+    /// How each row is compared with the one above before it is drawn.
+    pub row_difference: RowDifference,
+    /// Hex values the raster drew inside pixels last frame (zero when zoomed
+    /// out or over the per-frame limit); read by tests and the status bar.
+    pub hex_labels_drawn: usize,
+    /// Template and structure field outlines the raster drew last frame.
+    pub field_outlines_drawn: usize,
     pub last_raster_ms: f32,
     pub last_raster_pixels: usize,
 
@@ -479,6 +490,10 @@ impl ViewerApp {
             texture: None,
             raster_key: None,
             byte_buffer: Vec::new(),
+            raster_prefix: 0,
+            row_difference: RowDifference::None,
+            hex_labels_drawn: 0,
+            field_outlines_drawn: 0,
             last_raster_ms: 0.0,
             last_raster_pixels: 0,
             status: "Open a file (Cmd+O) or drop one onto the window".to_string(),
@@ -2139,21 +2154,18 @@ impl ViewerApp {
     pub fn ensure_texture(&mut self, ctx: &Context, rows: usize) -> Option<&TextureHandle> {
         let shape = self.shape;
         let rows = rows.clamp(1, (MAX_TEXTURE_PIXELS / shape.width.max(1)).max(1));
-        let key = RasterKey { version: self.document.version(), shape, top_row: self.top_row, rows };
+        let row_difference = self.row_difference;
+        let key = RasterKey { version: self.document.version(), shape, top_row: self.top_row, rows, row_difference };
         if self.raster_key == Some(key) && self.texture.is_some() {
             return self.texture.as_ref();
         }
         let started = Instant::now();
         let stride = shape.row_stride();
+        self.fill_raster_bytes(rows);
         let needed = stride * rows + 1;
-        self.byte_buffer.resize(needed, 0);
-        let start = shape.byte_offset + self.top_row * stride;
-        self.document.read_into(start, &mut self.byte_buffer[..needed]);
-        if shape.bit_offset != 0 {
-            raster::shift_left_bits(&mut self.byte_buffer[..needed], shape.bit_offset);
-        }
         let mut pixels = vec![Color32::BLACK; shape.width * rows];
-        raster::rasterise(shape.format, shape.palette, &self.byte_buffer[..needed], shape.width, rows, stride, &mut pixels);
+        let bytes = &self.byte_buffer[self.raster_prefix..self.raster_prefix + needed];
+        raster::rasterise(shape.format, shape.palette, bytes, shape.width, rows, stride, &mut pixels);
         let image = ColorImage::new([shape.width, rows], pixels);
         match &mut self.texture {
             Some(texture) => texture.set(image, TextureOptions::NEAREST),
@@ -2163,6 +2175,46 @@ impl ViewerApp {
         self.last_raster_ms = started.elapsed().as_secs_f32() * 1000.0;
         self.last_raster_pixels = shape.width * rows;
         self.texture.as_ref()
+    }
+
+    /// Read the bytes behind `rows` rows from the top row into
+    /// `byte_buffer`, apply the bit shift and the row difference, and record
+    /// where the top row starts in the buffer.
+    fn fill_raster_bytes(&mut self, rows: usize) {
+        let shape = self.shape;
+        let stride = shape.row_stride();
+        let start = shape.byte_offset + self.top_row * stride;
+        // The row difference needs the row above the top one as a reference;
+        // above the first row there is nothing, so it compares with zeros.
+        let prefix = if self.row_difference.is_active() { stride } else { 0 };
+        let needed = prefix + stride * rows + 1;
+        self.byte_buffer.clear();
+        self.byte_buffer.resize(needed, 0);
+        let read_from = if self.top_row > 0 { start - prefix } else { start };
+        let skipped = if self.top_row > 0 { 0 } else { prefix };
+        self.document.read_into(read_from, &mut self.byte_buffer[skipped..]);
+        if shape.bit_offset != 0 {
+            raster::shift_left_bits(&mut self.byte_buffer[skipped..], shape.bit_offset);
+        }
+        raster::difference_rows(self.row_difference, &mut self.byte_buffer[..needed - 1], stride);
+        self.raster_prefix = prefix;
+    }
+
+    /// The bytes the raster was last drawn from, starting at the top row,
+    /// after the bit shift and row difference: rows `shape.row_stride()`
+    /// bytes apart.
+    pub fn raster_bytes(&self) -> &[u8] {
+        self.byte_buffer.get(self.raster_prefix..).unwrap_or_default()
+    }
+
+    /// Switch to the next row-difference mode.
+    pub fn cycle_row_difference(&mut self) {
+        self.set_row_difference(self.row_difference.next());
+    }
+
+    pub fn set_row_difference(&mut self, mode: RowDifference) {
+        self.row_difference = mode;
+        self.status = format!("Row difference: {}", mode.label().to_lowercase());
     }
 
     // ------------------------------------------------------------------
@@ -2484,6 +2536,14 @@ impl ViewerApp {
                 let hilbert = self.bench.layout == crate::workbench::Layout::Hilbert;
                 if ui.selectable_label(!hilbert, "Layout: rows").clicked() { self.bench.layout = crate::workbench::Layout::Rows; ui.close(); }
                 if ui.selectable_label(hilbert, "Layout: Hilbert curve").clicked() { self.bench.layout = crate::workbench::Layout::Hilbert; ui.close(); }
+                ui.menu_button("Row difference", |ui| {
+                    for mode in RowDifference::ALL {
+                        if ui.selectable_label(self.row_difference == mode, mode.label()).clicked() {
+                            self.set_row_difference(mode);
+                            ui.close();
+                        }
+                    }
+                });
                 ui.checkbox(&mut self.bench.analysis.show_pointers, "Pointer arrows");
                 ui.checkbox(&mut self.bench.show_file_map, "File map");
                 if ui.button("Guess image shape").clicked() { self.guess_image_shape(); ui.close(); }
@@ -2492,6 +2552,7 @@ impl ViewerApp {
             });
             ui.menu_button("Tools", |ui| {
                 if ui.button("Explain this file").clicked() { self.dock.open = true; self.dock.tab = DockTab::Report; self.start_report(); ui.close(); }
+                if ui.button("Structure map: segments, find similar, feature tracks").clicked() { self.dock.toggle(DockTab::StructureMap); ui.close(); }
                 if ui.button("Dot plot (self-similarity)").clicked() { self.dock.toggle(DockTab::DotPlot); ui.close(); }
                 if ui.button("Find images").clicked() { self.dock.toggle(DockTab::Images); ui.close(); }
                 if ui.button("Firmware: processor, load address, vectors").clicked() { self.dock.toggle(DockTab::Firmware); ui.close(); }
@@ -2573,6 +2634,20 @@ impl ViewerApp {
                     })
                     .response
                     .on_hover_text("Colour ramp for single-channel formats");
+            }
+            let mut row_difference = self.row_difference;
+            egui::ComboBox::from_id_salt("row-difference")
+                .selected_text(row_difference.short_label())
+                .width(54.0)
+                .show_ui(ui, |ui| {
+                    for mode in RowDifference::ALL {
+                        ui.selectable_value(&mut row_difference, mode, mode.label());
+                    }
+                })
+                .response
+                .on_hover_text("Row difference: compare each row with the one above.\nFields that repeat in every record go dark; fields that change stand out.");
+            if row_difference != self.row_difference {
+                self.set_row_difference(row_difference);
             }
         });
 
