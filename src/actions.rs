@@ -27,6 +27,8 @@ impl ViewerApp {
     /// caller with a better place for the error (a panel's note) may show
     /// it there too.
     pub fn perform(&mut self, method: &str, params: Value) -> Result<Value, ApiError> {
+        #[cfg(test)]
+        PERFORMED.with_borrow_mut(|performed| performed.push((method.to_string(), params.clone())));
         let result = api::call(self, &Caller::Panel, method, params);
         if let Err(error) = &result {
             self.status = status_for(error);
@@ -41,6 +43,20 @@ impl ViewerApp {
         let result = self.perform(method, params)?;
         serde_json::from_value(result).map_err(|error| ApiError::invalid_params(format!("the result of {method} was not what the window expected: {error}")))
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The calls [`ViewerApp::perform`] made on this thread, for tests.
+    static PERFORMED: std::cell::RefCell<Vec<(String, Value)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// The methods the person's actions called on this thread since the last
+/// time this was asked, with their parameters: how a test proves an action
+/// went through the API, and with everything needed to repeat it.
+#[cfg(test)]
+pub fn take_performed() -> Vec<(String, Value)> {
+    PERFORMED.with_borrow_mut(std::mem::take)
 }
 
 /// A failed call as the status bar says it: the message, starting with a
@@ -80,6 +96,8 @@ mod tests {
         assert_eq!(edited.producer(), "panel");
         assert_eq!(app.document.read_range(0, 10), b"01AB456789");
         assert_eq!(app.document.undo_label(), Some("Overwrite 2 bytes"));
+        assert_eq!(take_performed(), [("bytes.write".to_string(), json!({"start": 2, "data": "4142"}))], "a test can see what was performed");
+        assert!(take_performed().is_empty());
     }
 
     #[test]

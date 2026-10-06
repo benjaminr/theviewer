@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 
 use super::permissions::{self, Caller, Decision, HeldCall};
 use super::packet_sets::PacketSets;
+use super::view::ViewShape;
 use super::{ApiError, Effect, RegisteredMethod};
 use crate::app::ViewerApp;
 use crate::bus::topics::{CursorMoved, DocumentEdited, DocumentOpened, FindingsPublished, SelectionChanged, TemplateApplied};
@@ -111,6 +112,11 @@ pub trait Workspace {
     /// Show packet set `id` where packets are shown, after it was made or
     /// its decoding changed; a workspace with nowhere to show it does nothing.
     fn show_packet_set(&mut self, _id: &str) {}
+    /// The shape document `id`'s bytes are drawn in.
+    fn shape(&self, id: &str) -> Option<ViewShape>;
+    /// Draw document `id`'s bytes in `shape`, already checked against the
+    /// document and the limits.
+    fn set_shape(&mut self, id: &str, shape: ViewShape) -> Result<(), ApiError>;
     /// The window, when this workspace is the window: for a method whose
     /// effect only the window has (a panel to show, a chart to fill), so it
     /// need not add a hook of its own here. Headless workspaces have none,
@@ -165,6 +171,7 @@ struct OpenDocument {
     name: String,
     document: Document,
     view: ViewState,
+    shape: ViewShape,
     /// The version `document.edited` has been published up to.
     published_version: u64,
 }
@@ -229,7 +236,7 @@ impl HeadlessWorkspace {
         let opened = DocumentOpened { name: name.clone(), path: document.path().map(|path| path.display().to_string()), len: document.len() };
         self.bus.publish(Draft::new("workspace", Payload::DocumentOpened(opened)).about(id.clone(), document.version()));
         let published_version = document.version();
-        self.documents.push(OpenDocument { id: id.clone(), name, document, view: ViewState::default(), published_version });
+        self.documents.push(OpenDocument { id: id.clone(), name, document, view: ViewState::default(), shape: ViewShape::default(), published_version });
         self.current = Some(self.documents.len() - 1);
         id
     }
@@ -269,6 +276,19 @@ impl Workspace for HeadlessWorkspace {
 
     fn view(&self, id: &str) -> Option<ViewState> {
         self.documents.iter().find(|open| open.id == id).map(|open| open.view.clone())
+    }
+
+    fn shape(&self, id: &str) -> Option<ViewShape> {
+        self.documents.iter().find(|open| open.id == id).map(|open| open.shape)
+    }
+
+    /// Without pixel formats, a row's pixels are its bytes, so records are
+    /// a row and its padding apart.
+    fn set_shape(&mut self, id: &str, shape: ViewShape) -> Result<(), ApiError> {
+        let open = self.documents.iter_mut().find(|open| open.id == id).ok_or_else(|| ApiError::not_found(format!("document '{id}' has closed")))?;
+        open.shape = shape;
+        open.view.record_stride = Some(shape.width + shape.row_padding);
+        Ok(())
     }
 
     fn registry(&self) -> Arc<Registry> {
@@ -412,6 +432,24 @@ impl Workspace for ViewerApp {
 
     fn registry(&self) -> Arc<Registry> {
         Arc::clone(&self.registry)
+    }
+
+    fn shape(&self, id: &str) -> Option<ViewShape> {
+        let shape = if id == self.document_id { &self.shape } else { &self.parents.iter().find(|parent| parent.id == id)?.shape };
+        Some(ViewShape { width: shape.width, offset: shape.byte_offset as u64, bit_offset: shape.bit_offset, row_padding: shape.row_padding })
+    }
+
+    /// The main view is drawn in the new shape, its hex dump following;
+    /// a parent's shape changes only once it is gone back to.
+    fn set_shape(&mut self, id: &str, shape: ViewShape) -> Result<(), ApiError> {
+        if id != self.document_id {
+            return Err(ApiError::invalid_params(format!("{id} waits behind the document shown; go back to it (documents.open with its id) to change its view")));
+        }
+        self.shape.byte_offset = (shape.offset as usize).min(self.document.len());
+        self.shape.bit_offset = shape.bit_offset;
+        self.shape.row_padding = shape.row_padding;
+        self.set_width(shape.width);
+        Ok(())
     }
 
     /// A document already open is gone back to; another file is opened in

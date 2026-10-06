@@ -87,6 +87,8 @@ Errors are `{code, message, data}`, with these codes:
 | [`jobs.list`](#jobslist) | read | The background jobs tools and callers started (the last 100): what each does, who started it, whether it is running, how far it has got and how it ended. |
 | [`jobs.status`](#jobsstatus) | read | One job's state, progress and outcome, and once it has finished, the result of a job a method started. |
 | [`jobs.cancel`](#jobscancel) | read | Ask a running job to stop; it ends as cancelled, without a result, as soon as it notices. |
+| [`view.get_shape`](#viewget_shape) | read | The shape a document's bytes are drawn in: pixels per row, the offset of the first pixel, a bit shift and the bytes skipped after each row. |
+| [`view.set_shape`](#viewset_shape) | view | Change the shape a document's bytes are drawn in (pixels per row, the first pixel's offset and bit, the padding after each row); what is not given stays as it is. |
 
 Each method's full JSON schemas are in `theviewer api --describe`.
 
@@ -1168,6 +1170,36 @@ Ask a running job to stop; it ends as cancelled, without a result, as soon as it
 | `state` | `"running"` \| `"cancelling"` \| `"finished"` \| `"failed"` \| `"cancelled"` | yes | Where a job is. |
 | `title` | string | yes | What the job does, such as "Report". |
 | `total` | integer | no | Units of work in all, when known. |
+
+### view.get_shape
+
+The shape a document's bytes are drawn in: pixels per row, the offset of the first pixel, a bit shift and the bytes skipped after each row.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `doc` | string | no | Document id, path or "current" (the default). |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `doc` | string | yes | Id of the document. |
+| `shape` | ViewShape | yes | The shape its bytes are drawn in now. |
+
+### view.set_shape
+
+Change the shape a document's bytes are drawn in (pixels per row, the first pixel's offset and bit, the padding after each row); what is not given stays as it is.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `bit_offset` | integer | no | Extra bit shift after `offset`, 0 to 7. |
+| `doc` | string | no | Document id, path or "current" (the default). |
+| `offset` | integer | no | Document offset of the first pixel; at most the document's length. |
+| `row_padding` | integer | no | Bytes skipped after each row's pixels. |
+| `width` | integer | no | Pixels per row, 1 to 16384. |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `doc` | string | yes | Id of the document. |
+| `shape` | ViewShape | yes | The shape its bytes are drawn in now. |
 
 ## Topics
 

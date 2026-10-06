@@ -1417,7 +1417,16 @@ impl ViewerApp {
             .unwrap_or(1.0);
     }
 
-    /// Set the pixels per row, within the allowed range.
+    /// The person changes the pixels per row, as `view.set_shape`; a width
+    /// outside the allowed range is brought inside it.
+    pub fn change_width(&mut self, width: usize) {
+        let width = width.clamp(1, MAX_WIDTH);
+        let _ = self.perform("view.set_shape", serde_json::json!({ "width": width }));
+    }
+
+    /// Set the pixels per row, within the allowed range. For the API and
+    /// for widths the app chooses itself; the person's go through
+    /// [`ViewerApp::change_width`].
     pub fn set_width(&mut self, width: usize) {
         self.shape.width = width.clamp(1, MAX_WIDTH);
         self.clamp_top_row();
@@ -2177,15 +2186,18 @@ impl ViewerApp {
         }
     }
 
+    /// Go to the offset typed in the Go to field, as `cursor.set`; an
+    /// offset past the end goes to the end.
     fn go_to(&mut self) {
-        match ops::parse_offset(&self.goto_text) {
-            Some(offset) => {
-                self.set_cursor(offset, false);
-                self.reveal_cursor_centred();
-                self.reveal_cursor_in_hex(true);
-                self.status = format!("Cursor at {:#x}", self.cursor);
-            }
-            None => self.status = "Go to: enter a decimal or 0x-prefixed hex offset".to_string(),
+        let Some(offset) = ops::parse_offset(&self.goto_text) else {
+            self.status = "Go to: enter a decimal or 0x-prefixed hex offset".to_string();
+            return;
+        };
+        let offset = offset.min(self.document.len());
+        if self.perform("cursor.set", serde_json::json!({ "offset": offset })).is_ok() {
+            self.reveal_cursor_centred();
+            self.reveal_cursor_in_hex(true);
+            self.status = format!("Cursor at {:#x}", self.cursor);
         }
     }
 
@@ -3078,11 +3090,11 @@ impl ViewerApp {
         }
         if consume(Key::OpenBracket) {
             let step = if shift { 16 } else { 1 };
-            self.set_width(self.shape.width.saturating_sub(step).max(1));
+            self.change_width(self.shape.width.saturating_sub(step).max(1));
         }
         if consume(Key::CloseBracket) {
             let step = if shift { 16 } else { 1 };
-            self.set_width(self.shape.width + step);
+            self.change_width(self.shape.width + step);
         }
         if consume(Key::Comma) {
             self.adjust_bit_offset(-8);
@@ -3385,7 +3397,7 @@ impl ViewerApp {
             );
             let drag = ui.add(egui::DragValue::new(&mut width).range(1..=MAX_WIDTH).speed(1.0));
             if slider.changed() || drag.changed() {
-                self.set_width(width);
+                self.change_width(width);
             }
             slider.on_hover_text("Drag to find the stride of repeating structures.\n[ and ] step by 1, Shift for 16");
             ui.menu_button("Presets", |ui| {
@@ -3393,7 +3405,7 @@ impl ViewerApp {
                 ui.horizontal_wrapped(|ui| {
                     for width in [8usize, 16, 32, 64, 128, 256, 320, 512, 640, 1024, 2048] {
                         if ui.small_button(width.to_string()).clicked() {
-                            self.set_width(width);
+                            self.change_width(width);
                             ui.close();
                         }
                     }
@@ -4040,4 +4052,57 @@ fn format_value(value: f64) -> String {
 fn clip_range((start, len): (usize, usize), document_len: usize) -> Option<(usize, usize)> {
     let end = start.saturating_add(len).min(document_len);
     (end > start).then_some((start, end - start))
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+    use crate::actions::take_performed;
+
+    fn app_with(bytes: &[u8]) -> ViewerApp {
+        let mut app = ViewerApp::new(Launch::default());
+        app.open_bytes(bytes.to_vec(), "test.bin".to_string());
+        app.run_bus();
+        take_performed();
+        app
+    }
+
+    #[test]
+    fn going_to_an_offset_moves_the_cursor_through_the_api() {
+        let mut app = app_with(&[0u8; 256]);
+        let cursor = app.bus.cursor();
+        app.goto_text = "0x40".to_string();
+        app.go_to();
+        assert_eq!(take_performed(), [("cursor.set".to_string(), json!({"offset": 0x40}))]);
+        assert_eq!((app.cursor, app.status.as_str()), (0x40, "Cursor at 0x40"));
+        app.run_bus();
+        let moved = app.bus.changed_since(cursor).messages.into_iter().find(|message| message.topic() == crate::bus::Topic::CursorMoved).expect("the move is published");
+        assert_eq!(moved.producer(), "panel");
+    }
+
+    #[test]
+    fn going_past_the_end_goes_to_the_end_and_a_bad_offset_changes_nothing() {
+        let mut app = app_with(&[0u8; 16]);
+        app.goto_text = "1000".to_string();
+        app.go_to();
+        assert_eq!(app.cursor, 16);
+        app.goto_text = "somewhere".to_string();
+        app.go_to();
+        assert_eq!(app.cursor, 16);
+        assert!(app.status.starts_with("Go to:"), "{}", app.status);
+        assert_eq!(take_performed().len(), 1, "only the offset that parsed was performed");
+    }
+
+    #[test]
+    fn the_person_s_width_changes_are_view_shape_steps_the_api_reports() {
+        let mut app = app_with(&[0u8; 1024]);
+        app.change_width(48);
+        app.change_width(MAX_WIDTH + 10);
+        assert_eq!(take_performed(), [("view.set_shape".to_string(), json!({"width": 48})), ("view.set_shape".to_string(), json!({"width": MAX_WIDTH}))]);
+        assert_eq!(app.shape.width, MAX_WIDTH, "a width past the limit is brought inside it");
+        let shape = crate::api::call(&mut app, &crate::api::Caller::Panel, "view.get_shape", json!({})).unwrap();
+        assert_eq!(shape["shape"]["width"], MAX_WIDTH);
+    }
 }
