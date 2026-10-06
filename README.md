@@ -488,6 +488,8 @@ theviewer capture.bin --tool protocol --layout network
 theviewer dump.bin --tool packets          # load the first capture, else the message framing
 theviewer firmware.bin --report          # print the report, no window
 theviewer firmware.bin --json > report.json
+theviewer api bytes.read '{"start": 0, "len": 16}' firmware.bin   # one data API call, printed as JSON
+theviewer api --describe                 # every API method with its schemas
 ```
 
 | Option | Effect |
@@ -504,6 +506,7 @@ theviewer firmware.bin --json > report.json
 | `--layout NAME` | Start with a layout for this session: `overview` `network` `structure` `firmware` `signals` `forensics` `compare` `focus`, or the name of one you saved. The last session's arrangement is left as it is. |
 | `--report` | Print the file's report as text and exit, without opening a window |
 | `--json` | Print the report as JSON and exit: the summary, regions, likely record widths and confident findings, for scripts and CI |
+| `api METHOD ['{JSON}'] [FILE]` | Run one method of the data API on FILE and print its JSON result; an error is printed as JSON on stderr with a non-zero exit code. `api --describe` lists every method. The methods are described in [docs/api.md](docs/api.md) |
 
 ## Extending it
 
@@ -593,6 +596,7 @@ text.
 | `sources.rs` `plot.rs` | Live sources, watching and recording; plots and bytes as audio. |
 | `analysis_tools.rs` `analysis_stats.rs` `analysis_tabs.rs` `dock.rs` `workbench.rs` | The tool panels and the state behind them. |
 | `assistant.rs` | *Ask*: a streaming Claude API client with tools, on a background thread. |
+| `api.rs` `api/` | The data API: one table of methods with JSON schemas, run against the window or a headless workspace; Ask's tools, `theviewer api` and [docs/api.md](docs/api.md) come from it. |
 | `layout.rs` `layouts.rs` `packing.rs` | Dockable panels; recommended and saved layouts; toolbar packing and reordering. |
 | `legend.rs` | The legend bar: the colouring in effect and each highlight layer, with toggles. |
 | `freshness.rs` | Which document version each tool's result describes; refreshing cheap views after edits and marking the rest out of date. |
