@@ -974,10 +974,10 @@ group = "Web and remote access"
 ports = ["tcp/443", "tcp/465", "tcp/853", "tcp/993", "tcp/995", "tcp/8883"]
 
 [[format.specs]]
-document = "RFC 8446"
+document = "RFC 9846"
 title = "The Transport Layer Security (TLS) Protocol Version 1.3"
-url = "https://www.rfc-editor.org/rfc/rfc8446"
-rfc = 8446
+url = "https://www.rfc-editor.org/rfc/rfc9846"
+rfc = 9846
 section = "5.1"
 
 [[format.specs]]
@@ -995,42 +995,42 @@ url = "https://www.iana.org/assignments/tls-parameters/tls-parameters.xhtml"
 [[format.fields]]
 name = "ClientHello"
 meaning = "The client's opening message: its random value, offered cipher suites and extensions such as the server name (SNI), supported versions and key shares."
-section = "4.1.2"
+section = "4.2.2"
 
 [[format.fields]]
 name = "ServerHello"
 meaning = "The server's choice of version and cipher suite, its random value and, in TLS 1.3, its key share; after it, TLS 1.3 encrypts everything."
-section = "4.1.3"
+section = "4.2.3"
 
 [[format.fields]]
 name = "NewSessionTicket"
 meaning = "Sent by the server after the handshake: a ticket the client can present later to resume the session."
-section = "4.6.1"
+section = "4.7.1"
 
 [[format.fields]]
 name = "EncryptedExtensions"
 meaning = "TLS 1.3: extensions the server sends once encryption has begun, such as the chosen application protocol (ALPN)."
-section = "4.3.1"
+section = "4.4.1"
 
 [[format.fields]]
 name = "Certificate"
 meaning = "The sender's certificate chain, starting with its own certificate. Readable in TLS 1.2, encrypted in TLS 1.3."
-section = "4.4.2"
+section = "4.5.1"
 
 [[format.fields]]
 name = "CertificateRequest"
 meaning = "The server asks the client to authenticate with a certificate."
-section = "4.3.2"
+section = "4.4.2"
 
 [[format.fields]]
 name = "CertificateVerify"
 meaning = "A signature over the handshake so far, proving the sender holds the private key of its certificate."
-section = "4.4.3"
+section = "4.5.2"
 
 [[format.fields]]
 name = "Finished"
 meaning = "A keyed hash over the whole handshake, confirming both sides saw the same messages; the first message protected by the new keys in TLS 1.2."
-section = "4.4.4"
+section = "4.5.3"
 
 [[format.fields]]
 name = "ServerKeyExchange"
