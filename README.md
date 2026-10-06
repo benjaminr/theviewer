@@ -171,7 +171,7 @@ right-click menu. Each one is a panel you can dock anywhere.
 | **Images** | Finds uncompressed pictures, fonts, splash screens and framebuffers by trying widths and pixel formats across the file; click a result to show it in the view at the right width and format. |
 | **Columns** | For a table of fixed-size records: a profile of each byte position (constant, counter, timestamp, a few values, text, random) and the fields it adds up to. One click applies them as a template. |
 | **Protocol** | For captures, serial logs and streams of messages: finds the framing (sync words, delimiters, length prefixes or fixed size), splits the messages, and identifies types, sequence numbers, lengths, timestamps and checksums. *Align messages* groups messages into types and lines them up, so constant, counting and length fields line up even when messages differ in length. |
-| **Packets** | A packet list for captures and message streams. Load the protocol framing's messages, a pcap or pcapng capture found inside the file, the selection as one packet, or any range split into frames by a fixed width, a length field inside each frame (u8, u16, u32 or LEB128, with auto-detection) or a byte pattern with `??` wildcards. Show them as a list, or as a *Raster* or *Hex* grid with one packet per row so fields line up in columns. Each packet is dissected (Ethernet, VLAN, ARP, IPv4, IPv6, ICMP, TCP, UDP, DNS, HTTP, NTP, Modbus/TCP, MQTT; raw frames by a template or the protocol tool's field guesses), with conversations, endpoints and *Follow stream*. Filter with terms such as `udp port:53 len>60 hex:DEADBEEF`, or by Wireshark field names: `ip.ttl==64`, `tcp.dstport>=1024`, `dns.qry.name~example` (`~` means contains) or a bare `ip.ttl` for packets that have the field. These reach our own fields through the Wireshark names in the reference notes, and tshark's fields directly once packets are decoded with it. Export the shown packets as a pcap file Wireshark opens. |
+| **Packets** | A packet list for captures and message streams. Load the protocol framing's messages, a pcap or pcapng capture found inside the file, the selection as one packet, or any range split into frames by a fixed width, a length field inside each frame (u8, u16, u32 or LEB128, with auto-detection) or a byte pattern with `??` wildcards. Show them as a list, or as a *Raster* or *Hex* grid with one packet per row so fields line up in columns. Each packet is dissected (Ethernet, VLAN, ARP, IPv4, IPv6, ICMP, TCP, UDP, DNS, HTTP, NTP, Modbus/TCP, MQTT, SNMP, DHCP, TFTP, TPKT/COTP/S7comm, NetBIOS/SMB, RTP/RTCP; frames of unknown format as the protocol they are detected or chosen as, else by a template or the protocol tool's field guesses), with conversations, endpoints and *Follow stream*. Filter with terms such as `udp port:53 len>60 hex:DEADBEEF`, or by Wireshark field names: `ip.ttl==64`, `tcp.dstport>=1024`, `dns.qry.name~example` (`~` means contains) or a bare `ip.ttl` for packets that have the field. These reach our own fields through the Wireshark names in the reference notes, and tshark's fields directly once packets are decoded with it. Export the shown packets as a pcap file Wireshark opens. |
 | **Bits** | For data that is not byte-aligned or not plain binary: finds frame lengths in bits (such as a 37-bit radio frame) and their sync words; shows each bit plane as an image; decodes Manchester, differential Manchester, NRZI, 8b/10b, Gray code and BCD, picking the decoder and bit offset automatically; guesses what the field at the cursor holds (integer, float, fixed-point or a timestamp, and which byte order); and finds length prefixes, tag-length-value chains and offset tables. |
 | **Template** | Describe a structure in a small language, such as `struct Chunk { id: char[4]  len: u32  data: bytes[len] }`, and see it decoded as a tree and a table. It can also propose a template from a few selected records. See [docs/templates.md](docs/templates.md). |
 | **Statistics** | Byte histogram, randomness tests (entropy, chi-square, serial correlation, Monte Carlo π) with a plain verdict, a byte-pair fingerprint, entropy along the file, and the most repeated sequences. |
@@ -228,7 +228,34 @@ drag across packets to select a block (a range of packets by a range of
 byte offsets), or click the ruler (or Alt-click) to select whole columns,
 then invert, fill, XOR, add to, set, number, byte-swap, copy (hex or CSV)
 or delete those bytes in every packet of the selection at once, as one
-undoable edit.
+undoable edit. Once the frames are decoded as a protocol, hovering a column
+or a byte names the field it holds (*Transaction ID (DNS)*), and a selection
+of columns lists the fields it spans.
+
+**Decode frames as.** Frames split from the file, taken from the protocol
+framing or added from the selection carry no link type and no ports, so
+nothing says what they are. The packet viewer finds out: it tries each of
+its decoders (Ethernet, raw IP, DNS, DNS with a TCP length prefix, SNMP,
+NTP, Modbus/TCP, MQTT, TLS records, DHCP, TFTP, TPKT with COTP and S7comm,
+the NetBIOS session service with SMB, RTP, RTCP and HTTP) on up to 64
+frames spread through the set, and decodes the frames as the one that reads
+at least 80% of them (and at least two) from first byte to nearly the last.
+A decoder that only reads a short prefix of each frame does not count, the
+looser protocols (MQTT, NTP, TFTP, RTP) must also show values real traffic
+has and are never taken from a single frame, and a set of one frame is
+taken only when it is read to its last byte; when nothing fits, the frames
+keep their field guesses. The status line above the list says what
+happened, such as *decoded as DNS (detected, 61 of 64 sampled)*. The
+*Decode frames as* choice overrides it for the set: *Auto*, any protocol by
+name, *Field guesses*, or a template. A frame the chosen protocol does not
+read falls back to the template or field guesses with a note, and the
+status line counts how many were read and what detection would have picked.
+Decoded frames are listed, filtered and explained like the same protocol
+on its port: `dns.qry.name~example` finds DNS messages split from a file.
+Turn off *Detect the protocol of split frames* in Settings to start every
+set on its field guesses instead; *Detect now* in the choice then runs
+detection for that set. The Protocol tab also says when the messages its
+framing found are a protocol the packet viewer dissects.
 
 **More protocols with Wireshark's tshark (optional).** When Wireshark is
 installed, *Decode with tshark* in *Packets* hands the shown packets (or,
