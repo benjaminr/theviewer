@@ -577,7 +577,10 @@ pub fn fold_chip(ui: &Ui, id: Id, at: Pos2, hidden: usize, colour: Color32) -> b
 
 #[cfg(test)]
 mod tests {
-    use crate::app::{Launch, ViewerApp};
+    use serde_json::json;
+
+    use crate::actions::take_performed;
+    use crate::app::{EditMode, Launch, ViewerApp};
     use crate::bus::Topic;
     use crate::selection::Selection;
 
@@ -615,6 +618,42 @@ mod tests {
         app.invert_target();
         assert_eq!(app.document.read_range(0, 4), [0x00, 0xFF, 0x00, 0x00]);
         assert_eq!((app.cursor, app.current_selection()), (1, None), "nothing is selected afterwards, as before");
+    }
+
+    #[test]
+    fn a_byte_typed_over_another_is_written_through_the_api_and_undoes_as_one_step() {
+        let mut app = app_with(&[0x12, 0x34]);
+        take_performed();
+        app.type_hex_digit(0xA);
+        assert_eq!((app.document.read_range(0, 2), app.cursor, app.pending_low_nibble), (vec![0xA2, 0x34], 0, true));
+        app.type_hex_digit(0xB);
+        assert_eq!((app.document.read_range(0, 2), app.cursor, app.pending_low_nibble), (vec![0xAB, 0x34], 1, false));
+        assert_eq!(
+            take_performed(),
+            [("bytes.write".to_string(), json!({"start": 0, "data": "a2"})), ("bytes.write".to_string(), json!({"start": 0, "data": "ab", "coalesce": true}))]
+        );
+        assert_eq!(app.document.undo_label(), Some("Overwrite 1 byte"));
+        app.document.undo();
+        assert_eq!(app.document.read_range(0, 2), [0x12, 0x34], "one undo takes the whole byte back");
+        assert!(!app.document.can_undo());
+    }
+
+    #[test]
+    fn a_byte_typed_in_insert_mode_is_inserted_and_undoes_as_one_step() {
+        let mut app = app_with(&[0x12, 0x34]);
+        app.edit_mode = EditMode::Insert;
+        app.set_cursor(1, false);
+        take_performed();
+        app.type_hex_digit(0xC);
+        app.type_hex_digit(0xD);
+        assert_eq!((app.document.read_range(0, 3), app.cursor), (vec![0x12, 0xCD, 0x34], 2));
+        assert_eq!(
+            take_performed(),
+            [("bytes.insert".to_string(), json!({"at": 1, "data": "c0"})), ("bytes.write".to_string(), json!({"start": 1, "data": "cd", "coalesce": true}))]
+        );
+        assert_eq!(app.document.undo_label(), Some("Insert 1 byte"));
+        app.document.undo();
+        assert_eq!(app.document.read_range(0, 3), [0x12, 0x34]);
     }
 
     #[test]

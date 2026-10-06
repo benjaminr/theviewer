@@ -517,6 +517,37 @@ impl Document {
         result
     }
 
+    /// Run `edits` as part of the last undo step, as
+    /// [`Document::transaction`] runs them as a new one: they undo together
+    /// with that step and keep its name. When they fail, every change they
+    /// made is reversed and the step is left as it was. Inside an open
+    /// group they simply join the group.
+    pub fn extend_last_step<R, E>(&mut self, edits: impl FnOnce(&mut Document) -> Result<R, E>) -> Result<R, E> {
+        if self.open_group.is_none() {
+            self.open_group = self.undo_stack.pop();
+        }
+        self.begin_group();
+        let result = edits(self);
+        match result {
+            Ok(_) => self.end_group(),
+            Err(_) => self.abandon_group(),
+        }
+        result
+    }
+
+    /// Where the last undo step put in a single byte, when that step is
+    /// one edit that did (the first hex digit of a typed byte, say) and no
+    /// group is open.
+    pub fn last_step_byte(&self) -> Option<usize> {
+        if self.open_group.is_some() {
+            return None;
+        }
+        match self.undo_stack.last()?.edits.as_slice() {
+            [only] if only.inserted.len() == 1 => Some(only.pos),
+            _ => None,
+        }
+    }
+
     // ----------------------------------------------------------------------
     // Public editing API (all undoable)
     // ----------------------------------------------------------------------
@@ -697,6 +728,37 @@ mod tests {
         assert_eq!(document.read_range(0, 4), [b'a', b'b', b'c', 0xA5]);
         document.undo();
         assert_eq!(document.read_range(0, 4), b"abc");
+    }
+
+    #[test]
+    fn edits_that_extend_the_last_step_undo_with_it_and_keep_its_name() {
+        let mut document = doc(b"abc");
+        assert_eq!(document.last_step_byte(), None);
+        document
+            .transaction::<(), ()>("Insert 1 byte", |document| {
+                document.insert(1, &[0xA0]);
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(document.last_step_byte(), Some(1));
+        document
+            .extend_last_step::<(), ()>(|document| {
+                document.overwrite(1, &[0xA5]);
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(document.read_range(0, 4), [b'a', 0xA5, b'b', b'c']);
+        assert_eq!(document.undo_label(), Some("Insert 1 byte"));
+        assert_eq!(document.last_step_byte(), None, "the step now holds two edits");
+        let failed: Result<(), &str> = document.extend_last_step(|document| {
+            document.overwrite(0, b"Z");
+            Err("no")
+        });
+        assert!(failed.is_err());
+        assert_eq!(document.read_range(0, 4), [b'a', 0xA5, b'b', b'c'], "a failed extension is reversed");
+        document.undo();
+        assert_eq!(document.read_range(0, 3), b"abc", "one undo reverses the step and what joined it");
+        assert!(!document.can_undo());
     }
 
     #[test]

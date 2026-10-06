@@ -2164,21 +2164,30 @@ impl ViewerApp {
         self.status = format!("Pasted {} bytes", bytes.len());
     }
 
-    /// Handle a typed hex digit: overwrite or insert one nibble at the cursor.
-    fn type_hex_digit(&mut self, digit: u8) {
-        let at_end = self.cursor >= self.document.len();
+    /// Handle a typed hex digit: overwrite or insert one nibble at the
+    /// cursor, as `bytes.write` or `bytes.insert`. The second digit
+    /// coalesces with the first, so a typed byte undoes as one step.
+    pub(crate) fn type_hex_digit(&mut self, digit: u8) {
+        let at = self.cursor.min(self.document.len());
+        let at_end = at >= self.document.len();
         if self.pending_low_nibble && !at_end {
-            let current = self.document.byte_at(self.cursor).unwrap_or(0);
-            self.document.overwrite_byte_coalescing(self.cursor, (current & 0xF0) | digit);
-            self.pending_low_nibble = false;
-            self.cursor += 1;
+            let current = self.document.byte_at(at).unwrap_or(0);
+            let data = ops::to_compact_hex(&[(current & 0xF0) | digit]);
+            if self.perform("bytes.write", serde_json::json!({ "start": at, "data": data, "coalesce": true })).is_ok() {
+                self.pending_low_nibble = false;
+                self.cursor = at + 1;
+            }
         } else if self.edit_mode == EditMode::Insert || at_end {
-            self.document.insert(self.cursor.min(self.document.len()), &[digit << 4]);
-            self.pending_low_nibble = true;
+            let data = ops::to_compact_hex(&[digit << 4]);
+            if self.perform("bytes.insert", serde_json::json!({ "at": at, "data": data })).is_ok() {
+                self.pending_low_nibble = true;
+            }
         } else {
-            let current = self.document.byte_at(self.cursor).unwrap_or(0);
-            self.document.overwrite(self.cursor, &[(digit << 4) | (current & 0x0F)]);
-            self.pending_low_nibble = true;
+            let current = self.document.byte_at(at).unwrap_or(0);
+            let data = ops::to_compact_hex(&[(digit << 4) | (current & 0x0F)]);
+            if self.perform("bytes.write", serde_json::json!({ "start": at, "data": data })).is_ok() {
+                self.pending_low_nibble = true;
+            }
         }
         self.anchor = None;
         self.scroll_cursor_into_view();

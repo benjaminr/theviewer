@@ -267,6 +267,7 @@ Overwrite bytes in place with new ones, as one undoable step; the document keeps
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
+| `coalesce` | boolean | no | Join the caller's previous step when that step wrote or inserted just the one byte at `start`, so a byte typed as two hex digits undoes as one step. |
 | `data` | string | yes | The new bytes, written as `encoding` says; they must fit inside the document. |
 | `doc` | string | no | Document id, path or "current" (the default). |
 | `encoding` | `"hex"` \| `"base64"` \| `"text"` | no | How `data` is written: hex (the default), base64 or text. |
@@ -288,6 +289,7 @@ Insert bytes at an offset, as one undoable step; the bytes after it move along.
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `at` | integer | yes | Offset to insert at; the document's length appends. |
+| `coalesce` | boolean | no | Join the caller's previous step when that step wrote or inserted just the one byte at `at`. |
 | `data` | string | yes | The bytes to insert, written as `encoding` says. |
 | `doc` | string | no | Document id, path or "current" (the default). |
 | `encoding` | `"hex"` \| `"base64"` \| `"text"` | no | How `data` is written: hex (the default), base64 or text. |

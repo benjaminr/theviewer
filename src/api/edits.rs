@@ -50,7 +50,9 @@ pub(super) fn examples() -> Vec<(&'static str, serde_json::Value)> {
     vec![
         ("transform.preview", json!({"selection": {"range": [0, 4]}, "operation": {"op": "invert"}})),
         ("bytes.write", json!({"start": 0, "data": "00"})),
+        ("bytes.write", json!({"start": 0, "data": "0f", "coalesce": true})),
         ("bytes.insert", json!({"at": 0, "data": "00"})),
+        ("bytes.insert", json!({"at": 0, "data": "0a", "coalesce": true})),
         ("bytes.delete", json!({"start": 0, "len": 1})),
         ("bytes.replace", json!({"start": 0, "len": 1, "data": "ffff"})),
         ("bits.write", json!({"bit_start": 3, "bits": "101"})),
@@ -80,6 +82,10 @@ pub struct WriteParams {
     /// How `data` is written: hex (the default), base64 or text.
     #[serde(default)]
     pub encoding: ByteEncoding,
+    /// Join the caller's previous step when that step wrote or inserted just the one byte at `start`,
+    /// so a byte typed as two hex digits undoes as one step.
+    #[serde(default)]
+    pub coalesce: bool,
     /// Fail with version_conflict, changing nothing, unless the document is at this version.
     #[serde(default)]
     pub expect_version: Option<u64>,
@@ -99,6 +105,9 @@ pub struct InsertParams {
     /// How `data` is written: hex (the default), base64 or text.
     #[serde(default)]
     pub encoding: ByteEncoding,
+    /// Join the caller's previous step when that step wrote or inserted just the one byte at `at`.
+    #[serde(default)]
+    pub coalesce: bool,
     /// Fail with version_conflict, changing nothing, unless the document is at this version.
     #[serde(default)]
     pub expect_version: Option<u64>,
@@ -332,14 +341,53 @@ fn edit<R>(
     action: &str,
     change: impl FnOnce(&mut Document) -> Result<R, ApiError>,
 ) -> Result<(String, R, String), ApiError> {
+    edit_joining(workspace, caller, doc, expect_version, action, None, change)
+}
+
+/// [`edit`], except that when `join_at` is where the caller's previous
+/// step wrote or inserted its one byte, `change` joins that step (keeping
+/// its name) instead of making a new one.
+fn edit_joining<R>(
+    workspace: &mut dyn Workspace,
+    caller: &Caller,
+    doc: Option<&str>,
+    expect_version: Option<u64>,
+    action: &str,
+    join_at: Option<usize>,
+    change: impl FnOnce(&mut Document) -> Result<R, ApiError>,
+) -> Result<(String, R, String), ApiError> {
     let id = workspace::resolve(workspace, doc)?;
     workspace.publish_edits(&id, DOCUMENT_PRODUCER);
     let (_, document) = workspace::document(workspace, Some(&id))?;
     check_version(document, expect_version)?;
-    let label = caller.label(action);
-    let result = document.transaction(label.clone(), change);
+    let joined_label = join_at.and_then(|at| one_byte_step_at(document, caller, at));
+    let (label, result) = match joined_label {
+        Some(label) => (label, document.extend_last_step(change)),
+        None => {
+            let label = caller.label(action);
+            let result = document.transaction(label.clone(), change);
+            (label, result)
+        }
+    };
     workspace.publish_edits(&id, &caller.producer());
     result.map(|value| (id, value, label))
+}
+
+/// The name of the document's last step, when that step is `caller`'s
+/// write or insert of just the one byte at `at`: the step a coalescing
+/// edit there joins.
+fn one_byte_step_at(document: &Document, caller: &Caller, at: usize) -> Option<String> {
+    if document.last_step_byte() != Some(at) {
+        return None;
+    }
+    let label = document.undo_label()?;
+    let callers_own = [count("Overwrite", 1, "byte"), count("Insert", 1, "byte")].iter().any(|action| caller.label(action) == label);
+    callers_own.then(|| label.to_string())
+}
+
+/// Where a coalescing edit at `offset` may join the previous step.
+fn join_offset(coalesce: bool, offset: u64) -> Option<usize> {
+    if coalesce { usize::try_from(offset).ok() } else { None }
 }
 
 /// The result of an edit to document `id` that left new bytes at `ranges`.
@@ -358,7 +406,8 @@ fn new_bytes(data: &str, encoding: ByteEncoding) -> Result<Vec<u8>, ApiError> {
 pub fn write(workspace: &mut dyn Workspace, caller: &Caller, params: WriteParams) -> Result<EditResult, ApiError> {
     let bytes = new_bytes(&params.data, params.encoding)?;
     let action = count("Overwrite", bytes.len(), "byte");
-    let (id, start, label) = edit(workspace, caller, params.doc.as_deref(), params.expect_version, &action, |document| {
+    let join_at = join_offset(params.coalesce, params.start);
+    let (id, start, label) = edit_joining(workspace, caller, params.doc.as_deref(), params.expect_version, &action, join_at, |document| {
         let (start, len) = values::span_within(document.len(), params.start, Some(bytes.len() as u64))
             .map_err(|error| ApiError::out_of_range(format!("{}; bytes.write overwrites only, so use bytes.insert or bytes.replace to grow the document", error.message)))?;
         if len > 0 {
@@ -372,7 +421,8 @@ pub fn write(workspace: &mut dyn Workspace, caller: &Caller, params: WriteParams
 pub fn insert(workspace: &mut dyn Workspace, caller: &Caller, params: InsertParams) -> Result<EditResult, ApiError> {
     let bytes = new_bytes(&params.data, params.encoding)?;
     let action = count("Insert", bytes.len(), "byte");
-    let (id, at, label) = edit(workspace, caller, params.doc.as_deref(), params.expect_version, &action, |document| {
+    let join_at = join_offset(params.coalesce, params.at);
+    let (id, at, label) = edit_joining(workspace, caller, params.doc.as_deref(), params.expect_version, &action, join_at, |document| {
         let (at, _) = values::span_within(document.len(), params.at, Some(0))?;
         document.insert(at, &bytes);
         Ok(at)
@@ -737,6 +787,42 @@ mod tests {
         let redone = call(&mut workspace, "history.redo", json!({})).unwrap();
         assert_eq!(redone["label"], "Overwrite 2 bytes by mcp:claude-code");
         assert_eq!(bytes_of(&mut workspace), b"01AB456789");
+    }
+
+    #[test]
+    fn a_byte_typed_as_two_digits_undoes_as_one_step() {
+        let mut workspace = workspace_with("a.bin", b"abcd");
+        call(&mut workspace, "bytes.write", json!({"start": 1, "data": "f2"})).unwrap();
+        let joined = call(&mut workspace, "bytes.write", json!({"start": 1, "data": "ff", "coalesce": true})).unwrap();
+        assert_eq!(joined["label"], "Overwrite 1 byte by mcp:claude-code", "the joined step keeps its name");
+        assert_eq!(joined["ranges"], json!([[1, 1]]));
+        let inserted = call(&mut workspace, "bytes.insert", json!({"at": 2, "data": "a0"})).unwrap();
+        assert_eq!(inserted["label"], "Insert 1 byte by mcp:claude-code");
+        call(&mut workspace, "bytes.write", json!({"start": 2, "data": "a5", "coalesce": true})).unwrap();
+        assert_eq!(bytes_of(&mut workspace), [b'a', 0xFF, 0xA5, b'c', b'd']);
+        assert_eq!(undo_label(&mut workspace).as_deref(), Some("Insert 1 byte by mcp:claude-code"), "the second digit joined the insert");
+        call(&mut workspace, "history.undo", json!({})).unwrap();
+        assert_eq!(bytes_of(&mut workspace), [b'a', 0xFF, b'c', b'd'], "one undo takes the inserted byte out");
+        call(&mut workspace, "history.undo", json!({})).unwrap();
+        assert_eq!(bytes_of(&mut workspace), b"abcd", "and one more restores the overwritten byte");
+    }
+
+    #[test]
+    fn a_coalescing_edit_joins_only_its_own_caller_s_one_byte_step_there() {
+        let mut workspace = workspace_with("a.bin", b"abcd");
+        call(&mut workspace, "bytes.write", json!({"start": 0, "data": "41"})).unwrap();
+        call(&mut workspace, "bytes.write", json!({"start": 1, "data": "42", "coalesce": true})).unwrap();
+        api::call(&mut workspace, &Caller::Plugin("sync.lua".into()), "bytes.write", json!({"start": 1, "data": "43", "coalesce": true})).unwrap();
+        assert_eq!(undo_label(&mut workspace).as_deref(), Some("Overwrite 1 byte by plugin:sync.lua"), "another caller's step is never joined");
+        call(&mut workspace, "bytes.write", json!({"start": 2, "data": "4444"})).unwrap();
+        call(&mut workspace, "bytes.write", json!({"start": 2, "data": "45", "coalesce": true})).unwrap();
+        for expected in [b"ACED", b"ACDD", b"ACcd", b"ABcd", b"Abcd"] {
+            assert_eq!(bytes_of(&mut workspace), expected);
+            call(&mut workspace, "history.undo", json!({})).unwrap();
+        }
+        assert_eq!(bytes_of(&mut workspace), b"abcd");
+        let past = call(&mut workspace, "bytes.write", json!({"start": 4, "data": "00", "coalesce": true})).unwrap_err();
+        assert_eq!(past.code, ErrorCode::OutOfRange, "coalescing changes nothing about where an edit may go");
     }
 
     #[test]
