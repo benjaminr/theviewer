@@ -1654,6 +1654,43 @@ aliases = ["Contributing source"]
 meaning = "The SSRCs of the streams a mixer combined into this one, up to 15."
 section = "5.1"
 
+[[format.fields]]
+name = "Padding"
+wireshark = "rtp.padding"
+meaning = "When set, the packet ends with padding bytes that are not payload; the last byte says how many there are, itself included. Used to fill out blocks for encryption."
+section = "5.1"
+
+[[format.fields]]
+name = "Extension"
+wireshark = "rtp.ext"
+meaning = "When set, exactly one header extension follows the fixed header and any contributing sources."
+section = "5.1"
+
+[[format.fields]]
+name = "CSRC count"
+wireshark = "rtp.cc"
+aliases = ["CC"]
+meaning = "How many contributing-source identifiers follow the fixed header, 0 to 15; non-zero only after a mixer."
+section = "5.1"
+
+[[format.fields]]
+name = "Header extension"
+wireshark = "rtp.hdr_ext"
+meaning = "Extra header data a profile defines: a 16-bit value naming its kind (0xBEDE for RFC 8285's one-byte elements, 0x100x for two-byte ones), a length in 32-bit words and the data, often audio levels, transmit times or video orientation."
+section = "5.3.1"
+
+[[format.fields]]
+name = "Padding bytes"
+wireshark = "rtp.padding.count"
+meaning = "How many bytes at the end of the packet are padding, as given by its last byte."
+section = "5.1"
+
+[[format.fields]]
+name = "Payload"
+wireshark = "rtp.payload"
+meaning = "The encoded media: audio samples or frames, or a slice of a video frame, in the format the payload type names; encrypted under SRTP."
+section = "5.1"
+
 [[format]]
 id = "rtcp"
 name = "RTP Control Protocol"
@@ -1725,6 +1762,112 @@ name = "Interarrival jitter"
 wireshark = "rtcp.ssrc.jitter"
 aliases = ["Jitter"]
 meaning = "A smoothed estimate of the variation in packet transit time, in RTP timestamp units."
+section = "6.4.1"
+
+[[format.fields]]
+name = "Sender Report"
+aliases = ["SR"]
+meaning = "Packet type 200, from a source that is sending media: its SSRC, the NTP and RTP timestamps of one instant, its packet and byte counts, then a report block for each source it receives."
+section = "6.4.1"
+
+[[format.fields]]
+name = "Receiver Report"
+aliases = ["RR"]
+meaning = "Packet type 201, from a participant that has not sent media since its last report: its SSRC and a report block for each source it receives."
+section = "6.4.2"
+
+[[format.fields]]
+name = "Source description"
+aliases = ["SDES"]
+meaning = "Packet type 202: items describing sources, chiefly the CNAME that ties a participant's streams together, and optionally a name, e-mail address or tool."
+section = "6.5"
+
+[[format.fields]]
+name = "Goodbye"
+aliases = ["BYE"]
+meaning = "Packet type 203: the listed sources are leaving the session, optionally with a reason."
+section = "6.6"
+
+[[format.fields]]
+name = "Application specific"
+aliases = ["APP"]
+meaning = "Packet type 204: experimental or application-defined data under a four-character name."
+section = "6.7"
+
+[[format.fields]]
+name = "Generic RTP Feedback"
+aliases = ["RTPFB"]
+meaning = "Packet type 205 (RFC 4585): transport-layer feedback, such as negative acknowledgements listing lost packets, or congestion-control feedback."
+
+[[format.fields]]
+name = "Payload-specific Feedback"
+aliases = ["PSFB"]
+meaning = "Packet type 206 (RFC 4585): feedback about the media, such as a picture loss indication or a full intra request asking a video sender for a new key frame, or a bandwidth estimate (REMB)."
+
+[[format.fields]]
+name = "Extended report (RFC 3611)"
+aliases = ["XR"]
+meaning = "Packet type 207: report blocks with more detailed statistics than the basic reports, such as loss and duplicate run lengths, round-trip time for receivers and VoIP quality metrics."
+
+[[format.fields]]
+name = "Sender SSRC"
+wireshark = "rtcp.senderssrc"
+meaning = "The synchronisation source identifier of the participant that sent this report, matching the SSRC in its RTP packets."
+section = "6.4.1"
+
+[[format.fields]]
+name = "RTP timestamp"
+wireshark = "rtcp.timestamp.rtp"
+meaning = "The same instant as the NTP timestamp in the units of the sender's RTP timestamps, so a receiver can map media time to wall-clock time and line up audio with video."
+section = "6.4.1"
+
+[[format.fields]]
+name = "Sender's packet count"
+wireshark = "rtcp.sender.packetcount"
+meaning = "RTP packets the sender has sent since it started, as of this report."
+section = "6.4.1"
+
+[[format.fields]]
+name = "Sender's octet count"
+wireshark = "rtcp.sender.octetcount"
+meaning = "Payload bytes the sender has sent since it started, headers and padding not counted."
+section = "6.4.1"
+
+[[format.fields]]
+name = "Report block *"
+meaning = "Reception statistics about one source this participant receives: its SSRC, loss, the highest sequence number, jitter and the timing of its last sender report."
+section = "6.4.1"
+
+[[format.fields]]
+name = "SSRC"
+wireshark = "rtcp.ssrc.identifier"
+meaning = "In a report block, the source whose packets the block describes."
+section = "6.4.1"
+
+[[format.fields]]
+name = "Cumulative packets lost"
+wireshark = "rtcp.ssrc.cum_nr"
+meaning = "Packets from this source expected but not received since reception began, as a signed 24-bit number; duplicates can make it negative."
+section = "6.4.1"
+
+[[format.fields]]
+name = "Highest sequence number received"
+wireshark = "rtcp.ssrc.ext_high"
+meaning = "The highest RTP sequence number received, extended to 32 bits: the top 16 bits count how many times the sequence number has wrapped."
+section = "6.4.1"
+
+[[format.fields]]
+name = "Last SR timestamp"
+wireshark = "rtcp.ssrc.lsr"
+aliases = ["LSR"]
+meaning = "The middle 32 bits of the NTP timestamp in the latest sender report from this source, or zero if none has arrived."
+section = "6.4.1"
+
+[[format.fields]]
+name = "Delay since last SR"
+wireshark = "rtcp.ssrc.dlsr"
+aliases = ["DLSR"]
+meaning = "How long since that sender report arrived, in units of 1/65536 s; the source works out the round-trip time as the arrival time of this report minus LSR minus DLSR."
 section = "6.4.1"
 
 [[format]]

@@ -24,13 +24,6 @@ const GENERIC_LAYERS: [&str; 6] = ["Data", "Padding", "Payload", "Trailing data"
 /// header names, rather than by the dissector.
 const FIELDS_WITH_FREE_NAMED_CHILDREN: [&str; 1] = ["Headers"];
 
-/// Fields of the newer dissectors that the notes do not describe yet, by
-/// layer. A field listed here that gains a note should leave the list.
-const FIELDS_AWAITING_NOTES: [(&str, &[&str]); 2] = [
-    ("RTP", &["Padding", "Extension", "CSRC count", "Payload"]),
-    ("RTCP", &["Receiver Report", "Sender SSRC"]),
-];
-
 /// An etherparse builder that has reached its UDP header.
 type UdpBuilder = etherparse::PacketBuilderStep<etherparse::UdpHeader>;
 
@@ -260,7 +253,6 @@ fn fields_without_notes(entry: &reference::FormatReference, fields: &[Field], mi
 #[test]
 fn every_layer_of_common_traffic_has_reference_notes_explaining_each_field() {
     let mut expected_layers = std::collections::BTreeSet::new();
-    let mut awaiting_seen = std::collections::BTreeSet::new();
     for (traffic, dissection) in sample_dissections() {
         assert!(dissection.notes.is_empty(), "{traffic}: the sample should dissect cleanly: {:?}", dissection.notes);
         for layer in &dissection.layers {
@@ -271,16 +263,7 @@ fn every_layer_of_common_traffic_has_reference_notes_explaining_each_field() {
             let entry = reference::lookup(&layer.name).unwrap_or_else(|| panic!("{traffic}: no reference notes for layer '{}'", layer.name));
             let mut missing = Vec::new();
             fields_without_notes(entry, &layer.fields, &mut missing);
-            let awaiting: &[&str] = FIELDS_AWAITING_NOTES.iter().find(|(name, _)| *name == layer.name).map_or(&[], |(_, fields)| fields);
-            awaiting_seen.extend(missing.iter().filter(|field| awaiting.contains(&field.as_str())).map(|field| (layer.name.clone(), field.clone())));
-            missing.retain(|field| !awaiting.contains(&field.as_str()));
             assert!(missing.is_empty(), "{traffic}: layer '{}' ({}) has fields without notes: {missing:?}", layer.name, entry.id);
-        }
-    }
-    for (layer, fields) in FIELDS_AWAITING_NOTES {
-        for field in fields {
-            let seen = awaiting_seen.contains(&(layer.to_string(), field.to_string()));
-            assert!(seen, "'{field}' of layer '{layer}' has a note now, or no sample shows it; take it off FIELDS_AWAITING_NOTES");
         }
     }
     for layer in [
