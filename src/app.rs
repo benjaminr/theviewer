@@ -2115,22 +2115,21 @@ impl ViewerApp {
         }
     }
 
-    /// Cut the selection out and re-insert it `delta` bytes away.
-    fn move_target(&mut self, delta: i64) {
+    /// Cut the selection out and re-insert it `delta` bytes away, as
+    /// `bytes.move`, which selects it there.
+    pub(crate) fn move_target(&mut self, delta: i64) {
         let Some((start, len)) = self.target_range() else { return };
-        let bytes = self.document.read_range(start, len);
         let remaining = self.document.len() - len;
         let destination = (start as i64 + delta).clamp(0, remaining as i64) as usize;
         if destination == start {
             return;
         }
-        self.document.grouped(|document| {
-            document.delete(start, len);
-            document.insert(destination, &bytes);
-        });
-        self.restore_selection(destination, len);
-        self.scroll_cursor_into_view();
-        self.status = format!("Moved {len} bytes from {start:#x} to {destination:#x}");
+        // Counted before the cut: bytes moving right land after the bytes they pass.
+        let to = if destination > start { destination + len } else { destination };
+        if self.perform("bytes.move", serde_json::json!({ "ranges": [[start, len]], "to": to })).is_ok() {
+            self.scroll_cursor_into_view();
+            self.status = format!("Moved {len} bytes from {start:#x} to {destination:#x}");
+        }
     }
 
     /// Copy the selected bytes (every range, one after another) as hex.

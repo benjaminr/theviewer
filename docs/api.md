@@ -38,6 +38,7 @@ Errors are `{code, message, data}`, with these codes:
 | [`bytes.insert`](#bytesinsert) | edit | Insert bytes at an offset, as one undoable step; the bytes after it move along. |
 | [`bytes.delete`](#bytesdelete) | edit | Remove a span of bytes, as one undoable step; the bytes after it move back. |
 | [`bytes.replace`](#bytesreplace) | edit | Replace a span of bytes with new bytes of any length, as one undoable step. |
+| [`bytes.move`](#bytesmove) | edit | Cut ranges out and put their bytes, one after another, at an offset counted before the cut, as one undoable step, and select them. |
 | [`bits.read`](#bitsread) | read | Read a span of bits, most or least significant bit of each byte first, as a string of 0s and 1s and, up to 64 bits, as a number. |
 | [`bits.write`](#bitswrite) | edit | Overwrite bits from any bit offset, most or least significant bit of each byte first, as one undoable step; the bits around them are kept. |
 | [`transform.apply`](#transformapply) | edit | Apply an operation (XOR, invert, shift bits, swap byte order, number, compress, decompress and more) to every range of a selection, as one undoable step, and select what it produced. |
@@ -334,6 +335,25 @@ Replace a span of bytes with new bytes of any length, as one undoable step.
 | `expect_version` | integer | no | Fail with version_conflict, changing nothing, unless the document is at this version. |
 | `len` | integer | yes | Bytes to take out; the new bytes may be longer or shorter. |
 | `start` | integer | yes | Offset of the first byte to replace. |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `doc` | string | yes | Id of the document edited. |
+| `label` | string | yes | What the step is called in the undo history, such as "XOR by mcp:claude-code". |
+| `len` | integer | yes | The document's length after the edit. |
+| `ranges` | array of pair | yes | Where the new bytes are, as [start, len]: one range per range changed. |
+| `version` | integer | yes | The document's version after the edit; pass it as expect_version to the next. |
+
+### bytes.move
+
+Cut ranges out and put their bytes, one after another, at an offset counted before the cut, as one undoable step, and select them.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `doc` | string | no | Document id, path or "current" (the default). |
+| `expect_version` | integer | no | Fail with version_conflict, changing nothing, unless the document is at this version. |
+| `ranges` | array of pair | yes | The ranges to move, as [start, len]; their bytes land one after another, in document order. |
+| `to` | integer | yes | Where the bytes land, as an offset counted before they are cut out; an offset inside a range lands them where that range began. |
 
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |

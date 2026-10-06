@@ -34,6 +34,7 @@ pub(super) const METHODS: &[super::Method] = &[
     method!("bytes.insert", Edit, caller insert, InsertParams, EditResult, "Insert bytes at an offset, as one undoable step; the bytes after it move along."),
     method!("bytes.delete", Edit, caller delete, DeleteParams, EditResult, "Remove a span of bytes, as one undoable step; the bytes after it move back."),
     method!("bytes.replace", Edit, caller replace, ReplaceParams, EditResult, "Replace a span of bytes with new bytes of any length, as one undoable step."),
+    method!("bytes.move", Edit, caller move_bytes, MoveParams, EditResult, "Cut ranges out and put their bytes, one after another, at an offset counted before the cut, as one undoable step, and select them."),
     method!("bits.write", Edit, caller write_bits, BitsWriteParams, EditResult, "Overwrite bits from any bit offset, most or least significant bit of each byte first, as one undoable step; the bits around them are kept."),
     method!("transform.apply", Edit, caller apply_transform, TransformParams, EditResult, "Apply an operation (XOR, invert, shift bits, swap byte order, number, compress, decompress and more) to every range of a selection, as one undoable step, and select what it produced."),
     method!("transform.preview", Read, preview_transform, PreviewParams, PreviewResult, "What transform.apply would write into each range of a selection, without changing anything."),
@@ -55,6 +56,7 @@ pub(super) fn examples() -> Vec<(&'static str, serde_json::Value)> {
         ("bytes.insert", json!({"at": 0, "data": "0a", "coalesce": true})),
         ("bytes.delete", json!({"start": 0, "len": 1})),
         ("bytes.replace", json!({"start": 0, "len": 1, "data": "ffff"})),
+        ("bytes.move", json!({"ranges": [[0, 2]], "to": 6})),
         ("bits.write", json!({"bit_start": 3, "bits": "101"})),
         ("transform.apply", json!({"selection": {"range": [0, 4]}, "operation": {"op": "xor", "key": "5a"}})),
         ("history.undo", json!({})),
@@ -145,6 +147,23 @@ pub struct ReplaceParams {
     /// How `data` is written: hex (the default), base64 or text.
     #[serde(default)]
     pub encoding: ByteEncoding,
+    /// Fail with version_conflict, changing nothing, unless the document is at this version.
+    #[serde(default)]
+    pub expect_version: Option<u64>,
+}
+
+/// Parameters of `bytes.move`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct MoveParams {
+    /// Document id, path or "current" (the default).
+    #[serde(default)]
+    pub doc: Option<String>,
+    /// The ranges to move, as [start, len]; their bytes land one after another, in document order.
+    pub ranges: Vec<(u64, u64)>,
+    /// Where the bytes land, as an offset counted before they are cut out; an offset inside a range
+    /// lands them where that range began.
+    pub to: u64,
     /// Fail with version_conflict, changing nothing, unless the document is at this version.
     #[serde(default)]
     pub expect_version: Option<u64>,
@@ -451,6 +470,39 @@ pub fn replace(workspace: &mut dyn Workspace, caller: &Caller, params: ReplacePa
     edit_result(workspace, id, label, vec![(start, bytes.len())])
 }
 
+pub fn move_bytes(workspace: &mut dyn Workspace, caller: &Caller, params: MoveParams) -> Result<EditResult, ApiError> {
+    if params.ranges.is_empty() {
+        return Err(ApiError::invalid_params("give at least one range to move, as [start, len]"));
+    }
+    let id = workspace::resolve(workspace, params.doc.as_deref())?;
+    let len = workspace::info(workspace, &id)?.len as usize;
+    let given: Vec<(usize, usize)> = params.ranges.iter().map(|&(start, range_len)| (start as usize, range_len as usize)).collect();
+    check_inside(&Selection::Ranges(given.clone()), len)?;
+    let ranges = selection::normalise_ranges(given);
+    let total = selection::total_bytes(&ranges);
+    if total == 0 {
+        return Err(ApiError::invalid_params("the ranges hold no bytes to move"));
+    }
+    values::check_call_size(total)?;
+    let (to, _) = values::span_within(len, params.to, Some(0))?;
+    let landing = selection_ops::moved_destination(to, &ranges);
+    let action = count("Move", total, "byte");
+    let (id, (), label) = edit(workspace, caller, Some(&id), params.expect_version, &action, |document| {
+        let mut bytes = Vec::with_capacity(total);
+        for &(start, range_len) in &ranges {
+            bytes.extend(document.read_range(start, range_len));
+        }
+        selection_menu::rewrite_ranges(document, &ranges, &Operation::Delete).map_err(|message| ApiError::invalid_params(format!("the move failed: {message}")))?;
+        document.insert(landing, &bytes);
+        Ok(())
+    })?;
+    // Select the moved bytes, as the window does after a move; one byte is
+    // just the cursor's.
+    let (cursor, moved) = if total > 1 { (landing + total, Some(Selection::Range(landing, total))) } else { (landing, None) };
+    workspace.select(&id, cursor, moved, caller);
+    edit_result(workspace, id, label, vec![(landing, total)])
+}
+
 /// Bits written as "0" and "1", with spaces and underscores ignored.
 fn parse_bits(text: &str) -> Result<Vec<bool>, ApiError> {
     text.chars()
@@ -709,6 +761,11 @@ pub(super) fn describe_call(workspace: &mut dyn Workspace, method: &str, params:
             let replaced = count("Replace", params.len as usize, "byte");
             if len as u64 == params.len { format!("{replaced} at {:#x} with {hex}", params.start) } else { format!("{replaced} at {:#x} with {}: {hex}", params.start, count("", len, "byte").trim_start()) }
         }
+        "bytes.move" => {
+            let params: MoveParams = parsed(params)?;
+            let ranges: Vec<(usize, usize)> = params.ranges.iter().map(|&(start, len)| (start as usize, len as usize)).collect();
+            format!("Move {} to {:#x}", target_phrase(&selection::normalise_ranges(ranges), false), params.to)
+        }
         "bits.write" => {
             let params: BitsWriteParams = parsed(params)?;
             let bits: String = params.bits.chars().filter(|character| !matches!(character, ' ' | '_')).collect();
@@ -823,6 +880,38 @@ mod tests {
         assert_eq!(bytes_of(&mut workspace), b"abcd");
         let past = call(&mut workspace, "bytes.write", json!({"start": 4, "data": "00", "coalesce": true})).unwrap_err();
         assert_eq!(past.code, ErrorCode::OutOfRange, "coalescing changes nothing about where an edit may go");
+    }
+
+    #[test]
+    fn moved_bytes_land_where_the_offset_was_before_the_cut_as_one_step_and_are_selected() {
+        let mut workspace = workspace_with("a.bin", b"ABcdefgh");
+        let moved = call(&mut workspace, "bytes.move", json!({"ranges": [[0, 2]], "to": 6})).unwrap();
+        assert_eq!(bytes_of(&mut workspace), b"cdefABgh", "bytes moving right land after the bytes they pass");
+        assert_eq!((moved["label"].as_str(), moved["ranges"].clone()), (Some("Move 2 bytes by mcp:claude-code"), json!([[4, 2]])));
+        assert_eq!(workspace.view("doc-1").unwrap(), ViewState { cursor: 6, selection: Some(Selection::Range(4, 2)), record_stride: None });
+
+        let gathered = call(&mut workspace, "bytes.move", json!({"ranges": [[7, 1], [1, 1], [4, 2]], "to": 0})).unwrap();
+        assert_eq!(bytes_of(&mut workspace), b"dABhcefg", "several ranges are gathered in document order");
+        assert_eq!(gathered["ranges"], json!([[0, 4]]));
+        call(&mut workspace, "history.undo", json!({})).unwrap();
+        assert_eq!(bytes_of(&mut workspace), b"cdefABgh", "one undo puts every range back");
+
+        call(&mut workspace, "bytes.move", json!({"ranges": [[7, 1]], "to": 5})).unwrap();
+        assert_eq!(bytes_of(&mut workspace), b"cdefAhBg");
+        assert_eq!(workspace.view("doc-1").unwrap().selection, None, "a single moved byte is where the cursor is, not a selection");
+        assert_eq!(workspace.view("doc-1").unwrap().cursor, 5);
+    }
+
+    #[test]
+    fn a_move_with_nothing_to_move_or_past_the_end_is_refused_and_changes_nothing() {
+        let mut workspace = workspace_with("a.bin", b"abcd");
+        assert_eq!(call(&mut workspace, "bytes.move", json!({"ranges": [], "to": 0})).unwrap_err().code, ErrorCode::InvalidParams);
+        assert_eq!(call(&mut workspace, "bytes.move", json!({"ranges": [[1, 0]], "to": 0})).unwrap_err().code, ErrorCode::InvalidParams);
+        assert_eq!(call(&mut workspace, "bytes.move", json!({"ranges": [[2, 4]], "to": 0})).unwrap_err().code, ErrorCode::OutOfRange);
+        assert_eq!(call(&mut workspace, "bytes.move", json!({"ranges": [[0, 1]], "to": 5})).unwrap_err().code, ErrorCode::OutOfRange);
+        assert_eq!(call(&mut workspace, "bytes.move", json!({"ranges": [[0, 1]], "to": 3, "expect_version": 7})).unwrap_err().code, ErrorCode::VersionConflict);
+        assert_eq!(bytes_of(&mut workspace), b"abcd");
+        assert_eq!(undo_label(&mut workspace), None);
     }
 
     #[test]
@@ -941,6 +1030,7 @@ mod tests {
         assert_eq!(describe(&mut workspace, "bytes.replace", json!({"start": 0x40, "len": 4, "data": "deadbeef"})), "Replace 4 bytes at 0x40 with DE AD BE EF");
         assert_eq!(describe(&mut workspace, "bytes.replace", json!({"start": 0x40, "len": 4, "data": "dead"})), "Replace 4 bytes at 0x40 with 2 bytes: DE AD");
         assert_eq!(describe(&mut workspace, "bytes.delete", json!({"start": 16, "len": 1})), "Delete 1 byte at 0x10");
+        assert_eq!(describe(&mut workspace, "bytes.move", json!({"ranges": [[16, 4]], "to": 64})), "Move 4 bytes at 0x10 to 0x40");
         workspace.set_view("doc-1", ViewState { cursor: 0, selection: Some(Selection::Range(0, 128)), record_stride: None });
         assert_eq!(describe(&mut workspace, "transform.apply", json!({"operation": {"op": "xor", "key": "5a"}})), "XOR 128 selected bytes with 5A");
         assert_eq!(describe(&mut workspace, "bits.write", json!({"bit_start": 515, "bits": "0101"})), "Write 4 bits at bit 515 (byte 0x40): 0101");

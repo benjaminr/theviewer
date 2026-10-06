@@ -12,6 +12,7 @@ use std::sync::Arc;
 
 use eframe::egui::{self, Color32, Frame, Id, Order, Pos2, Rect, RichText, Ui, vec2};
 
+use crate::api::edits::EditResult;
 use crate::app::{DialogKind, FileAction, ViewerApp};
 use crate::compress::{self, Codec};
 use crate::document::Document;
@@ -78,26 +79,23 @@ impl ViewerApp {
     /// Apply `operation` to every selected range as one undo step, then keep
     /// the changed bytes selected. Carried out as `transform.apply`, with
     /// the selection (or the byte at the cursor) it acts on, so the step
-    /// can be repeated; a failure is said on the status bar.
-    pub fn apply_operation(&mut self, operation: Operation) {
+    /// can be repeated; a failure is said on the status bar. Returns
+    /// whether it was applied.
+    pub fn apply_operation(&mut self, operation: Operation) -> bool {
         let ranges = self.operation_ranges();
         if ranges.is_empty() {
             self.status = "Nothing to change: the cursor is at the end of the document".to_string();
-            return;
+            return false;
         }
         let target = self.current_selection().unwrap_or(Selection::Range(self.cursor, 1));
         let params = serde_json::json!({ "selection": target, "operation": operation });
-        if self.perform("transform.apply", params).is_ok() {
-            let bytes: usize = ranges.iter().map(|&(_, len)| len).sum();
-            let places = if ranges.len() == 1 { format!("at {:#x}", ranges[0].0) } else { format!("in {} ranges", ranges.len()) };
-            self.status = format!("{} {bytes} bytes {places}. Undo with Cmd+Z.", operation.label());
+        if self.perform("transform.apply", params).is_err() {
+            return false;
         }
-    }
-
-    /// Write `operation`'s result over `ranges` as one undo step. Returns
-    /// where each range's new bytes are.
-    fn rewrite_ranges(&mut self, ranges: &[(usize, usize)], operation: &Operation) -> Result<Vec<(usize, usize)>, String> {
-        rewrite_ranges(&mut self.document, ranges, operation)
+        let bytes: usize = ranges.iter().map(|&(_, len)| len).sum();
+        let places = if ranges.len() == 1 { format!("at {:#x}", ranges[0].0) } else { format!("in {} ranges", ranges.len()) };
+        self.status = format!("{} {bytes} bytes {places}. Undo with Cmd+Z.", operation.label());
+        true
     }
 
     /// Put the cursor at `cursor` and select `selection`, of any kind;
@@ -216,28 +214,26 @@ impl ViewerApp {
 
     /// Cut the selected ranges out and put their bytes, one after another,
     /// at document offset `destination` (counted before the cut), as one
-    /// undo step. Returns where they landed.
+    /// undo step through `bytes.move`, which selects them. Returns where
+    /// they landed.
     pub fn move_selection_to(&mut self, destination: usize) -> Option<(usize, usize)> {
         let ranges = self.operation_ranges();
         if ranges.is_empty() {
             return None;
         }
-        let bytes = self.selected_bytes();
-        let landing = selection_ops::moved_destination(destination.min(self.document.len()), &ranges);
-        self.document.begin_group();
-        let cut = self.rewrite_ranges(&ranges, &Operation::Delete);
-        if cut.is_ok() {
-            self.document.insert(landing.min(self.document.len()), &bytes);
+        let params = serde_json::json!({ "ranges": ranges, "to": destination.min(self.document.len()) });
+        match self.perform_typed::<EditResult>("bytes.move", params) {
+            Ok(moved) => {
+                let (landing, len) = moved.ranges.first().map_or((0, 0), |&(start, len)| (start as usize, len as usize));
+                self.reveal_cursor_in_hex(false);
+                self.status = format!("Moved {len} bytes to {landing:#x}. Undo with Cmd+Z.");
+                Some((landing, len))
+            }
+            Err(error) => {
+                self.status = format!("Move failed: {}", error.message);
+                None
+            }
         }
-        self.document.end_group();
-        if let Err(message) = cut {
-            self.status = format!("Move failed: {message}");
-            return None;
-        }
-        self.restore_selection(landing, bytes.len());
-        self.reveal_cursor_in_hex(false);
-        self.status = format!("Moved {} bytes to {landing:#x}. Undo with Cmd+Z.", bytes.len());
-        Some((landing, bytes.len()))
     }
 
     /// The bytes typed into the Insert fields: the pattern repeated to the count.

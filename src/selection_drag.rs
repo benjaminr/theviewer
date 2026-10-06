@@ -143,9 +143,13 @@ impl ViewerApp {
             return;
         }
         let shift: i64 = if left { 1 } else { -1 };
+        // The rotation acts on the widened ranges, which its step names;
+        // the moved ranges are then selected as a step of their own.
         self.select_ranges(widened, None);
-        self.apply_operation(Operation::RotateBytes(shift));
-        match selected {
+        if !self.apply_operation(Operation::RotateBytes(shift)) {
+            return;
+        }
+        let moved = match selected {
             Selection::Columns(mut column) => {
                 // Keep the column inside its records where it can be, so it
                 // still reads as the same column.
@@ -155,12 +159,92 @@ impl ViewerApp {
                     false if column.column + column.width < column.stride => column.column += 1,
                     false => column.first_row_start += 1,
                 }
-                self.select_column(column);
+                Selection::Columns(column)
             }
-            _ => {
-                let moved = ranges.iter().map(|&(start, range_len)| (if left { start - 1 } else { start + 1 }, range_len)).collect();
-                self.select_ranges(moved, None);
-            }
-        }
+            _ => Selection::Ranges(ranges.iter().map(|&(start, range_len)| (if left { start - 1 } else { start + 1 }, range_len)).collect()),
+        };
+        let _ = self.perform("selection.set", serde_json::json!({ "selection": moved }));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use crate::actions::take_performed;
+    use crate::app::{Launch, ViewerApp};
+    use crate::selection::Selection;
+    use crate::selection_ops::Operation;
+
+    fn app_with(bytes: &[u8]) -> ViewerApp {
+        let mut app = ViewerApp::new(Launch::default());
+        app.open_bytes(bytes.to_vec(), "test.bin".to_string());
+        app.run_bus();
+        take_performed();
+        app
+    }
+
+    #[test]
+    fn dragging_the_selection_moves_its_bytes_through_the_api_as_one_step() {
+        let mut app = app_with(b"ABCdefgh");
+        app.restore_selection(0, 3);
+        app.begin_plain_drag(1, false);
+        app.continue_drag(6);
+        app.finish_drag();
+        assert_eq!(take_performed(), [("bytes.move".to_string(), json!({"ranges": [[0, 3]], "to": 6}))]);
+        assert_eq!(app.document.read_range(0, 8), b"defABCgh", "the bytes land before the byte dropped on, counted before the cut");
+        assert_eq!(app.current_selection(), Some(Selection::Range(3, 3)), "the moved bytes stay selected");
+        assert_eq!(app.status, "Moved 3 bytes to 0x3. Undo with Cmd+Z.");
+        assert_eq!(app.document.undo_label(), Some("Move 3 bytes"));
+        app.document.undo();
+        assert_eq!(app.document.read_range(0, 8), b"ABCdefgh", "one undo puts them back");
+    }
+
+    #[test]
+    fn dropping_a_dragged_selection_onto_itself_moves_nothing() {
+        let mut app = app_with(b"ABCdefgh");
+        app.restore_selection(0, 3);
+        app.begin_plain_drag(1, false);
+        app.continue_drag(2);
+        app.finish_drag();
+        assert!(take_performed().is_empty());
+        assert_eq!(app.document.read_range(0, 8), b"ABCdefgh");
+    }
+
+    #[test]
+    fn the_toolbar_move_takes_the_selection_along_by_the_amount_through_the_api() {
+        let mut app = app_with(b"aBCdef");
+        app.restore_selection(1, 2);
+        app.move_target(2);
+        assert_eq!(take_performed(), [("bytes.move".to_string(), json!({"ranges": [[1, 2]], "to": 5}))]);
+        assert_eq!(app.document.read_range(0, 6), b"adeBCf");
+        assert_eq!(app.current_selection(), Some(Selection::Range(3, 2)));
+        assert_eq!(app.status, "Moved 2 bytes from 0x1 to 0x3");
+        app.move_target(-10);
+        assert_eq!(app.document.read_range(0, 6), b"BCadef", "a move is kept inside the document");
+        assert_eq!(take_performed(), [("bytes.move".to_string(), json!({"ranges": [[3, 2]], "to": 0}))]);
+    }
+
+    #[test]
+    fn nudging_a_range_moves_it_a_byte_through_the_api() {
+        let mut app = app_with(b"aBCdef");
+        app.restore_selection(1, 2);
+        app.nudge_selection(1);
+        assert_eq!(take_performed(), [("bytes.move".to_string(), json!({"ranges": [[1, 2]], "to": 4}))]);
+        assert_eq!(app.document.read_range(0, 6), b"adBCef");
+        assert_eq!(app.current_selection(), Some(Selection::Range(2, 2)));
+    }
+
+    #[test]
+    fn nudging_several_ranges_rotates_each_with_its_neighbour_and_selects_them_where_they_went() {
+        let mut app = app_with(b"abcdefgh");
+        app.select_ranges(vec![(1, 1), (4, 1)], None);
+        app.nudge_selection(1);
+        let rotate = json!({"selection": {"ranges": [[1, 2], [4, 2]]}, "operation": Operation::RotateBytes(-1)});
+        let moved = json!({"selection": {"ranges": [[2, 1], [5, 1]]}});
+        assert_eq!(take_performed(), [("transform.apply".to_string(), rotate), ("selection.set".to_string(), moved)]);
+        assert_eq!(app.document.read_range(0, 8), b"acbdfegh");
+        assert_eq!(app.current_selection(), Some(Selection::Ranges(vec![(2, 1), (5, 1)])));
+        assert!(app.status.starts_with("Rotate"), "{}", app.status);
     }
 }
