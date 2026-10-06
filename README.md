@@ -23,6 +23,7 @@ contains and where.</sub>
 - [What it can do](#what-it-can-do)
 - [The tools](#the-tools)
 - [Ask Claude about a file](#ask-claude-about-a-file)
+- [Who may change the file](#who-may-change-the-file)
 - [Make it yours](#make-it-yours)
 - [Keyboard shortcuts](#keyboard-shortcuts)
 - [Command line](#command-line)
@@ -377,7 +378,11 @@ search and parse more of the file itself, and run the analysis tools: the
 file overview, segmentation, statistics, compressibility, text encoding,
 processor detection and the reference notes on formats. *Characterise* asks it to work through them and
 describe the whole file. Offsets in its answers are links, and templates it
-writes can be applied with one click.
+writes can be applied with one click. When you ask it to change something
+("XOR the selection with 5A", "fix the length field"), it can edit too, with
+the same operations you have: each change waits for you to allow it (see
+below), is one undo step, and is labelled in the Edit menu as Ask's, such as
+*Undo XOR by ask*.
 
 Ask is off until you add an Anthropic API key in **Settings** (`Cmd+,`).
 On macOS the key is kept in your Keychain; elsewhere in
@@ -385,6 +390,30 @@ On macOS the key is kept in your Keychain; elsewhere in
 `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` environment variables, or an
 `ant auth login` session, also work. Nothing is sent anywhere unless you ask
 a question.
+
+## Who may change the file
+
+You edit freely. Plugins, Ask and other clients of the data API can always
+read, but what they may change is up to you: **Settings › Permissions**
+lists each one (Ask, every plugin that declared it edits, and any client
+that has asked before) with three choices, *Always allow*, *Always ask* and
+*Never allow*. A client not seen before is asked about.
+
+When a client set to ask wants to change the document or the selection, a
+window says who it is and what the change is, in plain words: "Ask wants to
+change the document: XOR 128 selected bytes with 5A", or "Overwrite 4 bytes
+at 0x40 with DE AD BE EF". *Allow once* makes the change, *Always allow this
+client* makes it and stops asking, and *Deny* refuses it, which the client
+is told. Nothing waits on the window: you can keep working, and a request
+nobody answers is refused after two minutes. Several requests are answered
+in the order they came.
+
+Every change a client makes is one undo step, labelled with what it did and
+who did it ("Overwrite 4 bytes by plugin:acme_telemetry.lua"), so *Undo*
+always takes it back. A client can also say which version of the file it
+expects, so a change based on bytes that have changed since is refused
+instead of applied. On the command line (`theviewer api`) every call is
+allowed: the files are the ones you named.
 
 ## Make it yours
 
@@ -536,8 +565,11 @@ built-in ones use the same interfaces as yours.
 - **Templates:** describe structures in the template language; see
   [docs/templates.md](docs/templates.md).
 - **Lua plugins:** scripts can add detectors, parsers, codecs and actions
-  through a small sandboxed API; see [docs/plugins.md](docs/plugins.md) and
-  the examples in `plugins/`. *View › Reload plugins* picks up changes.
+  through a small sandboxed API, call every method of the data API, react
+  to what other tools publish on the workspace bus and publish what they
+  learn, and register methods of their own that Ask and the command line
+  can call; see [docs/plugins.md](docs/plugins.md) and the examples in
+  `plugins/`. *View › Reload plugins* picks up changes.
   An error in a plugin, even in a background scan, is shown in the status
   bar, and every line a plugin logs is in the *Workspace* tab.
 - **Rust:** implement `Detector`, `Parser` or `CodecPlugin` from
@@ -594,7 +626,7 @@ text.
 
 | Module | Responsibility |
 | --- | --- |
-| `document.rs` | Piece table over a memory-mapped file plus an append-only edit buffer: cheap edits on any size, undo and redo, and safe saving. |
+| `document.rs` | Piece table over a memory-mapped file plus an append-only edit buffer: cheap edits on any size, undo and redo with named steps, and safe saving. |
 | `raster.rs` | Turns bytes into pixels for a format, palette and row stride, in parallel. |
 | `view.rs` `hex.rs` | The raster view (texture caching, scrolling, zoom, selection) and the inspector and hex dump. |
 | `app.rs` | Application state, shortcuts, editing commands, toolbar, menus and background analysis. |
@@ -603,7 +635,7 @@ text.
 | `plugin.rs` | The plugin traits, `Finding`, `Field`, `Category` and the `Registry`. |
 | `catalog.rs` | The signature catalogue and its matching engine. |
 | `parsers/` | Structure parsers for executables, images, archives, captures, ASN.1, disks and serialisation formats. |
-| `plugins.rs` | The sandboxed Lua plugin host. |
+| `plugins.rs` `plugins/` | The sandboxed Lua plugin host, and what scripts reach the data API and the bus through. |
 | `compress.rs` `unpack.rs` | Stream detection, bounded decompression and compression; recursive extraction. |
 | `media.rs` `player.rs` | Media detection and decoding; the image, audio and video viewer. |
 | `explain.rs` `hilbert.rs` `region_colours.rs` | The whole-file report and map; the Hilbert and Morton curve layouts; colours by region, block class and entropy. |
@@ -616,6 +648,7 @@ text.
 | `analysis_tools.rs` `analysis_stats.rs` `analysis_tabs.rs` `dock.rs` `workbench.rs` | The tool panels and the state behind them. |
 | `assistant.rs` | *Ask*: a streaming Claude API client with tools, on a background thread. |
 | `api.rs` `api/` | The data API: one table of methods with JSON schemas, run against the window or a headless workspace; Ask's tools, `theviewer api` and [docs/api.md](docs/api.md) come from it. |
+| `api/permissions.rs` `confirmations.rs` | Who is calling the API and what each client may change; the window that asks you about a change. |
 | `layout.rs` `layouts.rs` `packing.rs` | Dockable panels; recommended and saved layouts; toolbar packing and reordering. |
 | `legend.rs` | The legend bar: the colouring in effect and each highlight layer, with toggles. |
 | `freshness.rs` | Which document version each tool's result describes; refreshing cheap views after edits and marking the rest out of date. |

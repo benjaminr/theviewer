@@ -778,10 +778,10 @@ mod tests {
         let mut app = app_with(&[0x7E, 0x7E, 0x10, 0x20, 0, 0, 0, 0]);
         load(
             &mut app,
-            "acme.lua",
+            "beacon.lua",
             r#"theviewer.register_method{
-                name = "acme.decode_frame",
-                summary = "Decode one ACME telemetry frame.",
+                name = "beacon.decode_frame",
+                summary = "Decode one beacon frame.",
                 params = { start = "integer", len = "integer?" },
                 run = function(params, api)
                     local frame = api.bytes.read{ start = params.start, len = params.len or 4 }
@@ -790,17 +790,17 @@ mod tests {
             }"#,
         );
         let description = api::call(&mut app, &Caller::Panel, "api.describe", json!({})).unwrap();
-        let method = description["methods"].as_array().unwrap().iter().find(|method| method["name"] == "acme.decode_frame").expect("listed in api.describe");
+        let method = description["methods"].as_array().unwrap().iter().find(|method| method["name"] == "beacon.decode_frame").expect("listed in api.describe");
         assert_eq!((method["effect"].as_str(), method["stability"].as_str()), (Some("read"), Some("experimental")));
         assert_eq!(method["params"]["required"], json!(["start"]));
 
-        let decoded = api::call(&mut app, &Caller::Mcp("claude-code".into()), "acme.decode_frame", json!({"start": 0})).unwrap();
+        let decoded = api::call(&mut app, &Caller::Mcp("claude-code".into()), "beacon.decode_frame", json!({"start": 0})).unwrap();
         assert_eq!(decoded, json!({"sync": "7e7e", "value": 0x1020}));
-        let missing = api::call(&mut app, &Caller::Panel, "acme.decode_frame", json!({"len": 2})).unwrap_err();
+        let missing = api::call(&mut app, &Caller::Panel, "beacon.decode_frame", json!({"len": 2})).unwrap_err();
         assert_eq!(missing.code, ErrorCode::InvalidParams);
-        let wrong = api::call(&mut app, &Caller::Panel, "acme.decode_frame", json!({"start": "zero"})).unwrap_err();
+        let wrong = api::call(&mut app, &Caller::Panel, "beacon.decode_frame", json!({"start": "zero"})).unwrap_err();
         assert_eq!(wrong.code, ErrorCode::InvalidParams);
-        let past = api::call(&mut app, &Caller::Panel, "acme.decode_frame", json!({"start": 7})).unwrap_err();
+        let past = api::call(&mut app, &Caller::Panel, "beacon.decode_frame", json!({"start": 7})).unwrap_err();
         assert_eq!(past.code, ErrorCode::PluginFailed, "its error is the plugin's");
         assert!(past.message.contains("out_of_range"), "{}", past.message);
     }
@@ -835,6 +835,28 @@ mod tests {
         assert!(builtin.unwrap_err().contains("API's own namespaces"));
         let topic = app.load_plugin_source("deaf.lua", r#"theviewer.subscribe("weather.report", function() end)"#);
         assert!(topic.unwrap_err().contains("no topic 'weather.report'"));
+    }
+
+    #[test]
+    fn the_shipped_acme_example_identifies_its_frames_and_leaves_ordinary_files_alone() {
+        let mut frames = Vec::new();
+        for kind in 0..4u8 {
+            frames.extend([0x7E, 0xA5, kind, 4, 1, 2, 3, 4]);
+        }
+        let mut app = app_with(&frames);
+        assert!(app.plugin_methods.iter().any(|method| method.name == "acme.decode_frame"), "the example in plugins/ is loaded");
+        publish_frames(&mut app, &[(0, 8), (8, 8), (16, 8), (24, 8)]);
+        let identified = app.bus.facts().find(|fact| fact.producer() == "plugin:acme_telemetry.lua").expect("the example identified its frames");
+        assert_eq!(identified.payload_as::<ProtocolIdentified>().unwrap().protocol, "ACME telemetry");
+        let decoded = api::call(&mut app, &Caller::Ask, "acme.decode_frame", json!({"start": 8})).unwrap();
+        assert_eq!(decoded, json!({"sync": true, "type": 1, "length": 4}));
+
+        let mut ordinary = app_with(&[0x55; 64]);
+        publish_frames(&mut ordinary, &[(0, 16), (16, 16), (32, 16), (60, 16)]);
+        assert!(ordinary.bus.facts().all(|fact| fact.producer() != "plugin:acme_telemetry.lua"), "nothing is claimed for frames without the sync word");
+        assert!(logged(&ordinary, LogLevel::Error).is_empty(), "a frame past the end is passed over quietly: {:?}", logged(&ordinary, LogLevel::Error));
+        assert_eq!(api::call(&mut ordinary, &Caller::Panel, "acme.decode_frame", json!({"start": 0})).unwrap(), json!({"sync": false}));
+        assert!(!ordinary.document.is_modified());
     }
 
     #[test]

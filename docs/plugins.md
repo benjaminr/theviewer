@@ -9,6 +9,12 @@ registers appears in the viewer exactly like the built-in equivalents: the
 same highlights, the same findings list, the same Decompress and Probe
 buttons, the same command palette.
 
+Scripts can also call the data API (`theviewer.api`), react to what other
+tools learn (`theviewer.subscribe`), say what they learn
+(`theviewer.publish`) and offer methods of their own that panels, Ask, the
+command line and other plugins can call (`theviewer.register_method`); see
+[The data API, the bus and methods of your own](#the-data-api-the-bus-and-methods-of-your-own).
+
 ## Installing a plugin
 
 Plugins are `*.lua` files in either of these directories, loaded in name
@@ -17,7 +23,7 @@ order:
 - `plugins/` next to the working directory you launch the viewer from
 - `~/.config/theviewer/plugins/`
 
-The `plugins/` directory in this repository ships five examples that double
+The `plugins/` directory in this repository ships six examples that double
 as a reference. Copy one, rename it, and change what it registers.
 
 Each file runs once at load. Errors are reported per file: a script with a
@@ -150,6 +156,154 @@ error.
 
 Appends a line to the plugin log, shown in the Plugins menu.
 
+## The data API, the bus and methods of your own
+
+Plugins can do everything the other clients of the data API can (panels,
+Ask, the command line): read and edit the document, hear what other tools
+learn, say what they learn, and offer methods that every client can call.
+The methods and topics are listed in [docs/api.md](api.md).
+
+### `theviewer.plugin{ name = …, edits = … }`
+
+```lua
+theviewer.plugin{ name = "acme", edits = true }
+```
+
+Optional, once per script. `name` (lower-case letters, digits and
+underscores) is what the plugin's own methods and topics are named after;
+it defaults to the file name's stem, so `acme_telemetry.lua` is
+`acme_telemetry`. `edits = true` lets the plugin's subscription handlers
+edit, within the permission you give it under Settings › Permissions (see
+below); without it they only read.
+
+### `theviewer.api.<namespace>.<method>{ … }`
+
+```lua
+local head = theviewer.api.bytes.read{ start = 0, len = 16 }   -- { doc, start, len, encoding, data = "89504e47…" }
+theviewer.api.transform.apply{ selection = { range = { 0, 16 } }, operation = { op = "xor", key = "5a" } }
+local width = theviewer.api.events.facts{ topic = "record_width.estimated" }
+```
+
+Every method of the API, by the same name and with the same parameters as
+everywhere else; methods other plugins registered are there too
+(`theviewer.api.acme.decode_frame{ start = 0 }`). Parameters are one table
+and the result is a table. Values cross as JSON: a table keyed `1..n` is
+an array and any other table an object; `theviewer.array()` makes an empty
+array. Bytes are hex strings unless you ask for `encoding = "base64"` or
+`"text"`; `theviewer.hex(bytes)` and `theviewer.unhex(text)` convert.
+
+A failed call **raises a Lua error** whose message is `"<code>: <message>"`,
+such as `"out_of_range: offset 0x40 is past the end of the document"`.
+Catch it with `pcall` when failing is expected:
+
+```lua
+local ok, result = pcall(theviewer.api.bytes.read, { start = offset, len = 2 })
+if ok then ... else theviewer.log(result) end
+```
+
+The API works only while one of the plugin's own callbacks runs on the
+window's side: an action, a subscription handler or a registered method.
+Detectors, parsers and codecs stay pure: they see only their window of
+bytes, on background threads, and calling `theviewer.api` from them (or
+while the script loads) raises an error.
+
+Who may change what:
+
+| Where the call is made | Reads | Edits and view changes |
+| --- | --- | --- |
+| an action | yes | yes: you ran the action, so it is not asked about |
+| a subscription handler | yes | only with `edits = true`, and then as Settings › Permissions says for the plugin |
+| a registered method | yes | when its `effect` is `"edit"`: the call to it was already allowed |
+
+A handler's edit that must be confirmed is held for you in the
+confirmation window, and the call returns `{ pending = true, message = … }`
+straight away; the outcome is written to the plugin log once you answer.
+Every edit is one undo step labelled with the plugin, such as
+"Overwrite 2 bytes by plugin:acme_telemetry.lua".
+
+### `theviewer.subscribe(topic, function(message, api) … end)`
+
+```lua
+-- React to what other tools learn.
+theviewer.subscribe("frames.defined", function(message, api)
+  local first = message.payload.frames[1]
+  local head = api.bytes.read{ start = first.start, len = 2 }
+  if head.data == "7ea5" then
+    api.publish("protocol.identified", {
+      frames = message.payload.frames, protocol = "acme-telemetry", how = "sync word",
+    })
+  end
+end)
+```
+
+Call it while the script loads. The handler runs for every message on the
+topic, whether or not any panel is showing, with the message's envelope
+(`id`, `topic`, `kind`, `producer`, `document`, `version`, `span`,
+`confidence`, `key`, `caused_by` and `payload`) and `api`, which is
+`theviewer.api` with `publish` added. Handlers are queued per handler and
+run after the window delivers the frame's messages, a bounded number a
+frame, with the script's instruction and memory budgets: a runaway handler
+is stopped and logged, and the window carries on. A handler that falls more
+than 256 messages behind loses its oldest and is told how many in the log.
+What a handler publishes or edits is marked as caused by the message it
+handled, so a chain that loops is stopped after 8 steps.
+
+Topics are the built-in ones in [docs/api.md](api.md#topics) and plugins'
+own, `x.<plugin>.<name>`.
+
+### `theviewer.publish(topic, payload, options)`
+
+```lua
+api.publish("protocol.identified", { frames = frames, protocol = "acme-telemetry", how = "sync word" })
+api.publish("x.acme.frame_counts", { total = 12, bad = 1 }, { key = "counts" })
+```
+
+Publishes as the plugin (`plugin:acme_telemetry.lua`), about the current
+document. A built-in topic's payload must fit the topic's schema
+(`api.describe` lists them), or the call raises an error saying what does
+not fit. Topics the app itself publishes (`document.*`, `cursor.moved`,
+`selection.changed`, `job.*`) are refused; change the document or the
+selection through `theviewer.api` instead. A plugin's own topics are
+`x.<plugin>.<name>`, with any payload; it can subscribe to them like any
+other. `options` may give `key` (to keep several facts on one topic),
+`span` (`{ start = …, len = … }`, the bytes it is about) and `confidence`
+(0 to 1).
+
+### `theviewer.register_method{ … }`
+
+```lua
+-- Offer a capability every client can call: panels, Ask, the command line
+-- and other plugins.
+theviewer.register_method{
+  name = "acme.decode_frame",
+  summary = "Decode one ACME telemetry frame.",
+  params = { start = "integer", len = "integer?" },
+  effect = "read",                                  -- or "edit"
+  run = function(params, api)
+    local frame = api.bytes.read{ start = params.start, len = params.len or 4 }
+    return { sync = frame.data:sub(1, 4) == "7ea5", data = frame.data }
+  end,
+}
+```
+
+The method joins the API's table as soon as the plugin loads: `api.describe`
+lists it (as experimental), Ask offers it as a tool, `theviewer api
+acme.decode_frame '{"start": 0}' FILE` runs it, and other plugins call it as
+`theviewer.api.acme.decode_frame{ … }`. Its name is `<plugin>.<name>`,
+where `<plugin>` is the plugin's name, which may not be one of the API's own
+namespaces.
+
+`params` is a map of parameter names to types (`integer`, `number`,
+`string`, `boolean`, `object`, `array`; a trailing `?` makes one optional)
+or a full JSON schema (a table with `type = "object"`); calls are checked
+against it before `run` sees them. `result` may give the result's schema
+the same way. `run` returns a table, which becomes the call's JSON result;
+an error it raises becomes a `plugin_failed` error for the caller. An
+`effect = "edit"` method asks the caller's permission like any edit (Ask's
+call to it shows in the confirmation window), and may then edit through
+its `api`. A plugin cannot call its own methods through the API (call the
+Lua function instead).
+
 ## The window object
 
 Every callback that sees bytes gets a read-only `window`:
@@ -191,3 +345,4 @@ Nothing a script does can panic the viewer.
 | `ntp_timestamps.lua` | detector `ntp-timestamps` | strided numeric runs, confidence, date formatting in Lua |
 | `tlv.lua` | parser `tlv` | `looks_like` versus `parse`, nested field trees |
 | `uppercase_selection.lua` | action `uppercase-selection` | reading, replacing and selecting through the `api` handle |
+| `acme_telemetry.lua` | a `frames.defined` handler and the method `acme.decode_frame` | hearing what other tools learn, publishing `protocol.identified`, and offering a method every client can call; it only reads, and on files without its sync word it publishes nothing |

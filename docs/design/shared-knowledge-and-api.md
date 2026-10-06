@@ -316,6 +316,15 @@ theviewer.register_method{
 - **Detectors and parsers stay pure** (window in, findings out), because they
   run inside scans that must stay fast and parallel.
 
+As built in phase 3: handlers run on the window's thread from the bus
+drain, queued per handler (at most 256 waiting, the oldest dropped and
+counted) and at most 64 a frame, each with the script's budgets, because
+the document is only reachable there. A handler's edit that must be
+confirmed is held in the confirmation window and its call returns
+`{pending = true}` at once; the outcome goes to the plugin log. Actions are
+run by the person, so their edits are not asked about. API errors are
+raised as Lua errors, `"<code>: <message>"`.
+
 ### Ask
 
 Ask's tool list is generated from the method table, so it can use
@@ -375,6 +384,16 @@ It is checked with the MCP Inspector and an end-to-end test that drives
 | Ask | yes | proposes; you confirm, unless allowed in Settings |
 | MCP, standalone | the files given | yes (the files are the client's own) |
 | MCP, attached | yes | off until allowed in Settings, per client |
+
+As built in phase 3: every call names its `Caller` (panel, plugin, Ask, MCP
+client or command line). `api::call` checks a method whose effect is `edit`
+or `view` against the workspace's `permission(caller, effect)`: the window
+applies the caller's policy from Settings (allow, ask or deny; a new client
+is asked about), a headless workspace allows everything. Callers that
+cannot block use `api::call_or_hold`, which runs the call, refuses it, or
+hands it to the workspace's `hold_for_confirmation` with a reply to run
+when the person answers (or after two minutes, refused). Ask's tool calls,
+plugins' handlers and the attached MCP server all go through it.
 
 ## Delivery plan
 

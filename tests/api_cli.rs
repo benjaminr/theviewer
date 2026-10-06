@@ -61,6 +61,23 @@ fn an_error_exits_non_zero_with_the_error_as_json_on_stderr() {
 }
 
 #[test]
+fn the_command_line_may_edit_and_runs_methods_plugins_registered() {
+    let path = temp_file("edit.bin", &[0x7E, 0xA5, 3, 9]);
+    let file = path.to_str().unwrap();
+    let written = theviewer(&["api", "bytes.write", r#"{"start": 0, "data": "00"}"#, file]);
+    assert!(written.status.success(), "the command line works on the file it was given, so nothing asks: {}", String::from_utf8_lossy(&written.stderr));
+    assert_eq!(json_of(&written.stdout)["label"], "Overwrite 1 byte by cli");
+    assert_eq!(std::fs::read(&path).unwrap(), [0x7E, 0xA5, 3, 9], "an edit is not saved unless asked");
+
+    let described = json_of(&theviewer(&["api", "--describe"]).stdout);
+    assert!(described["methods"].as_array().unwrap().iter().any(|method| method["name"] == "acme.decode_frame"), "the example plugin's method is listed");
+    let decoded = theviewer(&["api", "acme.decode_frame", r#"{"start": 0}"#, file]);
+    assert!(decoded.status.success(), "{}", String::from_utf8_lossy(&decoded.stderr));
+    assert_eq!(json_of(&decoded.stdout)["length"], 9);
+    std::fs::remove_file(path).ok();
+}
+
+#[test]
 fn a_command_without_a_method_is_a_usage_error() {
     let output = theviewer(&["api"]);
     assert_eq!(output.status.code(), Some(2));
