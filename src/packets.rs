@@ -11,8 +11,8 @@
 //! from the message alignment. [`grid`] lays packets out one per row, so the
 //! same field lines up across them, and edits whole columns at once.
 //!
-//! Frames of unknown format can be decoded as a protocol we dissect
-//! ([`frames`]).
+//! Frames of unknown format can be decoded as a protocol we dissect, chosen
+//! by the user or detected from the frames themselves ([`frames`]).
 //!
 //! Each packet can be dissected into layers ([`dissect`]), summarised into
 //! conversations and endpoints and followed as a stream ([`flows`]), matched
@@ -41,7 +41,7 @@ pub use application::SetHints;
 pub use dissect::{Dissection, Layer, RawFrames, Summary, dissect, dissect_with};
 pub use export::{ExportError, ExportPacket, write_pcap, write_pcap_as};
 pub use filter::{Filter, FilterError, FilterSubject, parse_filter};
-pub use frames::FrameProtocol;
+pub use frames::{Detection, FrameProtocol, detect_frame_protocol};
 pub use flows::{Conversation, ConversationKey, Endpoint, EndpointStats, Flow, Stream, Transport, conversations, endpoints, follow_stream};
 pub use sources::{CaptureLocation, SourceError};
 
