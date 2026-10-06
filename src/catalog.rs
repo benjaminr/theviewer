@@ -737,9 +737,19 @@ struct Hit {
     confidence: f32,
 }
 
+/// Anchors this short match all sorts of data by chance, such as Tika's
+/// MATLAB signature, a lone `%` at the start, which every PDF also has.
+const WEAK_ANCHOR_BYTES: usize = 2;
+
 impl Hit {
+    fn is_weak(&self) -> bool {
+        self.literal_len <= WEAK_ANCHOR_BYTES
+    }
+
+    /// A hit on a specific magic beats one on a byte or two whatever their
+    /// priorities; otherwise the higher priority wins, then the longer anchor.
     fn beats(&self, other: &Hit) -> bool {
-        (self.priority, self.literal_len, self.confidence) > (other.priority, other.literal_len, other.confidence)
+        (!self.is_weak(), self.priority, self.literal_len, self.confidence) > (!other.is_weak(), other.priority, other.literal_len, other.confidence)
     }
 }
 
@@ -1124,6 +1134,21 @@ mod tests {
         assert!(at(tar_at).iter().any(|f| f.category == Category::Archive && f.title.to_lowercase().contains("tar")), "{:?}", at(tar_at));
         assert!(at(iso_at).iter().any(|f| f.category == Category::Filesystem), "{:?}", at(iso_at));
         assert!(at(5000).iter().any(|f| f.id.contains("pcap")), "{:?}", at(5000));
+    }
+
+    #[test]
+    fn a_pdf_is_a_pdf_even_though_it_starts_like_matlab_source() {
+        let catalog = Catalog::builtin();
+        // "%PDF-" then a binary comment line: also a "%" with "\n%" soon after,
+        // which is all Tika's higher-priority MATLAB signature asks for.
+        let pdf = b"%PDF-1.7\n%\xe2\xe3\xcf\xd3\n1 0 obj\n<< /Type /Catalog >>\nendobj\n";
+        let findings = catalog.scan(pdf, 0);
+        let at_start: Vec<&str> = findings.iter().filter(|f| f.start == 0).map(|f| f.id.as_str()).collect();
+        assert_eq!(at_start, ["signature:application/pdf"]);
+        // A file that is only "%" lines is still taken for MATLAB.
+        let matlab = b"% plot the signal\n% then its spectrum\nx = 1;\n";
+        let ids: Vec<String> = catalog.scan(matlab, 0).into_iter().filter(|f| f.start == 0).map(|f| f.id).collect();
+        assert_eq!(ids, ["signature:text/x-matlab"]);
     }
 
     #[test]
