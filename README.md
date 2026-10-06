@@ -260,8 +260,8 @@ framing found are a protocol the packet viewer dissects.
 **More protocols with Wireshark's tshark (optional).** When Wireshark is
 installed, *Decode with tshark* in *Packets* hands the shown packets (or,
 from the detail view, one packet) to its command-line dissector, tshark, and
-adds the layers it decodes where ours stop: a DHCP, SNMP or TLS packet that
-we list as UDP or TCP payload gains its own layer, with every field at its
+adds the layers it decodes where ours stop: a Kerberos, LDAP or X11 packet
+that we list as UDP or TCP payload gains its own layer, with every field at its
 exact bytes, so pointing at or clicking a field selects it in the view and
 the *Reference* tab follows it like any other layer. Such layers carry a
 small *tshark* tag; the packet list shows tshark's protocol, and
