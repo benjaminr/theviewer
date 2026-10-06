@@ -589,7 +589,7 @@ impl Walk<'_> {
         self.out.summary.destination = destination.to_string();
         self.set_top("IPv4", format!("{} packet", ip_protocol_name(protocol)));
         let payload_at = at + header_len;
-        if fragment_offset != 0 {
+        if fragment_offset != 0 || header.more_fragments() {
             self.fragment("IPv4", protocol, fragment_offset, payload_at, end);
             return end;
         }
@@ -597,11 +597,20 @@ impl Walk<'_> {
         end
     }
 
-    /// The data of a fragment after the first, which holds no transport
-    /// header.
+    /// The data of one fragment of a fragmented packet. Only the first
+    /// fragment holds the transport header, and even there the rest of the
+    /// transport message is missing, so nothing inside is decoded.
     fn fragment(&mut self, version: &str, protocol: u8, offset: usize, at: usize, end: usize) {
         self.data_layer(at, end, "Fragment");
-        self.set_top(version, format!("Fragmented {} packet, offset {offset}", ip_protocol_name(protocol)));
+        let protocol_name = ip_protocol_name(protocol);
+        if offset == 0 {
+            self.set_top(version, format!("Fragmented {protocol_name} packet, first fragment"));
+            self.out.notes.push(format!(
+                "This is the first fragment of a fragmented {version} packet; its {protocol_name} header is not decoded because the rest of the {protocol_name} message is in later fragments"
+            ));
+        } else {
+            self.set_top(version, format!("Fragmented {protocol_name} packet, offset {offset}"));
+        }
     }
 
     fn ipv6(&mut self, at: usize) -> usize {
@@ -701,7 +710,7 @@ impl Walk<'_> {
                         ],
                     );
                     at += IPV6_FRAGMENT_HEADER_LEN;
-                    if offset != 0 {
+                    if offset != 0 || more_fragments {
                         return ExtensionChain { end: at, outcome: ChainOutcome::Fragment { protocol: following, offset } };
                     }
                     next = following;
@@ -1217,4 +1226,48 @@ mod tests {
         assert!(!dissection.has_protocol("udp"));
     }
 
+    #[test]
+    fn the_first_fragment_of_an_ipv6_packet_is_left_as_fragment_data_until_reassembly() {
+        let mut payload = vec![IP_PROTOCOL_UDP, 0, 0, 1, 0x12, 0x34, 0x56, 0x78];
+        payload.extend_from_slice(&udp_datagram(&[0; 40])[..24]);
+        let dissection = dissect(&ipv6_packet(IPV6_FRAGMENT, &payload), LinkKind::RawIp);
+        let names: Vec<&str> = dissection.layers.iter().map(|l| l.name.as_str()).collect();
+        assert_eq!(names, ["Internet Protocol version 6", "IPv6 fragment header", "Fragment"]);
+        assert_eq!(layer(&dissection, "Internet Protocol version 6").len, 48);
+        let header = layer(&dissection, "IPv6 fragment header");
+        assert_eq!(field(header, "Fragment offset").value, "0, more fragments");
+        assert_eq!(field(header, "Identification").value, "0x12345678");
+        assert_eq!(dissection.summary.protocol, "IPv6");
+        assert_eq!(dissection.summary.info, "Fragmented UDP packet, first fragment");
+        assert!(dissection.notes.iter().any(|note| note.contains("first fragment")), "{:?}", dissection.notes);
+        assert!(dissection.flow.is_none());
+    }
+
+    #[test]
+    fn the_first_fragment_of_an_ipv4_datagram_does_not_decode_its_udp_header() {
+        let builder = PacketBuilder::ipv4(CLIENT_IP, SERVER_IP, 64).udp(5000, 53);
+        let mut packet = Vec::new();
+        builder.write(&mut packet, &[0xAB; 64]).unwrap();
+        // Set "more fragments" and keep the header checksum right.
+        packet[6] |= 0x20;
+        let checksum = Ipv4HeaderSlice::from_slice(&packet).unwrap().to_header().calc_header_checksum();
+        packet[10..12].copy_from_slice(&checksum.to_be_bytes());
+        let dissection = dissect(&packet, LinkKind::RawIp);
+        let names: Vec<&str> = dissection.layers.iter().map(|l| l.name.as_str()).collect();
+        assert_eq!(names, ["Internet Protocol version 4", "Fragment"]);
+        assert_eq!((layer(&dissection, "Fragment").offset, layer(&dissection, "Fragment").len), (20, 72));
+        assert_eq!(dissection.summary.protocol, "IPv4");
+        assert_eq!(dissection.summary.info, "Fragmented UDP packet, first fragment");
+        assert!(!dissection.has_protocol("udp"));
+        assert_eq!(dissection.notes.len(), 1, "{:?}", dissection.notes);
+
+        // A later fragment says where its data belongs, without a note.
+        packet[6] = 0x00;
+        packet[7] = 0x09;
+        let checksum = Ipv4HeaderSlice::from_slice(&packet).unwrap().to_header().calc_header_checksum();
+        packet[10..12].copy_from_slice(&checksum.to_be_bytes());
+        let later = dissect(&packet, LinkKind::RawIp);
+        assert_eq!(later.summary.info, "Fragmented UDP packet, offset 72");
+        assert!(later.notes.is_empty(), "{:?}", later.notes);
+    }
 }
