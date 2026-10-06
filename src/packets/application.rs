@@ -468,6 +468,7 @@ const NTP_PACKET_LEN: usize = 48;
 /// Seconds from the NTP epoch (1900) to the Unix epoch (1970).
 const NTP_TO_UNIX_SECONDS: u64 = 2_208_988_800;
 const NTP_FRACTION_SCALE: f64 = 4_294_967_296.0;
+const NTP_MODE_CONTROL: u8 = 6;
 
 fn ntp_mode_name(mode: u8) -> &'static str {
     match mode {
@@ -515,7 +516,7 @@ pub fn dissect_ntp(payload: &[u8]) -> Option<AppLayer> {
         0 | 1 => String::from_utf8_lossy(&payload[12..16]).trim_end_matches('\0').to_string(),
         _ => std::net::Ipv4Addr::new(payload[12], payload[13], payload[14], payload[15]).to_string(),
     };
-    let fields = vec![
+    let mut fields = vec![
         Field::new("Flags", 0, 1, format!("leap {leap}, version {version}, mode {mode} ({})", ntp_mode_name(mode))),
         Field::new("Stratum", 1, 1, stratum.to_string()),
         Field::new("Poll interval", 2, 1, format!("2^{poll} s")),
@@ -528,8 +529,66 @@ pub fn dissect_ntp(payload: &[u8]) -> Option<AppLayer> {
         Field::new("Receive timestamp", 32, 8, ntp_timestamp(payload, 32)),
         Field::new("Transmit timestamp", 40, 8, ntp_timestamp(payload, 40)),
     ];
+    let mut len = NTP_PACKET_LEN;
+    // Control (6) and private (7) messages share only the first byte with
+    // the time packet; what follows their 48 bytes is not an extension.
+    if mode < NTP_MODE_CONTROL {
+        len = ntp_extensions_and_mac(payload, &mut fields);
+    }
     let info = format!("NTP version {version}, {}, stratum {stratum}", ntp_mode_name(mode));
-    Some(AppLayer { name: "NTP", key: "ntp", len: NTP_PACKET_LEN, fields, info })
+    Some(AppLayer { name: "NTP", key: "ntp", len, fields, info })
+}
+
+/// Lengths of what may follow the 48-byte packet as a MAC alone: a 4-byte
+/// key ID of zero (a crypto-NAK), or a key ID and a 16-byte (MD5) or 20-byte
+/// (SHA-1) digest.
+const NTP_MAC_LENGTHS: [usize; 3] = [4, 20, 24];
+/// The longest MAC; anything longer after the packet starts with extensions.
+const NTP_LONGEST_MAC: usize = 24;
+/// The shortest extension field allowed (RFC 7822): a 4-byte header and
+/// 12 bytes of value.
+const NTP_MIN_EXTENSION_LEN: usize = 16;
+/// Most extension fields listed.
+const NTP_MAX_EXTENSIONS: usize = 16;
+const NTP_KEY_ID_LEN: usize = 4;
+
+/// The extension fields (RFC 7822) and message authentication code (RFC
+/// 5905) after the 48-byte packet, added to `fields`. Returns where the NTP
+/// message ends.
+fn ntp_extensions_and_mac(payload: &[u8], fields: &mut Vec<Field>) -> usize {
+    let mut at = NTP_PACKET_LEN;
+    let mut extensions = Vec::new();
+    while extensions.len() < NTP_MAX_EXTENSIONS && payload.len() - at > NTP_LONGEST_MAC {
+        let (Some(field_type), Some(len)) = (u16_at(payload, at), u16_at(payload, at + 2)) else { break };
+        let len = len as usize;
+        if len < NTP_MIN_EXTENSION_LEN || !len.is_multiple_of(4) || at + len > payload.len() {
+            break;
+        }
+        extensions.push(Field::new(format!("Extension field {}", extensions.len()), at, len, format!("type {field_type:#06x}, {len} bytes")).with_children(vec![
+            Field::new("Field type", at, 2, format!("{field_type:#06x}")),
+            Field::new("Length", at + 2, 2, len.to_string()),
+            Field::new("Value", at + 4, len - 4, super::hex_preview(&payload[at + 4..at + len], 16)),
+        ]));
+        at += len;
+    }
+    if !extensions.is_empty() {
+        fields.push(Field::new("Extension fields", NTP_PACKET_LEN, at - NTP_PACKET_LEN, format!("{} extension fields", extensions.len())).with_children(extensions));
+    }
+    let rest = payload.len() - at;
+    if NTP_MAC_LENGTHS.contains(&rest) {
+        let key_id = u32_at(payload, at).unwrap_or_default();
+        let mut mac = vec![Field::new("Key ID", at, NTP_KEY_ID_LEN, key_id.to_string())];
+        let digest = &payload[at + NTP_KEY_ID_LEN..];
+        let description = if digest.is_empty() {
+            "crypto-NAK".to_string()
+        } else {
+            mac.push(Field::new("Message digest", at + NTP_KEY_ID_LEN, digest.len(), super::hex_preview(digest, 20)));
+            format!("key {key_id}, {}-byte digest", digest.len())
+        };
+        fields.push(Field::new("Message authentication code", at, rest, description).with_children(mac));
+        at += rest;
+    }
+    at
 }
 
 // ---------------------------------------------------------------------------
@@ -830,6 +889,50 @@ mod tests {
         assert!(field(&layer, "Transmit timestamp").value.starts_with("2024-01-01 00:00:00 UTC"));
         assert_eq!(field(&layer, "Origin timestamp").value, "(not set)");
         assert!(dissect_ntp(&packet[..20]).is_none());
+    }
+
+    #[test]
+    fn an_ntp_packet_includes_its_extension_fields_and_message_authentication_code() {
+        let mut packet = vec![0u8; NTP_PACKET_LEN];
+        packet[0] = 0x24; // version 4, server
+        // An extension field: type 0x0104 (unique identifier), 36 bytes.
+        packet.extend_from_slice(&[0x01, 0x04, 0, 36]);
+        packet.extend_from_slice(&[0xAB; 32]);
+        // A MAC: key ID 7 and an MD5 digest.
+        packet.extend_from_slice(&7u32.to_be_bytes());
+        packet.extend_from_slice(&[0x5A; 16]);
+        let layer = dissect_ntp(&packet).expect("NTP");
+        assert_eq!(layer.len, packet.len());
+        let extension = &field(&layer, "Extension fields").children[0];
+        assert_eq!((extension.offset, extension.len), (48, 36));
+        assert_eq!(extension.children[0].value, "0x0104");
+        let mac = field(&layer, "Message authentication code");
+        assert_eq!((mac.offset, mac.len), (84, 20));
+        assert_eq!(mac.children[0].value, "7");
+    }
+
+    #[test]
+    fn an_ntp_packet_with_only_a_mac_or_with_stray_bytes_after_it_is_read_carefully() {
+        let mut packet = vec![0u8; NTP_PACKET_LEN];
+        packet[0] = 0x1B; // version 3, client
+        packet.extend_from_slice(&[0, 0, 0, 1]);
+        packet.extend_from_slice(&[0x11; 20]);
+        let layer = dissect_ntp(&packet).expect("NTP");
+        assert_eq!(field(&layer, "Message authentication code").value, "key 1, 20-byte digest");
+        assert_eq!(layer.len, 72);
+        // Seven bytes fit neither an extension nor a MAC: the message ends at 48.
+        let mut odd = vec![0u8; NTP_PACKET_LEN];
+        odd[0] = 0x23;
+        odd.extend_from_slice(&[1, 2, 3, 4, 5, 6, 7]);
+        assert_eq!(dissect_ntp(&odd).expect("NTP").len, NTP_PACKET_LEN);
+        // An extension claiming more bytes than there are is not listed.
+        let mut overlong = vec![0u8; NTP_PACKET_LEN];
+        overlong[0] = 0x23;
+        overlong.extend_from_slice(&[0x01, 0x04, 0x01, 0x00]);
+        overlong.extend_from_slice(&[0; 28]);
+        let layer = dissect_ntp(&overlong).expect("NTP");
+        assert!(layer.fields.iter().all(|f| f.name != "Extension fields"));
+        assert_eq!(layer.len, NTP_PACKET_LEN);
     }
 
     #[test]
