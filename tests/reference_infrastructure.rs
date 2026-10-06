@@ -159,3 +159,16 @@ fn ethertypes_the_dissector_names_open_their_notes() {
         assert_eq!(entry.id, id, "EtherType name '{name}'");
     }
 }
+
+#[test]
+fn layers_shown_only_as_data_still_explain_themselves() {
+    for (layer, note) in [("Netlink", "netlink"), ("IPX", "ipx"), ("IP protocol 33", "dccp"), ("IP protocol 46", "rsvp"), ("IP protocol 136", "udp-lite")] {
+        let entry = theviewer::reference::lookup(layer).unwrap_or_else(|| panic!("{layer} has no notes"));
+        assert_eq!(entry.id, note, "{layer}");
+        assert!(entry.field("Data").is_some(), "{layer}'s undecoded body is explained");
+    }
+    let sctp = theviewer::reference::lookup("SCTP").unwrap();
+    assert!(sctp.field("Data").is_some_and(|data| data.meaning.contains("does not decode")));
+    assert!(sctp.field("Bytes").is_some(), "the remains of a malformed layer are explained too");
+    assert!(sctp.field("No such field").is_none());
+}

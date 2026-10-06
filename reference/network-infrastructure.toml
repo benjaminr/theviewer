@@ -240,6 +240,21 @@ wireshark = "wlan.fcs"
 aliases = ["Frame check sequence"]
 meaning = "A CRC-32 over the whole frame, present at the end only when the capture kept it (radiotap's Flags field says so)."
 
+[[format.fields]]
+name = "Fixed parameters"
+meaning = "The fixed-size start of a management frame's body, before its information elements: for a beacon the timestamp, beacon interval and capability bits; for association frames the capabilities, listen interval or status code."
+wireshark = "wlan.fixed.all"
+
+[[format.fields]]
+name = "Security header"
+meaning = "The CCMP or TKIP header (8 bytes) or the WEP initialisation vector (4 bytes) before an encrypted body: the packet number or IV and the key ID used. The body after it is unreadable without the key."
+
+[[format.fields]]
+name = "HT Control"
+meaning = "Four bytes of high-throughput control in frames that set the Order bit, for link adaptation and beamforming feedback."
+wireshark = "wlan.htc"
+
+
 [[format]]
 id = "radiotap"
 name = "Radiotap header"
@@ -3841,3 +3856,113 @@ name = "Channel Number"
 wireshark = "stun.channel"
 aliases = ["ChannelData"]
 meaning = "TURN ChannelData: a channel number 0x4000 to 0x4FFF bound with ChannelBind, then a 2-byte length and the relayed data."
+
+[[format]]
+id = "netlink"
+name = "Linux Netlink"
+keys = ["Netlink", "Linux Netlink"]
+summary = "The Linux kernel's message channel to and from user-space programs, for routes, addresses, links and many other subsystems; captured from the nlmon device."
+organisation = """
+Captures of Netlink come through a Linux cooked capture whose device type is 824 (Netlink), so each frame after that header is one or more Netlink messages laid end to end.
+
+Every message starts with a 16-byte header in the host's own byte order (little-endian on most machines): a 4-byte total length, a 2-byte message type, 2 bytes of flags (request, multipart, acknowledgement wanted and so on), a 4-byte sequence number and a 4-byte port ID naming the sending socket. The body follows, padded to a multiple of four bytes, and the next message starts after it.
+
+What the body holds depends on the Netlink family: routing messages carry a small fixed structure followed by attributes, each a 2-byte length, a 2-byte type and a value, again padded to four bytes. Error messages (type 2) carry an error code and the header of the request they answer.
+"""
+group = "Network management"
+wireshark = "netlink"
+
+[[format.specs]]
+document = "RFC 3549"
+title = "Linux Netlink as an IP Services Protocol"
+url = "https://www.rfc-editor.org/rfc/rfc3549"
+rfc = 3549
+section = "2.3.2"
+
+[[format.specs]]
+document = "Linux kernel documentation"
+title = "Introduction to Netlink"
+url = "https://docs.kernel.org/userspace-api/netlink/intro.html"
+
+[[format]]
+id = "ipx"
+name = "Novell Internetwork Packet Exchange"
+keys = ["IPX", "Internetwork Packet Exchange", "Novell IPX"]
+summary = "The network layer of Novell NetWare networks, routing datagrams by a network number and a node address before IP displaced it."
+organisation = """
+Every IPX packet starts with a 30-byte big-endian header: a 2-byte checksum (in practice always 0xFFFF, meaning none), a 2-byte length of the whole packet, a transport control byte counting the routers passed, a packet type byte, then the destination and source addresses, each a 4-byte network number, a 6-byte node number (usually the station's MAC address) and a 2-byte socket naming the service.
+
+IPX travels over Ethernet in several framings: EtherType 0x8137 on Ethernet II, an 802.2 LLC header with SAP 0xE0, an 802.2 SNAP header, or Novell's raw 802.3 framing, recognisable because the IPX checksum 0xFFFF follows the 802.3 length directly. Sockets name what follows: 0x0451 NCP, 0x0452 SAP, 0x0453 RIP and 0x0455 NetBIOS.
+"""
+group = "Internet layer"
+ethertypes = [0x8137]
+wireshark = "ipx"
+
+[[format.specs]]
+document = "RFC 1234"
+title = "Tunneling IPX traffic through IP networks"
+url = "https://www.rfc-editor.org/rfc/rfc1234"
+rfc = 1234
+
+[[format]]
+id = "dccp"
+name = "Datagram Congestion Control Protocol"
+keys = ["DCCP", "IP protocol 33"]
+summary = "An unreliable datagram transport like UDP, but with connections and congestion control, meant for streaming media and games that prefer late data dropped to late data resent."
+organisation = """
+The generic header is 12 bytes, or 16 when the X bit asks for 48-bit sequence numbers: 2-byte source and destination ports, a data offset in 32-bit words to the start of the application data, a 4-bit CCVal for the congestion control in use, a 4-bit checksum coverage (0 covers the whole packet, otherwise how many 32-bit words of data are checked), a 2-byte checksum over a pseudo-header like TCP's, then 3 reserved bits, a 4-bit packet type and the X bit, and the sequence number.
+
+The packet type says what follows: Request, Response, Data, Ack, DataAck, CloseReq, Close, Reset, Sync and SyncAck. All but Request and Data carry an acknowledgement subheader with the sequence number being acknowledged; options then pad the header to the data offset.
+"""
+group = "Transport"
+ip_protocols = [33]
+wireshark = "dccp"
+
+[[format.specs]]
+document = "RFC 4340"
+title = "Datagram Congestion Control Protocol (DCCP)"
+url = "https://www.rfc-editor.org/rfc/rfc4340"
+rfc = 4340
+section = "5.1"
+
+[[format]]
+id = "rsvp"
+name = "Resource Reservation Protocol"
+keys = ["RSVP", "IP protocol 46", "Resource ReSerVation Protocol"]
+summary = "Signalling for reserving bandwidth along a path through routers, and in its traffic-engineering form for setting up MPLS label-switched paths."
+organisation = """
+Each message starts with an 8-byte common header: a 4-bit version (1) and 4 bits of flags, a message type (1 Path, 2 Resv, 3 PathErr, 4 ResvErr, 5 PathTear, 6 ResvTear, 7 ResvConf), a 2-byte checksum, the TTL the message was sent with, a reserved byte and the 2-byte length of the whole message.
+
+The rest is a list of objects, each with a 4-byte header: a 2-byte length (a multiple of four, header included), a class number saying what the object is (SESSION, RSVP_HOP, TIME_VALUES, SENDER_TEMPLATE, FLOWSPEC, LABEL and so on) and a C-type saying which form of that class follows. Objects are walked by their lengths.
+"""
+group = "Routing"
+ip_protocols = [46]
+wireshark = "rsvp"
+
+[[format.specs]]
+document = "RFC 2205"
+title = "Resource ReSerVation Protocol (RSVP) -- Version 1 Functional Specification"
+url = "https://www.rfc-editor.org/rfc/rfc2205"
+rfc = 2205
+section = "3.1.1"
+
+[[format]]
+id = "udp-lite"
+name = "Lightweight User Datagram Protocol"
+keys = ["UDP-Lite", "UDPLite", "IP protocol 136"]
+summary = "UDP with a checksum that may cover only the start of the datagram, so audio and video codecs that tolerate damaged payloads still receive them."
+organisation = """
+The header is UDP's eight bytes with one change: where UDP has a length, UDP-Lite has a checksum coverage, the number of bytes from the start of the header that the checksum protects. Zero means the whole datagram; otherwise it must be at least 8, so the header itself is always covered. The datagram's length comes from the IP header instead.
+
+The checksum is computed as UDP's is, over a pseudo-header of the addresses, protocol 136 and length, and the covered bytes; unlike UDP's it is never optional.
+"""
+group = "Transport"
+ip_protocols = [136]
+wireshark = "udplite"
+
+[[format.specs]]
+document = "RFC 3828"
+title = "The Lightweight User Datagram Protocol (UDP-Lite)"
+url = "https://www.rfc-editor.org/rfc/rfc3828"
+rfc = 3828
+section = "3.1"
