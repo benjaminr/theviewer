@@ -151,6 +151,7 @@ pub fn show_raster(app: &mut ViewerApp, ui: &mut Ui) {
     }
     draw_emphasis(app, &painter, &geometry, image_rect);
     draw_fold_markers(app, ui, &geometry, image_rect);
+    draw_move_caret(app, &painter, &geometry);
     if image_response.is_pointer_button_down_on() {
         app.selection_view = crate::selection_menu::SelectionView::Raster;
     }
@@ -502,6 +503,15 @@ impl Geometry {
     }
 }
 
+/// While selected bytes are dragged, a caret where they will land.
+fn draw_move_caret(app: &ViewerApp, painter: &egui::Painter, geometry: &Geometry) {
+    let Some(target) = app.move_caret() else { return };
+    let Some(cell) = geometry.rects(target, 1).first().copied() else { return };
+    let caret = Rect::from_min_max(pos2(cell.min.x - 1.5, cell.min.y - 2.0), pos2(cell.min.x + 1.5, cell.max.y + 2.0));
+    painter.rect_filled(caret, 1.0, theme::CURSOR);
+    painter.text(pos2(cell.min.x + 4.0, cell.min.y - 2.0), Align2::LEFT_BOTTOM, "move here · Esc cancels", FontId::proportional(10.0), theme::CURSOR);
+}
+
 /// The outline around the selected bytes on screen, if any are visible.
 fn selection_outline(app: &ViewerApp, geometry: &Geometry) -> Option<Rect> {
     let (start, end) = geometry.visible_bytes();
@@ -737,7 +747,8 @@ fn handle_pointer(app: &mut ViewerApp, response: &egui::Response, origin: Pos2, 
         app.hover = Some(byte_under(app, pointer, origin, zoom));
     }
     if response.hovered() {
-        response.ctx.set_cursor_icon(egui::CursorIcon::Crosshair);
+        let handle = app.hover.and_then(|offset| app.selection_handle_at(offset));
+        response.ctx.set_cursor_icon(handle_cursor(handle, app.move_caret().is_some()));
     }
     let Some(pointer) = response.interact_pointer_pos() else {
         return;
@@ -752,22 +763,36 @@ fn handle_pointer(app: &mut ViewerApp, response: &egui::Response, origin: Pos2, 
         // where the button went down.
         let origin_byte = response.ctx.input(|i| i.pointer.press_origin()).map_or(byte, |press| byte_under(app, press, origin, zoom));
         begin_drag(app, origin_byte, modifiers);
-        app.drag_selection_to(byte);
+        app.continue_drag(byte);
         app.reveal_cursor_in_hex(true);
     } else if response.dragged_by(egui::PointerButton::Primary) {
-        app.drag_selection_to(byte);
+        app.continue_drag(byte);
         app.reveal_cursor_in_hex(false);
     } else if response.clicked() {
         click_byte(app, byte, modifiers);
         app.reveal_cursor_in_hex(true);
     }
     if response.drag_stopped() {
-        app.end_drag_selection();
+        app.finish_drag();
+    }
+}
+
+/// The pointer's shape over a byte: a hand inside a selection (drag to
+/// move), arrows on its ends (drag to resize), else a crosshair.
+pub fn handle_cursor(handle: Option<crate::selection_drag::SelectionHandle>, moving: bool) -> egui::CursorIcon {
+    use crate::selection_drag::SelectionHandle;
+    match handle {
+        _ if moving => egui::CursorIcon::Grabbing,
+        Some(SelectionHandle::Move) => egui::CursorIcon::Grab,
+        Some(SelectionHandle::ResizeStart | SelectionHandle::ResizeEnd) => egui::CursorIcon::ResizeHorizontal,
+        None => egui::CursorIcon::Crosshair,
     }
 }
 
 /// Start a drag on `byte`: Alt makes a column selection, Cmd adds a range
-/// to the selection, Shift extends it, and a plain drag starts a new one.
+/// to the selection, Shift extends it, and a plain drag moves the selection
+/// (from inside it), resizes it (from its first or last byte) or starts a
+/// new one.
 /// Shared by the raster and the hex dump.
 pub fn begin_drag(app: &mut ViewerApp, byte: usize, modifiers: egui::Modifiers) {
     if modifiers.alt {
@@ -775,7 +800,7 @@ pub fn begin_drag(app: &mut ViewerApp, byte: usize, modifiers: egui::Modifiers) 
     } else if modifiers.command {
         app.begin_adding_drag(byte);
     } else {
-        app.begin_drag_selection(byte, modifiers.shift);
+        app.begin_plain_drag(byte, modifiers.shift);
     }
 }
 

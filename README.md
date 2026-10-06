@@ -299,12 +299,16 @@ the full list.
 | Arrow keys | Move by a pixel or a row (`Shift` extends the selection) |
 | `Alt`+drag | Select a column: the same bytes in every record (raster or hex) |
 | `Cmd`+click, `Cmd`+drag | Add a search match, finding, packet or range to the selection |
+| Drag a selection | Move its bytes to the caret (`Esc` cancels); drag its first or last byte to resize it |
+| `Alt+←` `Alt+→` `Alt+↑` `Alt+↓` | With a selection: nudge its bytes a byte left or right, or a row up or down |
+| `I` | Insert bytes before, after or at the cursor |
+| `S` | Skip the selection: fold it out of the views |
 | `PgUp` `PgDn` `Home` `End` | Move by a page, or to either end |
 | `Delete` `Backspace` | Delete the selection or byte |
 | `Cmd+C` `Cmd+X` `Cmd+V` `Cmd+A` | Copy as hex, cut, paste, select all |
 | `[` `]` | Width −1 / +1 (`Shift` for 16) |
 | `,` `.` | Start offset −1 / +1 byte |
-| `Alt+←` `Alt+→` | Start offset −1 / +1 bit |
+| `Alt+←` `Alt+→` | Start offset −1 / +1 bit (when nothing is selected) |
 | `-` `+` | Zoom out, zoom in |
 | `H` | Pattern highlights on or off |
 | `Cmd+Enter`, `Space` | Open the media at the cursor; play and pause |
@@ -400,7 +404,7 @@ never your Keychain.
 | `assistant.rs` | *Ask*: a streaming Claude API client with tools, on a background thread. |
 | `layout.rs` `packing.rs` | Dockable panels and presets; toolbar packing and reordering. |
 | `legend.rs` | The legend bar: the colouring in effect and each highlight layer, with toggles. |
-| `selection.rs` `selection_ops.rs` `selection_menu.rs` `folds.rs` | Range, column and multi-range selections; the byte operations on them; the Selection menu and floating toolbar; skipped (folded) ranges. |
+| `selection.rs` `selection_ops.rs` `selection_menu.rs` `selection_drag.rs` `folds.rs` | Range, column and multi-range selections; the byte operations on them; the Selection menu and floating toolbar; moving, resizing and nudging by hand; skipped (folded) ranges. |
 | `search.rs` `bookmarks.rs` `findings.rs` `commands.rs` | Search, bookmarks and the sidecar file, the findings list, the command palette. |
 | `settings.rs` `preferences.rs` `config.rs` | The settings window and API key storage; startup defaults; where settings live. |
 | `theme.rs` `logo.rs` | Colours and shared widgets; the logo, drawn in code. |

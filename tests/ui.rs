@@ -1359,7 +1359,7 @@ fn skipping_a_range_folds_it_out_of_the_raster_and_unfolding_brings_it_back() {
     let rows = harness.state().total_view_rows();
     harness.state_mut().restore_selection(0x100, 0x400);
     steps(&mut harness, 2);
-    harness.get_by_label("Skip").click();
+    harness.get_by_label("Skip  S").click();
     steps(&mut harness, 3);
     let app = harness.state();
     assert_eq!(app.folds.ranges(), &[(0x100, 0x400)]);
@@ -1377,4 +1377,96 @@ fn skipping_a_range_folds_it_out_of_the_raster_and_unfolding_brings_it_back() {
     assert_eq!(app.total_view_rows(), rows);
     let shown = app.raster_bytes()[4 * 64..4 * 64 + 4].to_vec();
     assert_eq!(shown, harness.state_mut().document.read_range(0x100, 4));
+}
+
+/// The centre of byte `offset`'s pixel, with the view at the top of the file.
+fn pixel_of(harness: &Harness<'static, ViewerApp>, offset: usize) -> egui::Pos2 {
+    let app = harness.state();
+    let rect = app.raster_rect.expect("the raster has been drawn");
+    let width = app.shape.width;
+    let row = offset / width - app.top_row;
+    pos2(rect.min.x + ((offset % width) as f32 + 0.5) * app.zoom, rect.min.y + (row as f32 + 0.5) * app.zoom)
+}
+
+#[test]
+fn dragging_a_selection_moves_its_bytes_and_esc_cancels_the_move() {
+    let mut harness = harness(sample_file("drag-move"));
+    let original = harness.state_mut().document.read_range(0, SAMPLE_LEN);
+    harness.state_mut().restore_selection(0x200, 0x40);
+    steps(&mut harness, 2);
+
+    // Esc during the drag leaves everything where it was.
+    let (from, to) = (pixel_of(&harness, 0x210), pixel_of(&harness, 0x400));
+    harness.hover_at(from);
+    harness.step();
+    harness.event(Event::PointerButton { pos: from, button: PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE });
+    harness.step();
+    harness.event(Event::PointerMoved(from.lerp(to, 0.5)));
+    harness.step();
+    harness.event(Event::PointerMoved(to));
+    harness.step();
+    assert_eq!(harness.state().move_caret(), Some(0x400), "a caret shows where the bytes would land");
+    harness.key_press(Key::Escape);
+    harness.step();
+    harness.event(Event::PointerButton { pos: to, button: PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE });
+    steps(&mut harness, 3);
+    assert_eq!(harness.state_mut().document.read_range(0, SAMPLE_LEN), original, "cancelled");
+    assert_eq!(harness.state().selection(), Some((0x200, 0x40)), "the selection survives Esc during a move");
+
+    drag(&mut harness, from, to);
+    let moved = harness.state_mut().document.read_range(0, SAMPLE_LEN);
+    assert_eq!(moved.len(), SAMPLE_LEN);
+    assert_eq!(&moved[0x3C0..0x400], &original[0x200..0x240], "the bytes land before the byte they were dropped on");
+    assert_eq!(&moved[0x200..0x3C0], &original[0x240..0x400], "the bytes in between close up");
+    assert_eq!(harness.state().selection(), Some((0x3C0, 0x40)), "the moved bytes stay selected");
+
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+    steps(&mut harness, 2);
+    assert_eq!(harness.state_mut().document.read_range(0, SAMPLE_LEN), original, "one undo puts them back");
+}
+
+#[test]
+fn dragging_the_last_selected_byte_resizes_the_selection() {
+    let mut harness = harness(sample_file("drag-resize"));
+    harness.state_mut().restore_selection(0x200, 0x40);
+    steps(&mut harness, 2);
+    let (from, to) = (pixel_of(&harness, 0x23F), pixel_of(&harness, 0x24F));
+    drag(&mut harness, from, to);
+    assert_eq!(harness.state().selection(), Some((0x200, 0x50)));
+    assert_eq!(harness.state().document.len(), SAMPLE_LEN, "resizing changes no bytes");
+}
+
+#[test]
+fn alt_arrows_nudge_the_selected_bytes_and_quick_keys_insert_and_skip() {
+    let mut harness = harness(sample_file("nudge"));
+    let original = harness.state_mut().document.read_range(0, SAMPLE_LEN);
+    harness.state_mut().restore_selection(0x200, 0x10);
+    steps(&mut harness, 2);
+    harness.key_press_modifiers(Modifiers::ALT, Key::ArrowRight);
+    steps(&mut harness, 2);
+    assert_eq!(harness.state().selection(), Some((0x201, 0x10)));
+    let nudged = harness.state_mut().document.read_range(0x200, 0x11);
+    assert_eq!(nudged[0], original[0x210], "the byte after moves in front");
+    assert_eq!(&nudged[1..], &original[0x200..0x210]);
+    harness.key_press_modifiers(Modifiers::ALT, Key::ArrowDown);
+    steps(&mut harness, 2);
+    assert_eq!(harness.state().selection(), Some((0x201 + 64, 0x10)), "a row down");
+
+    harness.key_press(Key::I);
+    steps(&mut harness, 2);
+    assert!(harness.state().insert_dialog_open);
+    harness.get_by_label("At cursor").click();
+    steps(&mut harness, 2);
+    assert!(!harness.state().insert_dialog_open);
+    assert_eq!(harness.state().document.len(), SAMPLE_LEN + 1, "one byte inserted");
+
+    harness.state_mut().restore_selection(0x800, 0x100);
+    harness.key_press(Key::S);
+    steps(&mut harness, 2);
+    assert_eq!(harness.state().folds.ranges(), &[(0x800, 0x100)]);
+
+    // The shortcut window lists the new keys.
+    harness.key_press(Key::Questionmark);
+    steps(&mut harness, 2);
+    assert!(harness.query_by_label_contains("nudge its bytes").is_some());
 }

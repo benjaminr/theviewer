@@ -297,7 +297,13 @@ fn show_hex_dump(app: &mut ViewerApp, ui: &mut Ui) {
         && pointer.y >= body.min.y
         && !app.document.is_empty()
     {
-        app.hover = Some(byte_at_pointer(pointer, app));
+        let hovered = byte_at_pointer(pointer, app);
+        app.hover = Some(hovered);
+        let handle = app.selection_handle_at(hovered);
+        let moving = app.move_caret().is_some();
+        if handle.is_some() || moving {
+            ui.ctx().set_cursor_icon(crate::view::handle_cursor(handle, moving));
+        }
     }
 
     if let Some(pointer) = response.interact_pointer_pos()
@@ -322,14 +328,14 @@ fn show_hex_dump(app: &mut ViewerApp, ui: &mut Ui) {
             let press = ui.input(|i| i.pointer.press_origin()).filter(|press| press.y >= body.min.y);
             let origin_byte = press.map_or(byte, |press| byte_at_pointer(press, app));
             crate::view::begin_drag(app, origin_byte, modifiers);
-            app.drag_selection_to(byte);
+            app.continue_drag(byte);
         } else if response.dragged() {
-            app.drag_selection_to(byte);
+            app.continue_drag(byte);
         } else if response.clicked() {
             crate::view::click_byte(app, byte, modifiers);
         }
         if response.drag_stopped() {
-            app.end_drag_selection();
+            app.finish_drag();
         }
         if response.clicked() || response.drag_started() {
             app.reveal_cursor_centred();
@@ -365,6 +371,7 @@ fn show_hex_dump(app: &mut ViewerApp, ui: &mut Ui) {
     let end = offsets.last().map_or(start, |&last| last + 1);
     let selection = if app.layer_visible(LayerKind::Selection) { app.selection_ranges_in(start, end) } else { Vec::new() };
     let show_cursor = app.layer_visible(LayerKind::Cursor);
+    let move_caret = app.move_caret();
     let cursor = app.cursor;
     let pending = app.pending_low_nibble;
     let hover = app.hover;
@@ -449,6 +456,10 @@ fn show_hex_dump(app: &mut ViewerApp, ui: &mut Ui) {
             }
             if hover == Some(offset) && offset != cursor {
                 painter.rect_stroke(hex_cell, 2.0, Stroke::new(1.0, theme::ACCENT_DIM), StrokeKind::Inside);
+            }
+            if move_caret == Some(offset) {
+                let caret = Rect::from_min_max(pos2(hex_cell.min.x - 1.5, hex_cell.min.y), pos2(hex_cell.min.x + 1.5, hex_cell.max.y));
+                painter.rect_filled(caret, 1.0, theme::CURSOR);
             }
             if offset == cursor && show_cursor {
                 painter.rect_filled(hex_cell, 3.0, theme::CURSOR_FILL);

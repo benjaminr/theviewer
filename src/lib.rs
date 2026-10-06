@@ -88,6 +88,7 @@ pub mod region_colours;
 pub mod search;
 pub mod segments;
 pub mod selection;
+pub mod selection_drag;
 pub mod selection_menu;
 pub mod selection_ops;
 pub mod settings;

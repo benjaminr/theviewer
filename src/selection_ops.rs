@@ -48,6 +48,9 @@ pub enum Operation {
     /// Rotate the range's bits; positive moves them towards the start and
     /// the bits shifted out come back in at the other end.
     RotateBits(i64),
+    /// Rotate the range's bytes; positive moves them towards the start and
+    /// the bytes moved out come back in at the other end.
+    RotateBytes(i64),
     /// Reverse each group of this many bytes (2, 4 or 8): swap the byte
     /// order of the numbers in the range.
     SwapByteOrder(usize),
@@ -77,6 +80,7 @@ impl Operation {
             Operation::MirrorBits => "Mirrored bits".to_string(),
             Operation::ShiftBits(amount) => format!("Shifted bits by {amount}"),
             Operation::RotateBits(amount) => format!("Rotated bits by {amount}"),
+            Operation::RotateBytes(amount) => format!("Rotated bytes by {amount}"),
             Operation::SwapByteOrder(width) => format!("Swapped the byte order of {width}-byte values in"),
             Operation::Counter { .. } => "Numbered".to_string(),
             Operation::Duplicate => "Duplicated".to_string(),
@@ -116,6 +120,12 @@ pub fn transform_range(operation: &Operation, bytes: &[u8], index: usize) -> Res
         Operation::MirrorBits => ops::reverse_bits_in_bytes(&mut out),
         Operation::ShiftBits(amount) => out = ops::shift_bits(bytes, *amount),
         Operation::RotateBits(amount) => out = rotate_bits(bytes, *amount),
+        Operation::RotateBytes(amount) => {
+            if !out.is_empty() {
+                let turn = amount.rem_euclid(out.len() as i64) as usize;
+                out.rotate_left(turn);
+            }
+        }
         Operation::SwapByteOrder(width) => swap_byte_order(&mut out, *width)?,
         Operation::Counter { start, step, little_endian } => {
             let value = start.wrapping_add(step.wrapping_mul(index as u64));
@@ -330,6 +340,13 @@ mod tests {
         assert_eq!(apply(Operation::RotateBits(4), &[0xAB, 0xCD]), vec![0xBC, 0xDA]);
         assert_eq!(apply(Operation::RotateBits(-4), &[0xAB, 0xCD]), vec![0xDA, 0xBC]);
         assert_eq!(apply(Operation::RotateBits(16), &[0xAB, 0xCD]), vec![0xAB, 0xCD], "a full turn changes nothing");
+    }
+
+    #[test]
+    fn rotating_bytes_moves_them_round_in_either_direction() {
+        assert_eq!(apply(Operation::RotateBytes(1), &[1, 2, 3]), vec![2, 3, 1]);
+        assert_eq!(apply(Operation::RotateBytes(-1), &[1, 2, 3]), vec![3, 1, 2]);
+        assert_eq!(apply(Operation::RotateBytes(5), &[]), Vec::<u8>::new());
     }
 
     #[test]

@@ -340,6 +340,10 @@ pub struct ViewerApp {
     pub inputs: OperationInputs,
     /// The view the person last pointed into, which shows the floating toolbar.
     pub selection_view: SelectionView,
+    /// A drag moving the selected bytes, while one is in progress.
+    pub(crate) move_drag: Option<crate::selection_drag::MoveDrag>,
+    /// The Insert window (opened with I) is showing.
+    pub insert_dialog_open: bool,
     scroll_accumulator: f32,
 }
 
@@ -582,6 +586,8 @@ impl ViewerApp {
             move_amount: 1,
             inputs: OperationInputs::default(),
             selection_view: SelectionView::default(),
+            move_drag: None,
+            insert_dialog_open: false,
             scroll_accumulator: 0.0,
         };
         if launch.restore_layout {
@@ -1078,7 +1084,7 @@ impl ViewerApp {
 
     /// Whether a mouse drag is selecting bytes right now.
     pub fn is_dragging(&self) -> bool {
-        self.drag_grab.is_some()
+        self.drag_grab.is_some() || self.move_drag.is_some()
     }
 
     /// Start a drag that adds a range to what is already selected (Cmd held).
@@ -2741,7 +2747,17 @@ impl ViewerApp {
         let pixel_bytes = self.shape.format.bytes_per_pixel().max(1) as i64;
 
         let consume = |key: Key| ctx.input_mut(|i| i.consume_key(Modifiers::NONE, key) || i.consume_key(Modifiers::SHIFT, key));
-        if alt {
+        if alt && self.current_selection().is_some() {
+            // With a selection, Alt+arrows nudge the selected bytes.
+            let nudges = [(Key::ArrowLeft, -1), (Key::ArrowRight, 1), (Key::ArrowUp, -stride), (Key::ArrowDown, stride)];
+            for (key, delta) in nudges {
+                if ctx.input_mut(|i| i.consume_key(Modifiers::ALT, key)) {
+                    self.nudge_selection(delta);
+                    self.scroll_cursor_into_view();
+                    self.reveal_cursor_in_hex(false);
+                }
+            }
+        } else if alt {
             if ctx.input_mut(|i| i.consume_key(Modifiers::ALT, Key::ArrowLeft)) {
                 self.adjust_bit_offset(-1);
             }
@@ -2779,7 +2795,7 @@ impl ViewerApp {
             self.scroll_cursor_into_view();
             self.reveal_cursor_in_hex(true);
         }
-        if consume(Key::Escape) {
+        if consume(Key::Escape) && !self.cancel_move_drag() {
             self.anchor = None;
             self.clear_secondary_selection();
             self.pending_low_nibble = false;
@@ -2810,6 +2826,16 @@ impl ViewerApp {
         }
         if consume(Key::H) {
             self.highlight_patterns = !self.highlight_patterns;
+        }
+        if consume(Key::I) {
+            self.insert_dialog_open = true;
+        }
+        if consume(Key::S) {
+            if self.current_selection().is_some() {
+                self.skip_selection();
+            } else {
+                self.status = "Select the bytes to skip first, then press S".to_string();
+            }
         }
         if consume(Key::Questionmark) || consume(Key::Slash) || consume(Key::F1) {
             self.show_help = !self.show_help;
@@ -3526,12 +3552,16 @@ impl ViewerApp {
                     ("Click, drag", "Place the cursor, select a range"),
                     ("Alt+drag", "Select a column: the same bytes in every record"),
                     ("Cmd+click  Cmd+drag", "Add a match, finding, packet or range to the selection (again to remove)"),
+                    ("Drag a selection", "Move its bytes to the caret (Esc cancels); drag its first or last byte to resize"),
+                    ("Alt+arrows", "With a selection: nudge its bytes a byte left or right, or a row up or down"),
+                    ("I", "Insert bytes before, after or at the cursor"),
+                    ("S", "Skip the selection: fold it out of the views (click the marker to show it)"),
                     ("Backspace Del", "Delete the selection or byte"),
                     ("Cmd+Z Shift+Cmd+Z", "Undo, redo"),
                     ("Cmd+C Cmd+X Cmd+V Cmd+A", "Copy (as hex), cut, paste, select all"),
                     ("[ ]", "Width -1 / +1 (Shift: 16)"),
                     (", .", "Origin -1 / +1 byte"),
-                    ("Alt+Left Alt+Right", "Origin -1 / +1 bit"),
+                    ("Alt+Left Alt+Right", "Origin -1 / +1 bit (when nothing is selected)"),
                     ("- +", "Zoom out / in (also Cmd+ + scroll, pinch)"),
                     ("Scroll", "Rows; Shift+scroll pans horizontally"),
                     ("Cmd+O Cmd+S Shift+Cmd+S Cmd+N", "Open, save, save as, new"),
@@ -3621,6 +3651,7 @@ impl eframe::App for ViewerApp {
         self.show_plot_window(&ctx);
         self.show_settings_window(&ctx);
         self.show_bookmark_prompt(&ctx);
+        crate::selection_menu::show_insert_dialog(self, &ctx);
         commands::show_palette(self, &ctx);
     }
 }

@@ -293,8 +293,8 @@ pub fn menu_button(app: &mut ViewerApp, ui: &mut Ui) {
 /// Every operation on the selection, for any menu.
 pub fn show_selection_menu(app: &mut ViewerApp, ui: &mut Ui) {
     ui.label(RichText::new(menu_title(app)).small().color(theme::TEXT_DIM));
-    ui.menu_button("Insert…", |ui| show_insert_fields(app, ui));
-    if ui.button("Delete").clicked() {
+    ui.menu_button("Insert…   I", |ui| show_insert_fields(app, ui));
+    if ui.button("Delete   ⌫").clicked() {
         app.apply_operation(Operation::Delete);
         ui.close();
     }
@@ -328,7 +328,7 @@ pub fn show_selection_menu(app: &mut ViewerApp, ui: &mut Ui) {
         app.apply_operation(Operation::Duplicate);
         ui.close();
     }
-    if ui.button("Skip (fold out of the views)").on_hover_text("Leave these bytes out of the raster and the hex dump without deleting them; click the marker to show them again").clicked() {
+    if ui.button("Skip (fold out of the views)   S").on_hover_text("Leave these bytes out of the raster and the hex dump without deleting them; click the marker to show them again").clicked() {
         app.skip_selection();
         ui.close();
     }
@@ -368,7 +368,31 @@ fn hex_field(ui: &mut Ui, text: &mut String, hint: &str) {
     ui.add(egui::TextEdit::singleline(text).desired_width(FIELD_WIDTH).hint_text(hint));
 }
 
+/// The Insert window, opened with I: the insert fields and where to insert.
+pub fn show_insert_dialog(app: &mut ViewerApp, ctx: &egui::Context) {
+    if !app.insert_dialog_open {
+        return;
+    }
+    let mut open = true;
+    let mut acted = false;
+    egui::Window::new("Insert bytes").open(&mut open).collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
+        acted = insert_fields(app, ui);
+        if ui.input(|input| input.key_pressed(egui::Key::Escape)) {
+            acted = true;
+        }
+    });
+    app.insert_dialog_open = open && !acted;
+}
+
 fn show_insert_fields(app: &mut ViewerApp, ui: &mut Ui) {
+    if insert_fields(app, ui) {
+        ui.close();
+    }
+}
+
+/// The insert fields and buttons. Returns whether bytes were inserted.
+fn insert_fields(app: &mut ViewerApp, ui: &mut Ui) -> bool {
+    let mut acted = false;
     ui.horizontal(|ui| {
         hex_field(ui, &mut app.insert_value_text, "hex pattern");
         ui.add(egui::DragValue::new(&mut app.insert_count).range(1..=usize::MAX / 2).prefix("× "));
@@ -376,19 +400,21 @@ fn show_insert_fields(app: &mut ViewerApp, ui: &mut Ui) {
     let size = compress::human_bytes(app.insert_count.max(1));
     ui.label(RichText::new(format!("{size} of the pattern, repeated")).small().color(theme::TEXT_DIM));
     ui.horizontal(|ui| {
-        if ui.button("Before").on_hover_text("Insert before each selected range").clicked() {
+        let has_selection = app.current_selection().is_some();
+        if ui.add_enabled(has_selection, egui::Button::new("Before")).on_hover_text("Insert before each selected range").clicked() {
             app.insert_around_selection(false);
-            ui.close();
+            acted = true;
         }
-        if ui.button("After").on_hover_text("Insert after each selected range").clicked() {
+        if ui.add_enabled(has_selection, egui::Button::new("After")).on_hover_text("Insert after each selected range").clicked() {
             app.insert_around_selection(true);
-            ui.close();
+            acted = true;
         }
         if ui.button("At cursor").clicked() {
             app.insert_from_fields();
-            ui.close();
+            acted = true;
         }
     });
+    acted
 }
 
 fn show_fill_fields(app: &mut ViewerApp, ui: &mut Ui) {
@@ -499,13 +525,14 @@ fn floating_buttons(app: &mut ViewerApp, ui: &mut Ui) {
     }
     ui.menu_button(RichText::new("Fill…").small(), |ui| show_fill_fields(app, ui));
     ui.menu_button(RichText::new("XOR…").small(), |ui| show_key_fields(app, ui));
-    ui.menu_button(RichText::new("Insert…").small(), |ui| show_insert_fields(app, ui));
-    if small(ui, "Skip", "Fold these bytes out of the views without deleting them").clicked() {
+    ui.menu_button(RichText::new("Insert…  I").small(), |ui| show_insert_fields(app, ui));
+    if small(ui, "Skip  S", "Fold these bytes out of the views without deleting them (S); click the marker to show them again").clicked() {
         app.skip_selection();
     }
-    if small(ui, "Delete ⌫", "Delete the selected bytes").clicked() {
+    if small(ui, "Delete ⌫", "Delete the selected bytes (Backspace)").clicked() {
         app.apply_operation(Operation::Delete);
     }
+    ui.label(RichText::new("drag to move · Alt+arrows nudge").small().color(theme::TEXT_DIM));
     ui.menu_button(RichText::new("More ▾").small(), |ui| show_selection_menu(app, ui));
 }
 
