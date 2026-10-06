@@ -35,6 +35,7 @@ use crate::dock::DockTab;
 use crate::packets::sources::{self, CaptureLocation, MarkerMode, Recipe};
 use crate::packets::{self, Dissection, Flow, Layer, LinkKind, PacketSet, RawFrames, Summary};
 use crate::panel_packets_grid::{self as grid, GridState};
+use crate::panel_packets_tshark::{self as tshark_view, TsharkState};
 use crate::panel_packets_view as view;
 use crate::plugin::{Category, Finding};
 use crate::templates::{self, Template};
@@ -179,6 +180,8 @@ pub(crate) struct Detail {
     pub version: u64,
     pub link_choice: LinkChoice,
     pub raw_generation: u64,
+    /// tshark's results the dissection was merged with.
+    pub tshark_generation: u64,
     pub bytes: Vec<u8>,
     pub dissection: Dissection,
 }
@@ -233,6 +236,11 @@ pub struct PacketsState {
     pending: Option<Receiver<DissectionJob>>,
     pub(crate) rows: Vec<PacketRow>,
     pub(crate) rows_generation: u64,
+    /// Counts readings of the packets; results computed for one reading
+    /// (tshark's decodes) are dropped when the packets are read again.
+    pub(crate) set_generation: u64,
+    /// Decoding with Wireshark's tshark.
+    pub tshark: TsharkState,
 
     pub(crate) link_choice: LinkChoice,
     pub(crate) raw: RawFrames,
@@ -323,7 +331,12 @@ impl PacketsState {
 
     /// Whether packets are being read, dissected or waited for.
     pub fn is_busy(&self) -> bool {
-        self.incoming.is_some() || self.pending.is_some() || self.awaiting_protocol || self.captures_pending.is_some() || self.change_noticed.is_some()
+        self.is_reading() || self.awaiting_protocol || self.captures_pending.is_some() || self.tshark.is_busy()
+    }
+
+    /// Whether the packets are being read or dissected, or soon will be.
+    pub(crate) fn is_reading(&self) -> bool {
+        self.incoming.is_some() || self.pending.is_some() || self.change_noticed.is_some()
     }
 
     pub fn set_filter(&mut self, text: &str) {
@@ -342,7 +355,7 @@ impl PacketsState {
     }
 
     /// The rows changed: forget everything computed from the old ones.
-    fn rows_changed(&mut self) {
+    pub(crate) fn rows_changed(&mut self) {
         self.rows_generation += 1;
         self.filter_key = None;
         self.statistics = None;
@@ -647,6 +660,7 @@ fn install(state: &mut PacketsState, job: DissectionJob) {
     state.rows = job.rows;
     state.built = Some(job.snapshot);
     state.detail = None;
+    state.set_generation += 1;
     state.rows_changed();
 }
 
@@ -704,15 +718,32 @@ fn refresh_detail(state: &mut PacketsState, app: &mut ViewerApp) {
     };
     let version = app.document.version();
     let current = state.detail.as_ref().is_some_and(|detail| {
-        detail.index == index && detail.version == version && detail.link_choice == state.link_choice && detail.raw_generation == state.raw_generation
+        detail.index == index
+            && detail.version == version
+            && detail.link_choice == state.link_choice
+            && detail.raw_generation == state.raw_generation
+            && detail.tshark_generation == state.tshark.generation
     });
     if current || state.foreign_document {
         return;
     }
     let bytes = app.document.read_range(packet.offset, packet.len.min(PACKET_READ_LIMIT));
-    let dissection = packets::dissect_with(&bytes, state.link_choice.apply(packet.link), &state.raw);
+    let mut dissection = packets::dissect_with(&bytes, state.link_choice.apply(packet.link), &state.raw);
+    // tshark decoded the bytes as they were read; once the document has
+    // changed since, its layers no longer describe them.
+    if state.built.is_some_and(|built| built.version == version) {
+        dissection = tshark_view::merged(state, index, dissection);
+    }
     state.hex.position = state.hex.position.min(bytes.len().saturating_sub(1));
-    state.detail = Some(Detail { index, version, link_choice: state.link_choice, raw_generation: state.raw_generation, bytes, dissection });
+    state.detail = Some(Detail {
+        index,
+        version,
+        link_choice: state.link_choice,
+        raw_generation: state.raw_generation,
+        tshark_generation: state.tshark.generation,
+        bytes,
+        dissection,
+    });
 }
 
 /// When the main view's cursor moves into a packet, select that packet (and
@@ -780,13 +811,19 @@ pub(crate) fn layers_at(app: &mut ViewerApp, position: usize) -> Option<PacketLa
         && detail.version == version
         && detail.link_choice == state.link_choice
         && detail.raw_generation == state.raw_generation
+        && detail.tshark_generation == state.tshark.generation
     {
         return Some(PacketLayers::from_dissection(packet.offset, packet.len, &detail.dissection));
     }
     let link = state.link_choice.apply(packet.link);
     let raw = state.raw.clone();
+    let unchanged = state.built.is_some_and(|built| built.version == version);
     let bytes = app.document.read_range(packet.offset, packet.len.min(PACKET_READ_LIMIT));
-    Some(PacketLayers::from_dissection(packet.offset, packet.len, &packets::dissect_with(&bytes, link, &raw)))
+    let mut dissection = packets::dissect_with(&bytes, link, &raw);
+    if unchanged {
+        dissection = tshark_view::merged(&app.bench.panels.packets, index, dissection);
+    }
+    Some(PacketLayers::from_dissection(packet.offset, packet.len, &dissection))
 }
 
 /// Note the main view's selection as one the panel made, so it is not
@@ -877,13 +914,15 @@ pub fn show_packets(state: &mut PacketsState, app: &mut ViewerApp, ui: &mut Ui) 
     poll_dissection(state, &ctx);
     poll_captures(state, &ctx);
     poll_protocol_wait(state, app, &ctx);
+    tshark_view::poll(state, &ctx);
     if let Some(set) = state.incoming.take() {
         start_dissection(state, app, set);
     }
     follow_document(state, app, &ctx);
     follow_main_selection(state, app);
-    refresh_detail(state, app);
     refresh_filter(state);
+    tshark_view::decode_automatically(state, app);
+    refresh_detail(state, app);
 
     state.pane_height = ui.available_height();
     egui::ScrollArea::vertical().id_salt("packets-panel").auto_shrink([false, false]).show(ui, |ui| show_body(state, app, ui));
@@ -902,6 +941,7 @@ fn show_body(state: &mut PacketsState, app: &mut ViewerApp, ui: &mut Ui) {
         );
         return;
     }
+    tshark_view::show_controls(state, app, ui);
     ui.horizontal_wrapped(|ui| {
         for choice in PacketsView::ALL {
             if ui.selectable_label(state.view == choice, choice.label()).clicked() {

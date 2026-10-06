@@ -43,6 +43,12 @@ pub struct Preferences {
     pub open_with_layout: String,
     /// Offer the recommended layout that suits each file opened.
     pub suggest_layouts: bool,
+    /// Have Wireshark's tshark, when installed, decode the packets the
+    /// packet viewer lists. Off unless the user turns it on.
+    pub use_tshark: bool,
+    /// Where tshark is; empty to look for it on the PATH and in the usual
+    /// install locations.
+    pub tshark_path: String,
 }
 
 impl Default for Preferences {
@@ -59,6 +65,8 @@ impl Default for Preferences {
             detect_width_on_open: false,
             open_with_layout: String::new(),
             suggest_layouts: true,
+            use_tshark: false,
+            tshark_path: String::new(),
         }
     }
 }
@@ -106,6 +114,7 @@ mod tests {
     fn pattern_highlights_start_off() {
         assert!(!Preferences::default().highlight_patterns);
         assert!(!Preferences::default().pixel_values, "values inside pixels start off too");
+        assert!(!Preferences::default().use_tshark, "tshark is never run unless the user turns it on");
     }
 
     #[test]

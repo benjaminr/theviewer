@@ -12,6 +12,7 @@ use eframe::egui::{self, Align2, Color32, FontId, Key, Modifiers, Rect, RichText
 
 use crate::app::{DialogKind, FileAction, ViewerApp};
 use crate::packets::edit::{self, ByteOperation};
+use crate::packets::dissect::WiresharkNames;
 use crate::packets::{self, ConversationKey, ExportPacket, Layer};
 use crate::plugin::Field;
 use crate::panel_packets::{self as panel, FieldEdit, PacketsState, PacketsView, Statistics};
@@ -500,6 +501,11 @@ fn show_detail(state: &mut PacketsState, app: &mut ViewerApp, ui: &mut Ui) {
         {
             follow(state, &flow.key());
         }
+        if crate::panel_packets_tshark::can_decode_one(state, app)
+            && ui.small_button("Decode with tshark").on_hover_text("Have Wireshark's tshark decode this packet alone (run locally with -n)").clicked()
+        {
+            crate::panel_packets_tshark::start(state, app, Some(detail.index));
+        }
     });
     for note in &detail.dissection.notes {
         ui.label(RichText::new(note).small().color(theme::DANGER));
@@ -511,7 +517,8 @@ fn show_detail(state: &mut PacketsState, app: &mut ViewerApp, ui: &mut Ui) {
     let tree = |ui: &mut Ui, actions: &mut Vec<TreeAction>, field_edit: &mut Option<FieldEdit>| {
         egui::ScrollArea::vertical().id_salt("packet-tree").max_height(DETAIL_TREE_HEIGHT).auto_shrink([false, true]).show(ui, |ui| {
             for (number, layer) in detail.dissection.layers.iter().enumerate() {
-                show_layer(ui, number, layer, selected_field, cursor_in_packet, field_edit, actions);
+                let wireshark = detail.dissection.wireshark_names(number);
+                show_layer(ui, number, layer, wireshark, selected_field, cursor_in_packet, field_edit, actions);
             }
         });
     };
@@ -573,10 +580,14 @@ fn act_on_tree(state: &mut PacketsState, app: &mut ViewerApp, action: TreeAction
     }
 }
 
+/// One layer of the detail tree; a layer tshark decoded carries a "tshark"
+/// tag naming its Wireshark filter name.
+#[allow(clippy::too_many_arguments)]
 fn show_layer(
     ui: &mut Ui,
     number: usize,
     layer: &Layer,
+    wireshark: Option<&WiresharkNames>,
     selected: Option<(usize, usize)>,
     cursor: Option<usize>,
     field_edit: &mut Option<FieldEdit>,
@@ -589,6 +600,10 @@ fn show_layer(
         .show_header(ui, |ui| {
             if ui.add(egui::Label::new(title).selectable(false).sense(Sense::click())).on_hover_text("Click to select the layer's bytes").clicked() {
                 actions.push(TreeAction::Select { offset: layer.offset, len: layer.len, name: layer.name.clone() });
+            }
+            if let Some(names) = wireshark {
+                ui.label(RichText::new("tshark").small().color(theme::ACCENT))
+                    .on_hover_text(format!("Decoded by Wireshark's tshark, not by this viewer (Wireshark filter name: {})", names.protocol));
             }
             if notes.is_some() && ui.small_button("Reference").on_hover_text("How this protocol is organised, what its fields mean and where it is specified").clicked() {
                 actions.push(TreeAction::Reference { offset: layer.offset, len: layer.len, name: layer.name.clone() });

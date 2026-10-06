@@ -72,6 +72,7 @@ pub mod panel_image_finder;
 pub mod panel_learn;
 pub mod panel_packets;
 pub mod panel_packets_grid;
+pub mod panel_packets_tshark;
 pub mod panel_packets_view;
 pub mod panel_reference;
 pub mod panel_structure_map;

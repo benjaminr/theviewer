@@ -886,3 +886,55 @@ fn opening_a_capture_offers_the_network_layout_and_switching_lists_its_packets_i
     std::fs::remove_file(path).ok();
     std::fs::remove_file(plain).ok();
 }
+
+/// A DHCP Discover from 0.0.0.0:68 to 255.255.255.255:67, built byte by byte.
+fn dhcp_discover_frame() -> Vec<u8> {
+    let mut dhcp = vec![1, 1, 6, 0]; // boot request, Ethernet, 6-byte addresses, no hops
+    dhcp.extend_from_slice(&[0x12, 0x34, 0x56, 0x78]); // transaction ID
+    dhcp.extend_from_slice(&[0; 4]); // seconds and flags
+    dhcp.extend_from_slice(&[0; 16]); // client, your, server and relay addresses
+    dhcp.extend_from_slice(&[2, 0, 0, 0, 0, 1]); // client MAC
+    dhcp.extend_from_slice(&[0; 10 + 64 + 128]); // MAC padding, server name, boot file
+    dhcp.extend_from_slice(&[0x63, 0x82, 0x53, 0x63]); // magic cookie
+    dhcp.extend_from_slice(&[53, 1, 1, 255]); // message type Discover, end
+    let builder = etherparse::PacketBuilder::ethernet2([2, 0, 0, 0, 0, 1], [0xFF; 6]).ipv4([0, 0, 0, 0], [255, 255, 255, 255], 64).udp(68, 67);
+    let mut frame = Vec::new();
+    builder.write(&mut frame, &dhcp).unwrap();
+    frame
+}
+
+#[test]
+fn decoding_with_tshark_adds_a_dhcp_layer_whose_fields_select_their_bytes() {
+    if theviewer::packets::tshark::find_tshark(None).is_none() {
+        eprintln!("tshark is not installed; skipping the tshark decoding test");
+        return;
+    }
+    let path = temp_path("tshark-dhcp.pcap");
+    std::fs::write(&path, pcap_of(&[dhcp_discover_frame()])).unwrap();
+    let mut harness = harness_for(path.clone());
+    theviewer::panel_packets::open_capture_at(harness.state_mut(), 0);
+    wait_for(&mut harness, |app| app.bench.panels.packets.rows().len() == 1 && !app.bench.panels.packets.is_busy());
+    assert_eq!(harness.state().bench.panels.packets.rows()[0].summary.protocol, "UDP", "our own dissector stops at UDP");
+
+    wait_for_label(&mut harness, "Decode with tshark");
+    harness.get_by_label("Decode with tshark").click();
+    wait_for(&mut harness, |app| app.bench.panels.packets.rows()[0].summary.protocol == "DHCP" && !app.bench.panels.packets.is_busy());
+    assert_eq!(harness.state().bench.panels.packets.rows()[0].summary.protocol, "DHCP");
+    harness.state_mut().bench.panels.packets.set_filter("proto:dhcp");
+    steps(&mut harness, 3);
+    assert_eq!(harness.state().bench.panels.packets.visible_rows(), &[0], "tshark's protocols can be filtered on");
+
+    harness.get_by_label_contains("Dynamic Host Configuration").scroll_to_me();
+    steps(&mut harness, 2);
+    harness.get_by_label_contains("Dynamic Host Configuration").click_accesskit();
+    wait_for_label(&mut harness, "Transaction ID:");
+    assert!(harness.query_by_label("tshark").is_some(), "the layer tshark decoded is tagged");
+    harness.get_by_label("Transaction ID:").scroll_to_me();
+    steps(&mut harness, 10);
+    harness.get_by_label("Transaction ID:").click_accesskit();
+    steps(&mut harness, 3);
+    // File header, record header, Ethernet, IPv4 and UDP, then four bytes in.
+    let transaction_id_at = 24 + 16 + 14 + 20 + 8 + 4;
+    assert_eq!(harness.state().selection(), Some((transaction_id_at, 4)));
+    std::fs::remove_file(path).ok();
+}
