@@ -648,6 +648,23 @@ Each phase is useful on its own and keeps the app working.
    - Panels, menus, shortcuts, the palette and the context menu call
      methods as `Caller::Panel`, adding methods where something is missing,
      so nothing the person does bypasses the journal.
+   - `docs/design/ui-actions.md` lists every action with its method and
+     the area converting it.
+   - **Foundation, as built:**
+     - Each module under `src/api/` declares its own methods, call
+       descriptions and examples. They are joined into one table, grouped
+       by namespace.
+     - `ViewerApp::perform` calls a method as the panel. `perform_later`
+       does the same for panels whose state is lent out while drawing.
+     - `Workspace::window` reaches the window for effects only it has.
+     - The person's undo steps are named without "by panel".
+     - Four actions are converted as patterns:
+       - the Selection menu's operations, through `transform.apply`;
+       - Go to and the width, through `cursor.set` and the new
+         `view.set_shape`;
+       - Detect width, through the new `analysis.period_scan` job;
+       - splitting the selection into packets by row width, through
+         `packets.sets.create`.
 7. **History, playback and recipes.**
    - The journal, the History tab, undo across analysis steps and
      "go back to step N".
