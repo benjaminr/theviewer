@@ -1762,7 +1762,7 @@ section = "3.2"
 [[format]]
 id = "gzip"
 name = "gzip stream"
-keys = ["stream:gzip", "gzip stream", "application/gzip"]
+keys = ["stream:gzip", "gzip stream", "application/gzip", "gzip-capture", "gzip-compressed capture"]
 summary = "The gzip file format: deflate data with a header carrying a file name and timestamp, and a CRC-32 and length trailer."
 organisation = """
 Each member begins with 1F 8B, the method byte 08 (deflate) and a flags byte, then a 4-byte modification time, an extra-flags byte and an operating system byte. Flags announce optional fields that follow in order: an extra field with its own length, the original file name and a comment (each zero-terminated), and a CRC-16 of the header.
@@ -1771,7 +1771,7 @@ The deflate data comes next, and an 8-byte trailer ends the member: the CRC-32 o
 
 A gzip file may hold several members one after another; they decompress to the concatenation of their contents. Most .tar.gz files hold one member containing a tar archive.
 """
-carries = ["deflate", "tar"]
+carries = ["deflate", "tar", "pcap", "pcapng"]
 group = "Compression"
 
 [[format.specs]]

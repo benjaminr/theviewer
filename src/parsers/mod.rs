@@ -8,6 +8,7 @@
 
 pub mod archive;
 pub mod asn1;
+pub mod captures;
 pub mod disk;
 pub mod executable;
 pub mod image;
@@ -42,6 +43,10 @@ pub fn builtin_parsers() -> Vec<Arc<dyn Parser>> {
         Arc::new(archive::CpioParser),
         Arc::new(protocol::PcapParser),
         Arc::new(protocol::PcapNgParser),
+        Arc::new(captures::SnoopParser),
+        Arc::new(captures::NetMonParser),
+        Arc::new(captures::ErfParser),
+        Arc::new(captures::GzipCaptureParser),
         Arc::new(asn1::DerParser),
         Arc::new(disk::MbrParser),
         Arc::new(disk::GptParser),

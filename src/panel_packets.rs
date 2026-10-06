@@ -1,7 +1,8 @@
 //! Dock panel: the packet viewer.
 //!
-//! Packets come from the protocol analysis's messages, a pcap or pcapng
-//! capture inside the document, the selection (as one packet, or cut into
+//! Packets come from the protocol analysis's messages, a capture inside the
+//! document (pcap, pcapng, snoop, Network Monitor or ERF, or one of these
+//! compressed with gzip, which is opened decompressed), the selection (as one packet, or cut into
 //! records), or a cluster from the message alignment. They are listed in a
 //! filterable table, dissected layer by layer, summarised into conversations
 //! and endpoints, followed as streams, edited in place and exported as pcap.
@@ -34,6 +35,7 @@ use crate::app::ViewerApp;
 use crate::dock::DockTab;
 use crate::packets::sources::{self, CaptureLocation, MarkerMode, Recipe};
 use crate::packets::{self, Dissection, Flow, Layer, LinkKind, PacketSet, RawFrames, Summary};
+use crate::parsers::captures::{CAPTURE_FINDING_IDS, GZIP_CAPTURE_FINDING_ID};
 use crate::panel_packets_grid::{self as grid, GridState};
 use crate::panel_packets_tshark::{self as tshark_view, TsharkState};
 use crate::panel_packets_view as view;
@@ -404,10 +406,10 @@ pub fn open_capture_at(app: &mut ViewerApp, offset: usize) {
     app.dock.toggle(DockTab::Packets);
 }
 
-/// The start of a pcap or pcapng capture covering `offset`: a capture
-/// finding around it, or a capture header right there.
+/// The start of a capture covering `offset`: a capture finding around it,
+/// or a capture header right there.
 pub fn capture_containing(app: &mut ViewerApp, offset: usize) -> Option<usize> {
-    let finding = app.patterns_in(offset, offset + 1).find(|finding| finding.id == "pcap" || finding.id == "pcapng").map(|finding| finding.start);
+    let finding = app.patterns_in(offset, offset + 1).find(|finding| is_capture_finding(&finding.id)).map(|finding| finding.start);
     finding.or_else(|| sources::capture_format(&app.document.read_range(offset, CAPTURE_HEADER_PROBE)).map(|_| offset))
 }
 
@@ -484,11 +486,48 @@ fn load_from_protocol(state: &mut PacketsState, app: &mut ViewerApp) {
     state.suggested_template = suggestion;
 }
 
+/// Whether a finding is a capture the packet viewer can load.
+fn is_capture_finding(id: &str) -> bool {
+    CAPTURE_FINDING_IDS.contains(&id) || id == GZIP_CAPTURE_FINDING_ID
+}
+
 fn load_capture(state: &mut PacketsState, app: &mut ViewerApp, offset: usize) {
     let bytes = app.document.read_range(offset, CAPTURE_READ_LIMIT);
+    if sources::gzip::looks_like(&bytes) {
+        load_gzipped_capture(state, app, offset, &bytes);
+        return;
+    }
     match sources::from_capture(&bytes, offset) {
         Ok(set) => state.load(set),
         Err(error) => state.show_note(error.to_string(), true),
+    }
+}
+
+/// A capture compressed with gzip: its packets are not ranges of the
+/// document, so the decompressed capture is opened as a document of its own
+/// (Back returns to this one) and its packets are read from there.
+fn load_gzipped_capture(state: &mut PacketsState, app: &mut ViewerApp, offset: usize, bytes: &[u8]) {
+    let capture = match sources::gzip::gunzip(bytes, offset) {
+        Ok(capture) => capture,
+        Err(error) => {
+            state.show_note(error.to_string(), true);
+            return;
+        }
+    };
+    let set = match sources::from_capture(&capture.data, 0) {
+        Ok(set) => set,
+        Err(error) => {
+            state.show_note(format!("The gzip stream at {offset:#x} decompresses to a {} header, but: {error}", capture.format.label()), true);
+            return;
+        }
+    };
+    let name = format!("{} › {} capture decompressed from {offset:#x}", app.display_name(), capture.format.label());
+    let truncated = capture.truncated;
+    app.open_derived(capture.data, name);
+    state.load(set);
+    if truncated {
+        let limit = crate::compress::human_bytes(sources::gzip::MAX_GUNZIPPED_LEN);
+        state.show_note(format!("Only the first {limit} of the decompressed capture were opened."), false);
     }
 }
 
@@ -563,7 +602,7 @@ fn split_selection_by_delimiter(state: &mut PacketsState, app: &mut ViewerApp) {
 /// capture findings, on a background thread.
 fn start_capture_search(state: &mut PacketsState, app: &mut ViewerApp) {
     let mut regions = vec![(0usize, app.document.read_range(0, SCAN_LIMIT))];
-    let found: Vec<(usize, usize)> = app.patterns_in(SCAN_LIMIT, usize::MAX).filter(|f| f.id == "pcap" || f.id == "pcapng").map(|f| (f.start, f.len)).collect();
+    let found: Vec<(usize, usize)> = app.patterns_in(SCAN_LIMIT, usize::MAX).filter(|f| is_capture_finding(&f.id)).map(|f| (f.start, f.len)).collect();
     for (start, len) in found {
         regions.push((start, app.document.read_range(start, len.min(CAPTURE_READ_LIMIT))));
     }
@@ -985,7 +1024,7 @@ fn show_controls(state: &mut PacketsState, app: &mut ViewerApp, ui: &mut Ui) {
             load_from_protocol(state, app);
         }
         let searching = state.captures_pending.is_some();
-        if ui.add_enabled(!searching, egui::Button::new("Find captures")).on_hover_text("Look for pcap and pcapng captures inside the document").clicked() {
+        if ui.add_enabled(!searching, egui::Button::new("Find captures")).on_hover_text("Look for captures inside the document: pcap, pcapng, snoop, Network Monitor 2.x and ERF, and any of them compressed with gzip").clicked() {
             start_capture_search(state, app);
         }
         ui.menu_button("From the selection", |ui| {
@@ -1096,14 +1135,15 @@ fn show_captures(state: &mut PacketsState, app: &mut ViewerApp, ui: &mut Ui) {
         return;
     }
     if state.captures.is_empty() {
-        ui.label(RichText::new(format!("No pcap or pcapng capture found in the first {} or in the findings.", crate::compress::human_bytes(SCAN_LIMIT))).small().color(theme::TEXT_DIM));
+        ui.label(RichText::new(format!("No capture found in the first {} or in the findings.", crate::compress::human_bytes(SCAN_LIMIT))).small().color(theme::TEXT_DIM));
         return;
     }
     let mut chosen = None;
     ui.horizontal_wrapped(|ui| {
         ui.label(RichText::new("Captures:").small().color(theme::TEXT_DIM));
         for capture in &state.captures {
-            if ui.small_button(capture.describe()).on_hover_text("Load this capture's packets").clicked() {
+            let hint = if capture.gzipped { "Open the decompressed capture as a document of its own and load its packets" } else { "Load this capture's packets" };
+            if ui.small_button(capture.describe()).on_hover_text(hint).clicked() {
                 chosen = Some(capture.offset);
             }
         }
@@ -1216,6 +1256,53 @@ mod tests {
         let bytes = app.document.read_range(at, 4096);
         state.load(sources::from_capture(&bytes, at).expect("a capture"));
         settle(harness);
+    }
+
+    #[test]
+    fn find_captures_lists_a_network_monitor_capture_inside_a_larger_file_and_loads_it() {
+        let frames = [udp_packet(4000, 53, b"query"), udp_packet(4001, 9999, b"other")];
+        let ethernet: Vec<Vec<u8>> = frames
+            .iter()
+            .map(|ip| {
+                let mut frame = vec![2, 0, 0, 0, 0, 2, 2, 0, 0, 0, 0, 1, 0x08, 0x00];
+                frame.extend_from_slice(ip);
+                frame
+            })
+            .collect();
+        let test_frames: Vec<sources::netmon::tests::TestFrame> = ethernet.iter().map(|data| sources::netmon::tests::TestFrame { data, offset_micros: 0, media_type: 1 }).collect();
+        let mut document = vec![0x11u8; 300];
+        let at = document.len();
+        document.extend_from_slice(&sources::netmon::tests::netmon_file(0x02, &test_frames));
+        document.extend(std::iter::repeat_n(0x22u8, 80));
+        let mut harness = harness_for(document);
+        harness.get_by_label("Find captures").click();
+        settle(&mut harness);
+        let listed = format!("Network Monitor at {at:#x} · Ethernet · 2 packets");
+        harness.get_by_label(&listed).click();
+        settle(&mut harness);
+        let (state, _) = harness.state();
+        assert_eq!(state.rows().len(), 2);
+        assert_eq!(state.rows()[1].summary.source, "10.0.0.2");
+        assert_eq!(state.packet_set().unwrap().packets[0].offset, at + 72 + 16);
+    }
+
+    #[test]
+    fn a_gzipped_snoop_capture_opens_decompressed_with_its_packets() {
+        let packet = udp_packet(4000, 9999, b"inside gzip");
+        let mut frame = vec![2, 0, 0, 0, 0, 2, 2, 0, 0, 0, 0, 1, 0x08, 0x00];
+        frame.extend_from_slice(&packet);
+        let snoop = sources::snoop::tests::snoop_file(4, &[(&frame, 1, 0)]);
+        let compressed = crate::compress::compress(crate::compress::Codec::Gzip, &snoop).unwrap();
+        let mut harness = harness_for(compressed);
+        harness.get_by_label("Find captures").click();
+        settle(&mut harness);
+        harness.get_by_label_contains("snoop (gzip) at 0x0").click();
+        settle(&mut harness);
+        let (state, app) = harness.state();
+        assert_eq!(app.document.len(), snoop.len(), "the decompressed capture is the document now");
+        assert_eq!(state.rows().len(), 1);
+        assert_eq!(state.rows()[0].summary.destination, "10.0.0.1");
+        assert!(!state.foreign_document);
     }
 
     #[test]

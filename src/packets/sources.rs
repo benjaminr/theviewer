@@ -52,7 +52,7 @@ pub enum SourceError {
     EmptyDelimiter,
     /// The delimiter never occurs in the range.
     DelimiterNotFound { delimiter: String },
-    /// The bytes do not start with a pcap or pcapng header.
+    /// The bytes do not start with a capture in a format we read.
     NotACapture { offset: usize },
     /// The capture's header was read, but no packet record could be.
     NoPacketsInCapture { offset: usize },
@@ -72,7 +72,7 @@ impl fmt::Display for SourceError {
             SourceError::ZeroRecordLength => write!(f, "The record length must be at least 1 byte."),
             SourceError::EmptyDelimiter => write!(f, "Give the delimiter as hex bytes, such as 0D0A."),
             SourceError::DelimiterNotFound { delimiter } => write!(f, "The delimiter {delimiter} does not occur in the range."),
-            SourceError::NotACapture { offset } => write!(f, "There is no pcap or pcapng header at {offset:#x}."),
+            SourceError::NotACapture { offset } => write!(f, "There is no capture we read at {offset:#x} (pcap, pcapng, snoop, Network Monitor 2.x or ERF)."),
             SourceError::NoPacketsInCapture { offset } => write!(f, "The capture at {offset:#x} has a header but no readable packet records."),
             SourceError::UnreadableCapture { offset, format, reason } => write!(f, "The {format} capture at {offset:#x} cannot be read: {reason}."),
             SourceError::NoMessages => write!(f, "There are no messages to take packets from."),
@@ -402,7 +402,7 @@ pub fn from_capture(bytes: &[u8], base: usize) -> Result<PacketSet, SourceError>
 }
 
 /// The packets and the number of bytes the capture spans.
-fn read_capture(bytes: &[u8], base: usize) -> Result<(PacketSet, usize), SourceError> {
+pub fn read_capture(bytes: &[u8], base: usize) -> Result<(PacketSet, usize), SourceError> {
     let (set, extent) = match capture_format(bytes) {
         Some(CaptureFormat::Pcap) => read_pcap(bytes, base)?,
         Some(CaptureFormat::PcapNg) => read_pcapng(bytes, base),

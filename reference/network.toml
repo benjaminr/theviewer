@@ -166,6 +166,155 @@ wireshark = "pcapng.block"
 meaning = "A block of another type, such as a Decryption Secrets Block or a custom block. Its total length still lets a reader step over it."
 section = "3.1"
 
+[[format]]
+id = "snoop"
+name = "snoop capture file"
+keys = ["snoop", "snoop capture", "capture/snoop"]
+summary = "The capture file written by Sun's snoop tool on Solaris: a 16-byte file header and then one record per packet, every number big-endian."
+organisation = """
+The file header is the identification string "snoop" followed by three zero bytes, a 4-byte version number (2) and a 4-byte datalink type saying what the first byte of every packet is: 4 is Ethernet, 0 IEEE 802.3, 2 token ring and 8 FDDI.
+
+Each packet record starts with six 4-byte fields: the packet's original length, the included length (the bytes actually kept), the length of the whole record, the number of packets dropped since the capture began, and the time in seconds and microseconds since 1970. The included bytes follow, then padding up to the record length, usually to a multiple of four bytes, so the next record begins at record start + record length.
+"""
+carries = ["ethernet"]
+group = "Capture files"
+
+[[format.specs]]
+document = "RFC 1761"
+title = "Snoop Version 2 Packet Capture File Format"
+url = "https://www.rfc-editor.org/rfc/rfc1761"
+rfc = 1761
+section = "3"
+
+[[format.fields]]
+name = "file header"
+meaning = "The 16 bytes before the first record: identification, version and datalink type."
+section = "3"
+
+[[format.fields]]
+name = "identification"
+meaning = "The eight bytes \"snoop\" followed by three zero bytes, which mark the file as a snoop capture."
+section = "3"
+
+[[format.fields]]
+name = "version"
+meaning = "The file format's version, 2 for the format RFC 1761 describes."
+section = "3"
+
+[[format.fields]]
+name = "datalink type"
+meaning = "The kind of network every packet was captured from: 0 IEEE 802.3, 1 token bus, 2 token ring, 3 metro net, 4 Ethernet, 5 HDLC, 6 character synchronous, 7 IBM channel-to-channel, 8 FDDI, 9 other."
+section = "3"
+
+[[format.fields]]
+name = "packets"
+meaning = "The packet records, each a 24-byte header, the included bytes and padding."
+section = "4"
+
+[[format.fields]]
+name = "packet *"
+meaning = "One packet record: original length, included length, record length, cumulative drops, timestamp seconds and microseconds, then the packet and its padding."
+section = "4"
+
+[[format]]
+id = "netmon"
+name = "Network Monitor capture file"
+keys = [
+  "netmon",
+  "Network Monitor capture",
+  "capture/netmon2",
+  "netmon_header",
+  "netmon_filter",
+  "netmon_event",
+  "netmon_network_info",
+]
+summary = "The capture file of Microsoft Network Monitor 2.x and 3.x (usually .cap): a header, the frames, and a table of where each frame starts."
+organisation = """
+The 72-byte header is little-endian. It starts with the signature "GMBU", a minor and a major version in binary-coded decimal (2.0 to 2.3), the media type of the network (1 Ethernet, 2 token ring, 3 FDDI) and the time the capture started as a Windows SYSTEMTIME in the capturing machine's local time. Pairs of 4-byte offsets and lengths follow for the frame table and for optional user data, comments, process information, extended information and conversation statistics.
+
+The frames are found only through the frame table, an array of 4-byte offsets that is usually written after the last frame. Each frame starts with the time since the capture started in microseconds (8 bytes), the length on the wire and the captured length (4 bytes each), followed by the captured bytes.
+
+From version 2.1 each frame's own media type (2 bytes) follows its bytes, so one file can mix networks; Network Monitor also stores pseudo-frames this way, such as the capture filter (0xFFFF), network information (0xFFFB, 0xFFFD) and event tracing records (0xFFE0). Version 2.2 adds a 4-byte process index and 2.3 the frame's UTC time as a FILETIME and a time zone index.
+"""
+carries = ["ethernet"]
+group = "Capture files"
+
+[[format.specs]]
+document = "Microsoft Network Monitor 2 SDK"
+title = "CAPTUREFILE_HEADER_VALUES structure (Netmon.h)"
+url = "https://learn.microsoft.com/en-us/windows/win32/netmon2/capturefile-header-values"
+
+[[format.specs]]
+document = "Wireshark wiki"
+title = "File format reference"
+url = "https://wiki.wireshark.org/FileFormatReference"
+
+[[format.fields]]
+name = "file header"
+meaning = "The 72 bytes at the start: signature, version, media type, start time and the offsets and lengths of the frame table and the optional tables."
+
+[[format.fields]]
+name = "signature"
+meaning = "The four bytes \"GMBU\" that mark a Network Monitor 2.x capture (version 1.x files start \"RTSS\")."
+
+[[format.fields]]
+name = "version"
+meaning = "Minor then major version, one binary-coded decimal byte each, so 03 02 is version 2.3."
+
+[[format.fields]]
+name = "media type"
+meaning = "The network the capture was made on: 1 Ethernet, 2 token ring, 3 FDDI, 4 ATM, 5 IEEE 1394, 6 802.11 with Network Monitor's own radio header. Frames of version 2.1 and later carry their own."
+
+[[format.fields]]
+name = "start time"
+meaning = "When the capture started, as a SYSTEMTIME: year, month, day of the week, day, hour, minute, second and millisecond, 16 bits each, in the capturing machine's local time."
+
+[[format.fields]]
+name = "frame table"
+meaning = "In the header, the offset and length in bytes of the frame table; at that offset, the table itself, one 4-byte frame offset per frame in capture order."
+
+[[format.fields]]
+name = "packets"
+meaning = "The frames, each a 16-byte header (time offset in microseconds, length on the wire, captured length) and the captured bytes."
+
+[[format.fields]]
+name = "packet *"
+meaning = "One frame: time since the capture started, lengths and data, then from version 2.1 its media type, from 2.2 a process index and from 2.3 its UTC time and time zone."
+
+[[format]]
+id = "erf"
+name = "ERF capture records"
+keys = ["erf", "ERF records", "Extensible Record Format"]
+wireshark = "erf"
+summary = "The Extensible Record Format written by Endace DAG capture cards: records back to back with no file header, each describing one captured frame or cell."
+organisation = """
+There is no file header and no magic number: a file is simply records. Each record starts with a 16-byte header: a 64-bit little-endian timestamp whose upper 32 bits are seconds since 1970 and lower 32 bits a binary fraction of a second, a type byte, a flags byte (capture interface, varying-length, truncation and error bits), then the record length, a loss counter and the length on the wire as big-endian 16-bit numbers.
+
+The type's low seven bits say what the record holds: 2 Ethernet (and 11, 16 and 20 for coloured variants), 1 HDLC from packet-over-SONET links, 3 ATM cells, 22 and 23 bare IPv4 and IPv6, 48 padding. When the type's top bit is set, 8-byte extension headers follow, each with its own top bit saying whether another comes after it. Ethernet records then have two bytes, an offset and a pad, before the frame.
+
+The record length includes the header and any alignment padding at the end, so the next record begins at record start + record length; the captured frame is the shorter of what remains and the wire length.
+"""
+carries = ["ethernet", "ipv4", "ipv6"]
+group = "Capture files"
+
+[[format.specs]]
+document = "Endace ERF types"
+title = "Extensible Record Format types"
+url = "https://www.endace.com/erf-extensible-record-format-types.pdf"
+
+[[format.specs]]
+document = "Wireshark wiki"
+title = "ERF"
+url = "https://wiki.wireshark.org/ERF"
+
+[[format.fields]]
+name = "packets"
+meaning = "The records, each a 16-byte header, any extension headers, the captured data and padding up to the record length."
+
+[[format.fields]]
+name = "packet *"
+meaning = "One record: timestamp, type, flags, record length, loss counter and wire length, then (for Ethernet) a 2-byte pad and the frame."
+
 # ---------------------------------------------------------------------------
 # Link layer
 # ---------------------------------------------------------------------------

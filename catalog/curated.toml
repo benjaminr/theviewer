@@ -1151,7 +1151,18 @@ magic = [{ matches = [{ offset = 0, bytes = "0a0d0d0a" }, { offset = 8, bytes = 
 id = "capture/snoop"
 name = "snoop capture"
 category = "Protocol"
-magic = [{ offset = 0, bytes = "736e6f6f70000000" }]
+extensions = ["snoop", "cap"]
+references = ["https://www.rfc-editor.org/rfc/rfc1761"]
+magic = [{ matches = [{ offset = 0, bytes = "736e6f6f70000000" }, { offset = 8, bytes = "00000002" }] }]
+
+[[signature]]
+id = "capture/netmon2"
+name = "Microsoft Network Monitor 2.x capture"
+category = "Protocol"
+extensions = ["cap"]
+priority = 60
+references = ["https://learn.microsoft.com/en-us/windows/win32/netmon2/capturefile-header-values"]
+magic = [{ matches = [{ offset = 0, bytes = "474d4255" }, { offset = 5, bytes = "02" }] }]
 
 [[signature]]
 id = "protocol/tls-record"

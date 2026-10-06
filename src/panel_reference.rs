@@ -373,7 +373,7 @@ fn packet_at(app: &mut ViewerApp, position: usize, findings: &[Finding], cache: 
     if let Some(layers) = panel_packets::layers_at(app, position) {
         return Some(layers);
     }
-    let capture = findings.iter().find(|finding| finding.id == "pcap" || finding.id == "pcapng")?;
+    let capture = findings.iter().find(|finding| crate::parsers::captures::CAPTURE_FINDING_IDS.contains(&finding.id.as_str()))?;
     let version = app.document.version();
     let current = cache.as_ref().is_some_and(|cached| (cached.start, cached.len, cached.version) == (capture.start, capture.len, version));
     if !current {

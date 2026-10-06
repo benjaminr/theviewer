@@ -528,7 +528,16 @@ pub fn run_file(path: &Path, registry: &Registry, tshark: Option<&Path>) -> File
         };
         result.size = bytes.len();
         let started = Instant::now();
+        // A capture compressed whole with gzip is read decompressed, as the
+        // packet viewer reads it.
+        let (bytes, gzipped) = match guarded(|| sources::gzip::gunzip(&bytes, 0).ok()).flatten() {
+            Some(capture) => (capture.data, true),
+            None => (bytes, false),
+        };
         let ours = run_ours(&name, &bytes, &registry, &mut result);
+        if gzipped {
+            result.format = format!("{} (gzip)", result.format);
+        }
         result.elapsed = started.elapsed();
         if let Some(tshark) = &tshark {
             run_tshark(&name, &path_owned, tshark, &ours, &mut result);
@@ -577,6 +586,23 @@ mod tests {
         assert_eq!(result.opened, Some(Ok(1)));
         assert_eq!(result.link_types, BTreeMap::from([(packets::LINKTYPE_ETHERNET, 1)]));
         assert!(result.failures.is_empty(), "{:?}", result.failures);
+    }
+
+    #[test]
+    fn snoop_network_monitor_and_gzipped_captures_are_opened() {
+        let frame = [0x02, 0, 0, 0, 0, 1, 0x02, 0, 0, 0, 0, 2, 0x88, 0xB5, 1, 2, 3, 4];
+        let snoop = sources::snoop::tests::snoop_file(4, &[(&frame, 1, 0)]);
+        let netmon = sources::netmon::tests::netmon_file(0x00, &[sources::netmon::tests::TestFrame { data: &frame, offset_micros: 0, media_type: 1 }]);
+        let gzipped = crate::compress::compress(crate::compress::Codec::Gzip, &snoop).unwrap();
+        for (suffix, bytes, format) in [("snoop", snoop.clone(), "snoop"), ("cap", netmon, "Network Monitor"), ("pcap", gzipped, "snoop (gzip)")] {
+            let path = std::env::temp_dir().join(format!("theviewer-corpus-formats-{}.{suffix}", std::process::id()));
+            std::fs::write(&path, &bytes).unwrap();
+            let result = run_file(&path, &crate::app::build_registry(), None);
+            std::fs::remove_file(&path).ok();
+            assert_eq!(result.format, format);
+            assert_eq!(result.opened, Some(Ok(1)), "{format}");
+            assert!(result.failures.is_empty(), "{format}: {:?}", result.failures);
+        }
     }
 
     #[test]

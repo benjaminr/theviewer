@@ -30,7 +30,7 @@ fn link_type_name(link_type: u32) -> String {
 }
 
 /// One-line summary of a packet's addresses and transport.
-fn summarise_packet(link_type: u32, data: &[u8]) -> String {
+pub(super) fn summarise_packet(link_type: u32, data: &[u8]) -> String {
     let sliced = match link_type {
         1 => SlicedPacket::from_ethernet(data),
         101 | 228 | 229 => SlicedPacket::from_ip(data),
