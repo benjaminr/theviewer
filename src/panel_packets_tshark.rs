@@ -6,8 +6,10 @@
 //! their own link type and handed to tshark, always with `-n`, on a
 //! background thread that can be cancelled and is stopped after a time limit.
 //! Its layers are merged into ours ([`crate::packets::tshark_layers`]):
-//! where our dissector stops, or for every layer when the user asks. The
-//! results belong to one reading of the packets and are dropped when the
+//! where our dissector stops, or for every layer when the user asks. Where
+//! ours found no addresses (frames of a link type we read only as raw
+//! bytes), the list's Source, Destination and flow come from tshark, with a
+//! note in the packet's detail saying so. The results belong to one reading of the packets and are dropped when the
 //! packets are read again, after an edit to the document for example.
 
 use std::collections::{BTreeMap, HashMap};
@@ -325,6 +327,19 @@ mod tests {
         assert_eq!(requests(&state, None)[0].link_type, 105, "an 802.11 frame stays 802.11");
         state.link_choice = LinkChoice::Ethernet;
         assert_eq!(requests(&state, Some(0))[0].link_type, packets::LINKTYPE_ETHERNET);
+    }
+
+    #[test]
+    fn a_raw_frame_tshark_decoded_shows_tshark_s_addresses_in_the_list() {
+        use crate::packets::{Endpoint, Flow, Transport};
+        let mut state = PacketsState::default();
+        let address = |last: u8| std::net::IpAddr::from([192, 0, 2, last]);
+        let flow = Flow { transport: Transport::Udp, source: Endpoint { address: address(1), port: Some(5000) }, destination: Endpoint { address: address(2), port: Some(53) }, tcp_sequence: None };
+        let layers = TsharkLayers { flow: Some(flow), ..TsharkLayers::default() };
+        state.tshark.decodes = Some(Decodes { set_generation: 0, packets: HashMap::from([(0, layers)]) });
+        let row = PacketRow::from(merged(&state, 0, packets::dissect(b"opaque frame", LinkKind::Unknown)));
+        assert_eq!((row.summary.source.as_str(), row.summary.destination.as_str()), ("192.0.2.1", "192.0.2.2"));
+        assert_eq!(row.flow.map(|flow| flow.destination.port), Some(Some(53)));
     }
 
     #[test]

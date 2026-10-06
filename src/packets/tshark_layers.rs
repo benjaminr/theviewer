@@ -5,7 +5,10 @@
 //! the viewer's own. Each layer is named so the Reference tab finds its
 //! notes where there are any. [`merge`] then adds tshark's layers to our
 //! dissection: only where ours stops decoding ([`TsharkMode::FillGaps`]), or
-//! in place of ours ([`TsharkMode::Everything`]).
+//! in place of ours ([`TsharkMode::Everything`]). Where our dissector found
+//! no addresses at all, as with link types we read only as raw frames, the
+//! packet's source, destination and ports come from tshark's IP, TCP and UDP
+//! fields instead, with a note saying so.
 //!
 //! tshark dissects some protocols from data it put together itself (a TCP
 //! stream reassembled from several segments, a decompressed body). Their
@@ -13,7 +16,10 @@
 //! which, so a protocol that starts before the one it is carried in, or ends
 //! past the frame, is left out of the layers and mentioned in a note.
 
+use std::net::IpAddr;
+
 use super::dissect::{Dissection, Layer, WiresharkNames};
+use super::flows::{Endpoint, Flow, Transport};
 use super::tshark::{TsharkField, TsharkPacket, TsharkProtocol, is_data_protocol};
 use crate::plugin::Field;
 use crate::reference;
@@ -39,11 +45,64 @@ pub struct TsharkLayers {
     /// The whole protocol stack tshark named, for the packet filter.
     pub protocols: Vec<String>,
     pub notes: Vec<String>,
+    /// The innermost IP addresses tshark decoded, with the transport and
+    /// ports above them.
+    pub flow: Option<Flow>,
+}
+
+/// IP protocol numbers whose transports the flow names.
+const IP_PROTOCOL_ICMP: u8 = 1;
+const IP_PROTOCOL_TCP: u8 = 6;
+const IP_PROTOCOL_UDP: u8 = 17;
+const IP_PROTOCOL_ICMPV6: u8 = 58;
+
+/// The flow tshark's fields describe: the addresses of the innermost IPv4 or
+/// IPv6 header, and the ports of the TCP or UDP header after it.
+fn flow_of(packet: &TsharkPacket) -> Option<Flow> {
+    let mut flow: Option<Flow> = None;
+    for protocol in &packet.layers {
+        let value = |name: &str| field_named(&protocol.fields, name).map(|field| field.show.trim());
+        match protocol.name.as_str() {
+            "ip" | "ipv6" => {
+                let prefix = protocol.name.as_str();
+                let address = |name: &str| value(&format!("{prefix}.{name}")).and_then(|text| text.parse::<IpAddr>().ok());
+                let number_field = if prefix == "ip" { "ip.proto" } else { "ipv6.nxt" };
+                let (Some(source), Some(destination)) = (address("src"), address("dst")) else { continue };
+                let transport = value(number_field).and_then(|text| text.parse::<u8>().ok()).map_or(Transport::Other(0), transport_for);
+                flow = Some(Flow { transport, source: Endpoint { address: source, port: None }, destination: Endpoint { address: destination, port: None }, tcp_sequence: None });
+            }
+            "tcp" | "udp" => {
+                let Some(flow) = flow.as_mut().filter(|flow| flow.source.port.is_none()) else { continue };
+                let prefix = protocol.name.as_str();
+                let port = |name: &str| value(&format!("{prefix}.{name}")).and_then(|text| text.parse::<u16>().ok());
+                flow.transport = if prefix == "tcp" { Transport::Tcp } else { Transport::Udp };
+                flow.source.port = port("srcport");
+                flow.destination.port = port("dstport");
+                flow.tcp_sequence = value("tcp.seq_raw").and_then(|text| text.parse::<u32>().ok());
+            }
+            _ => {}
+        }
+    }
+    flow
+}
+
+fn transport_for(ip_protocol: u8) -> Transport {
+    match ip_protocol {
+        IP_PROTOCOL_TCP => Transport::Tcp,
+        IP_PROTOCOL_UDP => Transport::Udp,
+        IP_PROTOCOL_ICMP | IP_PROTOCOL_ICMPV6 => Transport::Icmp,
+        other => Transport::Other(other),
+    }
+}
+
+/// The first field called `name`, looking inside fields too.
+fn field_named<'a>(fields: &'a [TsharkField], name: &str) -> Option<&'a TsharkField> {
+    fields.iter().find_map(|field| if field.name == name { Some(field) } else { field_named(&field.children, name) })
 }
 
 /// tshark's layers for a frame of `frame_len` bytes.
 pub fn to_layers(packet: &TsharkPacket, frame_len: usize) -> TsharkLayers {
-    let mut out = TsharkLayers { protocols: packet.protocols.clone(), notes: packet.notes.clone(), ..TsharkLayers::default() };
+    let mut out = TsharkLayers { protocols: packet.protocols.clone(), notes: packet.notes.clone(), flow: flow_of(packet), ..TsharkLayers::default() };
     let mut previous_start = 0;
     for protocol in &packet.layers {
         let Some(start) = protocol.position else { continue };
@@ -168,6 +227,7 @@ pub fn is_undecoded(layer: &Layer) -> bool {
 pub fn merge(ours: Dissection, theirs: &TsharkLayers, mode: TsharkMode) -> Dissection {
     let mut merged = ours;
     merged.tshark_protocols = theirs.protocols.clone();
+    fill_addresses(&mut merged, theirs);
     let all = theirs.layers.iter().zip(&theirs.wireshark_names);
     let chosen: Vec<(Layer, &WiresharkNames)> = match mode {
         TsharkMode::Everything => all.map(|(layer, names)| (layer.clone(), names)).collect(),
@@ -203,6 +263,26 @@ pub fn merge(ours: Dissection, theirs: &TsharkLayers, mode: TsharkMode) -> Disse
     }
     merged.notes.extend(theirs.notes.iter().map(|note| format!("tshark: {note}")));
     merged
+}
+
+/// tshark's addresses and ports, where our dissector found none: the Source
+/// and Destination columns are filled when ours are empty, and the flow
+/// (for conversations, streams and the port filter) when ours has none.
+fn fill_addresses(merged: &mut Dissection, theirs: &TsharkLayers) {
+    let Some(flow) = theirs.flow else { return };
+    let mut filled = Vec::new();
+    if merged.summary.source.is_empty() && merged.summary.destination.is_empty() {
+        merged.summary.source = flow.source.address.to_string();
+        merged.summary.destination = flow.destination.address.to_string();
+        filled.push("Source and Destination");
+    }
+    if merged.flow.is_none() {
+        merged.flow = Some(flow);
+        filled.push(if flow.source.port.is_some() { "the addresses and ports of the flow" } else { "the addresses of the flow" });
+    }
+    if !filled.is_empty() {
+        merged.notes.push(format!("tshark: {} from tshark's decoding, as ours found no addresses", filled.join(" and ")));
+    }
 }
 
 fn overlaps(a: &Layer, b: &Layer) -> bool {
@@ -348,6 +428,59 @@ mod tests {
         assert_eq!(merged.layers, ours.layers);
         assert!(merged.tshark_layers.is_empty());
         assert_eq!(merged.summary, ours.summary);
+    }
+
+    #[test]
+    fn a_raw_frame_takes_its_addresses_and_ports_from_tshark() {
+        let frame = udp_frame();
+        let ours = dissect(&frame, LinkKind::Unknown);
+        assert!(ours.summary.source.is_empty() && ours.flow.is_none(), "raw frames have no addresses of ours");
+        let mut view = tshark_view();
+        view.layers[1].fields = vec![field("ip.proto", "Protocol: UDP (17)", 23, 1), field("ip.src", "Source Address: 0.0.0.0", 26, 4), field("ip.dst", "Destination Address: 255.255.255.255", 30, 4)];
+        view.layers[2].fields = vec![field("udp.srcport", "Source Port: 68", 34, 2), field("udp.dstport", "Destination Port: 67", 36, 2)];
+        for protocol in &mut view.layers {
+            for field in &mut protocol.fields {
+                field.show = field.display.rsplit(": ").next().unwrap_or_default().split(' ').next().unwrap_or_default().to_string();
+            }
+        }
+        let merged = merge(ours, &to_layers(&view, frame.len()), TsharkMode::FillGaps);
+        assert_eq!((merged.summary.source.as_str(), merged.summary.destination.as_str()), ("0.0.0.0", "255.255.255.255"));
+        let flow = merged.flow.expect("a flow from tshark");
+        assert_eq!(flow.transport, Transport::Udp);
+        assert_eq!((flow.source.port, flow.destination.port), (Some(68), Some(67)));
+        assert!(merged.notes.iter().any(|note| note.starts_with("tshark: Source and Destination") && note.contains("ours found no addresses")), "{:?}", merged.notes);
+    }
+
+    #[test]
+    fn our_own_addresses_are_never_replaced_by_tshark() {
+        let frame = udp_frame();
+        let ours = dissect(&frame, LinkKind::Ethernet);
+        let mut view = tshark_view();
+        view.layers[1].fields = vec![TsharkField { name: "ip.src".into(), show: "192.0.2.1".into(), ..TsharkField::default() }, TsharkField { name: "ip.dst".into(), show: "192.0.2.2".into(), ..TsharkField::default() }];
+        let layers = to_layers(&view, frame.len());
+        assert!(layers.flow.is_some());
+        let merged = merge(ours.clone(), &layers, TsharkMode::Everything);
+        assert_eq!(merged.summary.source, ours.summary.source);
+        assert_eq!(merged.flow, ours.flow);
+    }
+
+    #[test]
+    fn the_innermost_ip_header_and_the_transport_after_it_give_the_flow() {
+        let shown = |name: &str, show: &str| TsharkField { name: name.into(), show: show.into(), ..TsharkField::default() };
+        let packet = TsharkPacket {
+            layers: vec![
+                TsharkProtocol { name: "ip".into(), fields: vec![shown("ip.src", "10.0.0.1"), shown("ip.dst", "10.0.0.2"), shown("ip.proto", "47")], ..TsharkProtocol::default() },
+                TsharkProtocol { name: "gre".into(), ..TsharkProtocol::default() },
+                TsharkProtocol { name: "ipv6".into(), fields: vec![shown("ipv6.src", "2001:db8::1"), shown("ipv6.dst", "2001:db8::2"), shown("ipv6.nxt", "6")], ..TsharkProtocol::default() },
+                TsharkProtocol { name: "tcp".into(), fields: vec![shown("tcp.srcport", "443"), shown("tcp.dstport", "50000"), shown("tcp.seq_raw", "12345")], ..TsharkProtocol::default() },
+            ],
+            ..TsharkPacket::default()
+        };
+        let flow = flow_of(&packet).expect("a flow");
+        assert_eq!(flow.source.to_string(), "[2001:db8::1]:443");
+        assert_eq!((flow.transport, flow.tcp_sequence), (Transport::Tcp, Some(12345)));
+        let without_ip = TsharkPacket { layers: vec![TsharkProtocol { name: "udp".into(), ..TsharkProtocol::default() }], ..TsharkPacket::default() };
+        assert_eq!(flow_of(&without_ip), None, "ports alone are no flow");
     }
 
     #[test]
