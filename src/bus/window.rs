@@ -10,16 +10,23 @@
 //! functions taking the app, which run whether or not the tool they belong
 //! to is on screen. A reaction that publishes says what caused it with
 //! [`Draft::caused_by`], which is how loops are stopped.
+//!
+//! Plugins' subscription handlers are queued per handler ([`PluginInbox`])
+//! and run after the reactions, a bounded number a frame, with their
+//! scripts' budgets; what they publish, or edit, is marked as caused by the
+//! message they handled, and delivered in the same frame.
 
+use std::collections::VecDeque;
 use std::sync::Arc;
 
 use crate::api::workspace::WINDOW_DOCUMENT_ID;
 use crate::app::ViewerApp;
 use crate::plugin::Finding;
+use crate::plugins::Subscription;
 use crate::selection::Selection;
 
 use super::topics::*;
-use super::{Draft, Message, Payload, Topic};
+use super::{Draft, Message, MessageId, Payload, Topic};
 
 /// What the window publishes its own changes as.
 pub const MAIN_VIEW: &str = "view:main";
@@ -28,6 +35,62 @@ pub const APP: &str = "app";
 /// Most messages delivered in one frame; the rest wait for the next, so a
 /// flood cannot stall the window.
 const MOST_PER_FRAME: usize = 2000;
+
+/// Most plugin handlers run in one frame; the rest wait for the next.
+const MOST_HANDLERS_PER_FRAME: usize = 64;
+/// Most messages waiting for one handler; when it falls further behind,
+/// its oldest are dropped and it is told how many.
+const MOST_WAITING_PER_HANDLER: usize = 256;
+
+/// Messages waiting for plugins' handlers, oldest first, each handler's
+/// queue bounded.
+#[derive(Default)]
+pub struct PluginInbox {
+    waiting: VecDeque<(Arc<Subscription>, Arc<Message>)>,
+    /// Handlers that fell behind since last reported, with how many
+    /// messages each lost.
+    dropped: Vec<(Arc<Subscription>, usize)>,
+    /// The message whose handler is running, which what it causes is
+    /// published as caused by.
+    pub handling: Option<MessageId>,
+}
+
+impl PluginInbox {
+    pub fn is_empty(&self) -> bool {
+        self.waiting.is_empty()
+    }
+
+    pub fn len(&self) -> usize {
+        self.waiting.len()
+    }
+
+    /// Queue `message` for `subscription`, dropping that handler's oldest
+    /// message when it already has its fill.
+    fn push(&mut self, subscription: &Arc<Subscription>, message: &Arc<Message>) {
+        let same = |(waiting, _): &(Arc<Subscription>, Arc<Message>)| Arc::ptr_eq(waiting, subscription);
+        if self.waiting.iter().filter(|entry| same(entry)).count() >= MOST_WAITING_PER_HANDLER
+            && let Some(oldest) = self.waiting.iter().position(same)
+        {
+            self.waiting.remove(oldest);
+            match self.dropped.iter_mut().find(|(behind, _)| Arc::ptr_eq(behind, subscription)) {
+                Some((_, count)) => *count += 1,
+                None => self.dropped.push((Arc::clone(subscription), 1)),
+            }
+        }
+        self.waiting.push_back((Arc::clone(subscription), Arc::clone(message)));
+    }
+
+    fn pop(&mut self) -> Option<(Arc<Subscription>, Arc<Message>)> {
+        self.waiting.pop_front()
+    }
+
+    /// Tell each handler that fell behind how many messages it lost.
+    fn report_dropped(&mut self) {
+        for (subscription, count) in self.dropped.drain(..) {
+            subscription.note_dropped(count);
+        }
+    }
+}
 
 /// What a reaction does with a delivered message.
 pub type React = fn(&mut ViewerApp, &Arc<Message>);
@@ -64,8 +127,13 @@ pub struct BusWatch {
 
 impl ViewerApp {
     /// A message from `producer` about the window's document as it is now.
+    /// While a plugin's handler runs, what it causes says so.
     pub fn draft(&self, producer: impl Into<String>, payload: Payload) -> Draft {
-        Draft::new(producer, payload).about(WINDOW_DOCUMENT_ID, self.document.version())
+        let draft = Draft::new(producer, payload).about(WINDOW_DOCUMENT_ID, self.document.version());
+        match self.plugin_inbox.handling {
+            Some(cause) => draft.caused_by(cause),
+            None => draft,
+        }
     }
 
     /// Publish `payload` from `producer` about the document as it is now.
@@ -73,28 +141,75 @@ impl ViewerApp {
         self.bus.publish(self.draft(producer, payload));
     }
 
-    /// Publish what changed in the app, then deliver every queued message
-    /// and run the reactions to each. Called once per frame from `logic()`.
-    /// Returns whether messages were left for the next frame, because more
-    /// than a frame's worth were queued.
+    /// Publish what changed in the app, then deliver every queued message,
+    /// run the reactions to each and queue it for the plugins subscribed to
+    /// its topic, then run plugins' handlers; what they publish is
+    /// delivered in turn. Called once per frame from `logic()`, whether or
+    /// not any panel is showing. Returns whether work was left for the next
+    /// frame, because more than a frame's worth was queued.
     pub fn run_bus(&mut self) -> bool {
         self.publish_edits_as(crate::api::workspace::DOCUMENT_PRODUCER);
         self.publish_selection_if_changed(MAIN_VIEW);
         self.publish_pinned_findings();
         self.publish_plugin_log();
+        let mut delivered = 0;
+        let mut handled = 0;
+        let left = loop {
+            let (count, drained) = self.deliver_messages(MOST_PER_FRAME - delivered);
+            delivered += count;
+            if !drained {
+                break true;
+            }
+            let ran = self.run_plugin_handlers(MOST_HANDLERS_PER_FRAME - handled);
+            handled += ran;
+            if ran == 0 || handled == MOST_HANDLERS_PER_FRAME {
+                break !self.plugin_inbox.is_empty();
+            }
+        };
+        self.plugin_inbox.report_dropped();
+        left
+    }
+
+    /// Deliver up to `most` queued messages, running their reactions and
+    /// queueing them for plugins. Returns how many were delivered and
+    /// whether the queue is empty.
+    fn deliver_messages(&mut self, most: usize) -> (usize, bool) {
         let reactions = std::mem::take(&mut self.reactions);
-        let mut delivered_all = false;
-        for _ in 0..MOST_PER_FRAME {
+        let mut delivered = 0;
+        let mut drained = false;
+        while delivered < most {
             let Some(message) = self.bus.deliver_next() else {
-                delivered_all = true;
+                drained = true;
                 break;
             };
+            delivered += 1;
             for reaction in reactions.iter().filter(|reaction| reaction.topic == message.topic()) {
                 (reaction.react)(self, &message);
             }
+            for subscription in self.plugin_subscriptions.iter().filter(|subscription| subscription.wants(&message)) {
+                self.plugin_inbox.push(subscription, &message);
+            }
         }
         self.reactions = reactions;
-        !delivered_all
+        (delivered, drained)
+    }
+
+    /// Run up to `most` waiting plugin handlers, oldest first; returns how
+    /// many ran.
+    fn run_plugin_handlers(&mut self, most: usize) -> usize {
+        let mut ran = 0;
+        while ran < most
+            && let Some((subscription, message)) = self.plugin_inbox.pop()
+        {
+            self.plugin_inbox.handling = Some(message.id);
+            subscription.deliver(self, &message);
+            self.plugin_inbox.handling = None;
+            ran += 1;
+        }
+        if ran > 0 {
+            self.publish_plugin_log();
+        }
+        ran
     }
 
     /// The reactions run when messages are delivered.

@@ -367,6 +367,10 @@ pub struct ViewerApp {
     pub(crate) reactions: Vec<crate::bus::window::Reaction>,
     /// Methods plugins registered, which join the data API's table.
     pub plugin_methods: Vec<Arc<crate::api::RegisteredMethod>>,
+    /// Handlers plugins subscribed to topics with.
+    pub plugin_subscriptions: Vec<Arc<crate::plugins::Subscription>>,
+    /// Messages waiting for plugins' handlers.
+    pub plugin_inbox: crate::bus::window::PluginInbox,
     /// Calls from plugins, Ask and other clients waiting for the person to
     /// allow or deny them, oldest first; the first is shown.
     pub confirmations: crate::confirmations::Confirmations,
@@ -622,6 +626,8 @@ impl ViewerApp {
             bus_watch: Default::default(),
             reactions: crate::bus::window::builtin_reactions(),
             plugin_methods: Vec::new(),
+            plugin_subscriptions: Vec::new(),
+            plugin_inbox: Default::default(),
             confirmations: Default::default(),
         };
         if launch.restore_layout {
@@ -645,6 +651,7 @@ impl ViewerApp {
         let (host, reports) = load_plugin_host();
         app.registry = Arc::new(build_registry_with(Some(&host)));
         app.plugin_host = Some(host);
+        app.refresh_plugin_hooks();
         let failed = failed_reports(&reports);
         if !failed.is_empty() {
             app.status = format!("Some plugins failed to load: {failed}");
@@ -1958,7 +1965,29 @@ impl ViewerApp {
 
     /// The plugins that declared they edit, by file name.
     pub fn editing_plugins(&self) -> Vec<String> {
-        Vec::new()
+        let Some(host) = &self.plugin_host else { return Vec::new() };
+        host.try_lock().map(|host| host.editing_plugins()).unwrap_or_default()
+    }
+
+    /// Take the methods and subscriptions plugins registered, after they
+    /// were loaded or reloaded.
+    pub fn refresh_plugin_hooks(&mut self) {
+        let Some(host) = &self.plugin_host else { return };
+        let Ok(host) = host.lock() else { return };
+        self.plugin_methods = host.methods();
+        self.plugin_subscriptions = host.subscriptions();
+        self.plugin_inbox = Default::default();
+    }
+
+    /// Load one plugin from source, as if from a file called `name`, and
+    /// take what it registered: its detectors and the rest, its methods and
+    /// its subscriptions.
+    pub fn load_plugin_source(&mut self, name: &str, source: &str) -> Result<String, String> {
+        let host = Arc::clone(self.plugin_host.get_or_insert_with(|| Arc::new(std::sync::Mutex::new(LuaHost::new()))));
+        let summary = host.lock().map_err(|_| "Plugin host is unavailable".to_string())?.load_source(name, source)?;
+        self.registry = Arc::new(build_registry_with(Some(&host)));
+        self.refresh_plugin_hooks();
+        Ok(summary)
     }
 
     pub fn run_plugin_action(&mut self, id: &str) {
@@ -1993,6 +2022,7 @@ impl ViewerApp {
             }
         };
         self.registry = Arc::new(build_registry_with(Some(&host)));
+        self.refresh_plugin_hooks();
         self.force_rescan();
         let failed = failed_reports(&reports);
         self.status = if failed.is_empty() {
@@ -3868,6 +3898,10 @@ impl ActionHost for ViewerApp {
 
     fn set_status(&mut self, text: &str) {
         self.status = text.to_string();
+    }
+
+    fn workspace(&mut self) -> Option<&mut dyn crate::api::Workspace> {
+        Some(self)
     }
 }
 

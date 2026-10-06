@@ -108,7 +108,11 @@ topics! {
     JobStarted(JobStarted) = "job.started", Event, "Background work started.";
     JobFinished(JobFinished) = "job.finished", Event, "Background work finished, with a one-line outcome.";
     PluginLog(PluginLog) = "plugin.log", Event, "A plugin logged a line, or one of its callbacks failed (in a background scan, say).";
+    Custom(CustomTopic) = "x.*", Event, "A plugin's own topic, named x.<plugin>.<name>, with a payload of its choosing.";
 }
+
+/// The prefix of plugins' own topics: `x.<plugin>.<name>`.
+pub const CUSTOM_PREFIX: &str = "x.";
 
 impl Topic {
     /// The topic's row in the table.
@@ -124,9 +128,40 @@ impl Topic {
         self.info().kind
     }
 
-    /// The topic called `name`.
+    /// The topic called `name`; every `x.<plugin>.<name>` is
+    /// [`Topic::Custom`].
     pub fn named(name: &str) -> Option<Topic> {
-        TOPICS.iter().find(|info| info.name == name).map(|info| info.topic)
+        if is_custom_topic(name) {
+            return Some(Topic::Custom);
+        }
+        TOPICS.iter().find(|info| info.name == name && info.topic != Topic::Custom).map(|info| info.topic)
+    }
+}
+
+/// Whether `name` is a plugin's own topic, `x.<plugin>.<name>`: lower case
+/// letters, digits and underscores in dotted parts.
+pub fn is_custom_topic(name: &str) -> bool {
+    let Some(rest) = name.strip_prefix(CUSTOM_PREFIX) else { return false };
+    let parts: Vec<&str> = rest.split('.').collect();
+    parts.len() >= 2 && parts.iter().all(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_'))
+}
+
+impl Payload {
+    /// The topic's name; a plugin's own topic is named by its payload.
+    pub fn topic_name(&self) -> &str {
+        match self {
+            Payload::Custom(custom) => &custom.name,
+            other => other.topic().name(),
+        }
+    }
+
+    /// The payload alone as JSON, as clients receive it: a plugin's own
+    /// topic carries its payload as given.
+    pub fn payload_json(&self) -> serde_json::Value {
+        match self {
+            Payload::Custom(custom) => custom.payload.clone(),
+            other => serde_json::to_value(other).map(|mut tagged| tagged["payload"].take()).unwrap_or(serde_json::Value::Null),
+        }
     }
 }
 
@@ -164,7 +199,8 @@ impl Payload {
             | Payload::ReferenceFocus(_)
             | Payload::JobStarted(_)
             | Payload::JobFinished(_)
-            | Payload::PluginLog(_) => {}
+            | Payload::PluginLog(_)
+            | Payload::Custom(_) => {}
         }
     }
 }
@@ -357,4 +393,13 @@ pub struct PluginLog {
     /// `error` for a failed callback, `info` for a line the plugin logged.
     pub level: LogLevel,
     pub text: String,
+}
+
+/// A message on a plugin's own topic.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct CustomTopic {
+    /// The topic, `x.<plugin>.<name>`.
+    pub name: String,
+    /// Whatever the plugin published.
+    pub payload: serde_json::Value,
 }

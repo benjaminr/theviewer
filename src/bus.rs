@@ -152,6 +152,11 @@ impl Message {
         self.draft.payload.topic()
     }
 
+    /// The topic's name, a plugin's own topic's included.
+    pub fn topic_name(&self) -> &str {
+        self.draft.payload.topic_name()
+    }
+
     pub fn payload(&self) -> &Payload {
         &self.draft.payload
     }
@@ -173,7 +178,7 @@ impl Message {
     /// The message as plugins and remote clients receive it: the envelope
     /// of the design, with the payload typed by its topic.
     pub fn to_json(&self) -> Value {
-        let mut envelope = serde_json::to_value(&self.draft.payload).unwrap_or(Value::Null);
+        let mut envelope = serde_json::json!({ "topic": self.topic_name(), "payload": self.draft.payload.payload_json() });
         let Some(object) = envelope.as_object_mut() else { return Value::Null };
         let draft = &self.draft;
         object.insert("id".into(), Value::String(self.id.to_string()));
@@ -662,6 +667,12 @@ mod tests {
         let mut names = std::collections::HashSet::new();
         for info in topics::TOPICS {
             assert!(names.insert(info.name), "{} is declared twice", info.name);
+            if info.topic == Topic::Custom {
+                assert_eq!(info.name, "x.*", "plugins' own topics are listed as one");
+                assert_eq!(Topic::named("x.acme.frames"), Some(Topic::Custom));
+                assert_eq!(Topic::named("x.acme"), None, "a plugin's topic has a name after the plugin's");
+                continue;
+            }
             assert!(info.name.contains('.') && info.name.chars().all(|c| c.is_ascii_lowercase() || c == '.' || c == '_'), "{}", info.name);
             assert!(info.description.ends_with('.'), "{}", info.name);
             assert_eq!(Topic::named(info.name), Some(info.topic));

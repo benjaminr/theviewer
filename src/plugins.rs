@@ -6,16 +6,26 @@
 //! an instruction budget per callback), so a broken or runaway plugin can
 //! only ever fail its own callback, never the viewer.
 //!
+//! Scripts also call the data API (`theviewer.api`), subscribe to the
+//! workspace bus's topics and publish on it, and register methods of their
+//! own that join the API's table (see [`lua_api`]).
+//!
 //! See `docs/plugins.md` for the scripting API.
+
+mod lua_api;
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
+use std::thread::ThreadId;
 
 use mlua::{AnyUserData, Function, HookTriggers, Lua, LuaOptions, RegistryKey, StdLib, Table, UserData, UserDataMethods, Value, VmState};
 
+use crate::api::{Caller, Effect, RegisteredMethod, Workspace};
 use crate::bus::topics::{LogLevel, PluginLog};
+use crate::bus::{Message, Topic};
 use crate::plugin::{Category, CodecKind, CodecPlugin, Decoded, Detector, Field, Finding, Parser, ScanContext};
+use lua_api::{Access, Binding, MethodSpec, Target};
 
 /// Memory a single script may allocate.
 const MEMORY_LIMIT_BYTES: usize = 64 * 1024 * 1024;
@@ -50,6 +60,11 @@ pub trait ActionHost {
     fn replace(&mut self, start: usize, len: usize, bytes: &[u8]);
     fn select(&mut self, start: usize, len: usize);
     fn set_status(&mut self, text: &str);
+    /// The workspace `theviewer.api` calls into during an action; none
+    /// leaves the API unavailable.
+    fn workspace(&mut self) -> Option<&mut dyn Workspace> {
+        None
+    }
 }
 
 /// Where plugins are looked for by default.
@@ -73,6 +88,10 @@ struct ScriptState {
     instructions: AtomicU64,
     /// Lines logged and callback errors, until the host collects them.
     log: Mutex<Vec<PluginLog>>,
+    /// The thread running one of the script's callbacks, if any: a callback
+    /// that calls back into its own script (through a method it registered)
+    /// is refused rather than left waiting for itself.
+    running_on: Mutex<Option<ThreadId>>,
 }
 
 impl ScriptState {
@@ -105,6 +124,7 @@ impl ScriptState {
             lua: Mutex::new(lua),
             instructions: AtomicU64::new(0),
             log: Mutex::new(Vec::new()),
+            running_on: Mutex::new(None),
         });
         state.install_instruction_budget()?;
         Ok(state)
@@ -139,9 +159,20 @@ impl ScriptState {
 
     /// Run `body` with the Lua state locked and a fresh instruction budget.
     fn with_lua<R>(&self, body: impl FnOnce(&Lua) -> Result<R, String>) -> Result<R, String> {
+        let this_thread = std::thread::current().id();
+        if self.running_on.lock().is_ok_and(|running| *running == Some(this_thread)) {
+            return Err(format!("{} called itself through the API; call its own Lua function directly instead", self.name));
+        }
         let lua = self.lua.lock().map_err(|_| "plugin state poisoned".to_string())?;
+        if let Ok(mut running) = self.running_on.lock() {
+            *running = Some(this_thread);
+        }
         self.instructions.store(0, Ordering::Relaxed);
-        body(&lua)
+        let result = body(&lua);
+        if let Ok(mut running) = self.running_on.lock() {
+            *running = None;
+        }
+        result
     }
 }
 
@@ -524,6 +555,12 @@ struct Registrations {
     parsers: Vec<(String, String, RegistryKey, RegistryKey)>,
     codecs: Vec<(String, String, CodecKind, RegistryKey, RegistryKey, Option<RegistryKey>)>,
     actions: Vec<(String, String, RegistryKey)>,
+    /// From `theviewer.plugin{ name = …, edits = … }`.
+    name: Option<String>,
+    edits: bool,
+    /// Topic and handler of each `theviewer.subscribe`.
+    subscriptions: Vec<(String, RegistryKey)>,
+    methods: Vec<MethodSpec>,
 }
 
 fn required_string(spec: &Table, key: &str) -> mlua::Result<String> {
@@ -606,6 +643,56 @@ fn install_api(lua: &Lua, state: Weak<ScriptState>) -> mlua::Result<()> {
     )?;
 
     api.set(
+        "plugin",
+        lua.create_function(|lua, spec: Table| {
+            let name = get_string(&spec, "name");
+            if let Some(name) = &name
+                && (name.is_empty() || !name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_'))
+            {
+                return Err(mlua::Error::RuntimeError(format!("a plugin's name is lower-case letters, digits and underscores, not '{name}'")));
+            }
+            let edits = spec.get::<Option<bool>>("edits")?.unwrap_or(false);
+            with_registrations(lua, |r| {
+                r.name = name;
+                r.edits = edits;
+            })
+        })?,
+    )?;
+
+    api.set(
+        "subscribe",
+        lua.create_function(|lua, (topic, handler): (String, Function)| {
+            if Topic::named(&topic).is_none() {
+                return Err(mlua::Error::RuntimeError(format!("there is no topic '{topic}' to subscribe to; api.describe lists them, and plugins' own are x.<plugin>.<name>")));
+            }
+            let handler = lua.create_registry_value(handler)?;
+            with_registrations(lua, |r| r.subscriptions.push((topic, handler)))
+        })?,
+    )?;
+
+    api.set(
+        "register_method",
+        lua.create_function(|lua, spec: Table| {
+            let name = required_string(&spec, "name")?;
+            let summary = get_string(&spec, "summary").unwrap_or_else(|| format!("{name}, from a plugin."));
+            let effect = match get_string(&spec, "effect").as_deref() {
+                None | Some("read") => Effect::Read,
+                Some("edit") => Effect::Edit,
+                Some(other) => return Err(mlua::Error::RuntimeError(format!("a method's effect is \"read\" or \"edit\", not '{other}'"))),
+            };
+            let params = lua_api::params_schema(&spec.get::<Value>("params")?).map_err(|problem| mlua::Error::RuntimeError(format!("{name}: {problem}")))?;
+            let result = match spec.get::<Value>("result")? {
+                Value::Nil => serde_json::json!({ "type": "object" }),
+                given => lua_api::params_schema(&given).map_err(|problem| mlua::Error::RuntimeError(format!("{name} result: {problem}")))?,
+            };
+            let run = required_function(lua, &spec, "run")?;
+            with_registrations(lua, |r| r.methods.push(MethodSpec { name, summary, effect, params, result, run }))
+        })?,
+    )?;
+
+    lua_api::install(lua, &api)?;
+
+    api.set(
         "log",
         lua.create_function(move |_, text: String| {
             if let Some(state) = state.upgrade() {
@@ -625,10 +712,65 @@ fn install_api(lua: &Lua, state: Weak<ScriptState>) -> mlua::Result<()> {
 /// One loaded script and everything it registered.
 struct Script {
     state: Arc<ScriptState>,
+    /// The plugin's name: the one it declared, or its file's stem. Its own
+    /// topics and methods are named after it.
+    namespace: String,
+    /// Whether it declared that its handlers edit.
+    edits: bool,
     detectors: Vec<Arc<LuaDetector>>,
     parsers: Vec<Arc<LuaParser>>,
     codecs: Vec<Arc<LuaCodec>>,
     actions: Vec<Arc<LuaAction>>,
+    subscriptions: Vec<Arc<Subscription>>,
+    methods: Vec<Arc<RegisteredMethod>>,
+}
+
+/// A plugin's name from its file name: the stem, lower case, with
+/// anything but letters, digits and underscores made an underscore.
+fn namespace_from_file(file: &str) -> String {
+    let stem = file.strip_suffix(".lua").unwrap_or(file);
+    stem.chars().map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '_' }).collect()
+}
+
+/// A handler a script subscribed to a topic with.
+pub struct Subscription {
+    state: Arc<ScriptState>,
+    /// The topic's name, a plugin's own `x.<plugin>.<name>` included.
+    pub topic: String,
+    /// The plugin's file name.
+    pub plugin: String,
+    namespace: String,
+    edits: bool,
+    handler: RegistryKey,
+}
+
+impl Subscription {
+    /// Whether this handler wants `message`.
+    pub fn wants(&self, message: &Message) -> bool {
+        message.topic_name() == self.topic
+    }
+
+    /// Run the handler for `message` against `workspace`, with the script's
+    /// budgets. Its API calls read only, unless the plugin declared edits,
+    /// when they edit within its permission. Failures are logged.
+    pub fn deliver(&self, workspace: &mut dyn Workspace, message: &Message) {
+        let access = if self.edits { Access::Checked } else { Access::ReadOnly };
+        let caller = Caller::Plugin(self.plugin.clone());
+        let result = lua_api::run_in_workspace(&self.state, workspace, caller, access, &self.namespace, Some(message.id), |lua| {
+            let handler: Function = lua.registry_value(&self.handler).map_err(|error| error.to_string())?;
+            let envelope = lua_api::json_to_lua(lua, &message.to_json()).map_err(|error| error.to_string())?;
+            let api: Table = lua.globals().get::<Table>("theviewer").and_then(|theviewer| theviewer.get("api")).map_err(|error| error.to_string())?;
+            handler.call::<()>((envelope, api)).map_err(|error| lua_error(&format!("{} handler", self.topic), error))
+        });
+        if let Err(error) = result {
+            self.state.log(LogLevel::Error, error);
+        }
+    }
+
+    /// Log that `count` messages for this handler were dropped, as it fell behind.
+    pub fn note_dropped(&self, count: usize) {
+        self.state.log(LogLevel::Error, format!("its {} handler fell behind; {count} messages were dropped", self.topic));
+    }
 }
 
 /// Loads scripts and exposes what they registered.
@@ -681,14 +823,38 @@ impl LuaHost {
             lua.remove_app_data::<Registrations>().ok_or_else(|| "registrations vanished".to_string())
         })?;
 
+        let namespace = registrations.name.clone().unwrap_or_else(|| namespace_from_file(name));
+        for method in &registrations.methods {
+            lua_api::check_method_name(&method.name, &namespace).map_err(|problem| format!("{name}: {problem}"))?;
+        }
         let summary = format!(
-            "{} detector(s), {} parser(s), {} codec(s), {} action(s)",
+            "{} detector(s), {} parser(s), {} codec(s), {} action(s), {} subscription(s), {} method(s)",
             registrations.detectors.len(),
             registrations.parsers.len(),
             registrations.codecs.len(),
-            registrations.actions.len()
+            registrations.actions.len(),
+            registrations.subscriptions.len(),
+            registrations.methods.len()
         );
+        let mut methods = Vec::with_capacity(registrations.methods.len());
+        for spec in registrations.methods {
+            if self.methods().iter().any(|known| known.name == spec.name) {
+                state.log(LogLevel::Error, format!("{} is already registered by another plugin; this one is left out", spec.name));
+                continue;
+            }
+            methods.push(Arc::new(lua_api::registered_method(spec, &state, name, &namespace)));
+        }
+        let edits = registrations.edits;
+        let subscriptions = registrations
+            .subscriptions
+            .into_iter()
+            .map(|(topic, handler)| Arc::new(Subscription { state: state.clone(), topic, plugin: name.to_string(), namespace: namespace.clone(), edits, handler }))
+            .collect();
         let script = Script {
+            namespace,
+            edits,
+            subscriptions,
+            methods,
             detectors: registrations
                 .detectors
                 .into_iter()
@@ -758,24 +924,42 @@ impl LuaHost {
             .collect()
     }
 
-    /// Run the action with `id` against `host`.
+    /// Run the action with `id` against `host`. The person ran it, so its
+    /// `theviewer.api` calls may edit without asking; its edits are
+    /// labelled with the plugin.
     pub fn run_action(&self, id: &str, host: &mut dyn ActionHost) -> Result<(), String> {
-        let action = self
+        let (script, action) = self
             .scripts
             .iter()
-            .flat_map(|script| script.actions.iter())
-            .find(|action| action.id == id)
+            .find_map(|script| script.actions.iter().find(|action| action.id == id).map(|action| (script, action)))
             .ok_or_else(|| format!("no plugin action '{id}'"))?;
         let alive = Arc::new(AtomicBool::new(true));
         let mut host_ref: &mut dyn ActionHost = host;
-        let api = ActionApi { host: (&mut host_ref as *mut &mut dyn ActionHost) as usize, alive: alive.clone() };
-        let result = action.state.with_lua(|lua| {
+        let host_pointer = (&mut host_ref as *mut &mut dyn ActionHost) as usize;
+        let api = ActionApi { host: host_pointer, alive: alive.clone() };
+        let binding = Binding::new(Target::Action(host_pointer), Caller::Plugin(script.state.name.clone()), Access::Granted, &script.namespace, &action.state);
+        let result = lua_api::run_bound(&action.state, binding, |lua| {
             let function: Function = lua.registry_value(&action.run).map_err(|e| e.to_string())?;
             let api: AnyUserData = lua.create_userdata(api).map_err(|e| e.to_string())?;
             function.call::<()>(api).map_err(|e| lua_error(&action.id, e))
         });
         alive.store(false, Ordering::Release);
         result
+    }
+
+    /// Every handler scripts subscribed to topics with.
+    pub fn subscriptions(&self) -> Vec<Arc<Subscription>> {
+        self.scripts.iter().flat_map(|script| script.subscriptions.iter().cloned()).collect()
+    }
+
+    /// Every method scripts registered, for the API's table.
+    pub fn methods(&self) -> Vec<Arc<RegisteredMethod>> {
+        self.scripts.iter().flat_map(|script| script.methods.iter().cloned()).collect()
+    }
+
+    /// The scripts that declared their handlers edit, by file name.
+    pub fn editing_plugins(&self) -> Vec<String> {
+        self.scripts.iter().filter(|script| script.edits).map(|script| script.state.name.clone()).collect()
     }
 
     /// Lines logged by scripts and errors from their callbacks, from the

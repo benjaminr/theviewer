@@ -80,7 +80,7 @@ fn show_fact(state: &mut WorkspaceState, app: &ViewerApp, ui: &mut Ui, fact: &Ar
     });
     if state.why == Some(fact.id) {
         for (depth, cause) in app.bus.cause_chain(fact).iter().enumerate().skip(1) {
-            ui.label(RichText::new(format!("{}↳ {} {} from {}", "  ".repeat(depth), cause.id, cause.topic().name(), cause.producer())).small().color(theme::TEXT_DIM));
+            ui.label(RichText::new(format!("{}↳ {} {} from {}", "  ".repeat(depth), cause.id, cause.topic_name(), cause.producer())).small().color(theme::TEXT_DIM));
         }
     }
 }
@@ -116,7 +116,7 @@ fn show_log(state: &mut WorkspaceState, app: &ViewerApp, ui: &mut Ui, select: &m
             let failed = message.payload_as::<topics::PluginLog>().is_some_and(|line| line.level == LogLevel::Error);
             ui.horizontal_wrapped(|ui| {
                 ui.label(RichText::new(message.id.to_string()).small().monospace().color(theme::TEXT_DIM));
-                ui.label(RichText::new(message.topic().name()).small().monospace());
+                ui.label(RichText::new(message.topic_name()).small().monospace());
                 ui.label(RichText::new(message.producer()).small().color(theme::TEXT_DIM));
                 span_link(ui, message, select);
                 ui.label(RichText::new(summary(message.payload(), app.document.len())).small().color(if failed { theme::DANGER } else { theme::TEXT }));
@@ -135,6 +135,9 @@ fn select_span(app: &mut ViewerApp, start: usize, len: usize) {
     app.reveal_cursor_centred();
     app.reveal_cursor_in_hex(true);
 }
+
+/// Characters of a plugin's own payload shown in the log.
+const CUSTOM_SUMMARY_CHARS: usize = 80;
 
 /// A few words on a payload, for a document `document_len` bytes long.
 fn summary(payload: &Payload, document_len: usize) -> String {
@@ -161,5 +164,9 @@ fn summary(payload: &Payload, document_len: usize) -> String {
         Payload::JobStarted(started) => started.title.clone(),
         Payload::JobFinished(finished) => format!("{}: {}", finished.title, finished.outcome),
         Payload::PluginLog(line) => format!("{}: {}", line.plugin, line.text),
+        Payload::Custom(custom) => {
+            let text = custom.payload.to_string();
+            if text.chars().count() > CUSTOM_SUMMARY_CHARS { format!("{}…", text.chars().take(CUSTOM_SUMMARY_CHARS).collect::<String>()) } else { text }
+        }
     }
 }

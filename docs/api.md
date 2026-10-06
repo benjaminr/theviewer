@@ -955,6 +955,7 @@ What tools, panels and plugins publish on the workspace bus. Facts are kept, the
 | [`job.started`](#jobstarted) | event | Background work started. |
 | [`job.finished`](#jobfinished) | event | Background work finished, with a one-line outcome. |
 | [`plugin.log`](#pluginlog) | event | A plugin logged a line, or one of its callbacks failed (in a background scan, say). |
+| [`x.*`](#x*) | event | A plugin's own topic, named x.<plugin>.<name>, with a payload of its choosing. |
 
 ### document.opened
 
@@ -1095,3 +1096,12 @@ A plugin logged a line, or one of its callbacks failed (in a background scan, sa
 | `level` | `"info"` \| `"error"` | yes | `error` for a failed callback, `info` for a line the plugin logged. |
 | `plugin` | string | yes | The plugin's file name, such as `modbus_rtu.lua`. |
 | `text` | string | yes |  |
+
+### x.*
+
+A plugin's own topic, named x.<plugin>.<name>, with a payload of its choosing.
+
+| Payload field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `name` | string | yes | The topic, `x.<plugin>.<name>`. |
+| `payload` | any | yes | Whatever the plugin published. |

@@ -107,10 +107,9 @@ pub struct PollResult {
 /// A message as the API returns it.
 fn entry(message: &Message, stale: bool) -> MessageEntry {
     let draft = &message.draft;
-    let tagged = serde_json::to_value(&draft.payload).unwrap_or(Value::Null);
     MessageEntry {
         id: message.id.to_string(),
-        topic: message.topic().name().to_string(),
+        topic: message.topic_name().to_string(),
         kind: message.topic().kind(),
         producer: draft.producer.clone(),
         document: draft.document.clone(),
@@ -119,7 +118,7 @@ fn entry(message: &Message, stale: bool) -> MessageEntry {
         confidence: draft.confidence,
         key: draft.key.clone(),
         caused_by: draft.caused_by.map(|cause| cause.to_string()),
-        payload: tagged["payload"].clone(),
+        payload: draft.payload.payload_json(),
         stale,
         retracted: draft.retracts,
     }
@@ -149,13 +148,16 @@ pub fn facts(workspace: &mut dyn Workspace, params: FactsParams) -> Result<Facts
 }
 
 pub fn poll(workspace: &mut dyn Workspace, params: PollParams) -> Result<PollResult, ApiError> {
-    let topics = params.topics.iter().flatten().map(|name| topic_named(name)).collect::<Result<Vec<Topic>, ApiError>>()?;
+    let topics = params.topics.unwrap_or_default();
+    for name in &topics {
+        topic_named(name)?;
+    }
     let limit = params.limit.unwrap_or(DEFAULT_POLL_LIMIT).clamp(1, MOST_POLLED);
     let bus = workspace.bus();
     let changes = bus.changed_since(params.cursor.unwrap_or(0));
     let mut next = bus.cursor();
     let mut messages = Vec::new();
-    for message in changes.messages.iter().filter(|message| topics.is_empty() || topics.contains(&message.topic())) {
+    for message in changes.messages.iter().filter(|message| topics.is_empty() || topics.iter().any(|name| name == message.topic_name())) {
         if messages.len() == limit {
             next = message.id.0 - 1;
             break;

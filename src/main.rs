@@ -113,10 +113,8 @@ fn parse_launch() -> Result<(Launch, Option<HeadlessOutput>), String> {
 /// JSON on stderr, with a non-zero exit code.
 fn run_api(args: &[String]) -> i32 {
     let (method, rest) = match args {
-        [flag] if flag == "--describe" => {
-            println!("{}", serde_json::to_string_pretty(&api::describe()).unwrap_or_default());
-            return 0;
-        }
+        // The methods plugins register are listed with the rest.
+        [flag] if flag == "--describe" => ("api.describe", &[][..]),
         [method, rest @ ..] if !method.starts_with('-') => (method.as_str(), rest),
         _ => {
             eprintln!("theviewer api needs a method, or --describe\n\n{USAGE}");
@@ -150,6 +148,9 @@ fn call_headless(method: &str, params: &str, file: Option<&Path>) -> Result<serd
     let params: serde_json::Value = serde_json::from_str(params).map_err(|error| ApiError::invalid_params(format!("the parameters are not JSON: {error}")))?;
     let (host, _) = app::load_plugin_host();
     let mut workspace = HeadlessWorkspace::new(Arc::new(app::build_registry_with(Some(&host))));
+    if let Ok(host) = host.lock() {
+        workspace.set_registered_methods(host.methods());
+    }
     if let Some(file) = file {
         workspace.open_path(file)?;
     }
