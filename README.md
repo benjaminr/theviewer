@@ -253,7 +253,9 @@ a question.
 
 ## Make it yours
 
-**Arrange the panels.** Every panel can be moved:
+**Arrange the panels.** The main view's tab is **Bits**, with **Packets**
+beside it, so the bytes and the packets they hold are one click apart.
+Every panel can be moved:
 
 - **Split or stack:** drag a panel's tab to the edge of another panel to put
   it beside that one, or onto its tab bar to stack it there.

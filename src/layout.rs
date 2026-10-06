@@ -34,7 +34,7 @@ impl Pane {
 
     pub fn title(self) -> &'static str {
         match self {
-            Pane::Raster => "View",
+            Pane::Raster => "Bits",
             Pane::Inspector => "Inspector",
             Pane::Findings => "Findings",
             Pane::HexDump => "Hex",
@@ -43,9 +43,16 @@ impl Pane {
         }
     }
 
+    /// The tools stacked in the tools pane: every tool but Packets, which
+    /// sits beside the bits (see [`view_tabs`]).
     fn tools() -> Vec<Pane> {
-        DockTab::ALL.iter().map(|&tab| Pane::Tool(tab)).collect()
+        DockTab::ALL.iter().filter(|&&tab| tab != DockTab::Packets).map(|&tab| Pane::Tool(tab)).collect()
     }
+}
+
+/// The tabs of the main view's pane: the bits, with the packets beside them.
+fn view_tabs() -> Vec<Pane> {
+    vec![Pane::Raster, Pane::Tool(DockTab::Packets)]
 }
 
 /// Built-in arrangements offered in the View menu.
@@ -82,7 +89,7 @@ impl Preset {
 /// The view on the left with tools beneath it; inspector, findings and hex
 /// stacked down the right.
 pub fn default_layout() -> DockState<Pane> {
-    let mut state = DockState::new(vec![Pane::Raster]);
+    let mut state = DockState::new(view_tabs());
     let surface = state.main_surface_mut();
     let [left, right] = surface.split_right(NodeIndex::root(), 0.55, vec![Pane::Inspector]);
     let [_view, tools] = surface.split_below(left, 0.66, Pane::tools());
@@ -94,7 +101,7 @@ pub fn default_layout() -> DockState<Pane> {
 
 /// The view alone on the left; everything else stacked down the right.
 pub fn everything_right() -> DockState<Pane> {
-    let mut state = DockState::new(vec![Pane::Raster]);
+    let mut state = DockState::new(view_tabs());
     let surface = state.main_surface_mut();
     let [_view, right] = surface.split_right(NodeIndex::root(), 0.5, vec![Pane::Inspector, Pane::Findings]);
     let [_inspector, lower] = surface.split_below(right, 0.3, vec![Pane::HexDump]);
@@ -106,7 +113,7 @@ pub fn everything_right() -> DockState<Pane> {
 
 /// Tools down the left, the view in the middle, inspector and hex on the right.
 pub fn tools_left() -> DockState<Pane> {
-    let mut state = DockState::new(vec![Pane::Raster]);
+    let mut state = DockState::new(view_tabs());
     let surface = state.main_surface_mut();
     let [_tools, middle] = surface.split_left(NodeIndex::root(), 0.3, Pane::tools());
     let [_view, right] = surface.split_right(middle, 0.6, vec![Pane::Inspector, Pane::Findings]);
@@ -116,7 +123,7 @@ pub fn tools_left() -> DockState<Pane> {
 
 /// Just the view and the hex dump.
 pub fn focus() -> DockState<Pane> {
-    let mut state = DockState::new(vec![Pane::Raster]);
+    let mut state = DockState::new(view_tabs());
     state.main_surface_mut().split_right(NodeIndex::root(), 0.62, vec![Pane::HexDump, Pane::Inspector]);
     state
 }
@@ -155,20 +162,51 @@ pub fn load_toolbar(path: &Path) -> Option<Vec<Vec<String>>> {
     config::read_json(path)
 }
 
+/// Version of the saved arrangement. Files written before a change to the
+/// default arrangement are brought up to date once, when they are loaded.
+/// 1: the packet viewer sits beside the bits.
+const LAYOUT_REVISION: u64 = 1;
+
 pub fn save(path: &Path, state: &DockState<Pane>) -> Result<(), String> {
-    let mut value = serde_json::to_value(state).map_err(|e| e.to_string())?;
-    zero_missing_coordinates(&mut value);
-    config::write_json(path, &value)
+    let mut dock = serde_json::to_value(state).map_err(|e| e.to_string())?;
+    zero_missing_coordinates(&mut dock);
+    config::write_json(path, &serde_json::json!({ "revision": LAYOUT_REVISION, "dock": dock }))
+}
+
+/// Move the packet viewer into the bits' pane, just after them.
+fn place_packets_beside_bits(state: &mut DockState<Pane>) {
+    let packets = Pane::Tool(DockTab::Packets);
+    if let Some(path) = state.find_tab(&packets) {
+        state.remove_tab(path);
+    }
+    for (_, leaf) in state.iter_leaves_mut() {
+        if let Some(position) = leaf.tabs.iter().position(|tab| *tab == Pane::Raster) {
+            leaf.tabs.insert(position + 1, packets);
+            if leaf.active.0 > position {
+                leaf.active.0 += 1;
+            }
+            return;
+        }
+    }
 }
 
 /// The saved arrangement, if there is a readable one that still contains the
 /// view (a layout without it would leave nothing to look at).
 pub fn load(path: &Path) -> Option<DockState<Pane>> {
     let text = std::fs::read_to_string(path).ok()?;
-    let mut value: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let saved: serde_json::Value = serde_json::from_str(&text).ok()?;
+    // Files from before revisions were recorded hold the arrangement itself.
+    let (revision, mut value) = match (saved.get("revision").and_then(serde_json::Value::as_u64), saved.get("dock")) {
+        (Some(revision), Some(dock)) => (revision, dock.clone()),
+        _ => (0, saved),
+    };
     zero_missing_coordinates(&mut value);
-    let state: DockState<Pane> = serde_json::from_value(value).ok()?;
-    state.find_tab(&Pane::Raster).is_some().then_some(state)
+    let mut state: DockState<Pane> = serde_json::from_value(value).ok()?;
+    state.find_tab(&Pane::Raster)?;
+    if revision < 1 {
+        place_packets_beside_bits(&mut state);
+    }
+    Some(state)
 }
 
 /// Panes not yet drawn have no screen rectangle: their coordinates are not
@@ -199,8 +237,10 @@ pub fn show_pane(state: &mut DockState<Pane>, pane: Pane) {
         uncollapse_containing(state, pane);
         return;
     }
+    // Tools reopen among the other tools; the packets reopen beside the bits.
     let sibling = match pane {
-        Pane::Tool(_) => state.find_tab_from(|tab| matches!(tab, Pane::Tool(_))),
+        Pane::Tool(DockTab::Packets) => state.find_tab(&Pane::Raster),
+        Pane::Tool(_) => state.find_tab_from(|tab| matches!(tab, Pane::Tool(other) if *other != DockTab::Packets)),
         _ => None,
     };
     match sibling {
@@ -471,5 +511,38 @@ mod tests {
         save_toolbar(&path, None).unwrap();
         assert_eq!(load_toolbar(&path), None);
         save_toolbar(&path, None).expect("forgetting twice is fine");
+    }
+
+    #[test]
+    fn every_preset_opens_the_packets_beside_the_bits() {
+        for preset in Preset::ALL {
+            let state = preset.build();
+            let leaf = state.iter_leaves().map(|(_, leaf)| leaf).find(|leaf| leaf.tabs.contains(&Pane::Raster)).unwrap();
+            assert_eq!(leaf.tabs, vec![Pane::Raster, Pane::Tool(DockTab::Packets)], "{preset:?}");
+            assert_eq!(leaf.active.0, 0, "{preset:?} shows the bits first");
+        }
+        assert_eq!(Pane::Raster.title(), "Bits");
+    }
+
+    #[test]
+    fn an_older_saved_layout_gets_the_packets_beside_the_bits_once() {
+        let path = std::env::temp_dir().join(format!("theviewer-layout-revision-{}.json", std::process::id()));
+        // An arrangement saved before revisions: the packets among the tools.
+        let mut old = DockState::new(vec![Pane::Raster]);
+        old.main_surface_mut().split_below(NodeIndex::root(), 0.6, vec![Pane::Tool(DockTab::Report), Pane::Tool(DockTab::Packets)]);
+        let mut value = serde_json::to_value(&old).unwrap();
+        zero_missing_coordinates(&mut value);
+        std::fs::write(&path, serde_json::to_string(&value).unwrap()).unwrap();
+
+        let migrated = load(&path).expect("an old file still loads");
+        let bits_leaf = migrated.iter_leaves().map(|(_, leaf)| leaf).find(|leaf| leaf.tabs.contains(&Pane::Raster)).unwrap();
+        assert_eq!(bits_leaf.tabs, vec![Pane::Raster, Pane::Tool(DockTab::Packets)]);
+
+        // Once saved with a revision, a packets tab moved elsewhere stays put.
+        save(&path, &old).unwrap();
+        let kept = load(&path).unwrap();
+        let bits_leaf = kept.iter_leaves().map(|(_, leaf)| leaf).find(|leaf| leaf.tabs.contains(&Pane::Raster)).unwrap();
+        assert_eq!(bits_leaf.tabs, vec![Pane::Raster], "the person's own arrangement is respected");
+        std::fs::remove_file(&path).ok();
     }
 }
