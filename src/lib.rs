@@ -21,6 +21,7 @@ pub mod columns;
 pub mod commands;
 pub mod compress;
 pub mod config;
+pub mod corpus;
 pub mod correlation;
 pub mod cortex_m;
 pub mod cpu_detect;
