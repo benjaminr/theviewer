@@ -557,7 +557,9 @@ pub fn reference_markdown() -> String {
     out.push_str("\n\n");
     out.push_str("<!-- Generated from the method table in src/api.rs by `cargo run --bin api_docs`. Do not edit by hand. -->\n\n");
     out.push_str(
-        "Every method can be called from the command line (`theviewer api METHOD '{json params}' FILE`), \
+        "Every method can be called from the command line (`theviewer api METHOD '{json params}' FILE`; \
+with `--save`, the file is saved with the call's edits, so `--save history.transaction` edits and saves \
+in one command), \
 Lua plugins call them as `theviewer.api.<namespace>.<method>{…}`, Ask uses the methods that read \
 or edit as its tools, and `theviewer mcp FILE…` offers every method to MCP clients such as Claude \
 Code as a tool named with underscores for dots (`bytes_read`), with resources for each document \

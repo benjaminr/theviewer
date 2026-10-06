@@ -27,14 +27,15 @@ const EXIT_FAILURE: i32 = 1;
 const USAGE: &str = "\
 usage: theviewer [FILE] [--format NAME] [--palette NAME] [--width PIXELS] [--offset BYTES] [--cursor BYTES] [--zoom FACTOR] [--detect] [--open] [--tool NAME] [--layout NAME]
        theviewer FILE --report | --json
-       theviewer api METHOD ['{JSON PARAMS}'] [FILE]
+       theviewer api [--save] METHOD ['{JSON PARAMS}'] [FILE]
        theviewer api --describe
        theviewer mcp [--plugins DIR]... [--output-schemas] [FILE...]
 
   --report   print a plain-text report of FILE without opening a window
   --json     print the same report as JSON, for scripts and CI
   api        run one data API method on FILE without opening a window and print its JSON
-             result; --describe prints every method with its schemas (see docs/api.md)
+             result; --save then saves FILE with the method's edits (use history.transaction
+             for several edits); --describe prints every method with its schemas (see docs/api.md)
   mcp        serve the files over the Model Context Protocol on standard input and output,
              for Claude Code and other MCP clients; --plugins loads plugins from DIR instead
              of ./plugins and ~/.config/theviewer/plugins; --output-schemas lists each tool's
@@ -118,7 +119,9 @@ fn parse_launch() -> Result<(Launch, Option<HeadlessOutput>), String> {
 /// process exit code. The result is printed as JSON; an error is printed as
 /// JSON on stderr, with a non-zero exit code.
 fn run_api(args: &[String]) -> i32 {
-    let (method, rest) = match args {
+    let save = args.iter().any(|arg| arg == "--save");
+    let args: Vec<String> = args.iter().filter(|arg| *arg != "--save").cloned().collect();
+    let (method, rest) = match args.as_slice() {
         // The methods plugins register are listed with the rest.
         [flag] if flag == "--describe" => ("api.describe", &[][..]),
         [method, rest @ ..] if !method.starts_with('-') => (method.as_str(), rest),
@@ -137,7 +140,7 @@ fn run_api(args: &[String]) -> i32 {
             return EXIT_USAGE;
         }
     };
-    match call_headless(method, params, file.map(Path::new)) {
+    match call_headless(method, params, file.map(Path::new), save) {
         Ok(result) => {
             println!("{}", serde_json::to_string_pretty(&result).unwrap_or_default());
             0
@@ -149,8 +152,9 @@ fn run_api(args: &[String]) -> i32 {
     }
 }
 
-/// Run one API method in a workspace holding just `file`, if given.
-fn call_headless(method: &str, params: &str, file: Option<&Path>) -> Result<serde_json::Value, ApiError> {
+/// Run one API method in a workspace holding just `file`, if given; with
+/// `save`, then save the edits it made over the file, as one more call.
+fn call_headless(method: &str, params: &str, file: Option<&Path>, save: bool) -> Result<serde_json::Value, ApiError> {
     let params: serde_json::Value = serde_json::from_str(params).map_err(|error| ApiError::invalid_params(format!("the parameters are not JSON: {error}")))?;
     let (host, _) = app::load_plugin_host();
     let mut workspace = HeadlessWorkspace::new(Arc::new(app::build_registry_with(Some(&host))));
@@ -160,7 +164,11 @@ fn call_headless(method: &str, params: &str, file: Option<&Path>) -> Result<serd
     if let Some(file) = file {
         workspace.open_path(file)?;
     }
-    api::call(&mut workspace, &api::Caller::Cli, method, params)
+    let result = api::call(&mut workspace, &api::Caller::Cli, method, params)?;
+    if save && workspace.documents().iter().any(|document| document.current && document.modified) {
+        api::call(&mut workspace, &api::Caller::Cli, "documents.save", serde_json::json!({}))?;
+    }
+    Ok(result)
 }
 
 /// Run `theviewer mcp …` (the arguments after `mcp`) until the client

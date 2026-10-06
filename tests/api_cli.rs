@@ -78,6 +78,21 @@ fn the_command_line_may_edit_and_runs_methods_plugins_registered() {
 }
 
 #[test]
+fn one_command_edits_and_saves_the_file_when_asked_to() {
+    let path = temp_file("save.bin", &[1, 2, 3, 4]);
+    let file = path.to_str().unwrap();
+    let transaction = r#"{"calls": [{"method": "bytes.write", "params": {"start": 0, "data": "ff"}}, {"method": "bytes.insert", "params": {"at": 4, "data": "0a"}}]}"#;
+    let saved = theviewer(&["api", "--save", "history.transaction", transaction, file]);
+    assert!(saved.status.success(), "{}", String::from_utf8_lossy(&saved.stderr));
+    assert_eq!(json_of(&saved.stdout)["len"], 5, "the transaction's result is printed");
+    assert_eq!(std::fs::read(&path).unwrap(), [0xFF, 2, 3, 4, 0x0A], "both edits are saved");
+
+    let read = theviewer(&["api", "--save", "bytes.read", r#"{"start": 0, "len": 1}"#, file]);
+    assert!(read.status.success(), "a call that edits nothing leaves the file alone");
+    std::fs::remove_file(path).ok();
+}
+
+#[test]
 fn a_command_without_a_method_is_a_usage_error() {
     let output = theviewer(&["api"]);
     assert_eq!(output.status.code(), Some(2));
