@@ -35,7 +35,7 @@ use crate::api::workspace::WINDOW_DOCUMENT_ID;
 use crate::app::ViewerApp;
 use crate::bus::topics::{FramesDefined, ProtocolIdentified};
 use crate::bus::window::job_finished;
-use crate::bus::{Draft, Payload, Publisher};
+use crate::bus::{Draft, Message, Payload, Publisher};
 use crate::dock::DockTab;
 use crate::packets::sources::{self, CaptureLocation, MarkerMode, Recipe};
 use crate::packets::{self, Detection, Dissection, Flow, FrameProtocol, Layer, LinkKind, PacketSet, RawFrames, SetHints, Summary};
@@ -43,6 +43,7 @@ use crate::parsers::captures::{CAPTURE_FINDING_IDS, GZIP_CAPTURE_FINDING_ID};
 use crate::panel_packets_grid::{self as grid, GridState};
 use crate::panel_packets_tshark::{self as tshark_view, TsharkState};
 use crate::panel_packets_view as view;
+use crate::panels;
 use crate::plugin::{Category, Finding};
 use crate::templates::{self, Template};
 use crate::theme;
@@ -329,7 +330,6 @@ pub struct PacketsState {
     pub(crate) operation_on_field: bool,
     awaiting_protocol: bool,
     pub(crate) note: Option<Note>,
-    last_main_selection: Option<(usize, Option<usize>)>,
     pub(crate) scroll_to_row: Option<usize>,
     /// Whether the pointer was over the packet list last frame; the list is
     /// not scrolled under the user's hand.
@@ -930,15 +930,19 @@ fn refresh_detail(state: &mut PacketsState, app: &mut ViewerApp) {
     });
 }
 
+/// When the selection changes, unless the packet viewer made the change
+/// itself, follow it. Runs whether or not the panel is showing.
+pub fn follow_selection(app: &mut ViewerApp, message: &Arc<Message>) {
+    if app.bus.caused_by_producer(message, PACKETS_PRODUCER) {
+        return;
+    }
+    panels::with(app, |panels| &mut panels.packets, |state, app| follow_main_selection(state, app));
+}
+
 /// When the main view's cursor moves into a packet, select that packet (and
 /// note the field under the cursor), scrolling the list only when the user
 /// is not working in it.
 fn follow_main_selection(state: &mut PacketsState, app: &ViewerApp) {
-    let current = (app.cursor, app.anchor);
-    if state.last_main_selection == Some(current) {
-        return;
-    }
-    state.last_main_selection = Some(current);
     let position = app.selection().map_or(app.cursor, |(start, _)| start);
     let Some(index) = state.packet_at(position) else {
         state.cursor_in_packet = None;
@@ -1010,17 +1014,17 @@ pub(crate) fn layers_at(app: &mut ViewerApp, position: usize) -> Option<PacketLa
     Some(PacketLayers::from_dissection(packet.offset, packet.len, &dissection))
 }
 
-/// Note the main view's selection as one the panel made, so it is not
+/// Publish the main view's selection as one the panel made, so it is not
 /// followed back.
-pub(crate) fn remember_main_selection(state: &mut PacketsState, app: &ViewerApp) {
-    state.last_main_selection = Some((app.cursor, app.anchor));
+pub(crate) fn claim_main_selection(app: &mut ViewerApp) {
+    app.publish_selection(PACKETS_PRODUCER);
 }
 
 /// Select document bytes in the main view and bring them into view.
-pub(crate) fn select_in_document(state: &mut PacketsState, app: &mut ViewerApp, start: usize, len: usize, title: String) {
+pub(crate) fn select_in_document(app: &mut ViewerApp, start: usize, len: usize, title: String) {
     let finding = Finding::new("packet", "packets", Category::Protocol, start, len.max(1)).title(title);
     app.select_pattern(&finding);
-    remember_main_selection(state, app);
+    claim_main_selection(app);
 }
 
 fn poll_protocol_wait(state: &mut PacketsState, app: &mut ViewerApp, ctx: &egui::Context) {
@@ -1116,7 +1120,6 @@ pub fn show_packets(state: &mut PacketsState, app: &mut ViewerApp, ui: &mut Ui) 
         start_dissection(state, app, set);
     }
     follow_document(state, app, &ctx);
-    follow_main_selection(state, app);
     refresh_filter(state);
     tshark_view::decode_automatically(state, app);
     refresh_detail(state, app);
@@ -1429,7 +1432,14 @@ mod tests {
         let mut app = ViewerApp::new(Launch::default());
         app.document = Document::from_bytes(bytes);
         Harness::builder().with_size(egui::vec2(1100.0, 900.0)).build_ui_state(
-            |ui, (state, app): &mut (PacketsState, ViewerApp)| show_packets(state, app, ui),
+            |ui, (state, app): &mut (PacketsState, ViewerApp)| {
+                // The app delivers the bus before drawing; its reactions
+                // reach the panel's state where the app keeps it.
+                std::mem::swap(state, &mut app.bench.panels.packets);
+                app.run_bus();
+                std::mem::swap(state, &mut app.bench.panels.packets);
+                show_packets(state, app, ui)
+            },
             (PacketsState::default(), app),
         )
     }
@@ -1562,6 +1572,51 @@ mod tests {
         let state = &harness.state().0;
         assert_eq!(state.focused_packet(), Some(1));
         assert_eq!(state.cursor_in_packet, Some(22));
+    }
+
+    /// Move the panel's state into the app, as when the panel is not drawn.
+    fn hide_panel(harness: &mut PanelHarness) {
+        let state = std::mem::take(&mut harness.state_mut().0);
+        harness.state_mut().1.bench.panels.packets = state;
+    }
+
+    #[test]
+    fn packets_follow_the_main_cursor_even_while_the_panel_is_hidden() {
+        let (document, at) = document_with_capture();
+        let mut harness = harness_for(document);
+        load_capture_into(&mut harness, at);
+        settle(&mut harness);
+        let third = harness.state().0.packet_set().unwrap().packets[2].clone();
+        hide_panel(&mut harness);
+        let app = &mut harness.state_mut().1;
+        app.set_cursor(third.offset + 3, false);
+        app.run_bus();
+        assert_eq!(app.bench.panels.packets.focused_packet(), Some(2));
+        assert_eq!(app.bench.panels.packets.cursor_in_packet, Some(3));
+    }
+
+    #[test]
+    fn a_selection_the_packet_viewer_made_is_not_followed_back() {
+        let (document, at) = document_with_capture();
+        let mut harness = harness_for(document);
+        load_capture_into(&mut harness, at);
+        settle(&mut harness);
+        hide_panel(&mut harness);
+        let app = &mut harness.state_mut().1;
+        let third = app.bench.panels.packets.packet_set().unwrap().packets[2].clone();
+        app.bench.panels.packets.focus = Some(0);
+        select_in_document(app, third.offset, 4, "Bytes".to_string());
+        app.run_bus();
+        assert_eq!(app.bench.panels.packets.focused_packet(), Some(0), "the viewer's own selection leaves its focus be");
+        let changed = app.bus.recent().rev().find(|message| message.topic() == crate::bus::Topic::SelectionChanged).unwrap();
+        assert_eq!(changed.producer(), PACKETS_PRODUCER);
+
+        // The same bytes selected in the main view are followed.
+        app.set_cursor(0, false);
+        app.run_bus();
+        app.select_ranges(vec![(third.offset, 4)], None);
+        app.run_bus();
+        assert_eq!(app.bench.panels.packets.focused_packet(), Some(2));
     }
 
     #[test]

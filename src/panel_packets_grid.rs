@@ -1097,7 +1097,7 @@ fn handle_pointer(state: &mut PacketsState, app: &mut ViewerApp, ui: &Ui, respon
         if let Some(Drag::Bytes { .. }) = state.grid.drag
             && let Some((start, len)) = app.selection()
         {
-            panel::select_in_document(state, app, start, len, format!("{len} bytes"));
+            panel::select_in_document(app, start, len, format!("{len} bytes"));
         }
         state.grid.drag = None;
     }
@@ -1173,7 +1173,7 @@ fn drag_to(state: &mut PacketsState, app: &mut ViewerApp, geometry: &Geometry, c
             let byte = placement.offset + within;
             app.anchor = Some(anchor.min(byte));
             app.cursor = (anchor.max(byte) + 1).min(app.document.len());
-            panel::remember_main_selection(state, app);
+            panel::claim_main_selection(app);
         }
     }
 }
@@ -1186,10 +1186,10 @@ fn click_cell(state: &mut PacketsState, app: &mut ViewerApp, row: usize, column:
     if modifiers.shift {
         let anchor = app.anchor.unwrap_or(app.cursor);
         let (start, end) = (anchor.min(offset), (anchor.max(offset + 1)));
-        panel::select_in_document(state, app, start, end - start, format!("{} bytes", end - start));
+        panel::select_in_document(app, start, end - start, format!("{} bytes", end - start));
     } else {
         state.selected = std::collections::BTreeSet::from([packet]);
-        panel::select_in_document(state, app, offset, 1, format!("Packet {} +{}", packet + 1, offset - state.grid.rows.placements[row].offset));
+        panel::select_in_document(app, offset, 1, format!("Packet {} +{}", packet + 1, offset - state.grid.rows.placements[row].offset));
     }
     state.focus = Some(packet);
     state.cursor_in_packet = Some(offset - state.grid.rows.placements[row].offset);

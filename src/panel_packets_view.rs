@@ -203,7 +203,7 @@ fn select_packets_in_document(state: &mut PacketsState, app: &mut ViewerApp) {
     let range = |index: usize| set.packets.get(index).map(|packet| (packet.offset, packet.len));
     let ranges = state.selected.iter().filter_map(|&index| range(index)).collect();
     app.select_ranges(ranges, state.focus.and_then(range));
-    panel::remember_main_selection(state, app);
+    panel::claim_main_selection(app);
 }
 
 /// Make `index` the packet shown in detail and select its bytes.
@@ -215,7 +215,7 @@ fn focus_packet(state: &mut PacketsState, app: &mut ViewerApp, index: usize) {
     }
     state.focus = Some(index);
     if let Some(packet) = state.set.as_ref().and_then(|set| set.packets.get(index)).cloned() {
-        panel::select_in_document(state, app, packet.offset, packet.len, format!("Packet {}", index + 1));
+        panel::select_in_document(app, packet.offset, packet.len, format!("Packet {}", index + 1));
     }
 }
 
@@ -389,7 +389,7 @@ pub fn delete_selected_packets(state: &mut PacketsState, app: &mut ViewerApp) {
         }
     }
     app.set_cursor(start.min(app.document.len()), false);
-    panel::remember_main_selection(state, app);
+    panel::claim_main_selection(app);
     if set.recipe == packets::sources::Recipe::Fixed
         && let Some(shown) = &mut state.set
     {
@@ -555,7 +555,7 @@ fn act_on_tree(state: &mut PacketsState, app: &mut ViewerApp, action: TreeAction
             state.selected_field = Some((offset, len));
             state.hex.position = offset;
             state.hex.pending_low_nibble = false;
-            panel::select_in_document(state, app, packet_offset + offset, len, name);
+            panel::select_in_document(app, packet_offset + offset, len, name);
         }
         TreeAction::Reference { offset, len, name } => {
             act_on_tree(state, app, TreeAction::Select { offset, len, name: name.clone() }, packet_offset);
@@ -713,7 +713,7 @@ fn show_hex_editor(state: &mut PacketsState, app: &mut ViewerApp, ui: &mut Ui, b
     {
         state.hex = panel::HexCursor { position, pending_low_nibble: false };
         response.request_focus();
-        panel::select_in_document(state, app, packet_offset + position, 1, format!("Byte +{position}"));
+        panel::select_in_document(app, packet_offset + position, 1, format!("Byte +{position}"));
     }
     if response.has_focus() {
         ui.memory_mut(|memory| {

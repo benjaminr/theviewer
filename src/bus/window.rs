@@ -44,6 +44,7 @@ pub struct Reaction {
 /// The reactions built into the app.
 pub fn builtin_reactions() -> Vec<Reaction> {
     vec![
+        Reaction { topic: Topic::SelectionChanged, name: "Packets follows the selection", react: crate::panel_packets::follow_selection },
         Reaction { topic: Topic::PluginLog, name: "The status bar shows plugin errors", react: show_plugin_error },
     ]
 }
