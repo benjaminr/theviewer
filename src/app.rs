@@ -499,8 +499,6 @@ pub fn build_registry_with(host: Option<&SharedLuaHost>) -> Registry {
 
 /// What to do with the path a file dialog returns.
 pub enum FileAction {
-    Open,
-    SaveAs,
     /// Write the selection or stream at the cursor, or its decompressed contents.
     Extract { decompressed: bool },
     /// Compare the document with the chosen file.
@@ -889,8 +887,10 @@ impl ViewerApp {
         }
     }
 
+    /// Ask for a file and open it in place of what is shown, as
+    /// `documents.open`.
     pub fn open_dialog(&mut self) {
-        self.ask_for_file(DialogKind::Open, rfd::AsyncFileDialog::new().set_title("Open file"), FileAction::Open);
+        self.open_dialog_then_call("Open file", "documents.open", serde_json::json!({ "discard_unsaved": true }), "path");
     }
 
     /// Show a file dialog without blocking the window; `action` runs when a
@@ -919,9 +919,6 @@ impl ViewerApp {
 
     fn complete_file_action(&mut self, action: FileAction, path: &Path) {
         match action {
-            FileAction::Open => self.load_path(path),
-            // The status bar says whether saving worked.
-            FileAction::SaveAs => drop(self.save_to(path)),
             FileAction::Extract { decompressed: true } => self.export_decompressed_to(path),
             FileAction::Extract { decompressed: false } => self.export_bytes_to(path),
             FileAction::Compare => {
@@ -943,20 +940,19 @@ impl ViewerApp {
         }
     }
 
+    /// Save over the file, as `documents.save`; a document with no file yet
+    /// asks where.
     pub fn save(&mut self) {
-        self.save_sidecar();
-        match self.document.path().map(Path::to_path_buf) {
-            Some(path) => drop(self.save_to(&path)),
+        match self.document.path() {
+            Some(_) => drop(self.perform("documents.save", serde_json::json!({}))),
             None => self.save_as_dialog(),
         }
     }
 
+    /// Ask where to save, then save there as `documents.save`.
     pub fn save_as_dialog(&mut self) {
-        let mut dialog = rfd::AsyncFileDialog::new().set_title("Save as");
-        if let Some(name) = self.document.path().and_then(|p| p.file_name()) {
-            dialog = dialog.set_file_name(name.to_string_lossy());
-        }
-        self.ask_for_file(DialogKind::Save, dialog, FileAction::SaveAs);
+        let name = self.document.path().and_then(Path::file_name).map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
+        self.save_dialog_then_call("Save as", &name, "documents.save", serde_json::json!({}), "path");
     }
 
     /// Save the document to `path` and say so in the status bar; the error
@@ -2520,7 +2516,7 @@ impl ViewerApp {
         if self.parents.is_empty() {
             self.decompress_to_new_document();
         } else {
-            self.back_to_parent();
+            self.go_back_to_parent();
         }
     }
 
@@ -2990,7 +2986,7 @@ impl ViewerApp {
             self.save();
         }
         if ctx.input_mut(|i| i.consume_key(cmd, Key::N)) {
-            self.new_document();
+            self.open_new_document();
         }
         if ctx.input_mut(|i| i.consume_key(cmd, Key::D)) {
             self.toggle_compressed_view();
@@ -3045,7 +3041,7 @@ impl ViewerApp {
             self.media.toggle_play();
         }
         if ctx.input_mut(|i| i.consume_key(cmd, Key::OpenBracket)) {
-            self.back_to_parent();
+            self.go_back_to_parent();
         }
         if text_field_focused {
             return;
@@ -3217,7 +3213,7 @@ impl ViewerApp {
     fn handle_dropped_files(&mut self, ctx: &Context) {
         let dropped = ctx.input(|i| i.raw.dropped_files.first().map(|file| file.path().to_path_buf()));
         if let Some(path) = dropped {
-            self.load_path(&path);
+            self.open_file(&path);
         }
     }
 
@@ -3228,7 +3224,7 @@ impl ViewerApp {
     fn show_menu_bar(&mut self, ui: &mut egui::Ui) {
         egui::MenuBar::new().ui(ui, |ui| {
             ui.menu_button("File", |ui| {
-                if ui.button("New   Cmd+N").clicked() { self.new_document(); ui.close(); }
+                if ui.button("New   Cmd+N").clicked() { self.open_new_document(); ui.close(); }
                 if ui.button("Open…   Cmd+O").clicked() { self.open_dialog(); ui.close(); }
                 if ui.button("Save   Cmd+S").clicked() { self.save(); ui.close(); }
                 if ui.button("Save as…   Shift+Cmd+S").clicked() { self.save_as_dialog(); ui.close(); }
@@ -3260,7 +3256,7 @@ impl ViewerApp {
                         if ui.button(codec.label()).clicked() { self.compress_selection(codec); ui.close(); }
                     }
                 });
-                if ui.add_enabled(!self.parents.is_empty(), egui::Button::new("Back to parent document   Cmd+[")).clicked() { self.back_to_parent(); ui.close(); }
+                if ui.add_enabled(!self.parents.is_empty(), egui::Button::new("Back to parent document   Cmd+[")).clicked() { self.go_back_to_parent(); ui.close(); }
             });
             ui.menu_button("Go", |ui| {
                 if ui.button("Command palette   Cmd+K").clicked() { self.palette.toggle(); ui.close(); }
@@ -3805,7 +3801,7 @@ impl ViewerApp {
             if !self.parents.is_empty()
                 && ui.button("Back").on_hover_text("Return to the document this was decompressed from (Cmd+[)").clicked()
             {
-                self.back_to_parent();
+                self.go_back_to_parent();
             }
             ui.label(RichText::new(self.display_name()).strong());
             ui.label(RichText::new(human_size(self.document.len())).color(dim));

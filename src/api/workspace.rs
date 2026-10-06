@@ -93,6 +93,23 @@ pub trait Workspace {
     /// Open a new empty document called `name` and make it current,
     /// returning its id.
     fn new_document(&mut self, name: &str) -> Result<String, ApiError>;
+    /// [`Workspace::open_path`], but documents it closes are closed even
+    /// with unsaved edits, which are lost, as the window's File › Open
+    /// does; the file is opened again even when it is already open. Only
+    /// for the person at the window.
+    fn open_path_discarding(&mut self, path: &Path) -> Result<String, ApiError> {
+        self.open_path(path)
+    }
+    /// [`Workspace::switch_to`], losing unsaved edits in what it closes, as
+    /// the window's Back does.
+    fn switch_to_discarding(&mut self, id: &str) -> Result<(), ApiError> {
+        self.switch_to(id)
+    }
+    /// [`Workspace::new_document`], losing unsaved edits in what it closes,
+    /// as the window's File › New does.
+    fn new_document_discarding(&mut self, name: &str) -> Result<String, ApiError> {
+        self.new_document(name)
+    }
     /// Open `bytes` as a document called `name` derived from the open
     /// document `parent` (a selection, a decoded stream, a packet), make it
     /// current and return its id. The window keeps the parent waiting
@@ -568,6 +585,35 @@ impl Workspace for ViewerApp {
             self.back_to_parent();
         }
         Ok(())
+    }
+
+    /// The file is opened in place of every document shown, whatever they
+    /// hold, as File › Open always has.
+    fn open_path_discarding(&mut self, path: &Path) -> Result<String, ApiError> {
+        let before = self.document_id();
+        self.load_path(path);
+        if self.document_id() == before {
+            // The status bar says why, as "Failed to open …".
+            let mut reason = self.status.chars();
+            let reason: String = reason.next().map(|first| first.to_lowercase().chain(reason).collect()).unwrap_or_default();
+            return Err(ApiError::not_found(reason));
+        }
+        Ok(self.document_id())
+    }
+
+    fn switch_to_discarding(&mut self, id: &str) -> Result<(), ApiError> {
+        if id != self.document_id && !self.parents.iter().any(|parent| parent.id == id) {
+            return Err(ApiError::not_found(format!("document '{id}' has closed")));
+        }
+        while self.document_id != id {
+            self.back_to_parent();
+        }
+        Ok(())
+    }
+
+    fn new_document_discarding(&mut self, _name: &str) -> Result<String, ApiError> {
+        ViewerApp::new_document(self);
+        Ok(self.document_id())
     }
 
     /// Messages are delivered once per frame, before the API is called.

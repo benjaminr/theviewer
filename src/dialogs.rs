@@ -84,11 +84,15 @@ impl FileRequest {
 
 impl ViewerApp {
     /// Ask where to save (the dialog titled `title`, suggesting
-    /// `default_name`), then call `method` with `params` and the chosen path
-    /// as `params[path_field]`, as the person's action: the dialog is the
-    /// window's, the writing is the API's, so it is journalled.
+    /// `default_name`, unless it is empty), then call `method` with `params`
+    /// and the chosen path as `params[path_field]`, as the person's action:
+    /// the dialog is the window's, the writing is the API's, so it is
+    /// journalled.
     pub fn save_dialog_then_call(&mut self, title: &str, default_name: &str, method: &str, params: Value, path_field: &str) {
-        let dialog = AsyncFileDialog::new().set_title(title).set_file_name(default_name);
+        let mut dialog = AsyncFileDialog::new().set_title(title);
+        if !default_name.is_empty() {
+            dialog = dialog.set_file_name(default_name);
+        }
         self.ask_for_file(DialogKind::Save, dialog, FileAction::Call { method: method.to_string(), params, path_field: path_field.to_string() });
     }
 

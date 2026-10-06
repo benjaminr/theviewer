@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use super::values::{self, ByteEncoding, NoParams};
 use super::workspace::{self, DocumentInfo, Workspace};
 use super::ApiError;
+use super::permissions::Caller;
 use crate::selection_ops::{self, Operation};
 
 /// This module's methods, in the order `api.describe` lists them within
@@ -15,8 +16,8 @@ use crate::selection_ops::{self, Operation};
 pub(super) const METHODS: &[super::Method] = &[
     method!("documents.list", Read, list, super::values::NoParams, DocumentList, "The open documents, with their ids, names, paths, lengths and versions."),
     method!("documents.info", Read, info, InfoParams, super::workspace::DocumentInfo, "One document's id, name, path, length, version and whether it has unsaved edits."),
-    method!("documents.open", View, open, OpenParams, super::workspace::DocumentInfo, "Open a file by path, or an open document by id, and make it current; a file already open is made current again. In the window, a parent of the document shown is gone back to, closing what was derived from it."),
-    method!("documents.new", View, new, NewParams, super::workspace::DocumentInfo, "Open a new, empty document and make it current; the window refuses while its document has unsaved edits."),
+    method!("documents.open", View, caller open, OpenParams, super::workspace::DocumentInfo, "Open a file by path, or an open document by id, and make it current; a file already open is made current again. In the window, a parent of the document shown is gone back to, closing what was derived from it; that, or opening another file, is refused while what it closes has unsaved edits, unless the person at the window discards them."),
+    method!("documents.new", View, caller new, NewParams, super::workspace::DocumentInfo, "Open a new, empty document and make it current; the window refuses while its document has unsaved edits, unless the person at the window discards them."),
     method!("documents.save", Edit, save, SaveParams, super::workspace::DocumentInfo, "Save a document over its file, or to a path, with every edit made so far."),
     method!("documents.derive", View, derive, DeriveParams, super::workspace::DocumentInfo, "Open bytes of a document (a span, several ranges one after another, or bytes given), or what a transform such as decompress or XOR makes of them, as a document of their own derived from it, and make it current; in the window, Back goes back to the parent."),
 ];
@@ -94,6 +95,10 @@ pub struct OpenParams {
     /// derived the document shown from.
     #[serde(default)]
     pub doc: Option<String>,
+    /// In the window, close documents with unsaved edits, losing them, as
+    /// File › Open and Back do; only the person at the window may.
+    #[serde(default)]
+    pub discard_unsaved: bool,
 }
 
 /// Parameters of `documents.save`.
@@ -115,6 +120,10 @@ pub struct NewParams {
     /// What to call the document ("untitled" by default).
     #[serde(default)]
     pub name: Option<String>,
+    /// In the window, close documents with unsaved edits, losing them, as
+    /// File › New does; only the person at the window may.
+    #[serde(default)]
+    pub discard_unsaved: bool,
 }
 
 /// Parameters of `documents.derive`: which bytes, given exactly one way
@@ -204,8 +213,9 @@ pub fn save(workspace: &mut dyn Workspace, params: SaveParams) -> Result<Documen
     workspace::info(workspace, &id)
 }
 
-pub fn new(workspace: &mut dyn Workspace, params: NewParams) -> Result<DocumentInfo, ApiError> {
-    let id = workspace.new_document(params.name.as_deref().unwrap_or("untitled"))?;
+pub fn new(workspace: &mut dyn Workspace, caller: &Caller, params: NewParams) -> Result<DocumentInfo, ApiError> {
+    let name = params.name.as_deref().unwrap_or("untitled");
+    let id = if may_discard(caller, params.discard_unsaved)? { workspace.new_document_discarding(name)? } else { workspace.new_document(name)? };
     workspace::info(workspace, &id)
 }
 
@@ -218,17 +228,53 @@ pub fn info(workspace: &mut dyn Workspace, params: InfoParams) -> Result<Documen
     workspace::info(workspace, &id)
 }
 
-pub fn open(workspace: &mut dyn Workspace, params: OpenParams) -> Result<DocumentInfo, ApiError> {
+pub fn open(workspace: &mut dyn Workspace, caller: &Caller, params: OpenParams) -> Result<DocumentInfo, ApiError> {
+    let discard = may_discard(caller, params.discard_unsaved)?;
     let id = match (params.path, params.doc) {
+        (Some(path), None) if discard => workspace.open_path_discarding(Path::new(&path))?,
         (Some(path), None) => workspace.open_path(Path::new(&path))?,
         (None, Some(doc)) => {
             let id = workspace::resolve(workspace, Some(&doc))?;
-            workspace.switch_to(&id)?;
+            if discard { workspace.switch_to_discarding(&id)? } else { workspace.switch_to(&id)? }
             id
         }
         _ => return Err(ApiError::invalid_params("give the file to open as path, or an open document's id as doc, not both")),
     };
     workspace::info(workspace, &id)
+}
+
+/// The person's file actions in the window, each a `documents.*` step.
+/// Like the File menu always has, they close what is shown even with
+/// unsaved edits.
+impl crate::app::ViewerApp {
+    /// Open the file at `path` (dropped on the window, say) in place of
+    /// what is shown.
+    pub fn open_file(&mut self, path: &Path) {
+        let _ = self.perform("documents.open", serde_json::json!({ "path": path.display().to_string(), "discard_unsaved": true }));
+    }
+
+    /// Open a new, empty document in place of what is shown.
+    pub fn open_new_document(&mut self) {
+        let _ = self.perform("documents.new", serde_json::json!({ "discard_unsaved": true }));
+    }
+
+    /// Go back to the document the one shown was derived from.
+    pub fn go_back_to_parent(&mut self) {
+        let Some(parent) = self.parents.last().map(|parent| parent.id.clone()) else {
+            self.status = "Already at the top-level document".to_string();
+            return;
+        };
+        let _ = self.perform("documents.open", serde_json::json!({ "doc": parent, "discard_unsaved": true }));
+    }
+}
+
+/// Whether a call may discard unsaved edits: only the person at the window
+/// may ask to, as the File menu and Back do.
+fn may_discard(caller: &Caller, discard_unsaved: bool) -> Result<bool, ApiError> {
+    if discard_unsaved && *caller != Caller::Panel {
+        return Err(ApiError::new(super::ErrorCode::ReadOnly, "only the person at the window may discard unsaved edits; save them (documents.save) or undo them first"));
+    }
+    Ok(discard_unsaved)
 }
 
 #[cfg(test)]
@@ -322,6 +368,15 @@ mod tests {
         assert_eq!(call(&mut workspace, "documents.list", json!({})).unwrap()["documents"].as_array().unwrap().len(), 1, "nothing was opened");
     }
 
+    #[test]
+    fn only_the_person_at_the_window_may_discard_unsaved_edits() {
+        let mut workspace = workspace_with("fw.bin", b"0123");
+        let client = crate::api::Caller::Mcp("claude-code".to_string());
+        let refused = crate::api::call(&mut workspace, &client, "documents.new", json!({"discard_unsaved": true})).unwrap_err();
+        assert_eq!(refused.code, ErrorCode::ReadOnly);
+        assert_eq!(call(&mut workspace, "documents.new", json!({"discard_unsaved": true})).unwrap()["id"], "doc-2");
+    }
+
     mod window {
         use serde_json::json;
 
@@ -358,6 +413,67 @@ mod tests {
             app.open_selection_as_document();
             assert_eq!(take_performed(), [("documents.derive".to_string(), json!({"ranges": [[0, 2], [6, 2]], "name": "test.bin › selection"}))]);
             assert_eq!(app.document.read_range(0, 10), b"0167");
+        }
+
+        fn temporary_file(name: &str, bytes: &[u8]) -> std::path::PathBuf {
+            let path = std::env::temp_dir().join(format!("theviewer-files-{name}-{}.bin", std::process::id()));
+            std::fs::write(&path, bytes).unwrap();
+            path
+        }
+
+        #[test]
+        fn opening_a_file_by_hand_replaces_what_is_shown_even_with_unsaved_edits() {
+            let path = temporary_file("open", b"on disk");
+            let mut app = app_with(b"edited");
+            app.document.overwrite(0, b"E");
+            app.open_file(&path);
+            assert_eq!(take_performed(), [("documents.open".to_string(), json!({"path": path.display().to_string(), "discard_unsaved": true}))]);
+            assert_eq!(app.document.read_range(0, 7), b"on disk");
+            assert!(app.status.starts_with("Loaded theviewer-files-open"), "{}", app.status);
+            app.document.overwrite(0, b"O");
+            app.open_file(&path);
+            assert_eq!(app.document.read_range(0, 7), b"on disk", "opening the file shown again reads it from disk again");
+            std::fs::remove_file(path).ok();
+        }
+
+        #[test]
+        fn a_file_that_will_not_open_says_why_on_the_status_bar() {
+            let mut app = app_with(b"kept");
+            app.open_file(std::path::Path::new("/no/such/file.bin"));
+            assert!(app.status.starts_with("Failed to open /no/such/file.bin"), "{}", app.status);
+            assert_eq!(app.document.read_range(0, 4), b"kept");
+        }
+
+        #[test]
+        fn a_new_document_and_going_back_are_document_steps_that_close_unsaved_edits() {
+            let mut app = app_with(b"outer");
+            let outer = app.document_id();
+            app.open_derived(b"inner".to_vec(), "inner".to_string());
+            app.document.overwrite(0, b"I");
+            take_performed();
+            app.go_back_to_parent();
+            assert_eq!(take_performed(), [("documents.open".to_string(), json!({"doc": outer, "discard_unsaved": true}))]);
+            assert_eq!((app.document_id(), app.status.as_str()), (outer, "Back to test.bin"));
+            app.go_back_to_parent();
+            assert!(take_performed().is_empty(), "nothing to go back to");
+            assert_eq!(app.status, "Already at the top-level document");
+            app.document.overwrite(0, b"O");
+            app.open_new_document();
+            assert_eq!(take_performed(), [("documents.new".to_string(), json!({"discard_unsaved": true}))]);
+            assert_eq!((app.document.len(), app.status.as_str()), (0, "New empty document"));
+        }
+
+        #[test]
+        fn saving_by_hand_is_a_documents_save_step() {
+            let path = temporary_file("save", b"abc");
+            let mut app = app_with(b"x");
+            app.open_file(&path);
+            app.document.overwrite(0, b"A");
+            take_performed();
+            app.save();
+            assert_eq!(take_performed(), [("documents.save".to_string(), json!({}))]);
+            assert_eq!(std::fs::read(&path).unwrap(), b"Abc");
+            std::fs::remove_file(path).ok();
         }
 
         #[test]

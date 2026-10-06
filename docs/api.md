@@ -28,8 +28,8 @@ Errors are `{code, message, data}`, with these codes:
 | [`api.describe`](#apidescribe) | read | Every method with its summary, effect, stability and the JSON schemas of its parameters and result. |
 | [`documents.list`](#documentslist) | read | The open documents, with their ids, names, paths, lengths and versions. |
 | [`documents.info`](#documentsinfo) | read | One document's id, name, path, length, version and whether it has unsaved edits. |
-| [`documents.open`](#documentsopen) | view | Open a file by path, or an open document by id, and make it current; a file already open is made current again. In the window, a parent of the document shown is gone back to, closing what was derived from it. |
-| [`documents.new`](#documentsnew) | view | Open a new, empty document and make it current; the window refuses while its document has unsaved edits. |
+| [`documents.open`](#documentsopen) | view | Open a file by path, or an open document by id, and make it current; a file already open is made current again. In the window, a parent of the document shown is gone back to, closing what was derived from it; that, or opening another file, is refused while what it closes has unsaved edits, unless the person at the window discards them. |
+| [`documents.new`](#documentsnew) | view | Open a new, empty document and make it current; the window refuses while its document has unsaved edits, unless the person at the window discards them. |
 | [`documents.save`](#documentssave) | edit | Save a document over its file, or to a path, with every edit made so far. |
 | [`documents.derive`](#documentsderive) | view | Open bytes of a document (a span, several ranges one after another, or bytes given), or what a transform such as decompress or XOR makes of them, as a document of their own derived from it, and make it current; in the window, Back goes back to the parent. |
 | [`bytes.read`](#bytesread) | read | Read a span of bytes, as hex by default, or as base64 or text. |
@@ -166,10 +166,11 @@ One document's id, name, path, length, version and whether it has unsaved edits.
 
 ### documents.open
 
-Open a file by path, or an open document by id, and make it current; a file already open is made current again. In the window, a parent of the document shown is gone back to, closing what was derived from it.
+Open a file by path, or an open document by id, and make it current; a file already open is made current again. In the window, a parent of the document shown is gone back to, closing what was derived from it; that, or opening another file, is refused while what it closes has unsaved edits, unless the person at the window discards them.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
+| `discard_unsaved` | boolean | no | In the window, close documents with unsaved edits, losing them, as File › Open and Back do; only the person at the window may. |
 | `doc` | string | no | Id of an open document to make current, such as a parent the window derived the document shown from. |
 | `path` | string | no | Path of the file to open. |
 
@@ -185,10 +186,11 @@ Open a file by path, or an open document by id, and make it current; a file alre
 
 ### documents.new
 
-Open a new, empty document and make it current; the window refuses while its document has unsaved edits.
+Open a new, empty document and make it current; the window refuses while its document has unsaved edits, unless the person at the window discards them.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
+| `discard_unsaved` | boolean | no | In the window, close documents with unsaved edits, losing them, as File › New does; only the person at the window may. |
 | `name` | string | no | What to call the document ("untitled" by default). |
 
 | Result field | Type | Required | Description |

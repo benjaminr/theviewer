@@ -647,13 +647,13 @@ fn file_dialog_answers_open_compare_and_save_without_blocking() {
     let mut harness = harness_for(first.clone());
 
     // Opening: the chosen file loads on the next frame.
-    harness.state_mut().file_request = Some((FileRequest::answered(Answer::Chosen(second.clone())), FileAction::Open));
+    harness.state_mut().file_request = Some((FileRequest::answered(Answer::Chosen(second.clone())), FileAction::Call { method: "documents.open".to_string(), params: serde_json::json!({"discard_unsaved": true}), path_field: "path".to_string() }));
     steps(&mut harness, 2);
     assert_eq!(harness.state().document.len(), 19);
     assert!(harness.state().file_request.is_none(), "the answered request is cleared");
 
     // Cancelling does nothing.
-    harness.state_mut().file_request = Some((FileRequest::answered(Answer::Cancelled), FileAction::Open));
+    harness.state_mut().file_request = Some((FileRequest::answered(Answer::Cancelled), FileAction::Call { method: "documents.open".to_string(), params: serde_json::json!({"discard_unsaved": true}), path_field: "path".to_string() }));
     steps(&mut harness, 2);
     assert_eq!(harness.state().document.len(), 19);
 
