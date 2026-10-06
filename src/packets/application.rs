@@ -409,14 +409,31 @@ impl OptRecord<'_> {
 // HTTP
 // ---------------------------------------------------------------------------
 
-const HTTP_METHODS: [&str; 9] = ["GET", "POST", "PUT", "DELETE", "HEAD", "OPTIONS", "PATCH", "CONNECT", "TRACE"];
+/// Request methods of RFC 9110 and the WebDAV and UPnP extensions met on
+/// the wire.
+const HTTP_METHODS: [&str; 22] = [
+    "GET", "POST", "PUT", "DELETE", "HEAD", "OPTIONS", "PATCH", "CONNECT", "TRACE", "PROPFIND", "PROPPATCH", "MKCOL", "COPY", "MOVE", "LOCK", "UNLOCK", "REPORT", "SEARCH",
+    "NOTIFY", "M-SEARCH", "SUBSCRIBE", "UNSUBSCRIBE",
+];
+const HTTP_VERSIONS: [&str; 2] = ["HTTP/1.0", "HTTP/1.1"];
 /// Most header lines listed.
 const HTTP_MAX_HEADERS: usize = 100;
 /// Longest line considered part of an HTTP head.
 const HTTP_MAX_LINE: usize = 8 * 1024;
 
-fn starts_like_http(payload: &[u8]) -> bool {
-    payload.starts_with(b"HTTP/1.") || payload.starts_with(b"HTTP/2") || HTTP_METHODS.iter().any(|method| payload.starts_with(method.as_bytes()) && payload.get(method.len()) == Some(&b' '))
+/// Whether `line` is an HTTP/1.x request line ("GET /index.html HTTP/1.1")
+/// or status line ("HTTP/1.1 200 OK"). RTSP and SIP, which look alike, give
+/// other versions and are left alone.
+fn is_http_start_line(line: &str) -> bool {
+    if let Some(rest) = HTTP_VERSIONS.iter().find_map(|version| line.strip_prefix(version)) {
+        let Some(status) = rest.strip_prefix(' ') else { return false };
+        let code = status.get(..3).unwrap_or_default();
+        let after = &status[code.len()..];
+        return code.bytes().all(|byte| byte.is_ascii_digit()) && code.len() == 3 && (after.is_empty() || after.starts_with(' '));
+    }
+    let mut parts = line.split(' ');
+    let (Some(method), Some(target), Some(version), None) = (parts.next(), parts.next(), parts.next(), parts.next()) else { return false };
+    HTTP_METHODS.contains(&method) && !target.is_empty() && target.bytes().all(|byte| byte.is_ascii_graphic()) && HTTP_VERSIONS.contains(&version)
 }
 
 /// The next line from `at`: its text without the line ending, and where the
@@ -428,15 +445,14 @@ fn next_line(payload: &[u8], at: usize) -> Option<(String, usize)> {
     Some((String::from_utf8_lossy(line).into_owned(), at + end + 1))
 }
 
-/// An HTTP/1 request or response head: the first line and the headers.
+/// An HTTP/1 request or response head: the first line and the headers. The
+/// payload must start with a whole request or status line, so the middle
+/// of a body, or a request line cut short, is not taken for HTTP.
 pub fn dissect_http(payload: &[u8]) -> Option<AppLayer> {
-    if !starts_like_http(payload) {
+    let (first, mut at) = next_line(payload, 0)?;
+    if !is_http_start_line(&first) {
         return None;
     }
-    let (first, mut at) = match next_line(payload, 0) {
-        Some(line) => line,
-        None => (String::from_utf8_lossy(&payload[..payload.len().min(HTTP_MAX_LINE)]).into_owned(), payload.len()),
-    };
     let is_response = first.starts_with("HTTP/");
     let mut fields = vec![Field::new(if is_response { "Status line" } else { "Request line" }, 0, at, first.clone())];
     let mut headers = Vec::new();
@@ -866,6 +882,28 @@ mod tests {
         assert_eq!(headers.len(), 2);
         assert_eq!((headers[0].name.as_str(), headers[0].value.as_str()), ("Host", "example.com"));
         assert!(dissect_http(b"GETTING warmer").is_none());
+    }
+
+    #[test]
+    fn look_alike_protocols_and_the_middle_of_a_stream_are_not_taken_for_http() {
+        for payload in [
+            &b"OPTIONS rtsp://10.0.0.1:554/stream RTSP/1.0\r\nCSeq: 1\r\n\r\n"[..],
+            b"RTSP/1.0 200 OK\r\nCSeq: 1\r\n\r\n",
+            b"INVITE sip:bob@example.com SIP/2.0\r\nVia: SIP/2.0/TCP host\r\n\r\n",
+            b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n",
+            b"GET /a-request-line-cut-short-by-the-segment HTTP/1.",
+            b"GET /index.html\r\n\r\n",
+            b"FETCH /index.html HTTP/1.1\r\n\r\n",
+            b"HTTP/1.1 2000 OK\r\n\r\n",
+            b"HTTP/1.1\r\n",
+            b"<html><body>GET / HTTP/1.1\r\n</body></html>",
+            b"ttp-equiv=\"refresh\" content=\"0\">\r\nHTTP/1.1 200 OK\r\n",
+        ] {
+            assert!(dissect_http(payload).is_none(), "{}", String::from_utf8_lossy(payload));
+            assert_eq!(dissect_application(Transport::Tcp, 40000, 80, payload), None);
+        }
+        assert!(dissect_http(b"HTTP/1.0 404\r\n\r\n").is_some(), "a reason phrase may be left out");
+        assert!(dissect_http(b"PROPFIND /dav/ HTTP/1.1\r\nDepth: 1\r\n\r\n").is_some());
     }
 
     #[test]
