@@ -108,6 +108,8 @@ Every message has an envelope:
 | `fields.decoded` `{layer, fields}` | fact | dissector, tshark, templates | reference, grids, filter |
 | `template.applied` `{source, records}` | fact | template tool, Learn, Columns, Ask | views, packets raw frames |
 | `reference.focus` `{key}` | event | packets tree, inspector | reference |
+| `fields.guessed` `{fields, template}` (added in phase 5) | fact | protocol analysis | packets raw frames |
+| `view.jump` `{offset}`, `pane.show` `{pane}`, `template.apply_requested` `{source}` (added in phase 5) | event | links in reports and answers, `show_panel`, plugins, clients | views, layout, template tool |
 | `job.started`, `job.progress`, `job.finished` | event | every background job | status bar, Workspace panel |
 | `plugin.log` `{level, text}` | event | plugins | status bar, Workspace panel (fixes errors in background scans going unseen) |
 
@@ -163,6 +165,45 @@ example:
   `protocol.identified`. A Lua plugin that recognises a private protocol can
   publish the same topic, and the packet viewer uses it like a built-in.
 - Freshness subscribes to `document.edited` instead of polling versions.
+
+As built in phase 5:
+
+- **Protocol framing.** The protocol analysis publishes `frames.defined`
+  with the framing that cut the messages (so a reader can split the span
+  again after an edit, or past the 10,000 frames a message lists), the
+  new `fields.guessed` with its field guesses and template, and
+  `protocol.identified`, all from its own thread and before `job.finished`.
+  Packets' "From protocol framing" and Alignment read these facts; Packets
+  waits for the analysis with a reaction to `job.finished`. The analysis is
+  collected every frame, not only while its tab is drawn.
+- **Regions.** The raster's and curves' colours, the size map, the
+  trigrams' labels and the legend read `regions.mapped` (kept by a reaction
+  as the views' copy); the report keeps `bench.regions` for its own tab and
+  the file map.
+- **Templates.** `template.applied` carries a template's name, source,
+  record count and parse, and is withdrawn when cleared. The views outline
+  whatever template it names, a plugin's or a client's included; the packet
+  viewer's raw frames follow a template of the name they decode with when
+  it is applied again with new source.
+- **Hover.** `view.pointed` is published at the end of a frame when the
+  bytes the panels point at change (not every frame), and the views outline
+  what it last said; the per-frame gathering stays as it was.
+- **Decoded fields.** The packet viewer publishes its chosen packet on
+  `fields.decoded`, layers and fields at document offsets, when the cursor
+  moves into a packet, when its detail changes and after an edit, whether
+  or not the panel is showing. The Reference tab builds its stack from it
+  (its own capture cache stays, for captures the viewer has not loaded);
+  `panel_packets::layers_at` is gone. The grids still read the panel's own
+  dissections, which they draw from.
+- **Requests.** `dock.jump_to`, `dock.apply_template` and `pane_request`
+  are gone: links publish `view.jump` and `template.apply_requested`, and
+  `show_panel` publishes `pane.show`, each carried out by a reaction, so a
+  plugin or client can ask for them too. `dock.tab`/`dock.open` stay: they
+  are the dock's own state, which the layout reads.
+- **Not on the bus yet:** the legend's emphasis (`emphasis_next`, local to
+  the views), the Columns tab's record length, the Learn and Compare
+  panels' inputs, the packet grids' column selection, and the assistant's
+  tool calls (which already go through the API).
 
 ## 2. The data API (version 1)
 
@@ -260,6 +301,23 @@ A method whose effect is `Job` returns `{job: "job-17"}` at once. Progress
 and the result arrive on `job.progress` and `job.finished`, or through
 `jobs.status`. `jobs.cancel` uses the cancellation flags the tshark and
 serial code already have, extended to every job.
+
+As built in phase 5: the bus keeps a registry of jobs. `Bus::start_job`
+(the window's `start_job`) registers a job, publishes `job.started` and
+returns a handle the work keeps, from any thread, to publish
+`job.progress` (when it has moved on by 5%), check its cancellation flag
+and finish; the registry follows what is delivered. The pattern and period
+scans, the entropy strip, the report, unpacking, the protocol analysis,
+packet dissection (progress per packet), tshark (whose own flag is the
+job's), the structure map's three analyses and the trigrams are jobs; work
+that is one long call checks the flag when it returns and drops its
+result. `jobs.list`, `jobs.status` and `jobs.cancel` read and cancel them
+in the window and headless alike. `analysis.overview_job` is the first
+method whose effect is `job`: it reads the bytes, maps them on a thread,
+and its report is `job.finished`'s `result` and `jobs.status`'s; the
+synchronous `analysis.overview` stays for scripts that would rather wait.
+A job outlives neither its process (the command line exits at once) nor
+its document.
 
 ### Versioning
 
@@ -382,14 +440,30 @@ of that era and of the `initialize` era (2025-11-25 back to 2024-11-05) are
 both served, each in its own revision's terms. Tools are named with
 underscores for dots; the built-in methods give their result schema as the
 output schema. Resources are a document's info, bytes, findings and facts,
-and the reference notes; `theviewer://doc/{id}/packets/{set}` waits for
-packet sets in the API. The server drains its headless workspace's bus
+and the reference notes; `theviewer://doc/{id}/packets/{set}` came with
+packet sets in phase 5. The server drains its headless workspace's bus
 after every request and on a quarter-second timer, running plugins'
 handlers as the window does, and maps what was delivered to resource
 updates. `plugins.reload` is not a method yet; instead the server reloads a
 plugin directory whose scripts changed, and announces the new tool list.
 Requests are handled in turn on one thread, so cancellation stops only a
 request not yet started, or a listen stream.
+
+As built in phase 5: packet sets are in the API. `packets.sets.create`
+takes everything that makes the set (its source and that source's
+parameters, the link, "decode as", detection and a template) and returns
+the set's id with what it worked out (the capture's offset, the
+selection's ranges, the framing detected), so a recipe can repeat it
+exactly. A set is found again after edits by the same recipe the packet
+viewer uses, is announced on `frames.defined` keyed by its id, shows in the
+window's Packets panel when it is about the document shown, and is the
+resource `theviewer://doc/{id}/packets/{set}`, whose subscribers hear when
+it is made, decoded anew or its document edited. The window's documents
+have ids of their own: a derived document a new one, its parents theirs
+while they wait (listed, readable and editable by id, with what is known
+about them kept), and `documents.open {doc}` goes back to a parent.
+`theviewer api --save METHOD …` saves the file after the call, so one
+command (a `history.transaction`, say) edits and saves.
 
 ### Permissions
 

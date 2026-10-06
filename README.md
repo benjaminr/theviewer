@@ -209,8 +209,13 @@ protocol tool or *Packets*, the protocol frames turn out to be (detected,
 guessed from a port, or named by tshark), background jobs starting and
 finishing, plugin log lines, and every edit, cursor move and selection.
 *Columns* takes its record length from the published width, *Packets*
-follows the selection and *Reference* follows the layer picked in *Packets*
-even while they are hidden. The *Workspace* tab lists what is known, by
+follows the selection and takes the protocol tool's messages and field
+guesses, *Alignment* takes the same messages, *Reference* reads the layers
+of the packet chosen in *Packets*, the views colour by the report's regions
+and outline any template applied, all even while the tools are hidden.
+Background jobs (scans, the report, unpacking, protocol analysis,
+dissection, tshark and more) each have an id, report their progress and can
+be cancelled from a plugin or a client as well as from their tool. The *Workspace* tab lists what is known, by
 topic and by whom, dimming what describes the file before its last edit
 (what an edit did not touch moves with it instead); clicking a span selects
 those bytes, and *why* shows what led to a fact. Below is a log of recent
@@ -454,8 +459,19 @@ What the client gets:
   `?encoding=hex` for a hex dump), `theviewer://doc/{id}/findings` (what the
   detectors recognise and what tools and plugins published),
   `theviewer://doc/{id}/facts` (everything the workspace bus knows about
-  it) and `theviewer://reference/{id}` (the notes on a format or protocol).
-  A client subscribed to one is told when an edit or a plugin changes it.
+  it), `theviewer://doc/{id}/packets/{set}` (the packets of a set the
+  client made with `packets_sets_create`) and `theviewer://reference/{id}`
+  (the notes on a format or protocol). A client subscribed to one is told
+  when an edit, a plugin or a new decoding changes it.
+- **Packet sets:** `packets_sets_create` takes packets from a capture in
+  the file, a range split into fixed records, by a length field or at a
+  pattern, the selection, or the protocol framing; `packets_list` (with the
+  Packets panel's filter language), `packets_dissect`, `packets_decode_as`,
+  `packets_conversations`, `packets_follow_stream` and `packets_export_pcap`
+  work on it.
+- **Jobs:** `analysis_overview_job` maps a large file in the background and
+  returns a job id at once; `jobs_status` gives its progress and, once done,
+  the report, and `jobs_list` and `jobs_cancel` cover every background job.
 - **Prompts:** *Triage this file*, *Find the record structure* and
   *Explain the packet*, which walk the model through the tools.
 
@@ -596,6 +612,7 @@ theviewer dump.bin --tool packets          # load the first capture, else the me
 theviewer firmware.bin --report          # print the report, no window
 theviewer firmware.bin --json > report.json
 theviewer api bytes.read '{"start": 0, "len": 16}' firmware.bin   # one data API call, printed as JSON
+theviewer api --save bytes.write '{"start": 0, "data": "7f454c46"}' firmware.bin   # edit and save in one command
 theviewer api --describe                 # every API method with its schemas
 theviewer mcp firmware.bin               # serve it to an MCP client on stdin and stdout
 ```
