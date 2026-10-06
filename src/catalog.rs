@@ -371,10 +371,23 @@ struct CompiledSignature {
     alternatives: Vec<CompiledAlternative>,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 struct Target {
     signature: usize,
     alternative: usize,
+}
+
+/// The run of starts last tried for a ranged anchor, so the next occurrence
+/// of its literal, a byte or so later, skips the starts already decided.
+/// Without it a literal repeated through megabytes is re-checked hundreds of
+/// times per byte.
+#[derive(Clone, Copy, Debug)]
+struct TriedStarts {
+    /// Lowest and highest start tried; every start between was tried.
+    low: usize,
+    high: usize,
+    /// Whether the lowest start matched, which ended that run of tries.
+    matched_at_low: bool,
 }
 
 /// A compiled, searchable catalogue.
@@ -578,6 +591,19 @@ impl Catalog {
     /// Find every signature in `window`, whose first byte sits at document
     /// offset `base`. Findings are sorted by start.
     pub fn scan(&self, window: &[u8], base: usize) -> Vec<Finding> {
+        self.scan_remembering(window, base, true, 0.0)
+    }
+
+    /// [`Catalog::scan`] for signatures at least `min_confidence` sure, the
+    /// others not even tried: weak two-byte magics such as `//` would
+    /// otherwise match all through a file only to be thrown away.
+    pub fn scan_confident(&self, window: &[u8], base: usize, min_confidence: f32) -> Vec<Finding> {
+        self.scan_remembering(window, base, true, min_confidence)
+    }
+
+    /// [`Catalog::scan`], optionally without remembering the starts tried
+    /// for ranged anchors, which the tests use to show it changes nothing.
+    fn scan_remembering(&self, window: &[u8], base: usize, remember_tried: bool, min_confidence: f32) -> Vec<Finding> {
         use rayon::prelude::*;
 
         // Literal positions are split into chunks searched in parallel. Each
@@ -591,7 +617,7 @@ impl Catalog {
             .map(|&lo| {
                 let hi = (lo + SCAN_CHUNK).min(window.len());
                 let mut hits = HashMap::new();
-                self.scan_chunk(window, lo, hi, &mut hits);
+                self.scan_chunk(window, lo, hi, &mut hits, remember_tried, min_confidence);
                 hits
             })
             .collect();
@@ -614,10 +640,11 @@ impl Catalog {
     }
 
     /// Search literal positions in `lo..hi` of `window`.
-    fn scan_chunk(&self, window: &[u8], lo: usize, hi: usize, hits: &mut HashMap<usize, Hit>) {
+    fn scan_chunk(&self, window: &[u8], lo: usize, hi: usize, hits: &mut HashMap<usize, Hit>, remember_tried: bool, min_confidence: f32) {
         let search_end = (hi + MAX_LITERAL_OVERLAP).min(window.len());
         let haystack = &window[lo..search_end];
         let automata = [(&self.automaton, &self.automaton_targets), (&self.ci_automaton, &self.ci_targets)];
+        let mut tried: HashMap<Target, TriedStarts> = HashMap::new();
         for (automaton, targets) in automata {
             let Some(automaton) = automaton else { continue };
             for found in automaton.find_overlapping_iter(haystack) {
@@ -625,10 +652,20 @@ impl Catalog {
                 if position >= hi {
                     continue;
                 }
-                self.try_anchor(window, position, targets[found.pattern().as_usize()], hits);
+                let target = targets[found.pattern().as_usize()];
+                if self.confidence(target) < min_confidence {
+                    continue;
+                }
+                if !remember_tried {
+                    tried.clear();
+                }
+                self.try_anchor(window, position, target, hits, &mut tried);
             }
         }
         for &target in &self.brute {
+            if self.confidence(target) < min_confidence {
+                continue;
+            }
             let alternative = &self.compiled[target.signature].alternatives[target.alternative];
             let anchor = &alternative.matches[alternative.anchor];
             let span = anchor.start + anchor.value.len();
@@ -644,7 +681,7 @@ impl Catalog {
         }
     }
 
-    fn try_anchor(&self, window: &[u8], literal_pos: usize, target: Target, hits: &mut HashMap<usize, Hit>) {
+    fn try_anchor(&self, window: &[u8], literal_pos: usize, target: Target, hits: &mut HashMap<usize, Hit>, tried: &mut HashMap<Target, TriedStarts>) {
         let alternative = &self.compiled[target.signature].alternatives[target.alternative];
         let anchor = &alternative.matches[alternative.anchor];
         if anchor.start == anchor.end {
@@ -654,17 +691,64 @@ impl Catalog {
             return;
         }
         // Ranged anchor: the file could start anywhere that puts the literal
-        // inside the range. Try nearby starts first, bounded.
+        // inside the range. Try nearby starts first, bounded. Starts an
+        // earlier occurrence already tried are skipped: they either failed,
+        // or the lowest of them matched and is recorded, which ends the
+        // search here as it did there.
         let first = literal_pos.saturating_sub(anchor.end);
         let last = literal_pos.saturating_sub(anchor.start);
-        for (tried, candidate) in (first..=last).rev().enumerate() {
-            if tried >= MAX_RANGED_CANDIDATES {
+        let earlier = tried.get(&target).copied();
+        let mut candidate = last;
+        let mut count = 0;
+        let mut matched = false;
+        loop {
+            if count >= MAX_RANGED_CANDIDATES || candidate < first {
                 break;
+            }
+            if let Some(earlier) = earlier.filter(|earlier| (earlier.low..=earlier.high).contains(&candidate)) {
+                if earlier.matched_at_low {
+                    matched = true;
+                    candidate = earlier.low;
+                    break;
+                }
+                count += candidate - earlier.low + 1;
+                match earlier.low.checked_sub(1) {
+                    Some(below) => candidate = below,
+                    None => break,
+                }
+                continue;
             }
             if self.try_candidate(window, candidate, target, hits) {
+                matched = true;
                 break;
             }
+            count += 1;
+            match candidate.checked_sub(1) {
+                Some(below) => candidate = below,
+                None => break,
+            }
         }
+        // `candidate` is now the lowest start decided by this search (or one
+        // below it when the search ran out).
+        let low = if matched { candidate } else { (candidate + 1).min(last) };
+        if low > last {
+            return;
+        }
+        let run = match earlier {
+            // Joined to the earlier run, which this one reached into or met,
+            // unless this one matched above it: that match must stay the run's
+            // lowest start.
+            Some(earlier) if !(matched && low > earlier.low) && low <= earlier.high.saturating_add(1) && last >= earlier.low => TriedStarts { low: low.min(earlier.low), high: last.max(earlier.high), matched_at_low: if low <= earlier.low { matched } else { earlier.matched_at_low } },
+            _ => TriedStarts { low, high: last, matched_at_low: matched },
+        };
+        tried.insert(target, run);
+    }
+
+    /// How sure a hit on `target` would be.
+    fn confidence(&self, target: Target) -> f32 {
+        let signature = &self.compiled[target.signature];
+        let alternative = &signature.alternatives[target.alternative];
+        self.defs[signature.def].confidence.unwrap_or_else(|| default_confidence(alternative))
     }
 
     /// Verify the whole alternative at `candidate` and record a hit.
@@ -675,7 +759,7 @@ impl Catalog {
             return false;
         }
         let def = &self.defs[signature.def];
-        let confidence = def.confidence.unwrap_or_else(|| default_confidence(alternative));
+        let confidence = self.confidence(target);
         let hit = Hit {
             signature: target.signature,
             alternative: target.alternative,
@@ -767,8 +851,7 @@ impl Detector for Catalog {
     }
 
     fn scan(&self, window: &[u8], context: &ScanContext) -> Vec<Finding> {
-        let mut findings = Catalog::scan(self, window, context.base);
-        findings.retain(|finding| finding.confidence >= DETECTOR_MIN_CONFIDENCE);
+        let mut findings = self.scan_confident(window, context.base, DETECTOR_MIN_CONFIDENCE);
         for finding in &mut findings {
             let room = context.document_len.saturating_sub(finding.start).max(1);
             finding.len = finding.len.min(room);
@@ -1229,6 +1312,50 @@ magic = [
 
         assert!(Catalog::from_toml("[[signature]]\nid='x'\nname='x'\ncategory='Nope'\nmagic=[{bytes='00'}]").is_err());
         assert!(Catalog::from_toml("[[signature]]\nid='x'\nname='x'\nmagic=[{bytes='0'}]").is_err());
+    }
+
+    #[test]
+    fn remembering_tried_starts_finds_exactly_what_trying_them_all_finds() {
+        let catalog = Catalog::builtin();
+        let mut buffers: Vec<Vec<u8>> = vec![
+            noise(200_000, 0x5eed_1234),
+            vec![0u8; 100_000],
+            b"0\x84\x00\x00\x01\x00".repeat(20_000),
+            b"%\n%PDF-1.4\n".repeat(5_000),
+            b"<?xml version=\"1.0\"?><a>ustar</a>\n".repeat(3_000),
+        ];
+        // Known signatures among repetitive bytes, so matches and misses mix.
+        let mut mixed = b"MZ\x90\x00PE\x00\x00".repeat(10_000);
+        put(&mut mixed, 4_000, b"\x89PNG\r\n\x1a\n\x00\x00\x00\x0dIHDR");
+        put(&mut mixed, 30_000 + 257, b"ustar\x0000");
+        buffers.push(mixed);
+        let summary = |findings: Vec<Finding>| -> Vec<(usize, String)> { findings.into_iter().map(|f| (f.start, f.id)).collect() };
+        for (index, buffer) in buffers.iter().enumerate() {
+            assert_eq!(summary(catalog.scan_remembering(buffer, 0, true, 0.0)), summary(catalog.scan_remembering(buffer, 0, false, 0.0)), "buffer {index}");
+        }
+    }
+
+    #[test]
+    fn scanning_for_confident_signatures_keeps_every_confident_finding() {
+        let catalog = Catalog::builtin();
+        let mut buffer = b"// a comment\n/* another */\n;; and one more\n".repeat(2_000);
+        put(&mut buffer, 10_000, b"\x89PNG\r\n\x1a\n\x00\x00\x00\x0dIHDR");
+        put(&mut buffer, 20_000, b"%PDF-1.7\n%\xe2\xe3\xcf\xd3\n");
+        let confident = |findings: Vec<Finding>| -> Vec<(usize, String)> { findings.into_iter().filter(|f| f.confidence >= DETECTOR_MIN_CONFIDENCE).map(|f| (f.start, f.id)).collect() };
+        let everything = catalog.scan(&buffer, 0);
+        assert!(everything.iter().any(|f| f.confidence < DETECTOR_MIN_CONFIDENCE), "the comments do match weak signatures");
+        assert_eq!(confident(catalog.scan_confident(&buffer, 0, DETECTOR_MIN_CONFIDENCE)), confident(everything));
+        assert!(catalog.scan_confident(&buffer, 0, DETECTOR_MIN_CONFIDENCE).iter().all(|f| f.confidence >= DETECTOR_MIN_CONFIDENCE));
+    }
+
+    #[test]
+    fn a_literal_repeated_through_a_large_window_is_scanned_in_moments() {
+        let catalog = Catalog::builtin();
+        // Every byte pair here starts literals that ranged signatures anchor on.
+        let buffer = b"0\x84\x00\x00\x01\x00\x02\x01".repeat(256 * 1024);
+        let started = std::time::Instant::now();
+        catalog.scan(&buffer, 0);
+        assert!(started.elapsed() < std::time::Duration::from_secs(10), "took {:?}", started.elapsed());
     }
 
     #[test]
