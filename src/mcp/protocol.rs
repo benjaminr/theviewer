@@ -148,9 +148,10 @@ pub fn server_info() -> Value {
 /// What the server offers, the same in every revision.
 pub fn capabilities() -> Value {
     json!({
-        "tools": { "listChanged": false },
+        "tools": { "listChanged": true },
         "resources": { "subscribe": true, "listChanged": true },
         "prompts": { "listChanged": false },
+        "logging": {},
     })
 }
 

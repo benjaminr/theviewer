@@ -27,6 +27,12 @@ theviewer.register_method{
 }
 "#;
 
+/// A second plugin, added while the server runs.
+const LATE_PLUGIN: &str = r#"
+theviewer.plugin{ name = "late" }
+theviewer.register_method{ name = "late.hello", summary = "Say hello.", run = function(params, api) return { hello = "world" } end }
+"#;
+
 /// The server, spoken to a line at a time.
 struct Client {
     child: Child,
@@ -168,6 +174,10 @@ fn a_client_lists_calls_edits_reads_subscribes_and_disconnects() {
     assert_eq!(prompts["result"]["prompts"].as_array().unwrap().len(), 3);
 
     assert_eq!(client.call_tool("probe_echo", json!({ "text": "hi" }))["echoed"], "hi", "the plugin's method runs");
+
+    std::fs::write(plugins.join("late.lua"), LATE_PLUGIN).unwrap();
+    client.wait_for_notification("notifications/tools/list_changed", PATIENCE).expect("a new plugin's methods are announced");
+    assert!(tool_names(&client.request("tools/list", json!({}))).contains(&"late_hello".to_string()));
 
     let modern = client.request(
         "tools/call",

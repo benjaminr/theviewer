@@ -17,7 +17,7 @@ use super::permissions::{self, Caller, Decision, HeldCall};
 use super::{ApiError, Effect, RegisteredMethod};
 use crate::app::ViewerApp;
 use crate::bus::topics::{CursorMoved, DocumentEdited, DocumentOpened, FindingsPublished, SelectionChanged};
-use crate::bus::{Bus, Draft, Payload};
+use crate::bus::{Bus, Draft, MessageId, Payload};
 use crate::document::Document;
 use crate::plugin::{Finding, Registry};
 use crate::selection::Selection;
@@ -164,16 +164,40 @@ pub struct HeadlessWorkspace {
     opened: usize,
     bus: Bus,
     methods: Vec<Arc<RegisteredMethod>>,
+    /// The message whose plugin handler is running, which the edits and
+    /// selections it makes are published as caused by.
+    cause: Option<MessageId>,
 }
 
 impl HeadlessWorkspace {
     pub fn new(registry: Arc<Registry>) -> Self {
-        HeadlessWorkspace { documents: Vec::new(), current: None, registry, opened: 0, bus: Bus::new(), methods: Vec::new() }
+        HeadlessWorkspace { documents: Vec::new(), current: None, registry, opened: 0, bus: Bus::new(), methods: Vec::new(), cause: None }
     }
 
     /// Offer the methods plugins registered.
     pub fn set_registered_methods(&mut self, methods: Vec<Arc<RegisteredMethod>>) {
         self.methods = methods;
+    }
+
+    /// Use another registry of detectors, parsers and codecs, after the
+    /// plugins were reloaded.
+    pub fn set_registry(&mut self, registry: Arc<Registry>) {
+        self.registry = registry;
+    }
+
+    /// Say which message the plugin handler about to run handles (`None`
+    /// once it has finished), so what it changes is published as caused by
+    /// it and loops are stopped.
+    pub fn set_cause(&mut self, cause: Option<MessageId>) {
+        self.cause = cause;
+    }
+
+    /// `draft` marked as caused by the message being handled, if any.
+    fn caused(&self, draft: Draft) -> Draft {
+        match self.cause {
+            Some(cause) => draft.caused_by(cause),
+            None => draft,
+        }
     }
 
     fn open_document(&mut self, id: &str) -> Option<&mut OpenDocument> {
@@ -256,7 +280,7 @@ impl Workspace for HeadlessWorkspace {
         let Some(edited) = edits_since(&open.document, open.published_version) else { return };
         open.published_version = open.document.version();
         let draft = Draft::new(producer, Payload::DocumentEdited(edited)).about(id, open.published_version);
-        self.bus.publish(draft);
+        self.bus.publish(self.caused(draft));
     }
 
     fn select(&mut self, id: &str, cursor: usize, selection: Option<Selection>, caller: &Caller) {
@@ -266,9 +290,9 @@ impl Workspace for HeadlessWorkspace {
         open.view.selection = selection.clone();
         let version = open.document.version();
         if moved {
-            self.bus.publish(Draft::new(caller.producer(), Payload::CursorMoved(CursorMoved { offset: cursor })).about(id, version));
+            self.bus.publish(self.caused(Draft::new(caller.producer(), Payload::CursorMoved(CursorMoved { offset: cursor })).about(id, version)));
         }
-        self.bus.publish(Draft::new(caller.producer(), Payload::SelectionChanged(SelectionChanged { cursor, selection })).about(id, version));
+        self.bus.publish(self.caused(Draft::new(caller.producer(), Payload::SelectionChanged(SelectionChanged { cursor, selection })).about(id, version)));
     }
 
     fn save(&mut self, id: &str, path: Option<&Path>) -> Result<(), ApiError> {

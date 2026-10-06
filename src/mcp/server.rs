@@ -1,25 +1,33 @@
 //! The MCP server: requests in, answers and notifications out, against a
 //! headless workspace of the files it was given.
 //!
-//! Each line is handled in turn on one thread, while another reads them.
-//! After each request is answered, the bus is drained and subscribers hear
-//! which resources, and whether the list of resources, changed.
+//! Each line is handled in turn on one thread. After each request the bus
+//! is drained (plugins' handlers run, what they log is collected) before
+//! the answer is written, so a request's log messages come before its
+//! answer; then subscribers hear which resources, and whether the tool or
+//! resource lists, changed. A timer drains the bus and looks for changed
+//! plugin scripts between requests.
 
 use std::collections::{BTreeSet, VecDeque};
 use std::io::{self, BufRead, Write};
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::Arc;
-use std::sync::mpsc;
+use std::sync::mpsc::{self, RecvTimeoutError};
+use std::time::{Duration, Instant};
 
 use serde_json::{Map, Value, json};
 
 use super::jsonrpc::{self, INTERNAL_ERROR, INVALID_PARAMS, Incoming, LEGACY_RESOURCE_NOT_FOUND, RequestId, RpcError};
-use super::protocol::{self, RequestContext};
+use super::plugins::{self, Drained, PluginRuntime};
+use super::protocol::{self, RequestContext, Severity};
 use super::resources::{self, DocumentChanges, ReadError};
 use super::{prompts, tools};
-use crate::api::{Caller, HeadlessWorkspace, Workspace};
-use crate::app::SharedLuaHost;
-use crate::bus::Message;
+use crate::api::{self, Caller, HeadlessWorkspace, Workspace};
+use crate::bus::topics::{LogLevel, PluginLog};
+
+/// How often the bus is drained and plugin scripts looked at between requests.
+const TICK: Duration = Duration::from_millis(250);
+/// How often plugin scripts are looked at for changes.
+const PLUGIN_CHECK: Duration = Duration::from_secs(1);
 /// Items in one page of a list.
 pub const PAGE_SIZE: usize = 100;
 /// How long clients may keep lists that change only with the plugins or
@@ -30,6 +38,8 @@ const STABLE_TTL_MS: u64 = 60 * 60 * 1000;
 struct Session {
     version: &'static str,
     client: String,
+    /// The least severe log message to send; none until asked, but warnings.
+    log_level: Severity,
     /// Whether the client said `notifications/initialized`, after which
     /// the server may notify it.
     initialized: bool,
@@ -41,6 +51,7 @@ struct Session {
 struct Listener {
     /// The listen request's id, which every notification on it carries.
     id: RequestId,
+    tools: bool,
     resources_list: bool,
     resources: BTreeSet<String>,
 }
@@ -48,22 +59,34 @@ struct Listener {
 /// The server's state.
 pub struct Server {
     workspace: HeadlessWorkspace,
-    /// Kept so the methods plugins registered stay loaded.
-    _plugin_host: SharedLuaHost,
+    plugins: PluginRuntime,
     session: Option<Session>,
     listeners: Vec<Listener>,
     /// The bus has been delivered and looked at up to here.
     bus_cursor: u64,
-    /// The documents last listed, to notice changes.
+    /// The tools and documents last listed, to notice changes.
+    tool_names: Vec<String>,
     document_ids: Vec<String>,
     page_size: usize,
+    plugins_checked: Instant,
 }
 
 impl Server {
-    pub fn new(workspace: HeadlessWorkspace, plugin_host: SharedLuaHost) -> Self {
-        let mut server = Server { workspace, _plugin_host: plugin_host, session: None, listeners: Vec::new(), bus_cursor: 0, document_ids: Vec::new(), page_size: PAGE_SIZE };
+    pub fn new(workspace: HeadlessWorkspace, plugins: PluginRuntime) -> Self {
+        let mut server = Server {
+            workspace,
+            plugins,
+            session: None,
+            listeners: Vec::new(),
+            bus_cursor: 0,
+            tool_names: Vec::new(),
+            document_ids: Vec::new(),
+            page_size: PAGE_SIZE,
+            plugins_checked: Instant::now(),
+        };
         // What happened while starting (files opening) is nobody's news.
-        server.drain();
+        plugins::drain(&mut server.workspace, &mut server.plugins, &mut server.bus_cursor);
+        server.tool_names = server.current_tool_names();
         server.document_ids = server.current_document_ids();
         server
     }
@@ -72,6 +95,10 @@ impl Server {
     pub fn with_page_size(mut self, size: usize) -> Self {
         self.page_size = size.max(1);
         self
+    }
+
+    fn current_tool_names(&self) -> Vec<String> {
+        api::all_methods(&self.workspace).iter().map(|method| method.name().to_string()).collect()
     }
 
     fn current_document_ids(&self) -> Vec<String> {
@@ -116,19 +143,27 @@ impl Server {
         let (context, reply) = match outcome {
             Ok(Ok(Some(answered))) => answered,
             Ok(Ok(None)) => {
-                let delivered = self.drain();
-                return self.notify(&delivered, out);
+                let drained = self.drain();
+                return self.notify(&drained, out);
             }
             Ok(Err(error)) => return Err(error),
             Err(_) => (None, Err(RpcError::new(INTERNAL_ERROR, format!("{method} failed inside the server; the error is on its standard error")))),
         };
+        let drained = self.drain();
+        if let Some(context) = &context
+            && context.is_modern()
+            && let Some(level) = context.log_level
+        {
+            for line in &drained.logs {
+                write_log(out, line, level)?;
+            }
+        }
         let message = match reply {
             Ok(result) => jsonrpc::result(id, decorate(result, method, context.as_ref())),
             Err(error) => jsonrpc::error(id, &error),
         };
         jsonrpc::write_message(out, &message)?;
-        let delivered = self.drain();
-        self.notify(&delivered, out)
+        self.notify(&drained, out)
     }
 
     /// Answer a request: the context it was made in (when it could be
@@ -168,7 +203,7 @@ impl Server {
                 protocol::LEGACY_VERSIONS[0],
             ))
         })?;
-        Ok(RequestContext { version: session.version, client: session.client.clone(), log_level: None })
+        Ok(RequestContext { version: session.version, client: session.client.clone(), log_level: Some(session.log_level) })
     }
 
     /// Begin a handshake session, agreeing on a revision.
@@ -176,7 +211,7 @@ impl Server {
         let version = protocol::negotiate_legacy(params.get("protocolVersion").and_then(Value::as_str));
         let client = protocol::client_label(params.get("clientInfo").and_then(|info| info["name"].as_str()));
         eprintln!("theviewer mcp: {client} connected, speaking {version}");
-        self.session = Some(Session { version, client, initialized: false, subscribed: BTreeSet::new() });
+        self.session = Some(Session { version, client, log_level: Severity::Warning, initialized: false, subscribed: BTreeSet::new() });
         json!({
             "protocolVersion": version,
             "capabilities": protocol::capabilities(),
@@ -189,9 +224,12 @@ impl Server {
     fn listen(&mut self, id: &RequestId, params: &Map<String, Value>, out: &mut dyn Write) -> io::Result<()> {
         let wanted = params.get("notifications").cloned().unwrap_or_else(|| json!({}));
         let resources: BTreeSet<String> = wanted["resourceSubscriptions"].as_array().into_iter().flatten().filter_map(Value::as_str).map(str::to_string).collect();
-        let listener = Listener { id: id.clone(), resources_list: wanted["resourcesListChanged"] == true, resources };
-        // Tools and prompts do not change, so their list changes are not agreed to.
+        let listener = Listener { id: id.clone(), tools: wanted["toolsListChanged"] == true, resources_list: wanted["resourcesListChanged"] == true, resources };
+        // Prompts never change, so promptsListChanged is not agreed to.
         let mut agreed = Map::new();
+        if listener.tools {
+            agreed.insert("toolsListChanged".into(), Value::Bool(true));
+        }
         if listener.resources_list {
             agreed.insert("resourcesListChanged".into(), Value::Bool(true));
         }
@@ -243,44 +281,86 @@ impl Server {
                 }
                 Ok(json!({}))
             }
+            "logging/setLevel" if !modern => {
+                let level = Severity::parse(params.get("level").unwrap_or(&Value::Null))?;
+                if let Some(session) = &mut self.session {
+                    session.log_level = level;
+                }
+                Ok(json!({}))
+            }
             "prompts/list" => Ok(json!({ "prompts": prompts::list() })),
             "prompts/get" => prompts::get(params),
             _ => Err(RpcError::method_not_found(method)),
         }
     }
 
-    /// Deliver what was published since the last drain, and return it.
-    fn drain(&mut self) -> Vec<Arc<Message>> {
-        let bus = self.workspace.bus();
-        let changes = bus.changed_since(self.bus_cursor);
-        self.bus_cursor = bus.cursor();
-        if changes.missed > 0 {
-            eprintln!("theviewer mcp: {} bus messages went by unseen; subscribers may have missed changes", changes.missed);
+    /// Between requests: reload plugin scripts that changed, drain the bus
+    /// and tell subscribers what changed.
+    pub fn tick(&mut self, out: &mut dyn Write) -> io::Result<()> {
+        if self.plugins_checked.elapsed() >= PLUGIN_CHECK {
+            self.plugins_checked = Instant::now();
+            if self.plugins.changed_on_disk() {
+                self.reload_plugins();
+            }
         }
-        changes.messages
+        let drained = self.drain();
+        self.notify(&drained, out)
     }
 
-    /// Tell subscribers what the `delivered` messages changed: resources
-    /// they watch, and the list of resources.
-    fn notify(&mut self, delivered: &[Arc<Message>], out: &mut dyn Write) -> io::Result<()> {
+    /// Load the plugins again and offer what they register now.
+    pub fn reload_plugins(&mut self) {
+        for report in self.plugins.reload() {
+            match report.result {
+                Ok(summary) => eprintln!("theviewer mcp: reloaded {}: {summary}", report.name),
+                Err(error) => eprintln!("theviewer mcp: {} failed to load: {error}", report.name),
+            }
+        }
+        self.workspace.set_registry(std::sync::Arc::new(self.plugins.registry()));
+        self.workspace.set_registered_methods(self.plugins.methods());
+    }
+
+    fn drain(&mut self) -> Drained {
+        let drained = plugins::drain(&mut self.workspace, &mut self.plugins, &mut self.bus_cursor);
+        for line in &drained.logs {
+            eprintln!("theviewer mcp: {}: {}", line.plugin, line.text);
+        }
+        drained
+    }
+
+    /// Tell subscribers what `drained` changed: resources they watch, the
+    /// tool and resource lists, and (to a handshake session) what plugins
+    /// logged.
+    fn notify(&mut self, drained: &Drained, out: &mut dyn Write) -> io::Result<()> {
         let mut changes = DocumentChanges::default();
-        for message in delivered {
+        for message in &drained.messages {
             changes.note(message);
         }
+        let tool_names = self.current_tool_names();
+        let tools_changed = tool_names != self.tool_names;
+        self.tool_names = tool_names;
         let document_ids = self.current_document_ids();
         let documents_changed = document_ids != self.document_ids;
         self.document_ids = document_ids;
 
         if let Some(session) = self.session.as_ref().filter(|session| session.initialized) {
+            if tools_changed {
+                jsonrpc::write_message(out, &jsonrpc::notification("notifications/tools/list_changed", json!({})))?;
+            }
             if documents_changed {
                 jsonrpc::write_message(out, &jsonrpc::notification("notifications/resources/list_changed", json!({})))?;
             }
             for uri in session.subscribed.iter().filter(|uri| changes.touches(&self.workspace, uri)) {
                 jsonrpc::write_message(out, &jsonrpc::notification("notifications/resources/updated", json!({ "uri": uri })))?;
             }
+            for line in &drained.logs {
+                write_log(out, line, session.log_level)?;
+            }
         }
         for listener in &self.listeners {
             let tag = json!({ (protocol::META_SUBSCRIPTION_ID): listener.id });
+            if tools_changed && listener.tools {
+                jsonrpc::write_message(out, &jsonrpc::notification("notifications/tools/list_changed", json!({ "_meta": tag })))?;
+            }
             if documents_changed && listener.resources_list {
                 jsonrpc::write_message(out, &jsonrpc::notification("notifications/resources/list_changed", json!({ "_meta": tag })))?;
             }
@@ -338,6 +418,20 @@ fn decorate(mut result: Value, method: &str, context: Option<&RequestContext>) -
     result
 }
 
+/// Send a plugin's log line as `notifications/message`, when it is at
+/// least as severe as `level`.
+fn write_log(out: &mut dyn Write, line: &PluginLog, level: Severity) -> io::Result<()> {
+    let severity = match line.level {
+        LogLevel::Info => Severity::Info,
+        LogLevel::Error => Severity::Error,
+    };
+    if severity < level {
+        return Ok(());
+    }
+    let params = json!({ "level": severity.name(), "logger": line.plugin, "data": line.text });
+    jsonrpc::write_message(out, &jsonrpc::notification("notifications/message", params))
+}
+
 /// What the line reader hands the server.
 enum Input {
     Line(String),
@@ -380,8 +474,15 @@ pub fn serve(server: &mut Server, input: impl BufRead + Send + 'static, output: 
     let (sender, receiver) = mpsc::channel();
     std::thread::spawn(move || read_lines(input, sender));
     let mut waiting: VecDeque<Input> = VecDeque::new();
-    while let Ok(input) = receiver.recv() {
-        waiting.push_back(input);
+    loop {
+        match receiver.recv_timeout(TICK) {
+            Ok(input) => waiting.push_back(input),
+            Err(RecvTimeoutError::Timeout) => {
+                server.tick(output)?;
+                continue;
+            }
+            Err(RecvTimeoutError::Disconnected) => return Ok(()),
+        }
         waiting.extend(receiver.try_iter());
         while let Some(input) = waiting.pop_front() {
             match input {
@@ -391,7 +492,6 @@ pub fn serve(server: &mut Server, input: impl BufRead + Send + 'static, output: 
             }
         }
     }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -402,8 +502,7 @@ mod tests {
     use crate::mcp::protocol::MODERN_VERSION;
 
     fn server() -> Server {
-        let host = std::sync::Arc::new(std::sync::Mutex::new(crate::plugins::LuaHost::new()));
-        Server::new(workspace_with("sample.bin", b"hello world"), host)
+        Server::new(workspace_with("sample.bin", b"hello world"), PluginRuntime::none())
     }
 
     /// Serve `lines` to the end, returning every message written.
@@ -440,14 +539,14 @@ mod tests {
     }
 
     #[test]
-    fn initialize_agrees_on_a_revision_and_offers_tools_resources_and_prompts() {
+    fn initialize_agrees_on_a_revision_and_offers_tools_resources_prompts_and_logging() {
         let messages = exchange(&mut server(), &[initialize("2025-06-18"), initialized(), request(1, "ping", json!({}))]);
         let result = &response(&messages, 0)["result"];
         assert_eq!(result["protocolVersion"], "2025-06-18");
         assert_eq!(result["serverInfo"]["name"], "theviewer");
-        assert!(result["capabilities"]["tools"].is_object());
+        assert_eq!(result["capabilities"]["tools"]["listChanged"], true);
         assert_eq!(result["capabilities"]["resources"]["subscribe"], true);
-        assert!(result["capabilities"]["prompts"].is_object());
+        assert!(result["capabilities"]["prompts"].is_object() && result["capabilities"]["logging"].is_object());
         assert!(result.get("resultType").is_none(), "older revisions have no resultType");
         assert_eq!(response(&messages, 1)["result"], json!({}));
         assert_eq!(messages.len(), 2, "a notification is not answered");
@@ -511,8 +610,16 @@ mod tests {
         let first = &response(&messages, 1)["result"];
         assert_eq!(first["tools"].as_array().unwrap().len(), 10);
         assert_eq!(first["nextCursor"], "10");
-        assert_eq!(response(&messages, 2)["result"]["tools"][0]["name"], json!(tools::tool_name(crate::api::METHODS[10].name)));
+        assert_eq!(response(&messages, 2)["result"]["tools"][0]["name"], json!(tools::tool_name(api::METHODS[10].name)));
         assert_eq!(response(&messages, 3)["error"]["code"], INVALID_PARAMS);
+    }
+
+    #[test]
+    fn a_handshake_client_calls_tools_as_itself() {
+        let messages = exchange(&mut server(), &[initialize("2025-11-25"), initialized(), request(1, "tools/call", json!({ "name": "bytes_write", "arguments": { "start": 0, "data": "4a" } }))]);
+        let result = &response(&messages, 1)["result"];
+        assert_eq!(result["structuredContent"]["version"], 1);
+        assert_eq!(result["structuredContent"]["label"].as_str().map(|label| label.ends_with("by mcp:legacy-client")), Some(true), "{result}");
     }
 
     #[test]
@@ -570,9 +677,10 @@ mod tests {
     }
 
     #[test]
-    fn modern_requests_cannot_use_the_removed_subscribe() {
-        let messages = exchange(&mut server(), &[request(1, "resources/subscribe", modern(json!({ "uri": "theviewer://doc/doc-1" })))]);
+    fn modern_requests_cannot_use_the_removed_subscribe_and_set_level() {
+        let messages = exchange(&mut server(), &[request(1, "resources/subscribe", modern(json!({ "uri": "theviewer://doc/doc-1" }))), request(2, "logging/setLevel", modern(json!({ "level": "info" })))]);
         assert_eq!(response(&messages, 1)["error"]["code"], METHOD_NOT_FOUND);
+        assert_eq!(response(&messages, 2)["error"]["code"], METHOD_NOT_FOUND);
     }
 
     #[test]
@@ -613,5 +721,21 @@ mod tests {
         assert!(!cancelled_while_waiting(&call, &VecDeque::new()));
         let notification = json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }).to_string();
         assert!(!cancelled_while_waiting(&notification, &VecDeque::from([cancel(1)])), "only requests are cancelled");
+    }
+
+    #[test]
+    fn set_level_chooses_which_plugin_log_lines_a_handshake_client_hears() {
+        let mut server = server();
+        server.session = Some(Session { version: "2025-11-25", client: "c".into(), log_level: Severity::Info, initialized: true, subscribed: BTreeSet::new() });
+        let line = PluginLog { plugin: "p.lua".into(), level: LogLevel::Info, text: "hello".into() };
+        let drained = Drained { logs: vec![line.clone()], ..Default::default() };
+        let mut out = Vec::new();
+        server.notify(&drained, &mut out).unwrap();
+        let message: Value = serde_json::from_slice(out.split(|byte| *byte == b'\n').next().unwrap()).unwrap();
+        assert_eq!(message, json!({ "jsonrpc": "2.0", "method": "notifications/message", "params": { "level": "info", "logger": "p.lua", "data": "hello" } }));
+        server.session.as_mut().unwrap().log_level = Severity::Warning;
+        let mut quiet = Vec::new();
+        server.notify(&drained, &mut quiet).unwrap();
+        assert!(quiet.is_empty(), "information is below a warning");
     }
 }

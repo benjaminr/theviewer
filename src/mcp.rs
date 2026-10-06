@@ -17,6 +17,7 @@
 //! See `docs/design/shared-knowledge-and-api.md` ("MCP server").
 
 pub mod jsonrpc;
+pub mod plugins;
 pub mod prompts;
 pub mod protocol;
 pub mod resources;
@@ -28,8 +29,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::api::{HeadlessWorkspace, Workspace};
-use crate::app;
-use crate::plugins::LuaHost;
+use plugins::PluginRuntime;
 pub use server::Server;
 
 /// How to start the server.
@@ -45,22 +45,18 @@ pub struct Options {
 /// be opened is an error, so a mistyped path is not served as nothing.
 pub fn start(options: &Options) -> Result<Server, String> {
     let dirs = options.plugin_dirs.clone().unwrap_or_else(crate::plugins::default_dirs);
-    let mut host = LuaHost::new();
-    for dir in &dirs {
-        for report in host.load_dir(dir) {
-            if let Err(error) = report.result {
-                eprintln!("theviewer mcp: plugin {} failed to load: {error}", report.name);
-            }
+    let (plugins, reports) = PluginRuntime::load(dirs);
+    for report in reports {
+        if let Err(error) = report.result {
+            eprintln!("theviewer mcp: plugin {} failed to load: {error}", report.name);
         }
     }
-    let methods = host.methods();
-    let host = Arc::new(std::sync::Mutex::new(host));
-    let mut workspace = HeadlessWorkspace::new(Arc::new(app::build_registry_with(Some(&host))));
-    workspace.set_registered_methods(methods);
+    let mut workspace = HeadlessWorkspace::new(Arc::new(plugins.registry()));
+    workspace.set_registered_methods(plugins.methods());
     for file in &options.files {
         workspace.open_path(file).map_err(|error| error.message)?;
     }
-    Ok(Server::new(workspace, host))
+    Ok(Server::new(workspace, plugins))
 }
 
 /// Serve on standard input and output until the input closes.

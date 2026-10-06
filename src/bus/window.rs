@@ -66,7 +66,7 @@ impl PluginInbox {
 
     /// Queue `message` for `subscription`, dropping that handler's oldest
     /// message when it already has its fill.
-    fn push(&mut self, subscription: &Arc<Subscription>, message: &Arc<Message>) {
+    pub(crate) fn push(&mut self, subscription: &Arc<Subscription>, message: &Arc<Message>) {
         let same = |(waiting, _): &(Arc<Subscription>, Arc<Message>)| Arc::ptr_eq(waiting, subscription);
         if self.waiting.iter().filter(|entry| same(entry)).count() >= MOST_WAITING_PER_HANDLER
             && let Some(oldest) = self.waiting.iter().position(same)
@@ -80,12 +80,12 @@ impl PluginInbox {
         self.waiting.push_back((Arc::clone(subscription), Arc::clone(message)));
     }
 
-    fn pop(&mut self) -> Option<(Arc<Subscription>, Arc<Message>)> {
+    pub(crate) fn pop(&mut self) -> Option<(Arc<Subscription>, Arc<Message>)> {
         self.waiting.pop_front()
     }
 
     /// Tell each handler that fell behind how many messages it lost.
-    fn report_dropped(&mut self) {
+    pub(crate) fn report_dropped(&mut self) {
         for (subscription, count) in self.dropped.drain(..) {
             subscription.note_dropped(count);
         }
