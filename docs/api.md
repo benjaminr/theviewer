@@ -31,6 +31,7 @@ Errors are `{code, message, data}`, with these codes:
 | [`documents.open`](#documentsopen) | view | Open a file by path, or an open document by id, and make it current; a file already open is made current again. In the window, a parent of the document shown is gone back to, closing what was derived from it. |
 | [`documents.new`](#documentsnew) | view | Open a new, empty document and make it current; the window refuses while its document has unsaved edits. |
 | [`documents.save`](#documentssave) | edit | Save a document over its file, or to a path, with every edit made so far. |
+| [`documents.derive`](#documentsderive) | view | Open bytes of a document (a span, several ranges one after another, or bytes given), or what a transform such as decompress or XOR makes of them, as a document of their own derived from it, and make it current; in the window, Back goes back to the parent. |
 | [`bytes.read`](#bytesread) | read | Read a span of bytes, as hex by default, or as base64 or text. |
 | [`bytes.hexdump`](#byteshexdump) | read | A classic hex dump of a span, 16 bytes per line with an ASCII column, at most 1 MiB. |
 | [`bytes.write`](#byteswrite) | edit | Overwrite bytes in place with new ones, as one undoable step; the document keeps its length. |
@@ -188,6 +189,31 @@ Save a document over its file, or to a path, with every edit made so far.
 | --- | --- | --- | --- |
 | `doc` | string | no | Document id, path or "current" (the default). |
 | `path` | string | no | Where to save; over the document's own file when omitted. |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `current` | boolean | yes | Whether this is the current document. |
+| `id` | string | yes | Stable id, such as "doc-1". |
+| `len` | integer | yes | Length in bytes. |
+| `modified` | boolean | yes | Whether there are edits not saved. |
+| `name` | string | yes | File name, or the name of a derived document. |
+| `path` | string | no | Path on disk, for documents opened from a file. |
+| `version` | integer | yes | Incremented on every edit. |
+
+### documents.derive
+
+Open bytes of a document (a span, several ranges one after another, or bytes given), or what a transform such as decompress or XOR makes of them, as a document of their own derived from it, and make it current; in the window, Back goes back to the parent.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `data` | string | no | The bytes themselves, written as `encoding` says, when they are not in the document as they are (a reassembled stream, say). |
+| `doc` | string | no | Document id, path or "current" (the default): the parent. |
+| `encoding` | `"hex"` \| `"base64"` \| `"text"` | no | How `data` is written: hex (the default), base64 or text. |
+| `len` | integer | no | Bytes to open from `start`; to the end of the document when omitted. |
+| `name` | string | no | What to call the new document; the parent's name and the span when omitted. |
+| `ranges` | array of pair | no | Several spans as [start, len], opened one after another (a selection of several ranges, or several packets). |
+| `start` | integer | no | Offset of the first byte to open. |
+| `transform` | Operation | no | An operation to apply to each span first, such as {"op": "decompress"} or {"op": "xor", "key": "5a"}. |
 
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |

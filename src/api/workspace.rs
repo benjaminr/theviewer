@@ -91,6 +91,11 @@ pub trait Workspace {
     /// Open a new empty document called `name` and make it current,
     /// returning its id.
     fn new_document(&mut self, name: &str) -> Result<String, ApiError>;
+    /// Open `bytes` as a document called `name` derived from the open
+    /// document `parent` (a selection, a decoded stream, a packet), make it
+    /// current and return its id. The window keeps the parent waiting
+    /// behind it, to go back to.
+    fn open_derived(&mut self, parent: &str, bytes: Vec<u8>, name: &str) -> Result<String, ApiError>;
     /// Pin a template's parse over document `id`, as the template tool
     /// does: it is published on `template.applied`, with its structure and
     /// records, and shown.
@@ -358,6 +363,13 @@ impl Workspace for HeadlessWorkspace {
         Ok(self.add_document(name, Document::default()))
     }
 
+    fn open_derived(&mut self, parent: &str, bytes: Vec<u8>, name: &str) -> Result<String, ApiError> {
+        if self.open_document(parent).is_none() {
+            return Err(ApiError::not_found(format!("document '{parent}' has closed")));
+        }
+        Ok(self.add_document(name, Document::from_bytes(bytes)))
+    }
+
     fn pin_template(&mut self, id: &str, applied: TemplateApplied) {
         let Some(version) = self.open_document(id).map(|open| open.document.version()) else { return };
         let parse = applied.structure.clone();
@@ -534,6 +546,17 @@ impl Workspace for ViewerApp {
     fn new_document(&mut self, _name: &str) -> Result<String, ApiError> {
         refuse_unsaved(self)?;
         ViewerApp::new_document(self);
+        Ok(self.document_id())
+    }
+
+    /// The document shown goes on the parent stack, with its place and
+    /// analysis, and Back returns to it; a parent already waiting must be
+    /// gone back to first.
+    fn open_derived(&mut self, parent: &str, bytes: Vec<u8>, name: &str) -> Result<String, ApiError> {
+        if parent != self.document_id {
+            return Err(ApiError::invalid_params(format!("{parent} waits behind the document shown; go back to it (documents.open with its id) to open part of it")));
+        }
+        ViewerApp::open_derived(self, bytes, name.to_string());
         Ok(self.document_id())
     }
 

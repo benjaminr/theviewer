@@ -203,11 +203,15 @@ impl ViewerApp {
         self.ask_for_file(DialogKind::Save, dialog, FileAction::SaveBytes { name, bytes: Arc::new(bytes) });
     }
 
-    /// Open the selected bytes as a document of their own; Back returns.
+    /// Open the selected bytes (or the byte at the cursor) as a document of
+    /// their own, as `documents.derive`; Back returns.
     pub fn open_selection_as_document(&mut self) {
-        let bytes = self.selected_bytes();
         let name = format!("{} › selection", self.display_name());
-        self.open_derived(bytes, name);
+        let params = match self.operation_ranges().as_slice() {
+            &[(start, len)] => serde_json::json!({ "start": start, "len": len, "name": name }),
+            ranges => serde_json::json!({ "ranges": ranges, "name": name }),
+        };
+        let _ = self.perform("documents.derive", params);
     }
 
     /// Cut the selected ranges out and put their bytes, one after another,
