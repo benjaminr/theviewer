@@ -81,18 +81,35 @@ const DNS_MAX_POINTER_HOPS: usize = 16;
 /// Most labels in one name.
 const DNS_MAX_LABELS: usize = 128;
 const DNS_RESPONSE_BIT: u16 = 0x8000;
+const DNS_TYPE_A: u16 = 1;
+const DNS_TYPE_NS: u16 = 2;
+const DNS_TYPE_CNAME: u16 = 5;
+const DNS_TYPE_SOA: u16 = 6;
+const DNS_TYPE_PTR: u16 = 12;
+const DNS_TYPE_MX: u16 = 15;
+const DNS_TYPE_TXT: u16 = 16;
+const DNS_TYPE_AAAA: u16 = 28;
+const DNS_TYPE_SRV: u16 = 33;
+const DNS_TYPE_OPT: u16 = 41;
+/// The DNSSEC OK bit of an OPT record's flags.
+const EDNS_DNSSEC_OK: u16 = 0x8000;
 
 fn dns_type_name(record_type: u16) -> String {
     match record_type {
-        1 => "A".to_string(),
-        2 => "NS".to_string(),
-        5 => "CNAME".to_string(),
-        6 => "SOA".to_string(),
-        12 => "PTR".to_string(),
-        15 => "MX".to_string(),
-        16 => "TXT".to_string(),
-        28 => "AAAA".to_string(),
-        33 => "SRV".to_string(),
+        DNS_TYPE_A => "A".to_string(),
+        DNS_TYPE_NS => "NS".to_string(),
+        DNS_TYPE_CNAME => "CNAME".to_string(),
+        DNS_TYPE_SOA => "SOA".to_string(),
+        DNS_TYPE_PTR => "PTR".to_string(),
+        DNS_TYPE_MX => "MX".to_string(),
+        DNS_TYPE_TXT => "TXT".to_string(),
+        DNS_TYPE_AAAA => "AAAA".to_string(),
+        DNS_TYPE_SRV => "SRV".to_string(),
+        DNS_TYPE_OPT => "OPT".to_string(),
+        46 => "RRSIG".to_string(),
+        47 => "NSEC".to_string(),
+        48 => "DNSKEY".to_string(),
+        64 => "SVCB".to_string(),
         65 => "HTTPS".to_string(),
         255 => "ANY".to_string(),
         other => format!("type {other}"),
@@ -146,7 +163,8 @@ fn dissect_dns_over_tcp(payload: &[u8]) -> Option<AppLayer> {
     Some(layer)
 }
 
-/// A DNS message: the header, the questions and the answers.
+/// A DNS message: the header, the questions, and the answer, authority and
+/// additional records (an EDNS OPT pseudo-record among them).
 pub fn dissect_dns(message: &[u8]) -> Option<AppLayer> {
     if message.len() < DNS_HEADER_LEN {
         return None;
@@ -186,51 +204,205 @@ pub fn dissect_dns(message: &[u8]) -> Option<AppLayer> {
     if !questions.is_empty() {
         fields.push(Field::new("Question section", DNS_HEADER_LEN, at - DNS_HEADER_LEN, format!("{} questions", questions.len())).with_children(questions));
     }
-    let answers_start = at;
-    let mut answers = Vec::new();
-    for index in 0..(counts[1] as usize).min(DNS_MAX_RECORDS) {
-        let Some((record, len, data)) = dns_record(message, at, index) else { break };
-        summary_parts.push(data);
-        answers.push(record);
-        at += len;
-    }
-    if !answers.is_empty() {
-        fields.push(Field::new("Answer section", answers_start, at - answers_start, format!("{} answers", answers.len())).with_children(answers));
+    for (section, count) in [(DnsSection::Answer, counts[1]), (DnsSection::Authority, counts[2]), (DnsSection::Additional, counts[3])] {
+        let section_start = at;
+        let mut records = Vec::new();
+        for index in 0..(count as usize).min(DNS_MAX_RECORDS) {
+            let Some((record, len, description)) = dns_record(message, at, section, index) else { break };
+            // The packet list names the questions and answers, as Wireshark does.
+            if section == DnsSection::Answer {
+                summary_parts.push(description);
+            }
+            records.push(record);
+            at += len;
+        }
+        let read_all = records.len() == count as usize;
+        if !records.is_empty() {
+            fields.push(Field::new(format!("{} section", section.label()), section_start, at - section_start, format!("{} {}", records.len(), section.plural())).with_children(records));
+        }
+        if !read_all {
+            // Records follow one another, so nothing after an unreadable one
+            // (or past the cap) can be found.
+            break;
+        }
     }
     let kind = if is_response { "Standard query response" } else { "Standard query" };
     let info = format!("{kind} {id:#06x} {}", summary_parts.join(" ")).trim_end().to_string();
     Some(AppLayer { name: "DNS", key: "dns", len: at.max(DNS_HEADER_LEN), fields, info })
 }
 
+/// The three sections of resource records after the questions.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DnsSection {
+    Answer,
+    Authority,
+    Additional,
+}
+
+impl DnsSection {
+    fn label(self) -> &'static str {
+        match self {
+            DnsSection::Answer => "Answer",
+            DnsSection::Authority => "Authority",
+            DnsSection::Additional => "Additional",
+        }
+    }
+
+    fn plural(self) -> &'static str {
+        match self {
+            DnsSection::Answer => "answers",
+            DnsSection::Authority => "authority records",
+            DnsSection::Additional => "additional records",
+        }
+    }
+}
+
+/// A name inside record data, or a placeholder when it cannot be read.
+fn dns_name_or_placeholder(message: &[u8], at: usize) -> String {
+    read_dns_name(message, at).map(|(name, _)| name).unwrap_or_else(|| "(unreadable name)".to_string())
+}
+
+/// The character strings of a TXT record, each a length byte and its text.
+fn dns_text_strings(data: &[u8]) -> String {
+    let mut strings = Vec::new();
+    let mut at = 0;
+    while let Some(&len) = data.get(at) {
+        let Some(text) = data.get(at + 1..at + 1 + len as usize) else { break };
+        strings.push(format!("\"{}\"", String::from_utf8_lossy(text)));
+        at += 1 + len as usize;
+    }
+    strings.join(" ")
+}
+
+/// A record's data in words, by its type.
+fn dns_record_value(message: &[u8], record_type: u16, data_at: usize, data: &[u8]) -> String {
+    let number = |at: usize| u16_at(data, at).unwrap_or_default();
+    match (record_type, data.len()) {
+        (DNS_TYPE_A, 4) => std::net::Ipv4Addr::new(data[0], data[1], data[2], data[3]).to_string(),
+        (DNS_TYPE_AAAA, 16) => {
+            let mut octets = [0u8; 16];
+            octets.copy_from_slice(data);
+            std::net::Ipv6Addr::from(octets).to_string()
+        }
+        (DNS_TYPE_NS | DNS_TYPE_CNAME | DNS_TYPE_PTR, _) => dns_name_or_placeholder(message, data_at),
+        (DNS_TYPE_MX, 3..) => format!("{} {}", number(0), dns_name_or_placeholder(message, data_at + 2)),
+        (DNS_TYPE_SRV, 7..) => format!("{} {} {} {}", number(0), number(2), number(4), dns_name_or_placeholder(message, data_at + 6)),
+        (DNS_TYPE_SOA, _) => dns_soa_value(message, data_at),
+        (DNS_TYPE_TXT, _) => dns_text_strings(data),
+        (_, len) => format!("{len} bytes"),
+    }
+}
+
+/// An SOA record's primary server, responsible mailbox and serial number.
+fn dns_soa_value(message: &[u8], data_at: usize) -> String {
+    let Some((primary, primary_len)) = read_dns_name(message, data_at) else { return "(unreadable name)".to_string() };
+    let Some((mailbox, mailbox_len)) = read_dns_name(message, data_at + primary_len) else { return primary };
+    match u32_at(message, data_at + primary_len + mailbox_len) {
+        Some(serial) => format!("{primary} {mailbox} serial {serial}"),
+        None => format!("{primary} {mailbox}"),
+    }
+}
+
 /// One resource record: its field, its length and a short description.
-fn dns_record(message: &[u8], at: usize, index: usize) -> Option<(Field, usize, String)> {
+fn dns_record(message: &[u8], at: usize, section: DnsSection, index: usize) -> Option<(Field, usize, String)> {
     let (name, name_len) = read_dns_name(message, at)?;
     let fixed = at + name_len;
     let record_type = u16_at(message, fixed)?;
+    let class = u16_at(message, fixed + 2)?;
     let ttl = u32_at(message, fixed + 4)?;
     let data_len = u16_at(message, fixed + 8)? as usize;
     let data_at = fixed + 10;
     let data = message.get(data_at..data_at + data_len)?;
-    let value = match (record_type, data_len) {
-        (1, 4) => std::net::Ipv4Addr::new(data[0], data[1], data[2], data[3]).to_string(),
-        (28, 16) => {
-            let octets: [u8; 16] = data.try_into().ok()?;
-            std::net::Ipv6Addr::from(octets).to_string()
-        }
-        (5 | 2 | 12, _) => read_dns_name(message, data_at).map(|(n, _)| n).unwrap_or_else(|| "(unreadable name)".to_string()),
-        _ => format!("{data_len} bytes"),
-    };
     let len = name_len + 10 + data_len;
+    let label = format!("{} {index}", section.label());
+    if record_type == DNS_TYPE_OPT {
+        let record = OptRecord { at, name_len, payload_size: class, ttl, data_at, data };
+        let (field, description) = record.field(label, name);
+        return Some((field, len, description));
+    }
+    let value = dns_record_value(message, record_type, data_at, data);
     let description = format!("{} {value}", dns_type_name(record_type));
-    let field = Field::new(format!("Answer {index}"), at, len, format!("{name} {description} TTL {ttl}")).with_children(vec![
+    let field = Field::new(label, at, len, format!("{name} {description} TTL {ttl}")).with_children(vec![
         Field::new("Name", at, name_len, name),
         Field::new("Type", fixed, 2, dns_type_name(record_type)),
-        Field::new("Class", fixed + 2, 2, u16_at(message, fixed + 2)?.to_string()),
+        Field::new("Class", fixed + 2, 2, class.to_string()),
         Field::new("Time to live", fixed + 4, 4, format!("{ttl} s")),
         Field::new("Data length", fixed + 8, 2, data_len.to_string()),
         Field::new("Data", data_at, data_len, value),
     ]);
     Some((field, len, description))
+}
+
+fn edns_option_name(code: u16) -> String {
+    match code {
+        3 => "NSID".to_string(),
+        8 => "Client subnet".to_string(),
+        10 => "Cookie".to_string(),
+        11 => "TCP keepalive".to_string(),
+        12 => "Padding".to_string(),
+        15 => "Extended DNS error".to_string(),
+        other => format!("option {other}"),
+    }
+}
+
+/// An EDNS OPT pseudo-record (RFC 6891): its class holds the sender's UDP
+/// payload size and its time to live the extended RCODE, the EDNS version
+/// and the flags; its data is a list of options.
+struct OptRecord<'a> {
+    /// Where the record (its name) starts in the message.
+    at: usize,
+    name_len: usize,
+    payload_size: u16,
+    ttl: u32,
+    data_at: usize,
+    data: &'a [u8],
+}
+
+impl OptRecord<'_> {
+    /// The record's field and a short description.
+    fn field(&self, label: String, name: String) -> (Field, String) {
+        let fixed = self.at + self.name_len;
+        let [extended_rcode, version, flags_high, flags_low] = self.ttl.to_be_bytes();
+        let flags = u16::from_be_bytes([flags_high, flags_low]);
+        let dnssec_ok = flags & EDNS_DNSSEC_OK != 0;
+        let (options, options_len) = self.options();
+        let mut children = vec![
+            Field::new("Name", self.at, self.name_len, name.clone()),
+            Field::new("Type", fixed, 2, dns_type_name(DNS_TYPE_OPT)),
+            Field::new("UDP payload size", fixed + 2, 2, self.payload_size.to_string()),
+            Field::new("Extended RCODE", fixed + 4, 1, extended_rcode.to_string()),
+            Field::new("EDNS version", fixed + 5, 1, version.to_string()),
+            Field::new("EDNS flags", fixed + 6, 2, format!("{flags:#06x}{}", if dnssec_ok { " (DNSSEC OK)" } else { "" })),
+            Field::new("Data length", fixed + 8, 2, self.data.len().to_string()),
+        ];
+        if !options.is_empty() {
+            children.push(Field::new("Options", self.data_at, options_len, format!("{} options", options.len())).with_children(options));
+        }
+        let description = format!("OPT udp {}{}", self.payload_size, if dnssec_ok { " DO" } else { "" });
+        let field = Field::new(label, self.at, self.name_len + 10 + self.data.len(), format!("{name} {description}, version {version}")).with_children(children);
+        (field, description)
+    }
+
+    /// The options, each a code, a length and its value, and the bytes they
+    /// take up.
+    fn options(&self) -> (Vec<Field>, usize) {
+        let mut options = Vec::new();
+        let mut at = 0;
+        while options.len() < DNS_MAX_RECORDS {
+            let (Some(code), Some(len)) = (u16_at(self.data, at), u16_at(self.data, at + 2)) else { break };
+            let len = len as usize;
+            let Some(value) = self.data.get(at + 4..at + 4 + len) else { break };
+            let start = self.data_at + at;
+            let preview = super::hex_preview(value, 16);
+            options.push(Field::new(format!("Option {}", options.len()), start, 4 + len, format!("{} ({len} bytes) {preview}", edns_option_name(code))).with_children(vec![
+                Field::new("Option code", start, 2, format!("{code} ({})", edns_option_name(code))),
+                Field::new("Option length", start + 2, 2, len.to_string()),
+                Field::new("Option data", start + 4, len, preview),
+            ]));
+            at += 4 + len;
+        }
+        (options, at)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -569,6 +741,54 @@ mod tests {
         assert_eq!(layer.info, "Standard query response 0x1234 A example.com A 93.184.216.34");
         let answer = &field(&layer, "Answer section").children[0];
         assert_eq!(answer.children[0].value, "example.com");
+    }
+
+    #[test]
+    fn a_dns_response_lists_its_authority_and_additional_records_and_the_edns_opt_record() {
+        let mut message = dns_query("example.com");
+        message[2] = 0x81;
+        message[3] = 0x80;
+        message[7] = 1; // one answer
+        message[9] = 1; // one authority record
+        message[11] = 2; // two additional records
+        message.extend_from_slice(&[0xC0, 12, 0, 1, 0, 1, 0, 0, 0, 60, 0, 4, 93, 184, 216, 34]);
+        // Authority: example.com NS ns1.example.com (ns1 + pointer to example.com).
+        message.extend_from_slice(&[0xC0, 12, 0, 2, 0, 1, 0, 0, 0x0E, 0x10, 0, 6, 3, b'n', b's', b'1', 0xC0, 12]);
+        let ns_name_at = message.len() - 6;
+        // Additional: ns1.example.com A 192.0.2.53.
+        message.extend_from_slice(&[0xC0, ns_name_at as u8, 0, 1, 0, 1, 0, 0, 0x0E, 0x10, 0, 4, 192, 0, 2, 53]);
+        // Additional: OPT, root name, payload size 1232, DO set, a cookie option.
+        message.extend_from_slice(&[0, 0, 41, 0x04, 0xD0, 0, 0, 0x80, 0, 0, 12, 0, 10, 0, 8, 1, 2, 3, 4, 5, 6, 7, 8]);
+        let layer = dissect_dns(&message).expect("DNS");
+        assert_eq!(layer.len, message.len(), "the layer covers every section");
+        assert_eq!(layer.info, "Standard query response 0x1234 A example.com A 93.184.216.34");
+        let authority = &field(&layer, "Authority section").children[0];
+        assert_eq!(authority.name, "Authority 0");
+        assert_eq!(authority.children[5].value, "ns1.example.com");
+        let additional = &field(&layer, "Additional section").children;
+        assert_eq!(additional.len(), 2);
+        assert_eq!(additional[0].children[5].value, "192.0.2.53");
+        let opt = &additional[1];
+        let child = |name: &str| opt.children.iter().find(|f| f.name == name).unwrap_or_else(|| panic!("no {name} in {opt:?}"));
+        assert_eq!(child("UDP payload size").value, "1232");
+        assert!(child("EDNS flags").value.contains("DNSSEC OK"));
+        let cookie = &child("Options").children[0];
+        assert!(cookie.value.starts_with("Cookie (8 bytes)"), "{}", cookie.value);
+        assert_eq!(cookie.offset + cookie.len, message.len());
+    }
+
+    #[test]
+    fn a_dns_record_cut_short_ends_the_message_without_losing_the_sections_before_it() {
+        let mut message = dns_query("example.com");
+        message[2] = 0x81;
+        message[7] = 1;
+        message[9] = 1;
+        message.extend_from_slice(&[0xC0, 12, 0, 1, 0, 1, 0, 0, 0, 60, 0, 4, 93, 184, 216, 34]);
+        let answers_end = message.len();
+        message.extend_from_slice(&[0xC0, 12, 0, 2, 0, 1, 0, 0]);
+        let layer = dissect_dns(&message).expect("DNS");
+        assert_eq!(layer.len, answers_end);
+        assert!(layer.fields.iter().all(|f| f.name != "Authority section"));
     }
 
     #[test]
