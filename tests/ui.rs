@@ -1222,3 +1222,84 @@ fn the_legend_bar_lists_the_active_layers_and_toggling_one_hides_its_overlay() {
     assert!(harness.state().overlays_drawn.contains_key(&LayerKind::Bookmarks));
     harness.state_mut().remove_bookmark(0x40);
 }
+
+/// Drag from `from` to `to` holding `modifiers` (Alt for a column, Cmd to add).
+fn drag_with(harness: &mut Harness<'static, ViewerApp>, from: egui::Pos2, to: egui::Pos2, modifiers: Modifiers) {
+    harness.hover_at(from);
+    harness.step();
+    harness.event(Event::ModifiersChanged(modifiers));
+    harness.event(Event::PointerButton { pos: from, button: PointerButton::Primary, pressed: true, modifiers });
+    harness.step();
+    harness.event(Event::PointerMoved(from.lerp(to, 0.5)));
+    harness.step();
+    harness.event(Event::PointerMoved(to));
+    harness.step();
+    harness.event(Event::PointerButton { pos: to, button: PointerButton::Primary, pressed: false, modifiers });
+    harness.event(Event::ModifiersChanged(Modifiers::NONE));
+    steps(harness, 3);
+}
+
+/// Click at `pos` holding `modifiers`, so the app sees them held.
+fn click_with(harness: &mut Harness<'static, ViewerApp>, pos: egui::Pos2, modifiers: Modifiers) {
+    harness.event(Event::ModifiersChanged(modifiers));
+    click_at(harness, pos, modifiers);
+    harness.event(Event::ModifiersChanged(Modifiers::NONE));
+    steps(harness, 1);
+}
+
+#[test]
+fn alt_dragging_in_the_raster_selects_a_column_of_every_record() {
+    use theviewer::selection::Selection;
+    let mut harness = harness(sample_file("column-drag"));
+    let start = raster_point(&harness);
+    // A few bytes across and several rows down.
+    let zoom = harness.state().zoom;
+    drag_with(&mut harness, start, pos2(start.x + 3.0 * zoom, start.y + 8.0 * zoom), Modifiers::ALT);
+    let app = harness.state();
+    let Some(Selection::Columns(column)) = app.current_selection() else { panic!("a column selection, got {:?}", app.current_selection()) };
+    assert!((3..=5).contains(&column.width), "width {}", column.width);
+    assert!((8..=10).contains(&column.rows), "rows {}", column.rows);
+    assert_eq!(column.stride, 64);
+    let ranges = app.selection_ranges();
+    assert_eq!(ranges.len(), column.rows);
+    assert!(ranges.iter().all(|&(at, len)| len == column.width && at % 64 == column.column));
+    let last = column.column + column.width - 1;
+    assert!(app.selection_summary().unwrap().starts_with(&format!("column {}–{last} × {} rows", column.column, column.rows)));
+
+    // The hex dump makes the same kind of selection with Alt held.
+    let hex = hex_point(&harness);
+    drag_with(&mut harness, hex, pos2(hex.x + 40.0, hex.y + 60.0), Modifiers::ALT);
+    assert!(matches!(harness.state().current_selection(), Some(Selection::Columns(_))), "{:?}", harness.state().current_selection());
+
+    // A plain click goes back to a cursor.
+    click_at(&mut harness, start, Modifiers::NONE);
+    assert!(harness.state().current_selection().is_none());
+}
+
+#[test]
+fn cmd_click_builds_a_multi_range_selection_and_all_matches_selects_every_match() {
+    use theviewer::selection::Selection;
+    let mut harness = harness(sample_file("multi"));
+    // No findings under the pointer, so each Cmd-click adds one byte.
+    harness.state_mut().pattern_kinds = [false; Category::ALL.len()];
+    let first = raster_point(&harness);
+    click_with(&mut harness, first, Modifiers::COMMAND);
+    click_with(&mut harness, pos2(first.x + 20.0, first.y + 20.0), Modifiers::COMMAND);
+    click_with(&mut harness, pos2(first.x + 40.0, first.y + 40.0), Modifiers::COMMAND);
+    let selected = harness.state().current_selection();
+    let Some(Selection::Ranges(ranges)) = selected else { panic!("several ranges, got {selected:?}") };
+    assert_eq!(ranges.len(), 3);
+    assert_eq!(harness.state().selection_summary().as_deref(), Some("3 ranges, 3 B"));
+
+    // Cmd-clicking a selected range again takes it out.
+    click_with(&mut harness, first, Modifiers::COMMAND);
+    assert_eq!(harness.state().selection_ranges().len(), 2);
+
+    harness.state_mut().search_text = "AA 55".to_string();
+    harness.get_by_label("All matches").click();
+    steps(&mut harness, 2);
+    let ranges = harness.state().selection_ranges();
+    assert!(ranges.iter().all(|&(_, len)| len == 2));
+    let at_record_starts = ranges.iter().filter(|&&(at, _)| at % 64 == 0).count();
+    assert_eq!(at_record_starts, SAMPLE_LEN / 64, "every record's marker is selected");
+}

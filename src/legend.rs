@@ -260,7 +260,7 @@ impl ViewerApp {
     pub fn layer_ranges(&mut self, kind: LayerKind, start: usize, end: usize) -> Vec<(usize, usize)> {
         let overlapping = |range_start: usize, len: usize| range_start < end && range_start + len.max(1) > start;
         match kind {
-            LayerKind::Selection => self.selection_ranges().into_iter().filter(|&(s, l)| overlapping(s, l)).collect(),
+            LayerKind::Selection => self.selection_ranges_in(start, end),
             LayerKind::Cursor => vec![(self.cursor, 1)],
             LayerKind::SearchMatches => {
                 let len = self.search_highlight_len();

@@ -579,7 +579,8 @@ fn draw_selection(app: &mut ViewerApp, painter: &egui::Painter, geometry: &Geome
         return;
     }
     let mut drawn = 0;
-    for (start, len) in app.selection_ranges() {
+    let (visible_start, visible_end) = geometry.visible_bytes();
+    for (start, len) in app.selection_ranges_in(visible_start, visible_end) {
         for rect in geometry.rects(start, len) {
             painter.rect_filled(rect, 0.0, theme::SELECTION);
             painter.rect_stroke(rect, 0.0, Stroke::new(1.0, theme::ACCENT), StrokeKind::Inside);
@@ -688,22 +689,50 @@ fn handle_pointer(app: &mut ViewerApp, response: &egui::Response, origin: Pos2, 
         return;
     };
     let byte = byte_under(app, pointer, origin, zoom);
-    let shift = response.ctx.input(|i| i.modifiers.shift);
+    let modifiers = response.ctx.input(|i| i.modifiers);
     if response.secondary_clicked() || response.dragged_by(egui::PointerButton::Secondary) {
         return;
     }
     if response.drag_started_by(egui::PointerButton::Primary) {
-        app.begin_drag_selection(byte, shift);
+        // The drag is noticed once the pointer has moved a little; it starts
+        // where the button went down.
+        let origin_byte = response.ctx.input(|i| i.pointer.press_origin()).map_or(byte, |press| byte_under(app, press, origin, zoom));
+        begin_drag(app, origin_byte, modifiers);
+        app.drag_selection_to(byte);
         app.reveal_cursor_in_hex(true);
     } else if response.dragged_by(egui::PointerButton::Primary) {
         app.drag_selection_to(byte);
         app.reveal_cursor_in_hex(false);
     } else if response.clicked() {
-        app.set_cursor(byte, shift);
+        click_byte(app, byte, modifiers);
         app.reveal_cursor_in_hex(true);
     }
     if response.drag_stopped() {
         app.end_drag_selection();
+    }
+}
+
+/// Start a drag on `byte`: Alt makes a column selection, Cmd adds a range
+/// to the selection, Shift extends it, and a plain drag starts a new one.
+/// Shared by the raster and the hex dump.
+pub fn begin_drag(app: &mut ViewerApp, byte: usize, modifiers: egui::Modifiers) {
+    if modifiers.alt {
+        app.begin_column_drag(byte);
+    } else if modifiers.command {
+        app.begin_adding_drag(byte);
+    } else {
+        app.begin_drag_selection(byte, modifiers.shift);
+    }
+}
+
+/// A click on `byte`: Cmd adds what is there (a search match, a finding or
+/// the byte) to the selection or takes it out, Shift extends the selection,
+/// and a plain click places the cursor.
+pub fn click_byte(app: &mut ViewerApp, byte: usize, modifiers: egui::Modifiers) {
+    if modifiers.command {
+        app.add_to_selection_at(byte);
+    } else {
+        app.set_cursor(byte, modifiers.shift);
     }
 }
 

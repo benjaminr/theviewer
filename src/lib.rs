@@ -86,6 +86,7 @@ pub mod raster;
 pub mod region_colours;
 pub mod search;
 pub mod segments;
+pub mod selection;
 pub mod settings;
 pub mod similar;
 pub mod sources;

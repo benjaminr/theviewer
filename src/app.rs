@@ -25,6 +25,7 @@ use crate::dock::{DockState, DockTab};
 use crate::layout::{self, Pane, Preset};
 use crate::findings::FindingsFilter;
 use crate::legend::{LayerKind, LayerVisibility};
+use crate::selection::{self, ColumnSelection, Selection};
 use crate::plot::PlotWindow;
 use crate::workbench::{CurveColour, Layout, Workbench};
 use crate::media::{self, MediaFormat};
@@ -176,6 +177,13 @@ pub struct ViewerApp {
     /// The byte a mouse drag started on; it stays selected whichever way the
     /// drag goes.
     drag_grab: Option<usize>,
+    /// The drag in progress makes a column selection (Alt held at its start).
+    drag_column: bool,
+    /// A column selection: the same bytes in each record. It holds while the
+    /// anchor and cursor still span it.
+    pub column_selection: Option<ColumnSelection>,
+    /// Ranges selected besides the anchor-to-cursor one (Cmd-click adds).
+    pub extra_ranges: Vec<(usize, usize)>,
     pub clipboard: Vec<u8>,
     /// Set by the toolbar; the view resolves it once it knows its own size.
     pub fit_width_requested: bool,
@@ -472,6 +480,9 @@ impl ViewerApp {
             edit_mode: EditMode::Overwrite,
             pending_low_nibble: false,
             drag_grab: None,
+            drag_column: false,
+            column_selection: None,
+            extra_ranges: Vec::new(),
             clipboard: Vec::new(),
             fit_width_requested: false,
             hover: None,
@@ -678,6 +689,7 @@ impl ViewerApp {
                 self.derived_name = None;
                 self.cursor = 0;
                 self.anchor = None;
+                self.clear_secondary_selection();
                 self.top_row = 0;
                 self.pan_x = 0.0;
                 self.shape.byte_offset = 0;
@@ -858,15 +870,160 @@ impl ViewerApp {
         (end > start).then_some((start, end - start))
     }
 
-    /// Every selected range; one for a plain selection.
-    pub fn selection_ranges(&self) -> Vec<(usize, usize)> {
-        self.selection().into_iter().collect()
+    /// What is selected, of whichever kind: a range, a column of every
+    /// record, or several ranges. `selection()` stays the primary range.
+    pub fn current_selection(&self) -> Option<Selection> {
+        let primary = self.selection();
+        let len = self.document.len();
+        if let Some(column) = self.column_selection
+            && primary == clip_range(column.span(), len)
+        {
+            return Some(Selection::Columns(column));
+        }
+        if !self.extra_ranges.is_empty() {
+            let mut ranges: Vec<(usize, usize)> = self.extra_ranges.iter().filter_map(|&range| clip_range(range, len)).collect();
+            ranges.extend(primary);
+            let ranges = selection::normalise_ranges(ranges);
+            return match ranges.as_slice() {
+                [] => None,
+                [(start, len)] => Some(Selection::Range(*start, *len)),
+                _ => Some(Selection::Ranges(ranges)),
+            };
+        }
+        primary.map(|(start, len)| Selection::Range(start, len))
     }
 
-    /// A short description of the selection for the legend and status bar,
-    /// such as "312 B", or `None` when nothing is selected.
+    /// Every selected range, in document order.
+    pub fn selection_ranges(&self) -> Vec<(usize, usize)> {
+        self.current_selection().map_or_else(Vec::new, |selected| selected.ranges(self.document.len()))
+    }
+
+    /// The selected ranges that overlap `[start, end)`; cheap for a column
+    /// over many records.
+    pub fn selection_ranges_in(&self, start: usize, end: usize) -> Vec<(usize, usize)> {
+        self.current_selection().map_or_else(Vec::new, |selected| selected.ranges_within(start, end, self.document.len()))
+    }
+
+    /// Whether `offset` is selected, in any kind of selection.
+    pub fn is_selected(&self, offset: usize) -> bool {
+        self.current_selection().is_some_and(|selected| selected.contains(offset))
+    }
+
+    /// A short description of the selection for the legend, inspector and
+    /// status bar, such as "312 B", "column 4–7 × 120 rows (480 B)" or
+    /// "5 ranges, 312 B"; `None` when nothing is selected.
     pub fn selection_summary(&self) -> Option<String> {
-        self.selection().map(|(_, len)| format!("{len} B"))
+        self.current_selection().map(|selected| selected.describe(self.document.len()))
+    }
+
+    /// Forget the column and the extra ranges, leaving the plain selection.
+    pub fn clear_secondary_selection(&mut self) {
+        self.column_selection = None;
+        self.extra_ranges.clear();
+    }
+
+    /// Select several ranges at once, `primary` (or the last) being the
+    /// anchor-to-cursor one.
+    pub fn select_ranges(&mut self, ranges: Vec<(usize, usize)>, primary: Option<(usize, usize)>) {
+        let len = self.document.len();
+        let mut ranges = selection::normalise_ranges(ranges.into_iter().filter_map(|range| clip_range(range, len)).collect());
+        self.column_selection = None;
+        let primary = primary.and_then(|range| clip_range(range, len)).or_else(|| ranges.last().copied());
+        let Some((start, primary_len)) = primary else {
+            self.extra_ranges.clear();
+            self.anchor = None;
+            return;
+        };
+        ranges.retain(|&range| range != (start, primary_len));
+        self.extra_ranges = ranges;
+        self.anchor = Some(start);
+        self.cursor = start + primary_len;
+        self.pending_low_nibble = false;
+    }
+
+    /// Make a column selection: the same bytes in each of a run of records.
+    pub fn select_column(&mut self, column: ColumnSelection) {
+        let Some((start, len)) = clip_range(column.span(), self.document.len()) else { return };
+        self.extra_ranges.clear();
+        self.column_selection = Some(column);
+        self.anchor = Some(start);
+        self.cursor = start + len;
+        self.pending_low_nibble = false;
+    }
+
+    /// Add a range to the selection (Cmd-click), or take it out again when
+    /// it is already one of the selected ranges.
+    pub fn toggle_selection_range(&mut self, start: usize, len: usize) {
+        let mut ranges = self.selection_ranges();
+        if let Some(index) = ranges.iter().position(|&range| range == (start, len)) {
+            ranges.remove(index);
+            let primary = ranges.last().copied();
+            self.select_ranges(ranges, primary);
+        } else {
+            ranges.push((start, len));
+            self.select_ranges(ranges, Some((start, len)));
+        }
+        self.select_matching_packets();
+        self.status = self.selection_summary().map_or_else(|| "Nothing selected".to_string(), |summary| format!("Selected {summary}"));
+    }
+
+    /// When every selected range is exactly a packet in the packet viewer,
+    /// select those packets there too, so both show the same selection.
+    fn select_matching_packets(&mut self) {
+        let ranges = self.selection_ranges();
+        let primary_range = self.selection();
+        let state = &mut self.bench.panels.packets;
+        let Some(set) = &state.set else { return };
+        let index_of = |&(start, len): &(usize, usize)| set.packets.iter().position(|packet| packet.offset == start && packet.len == len);
+        let Some(indices) = ranges.iter().map(index_of).collect::<Option<Vec<usize>>>() else { return };
+        if indices.is_empty() {
+            return;
+        }
+        let primary = primary_range.and_then(|range| index_of(&range));
+        state.selected = indices.into_iter().collect();
+        state.focus = primary.or(state.focus);
+    }
+
+    /// What a Cmd-click on `offset` adds: the search match there, else the
+    /// most specific finding, else the byte itself.
+    pub fn range_to_add_at(&mut self, offset: usize) -> (usize, usize) {
+        let match_len = self.search_highlight_len();
+        if let Some(&at) = self.search_highlights().iter().find(|&&at| offset >= at && offset < at + match_len) {
+            return (at, match_len);
+        }
+        if let Some(finding) = self.pattern_at(offset) {
+            return (finding.start, finding.len.min(self.document.len().saturating_sub(finding.start)));
+        }
+        (offset, 1)
+    }
+
+    /// Cmd-click: add what is under `offset` to the selection, or remove it.
+    pub fn add_to_selection_at(&mut self, offset: usize) {
+        let (start, len) = self.range_to_add_at(offset);
+        self.toggle_selection_range(start, len);
+    }
+
+    /// Select every match of the Find box in the document, as several ranges.
+    pub fn select_all_matches(&mut self) {
+        const MOST_MATCHES: usize = 100_000;
+        let Some(needle) = self.search_needle() else { return };
+        let mut ranges = Vec::new();
+        let mut from = 0;
+        while ranges.len() < MOST_MATCHES
+            && let Some(at) = search::find_next(&mut self.document, &needle, from)
+        {
+            ranges.push((at, needle.len()));
+            from = at + 1;
+        }
+        if ranges.is_empty() {
+            self.status = "No match".to_string();
+            return;
+        }
+        let count = ranges.len();
+        self.select_ranges(ranges, None);
+        self.reveal_cursor_centred();
+        self.reveal_cursor_in_hex(true);
+        self.status = format!("Selected {count} matches");
     }
 
     /// The range an operation acts on: the selection, or the byte at the cursor.
@@ -882,6 +1039,7 @@ impl ViewerApp {
             }
         } else {
             self.anchor = None;
+            self.clear_secondary_selection();
         }
         self.cursor = position;
         self.pending_low_nibble = false;
@@ -891,13 +1049,39 @@ impl ViewerApp {
     /// from the existing selection's anchor instead.
     pub fn begin_drag_selection(&mut self, byte: usize, extend: bool) {
         let grab = if extend { self.anchor.unwrap_or(self.cursor) } else { byte };
+        if !extend {
+            self.clear_secondary_selection();
+        }
+        self.drag_column = false;
         self.drag_grab = Some(grab.min(self.document.len().saturating_sub(1)));
+        self.drag_selection_to(byte);
+    }
+
+    /// Start a drag that adds a range to what is already selected (Cmd held).
+    pub fn begin_adding_drag(&mut self, byte: usize) {
+        let kept = self.selection_ranges();
+        self.begin_drag_selection(byte, false);
+        self.extra_ranges = kept;
+    }
+
+    /// Start a column drag on `byte` (Alt held): the selection becomes the
+    /// same bytes in every record between the drag's corners.
+    pub fn begin_column_drag(&mut self, byte: usize) {
+        self.clear_secondary_selection();
+        self.drag_column = true;
+        self.drag_grab = Some(byte.min(self.document.len().saturating_sub(1)));
         self.drag_selection_to(byte);
     }
 
     /// Select from the drag's starting byte to `byte`, both included.
     pub fn drag_selection_to(&mut self, byte: usize) {
         let Some(grab) = self.drag_grab else { return };
+        if self.drag_column {
+            if let Some(column) = ColumnSelection::from_corners(self.shape.byte_offset, self.shape.row_stride(), grab, byte) {
+                self.select_column(column);
+            }
+            return;
+        }
         let len = self.document.len();
         if byte >= grab {
             self.anchor = Some(grab);
@@ -912,11 +1096,14 @@ impl ViewerApp {
     /// Finish a drag. Ending on the byte it started on is a click, not a
     /// selection: the cursor goes to that byte.
     pub fn end_drag_selection(&mut self) {
+        self.drag_column = false;
         if let Some(grab) = self.drag_grab.take()
             && self.selection() == Some((grab, 1))
+            && self.extra_ranges.is_empty()
         {
             self.anchor = None;
             self.cursor = grab;
+            self.column_selection = None;
         }
     }
 
@@ -1075,6 +1262,7 @@ impl ViewerApp {
     fn after_edit(&mut self, cursor: usize) {
         self.cursor = cursor.min(self.document.len());
         self.anchor = None;
+        self.clear_secondary_selection();
         self.pending_low_nibble = false;
         self.clamp_top_row();
         self.scroll_cursor_into_view();
@@ -1211,6 +1399,7 @@ impl ViewerApp {
     }
 
     fn show_match(&mut self, at: usize, len: usize, index_hint: &str) {
+        self.clear_secondary_selection();
         self.anchor = Some(at);
         self.cursor = at + len;
         self.pending_low_nibble = false;
@@ -1327,6 +1516,7 @@ impl ViewerApp {
     pub fn jump_to_bookmark(&mut self, offset: usize) {
         if let Some(bookmark) = self.bookmarks.at(offset).cloned() {
             if bookmark.len > 1 {
+                self.clear_secondary_selection();
                 self.anchor = Some(bookmark.offset);
                 self.cursor = bookmark.offset + bookmark.len;
             } else {
@@ -1468,7 +1658,7 @@ impl ViewerApp {
     /// Right-click menu shared by the raster and the hex dump, for the byte at
     /// `offset` (which becomes the cursor if it is outside the selection).
     pub fn context_menu(&mut self, ui: &mut egui::Ui, offset: usize) {
-        let in_selection = self.selection().is_some_and(|(start, len)| offset >= start && offset < start + len);
+        let in_selection = self.is_selected(offset);
         if !in_selection && self.cursor != offset {
             self.set_cursor(offset, false);
             self.reveal_cursor_in_hex(true);
@@ -1691,6 +1881,7 @@ impl ViewerApp {
 
     pub fn restore_selection(&mut self, start: usize, len: usize) {
         self.pending_low_nibble = false;
+        self.clear_secondary_selection();
         if len > 1 {
             self.anchor = Some(start);
             self.cursor = start + len;
@@ -1792,6 +1983,7 @@ impl ViewerApp {
     }
 
     pub fn select_all(&mut self) {
+        self.clear_secondary_selection();
         self.anchor = Some(0);
         self.cursor = self.document.len();
     }
@@ -1918,6 +2110,7 @@ impl ViewerApp {
         self.derived_name = derived_name;
         self.cursor = 0;
         self.anchor = None;
+        self.clear_secondary_selection();
         self.top_row = 0;
         self.pan_x = 0.0;
         self.shape.byte_offset = 0;
@@ -2251,6 +2444,7 @@ impl ViewerApp {
     /// Select a finding's bytes and bring them into view.
     pub fn select_pattern(&mut self, pattern: &Finding) {
         let (start, end) = (pattern.start, pattern.end().min(self.document.len()));
+        self.clear_secondary_selection();
         self.anchor = Some(start);
         self.cursor = end;
         self.pending_low_nibble = false;
@@ -2545,6 +2739,7 @@ impl ViewerApp {
         }
         if consume(Key::Escape) {
             self.anchor = None;
+            self.clear_secondary_selection();
             self.pending_low_nibble = false;
             self.show_help = false;
         }
@@ -2968,6 +3163,9 @@ impl ViewerApp {
             if ui.button("Prev").on_hover_text("Shift+F3").clicked() {
                 self.find_previous();
             }
+            if ui.button("All matches").on_hover_text("Select every match at once, as several ranges, to change them all together").clicked() {
+                self.select_all_matches();
+            }
             if self.search_mode == SearchMode::Integer {
                 ui.checkbox(&mut self.search_little_endian, "LE");
             }
@@ -3203,11 +3401,12 @@ impl ViewerApp {
             ui.separator();
             ui.label(RichText::new("cursor").color(dim));
             ui.monospace(format!("{:#x}", self.cursor));
-            if let Some((start, len)) = self.selection() {
+            if let Some(selected) = self.current_selection() {
+                let (start, len) = selected.span();
                 ui.separator();
                 ui.label(RichText::new("selection").color(dim));
                 ui.monospace(format!("{start:#x}–{:#x}", start + len));
-                ui.label(RichText::new(format!("{len} B")).color(dim));
+                ui.label(RichText::new(selected.describe(self.document.len())).color(dim));
             }
             if let Some((offset, byte)) = self.hover.and_then(|offset| self.document.byte_at(offset).map(|byte| (offset, byte))) {
                 ui.separator();
@@ -3286,6 +3485,8 @@ impl ViewerApp {
                     ("Arrow keys", "Move the cursor by a pixel / row (Shift to select)"),
                     ("PgUp PgDn Home End", "Move by a page / to the ends"),
                     ("Click, drag", "Place the cursor, select a range"),
+                    ("Alt+drag", "Select a column: the same bytes in every record"),
+                    ("Cmd+click  Cmd+drag", "Add a match, finding, packet or range to the selection (again to remove)"),
                     ("Backspace Del", "Delete the selection or byte"),
                     ("Cmd+Z Shift+Cmd+Z", "Undo, redo"),
                     ("Cmd+C Cmd+X Cmd+V Cmd+A", "Copy (as hex), cut, paste, select all"),
@@ -3456,4 +3657,11 @@ fn format_value(value: f64) -> String {
     } else {
         format!("{value:.3}")
     }
+}
+
+/// `(start, len)` cut to a document of `document_len` bytes, or `None` when
+/// nothing of it is left.
+fn clip_range((start, len): (usize, usize), document_len: usize) -> Option<(usize, usize)> {
+    let end = start.saturating_add(len).min(document_len);
+    (end > start).then_some((start, end - start))
 }

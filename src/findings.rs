@@ -46,7 +46,7 @@ pub fn show_findings_panel(app: &mut ViewerApp, ui: &mut Ui) {
             ui.label(RichText::new(format!("{} bookmarks", app.bookmarks.bookmarks.len())).small().color(theme::TEXT_DIM));
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.label(RichText::new("click to select · right-click for actions").small().color(theme::TEXT_DIM));
+            ui.label(RichText::new("click to select · Cmd-click to add · right-click for actions").small().color(theme::TEXT_DIM));
         });
     });
     app.pattern_list_open = open;
@@ -88,6 +88,7 @@ pub fn show_findings_panel(app: &mut ViewerApp, ui: &mut Ui) {
         .cloned()
         .collect();
     let mut chosen: Option<Finding> = None;
+    let mut added: Option<Finding> = None;
     let mut decompress: Option<Finding> = None;
     let mut bookmark: Option<Finding> = None;
     let mut play: Option<Finding> = None;
@@ -108,7 +109,11 @@ pub fn show_findings_panel(app: &mut ViewerApp, ui: &mut Ui) {
             });
             let label = row.inner;
             if label.clicked() {
-                chosen = Some(finding.clone());
+                if ui.input(|input| input.modifiers.command) {
+                    added = Some(finding.clone());
+                } else {
+                    chosen = Some(finding.clone());
+                }
             }
             label.on_hover_text(finding.description()).context_menu(|ui| {
                 if ui.button("Select").clicked() {
@@ -143,6 +148,10 @@ pub fn show_findings_panel(app: &mut ViewerApp, ui: &mut Ui) {
 
     if let Some(finding) = chosen {
         app.select_pattern(&finding);
+    }
+    if let Some(finding) = added {
+        let len = finding.len.min(app.document.len().saturating_sub(finding.start));
+        app.toggle_selection_range(finding.start, len);
     }
     if let Some(finding) = decompress {
         app.select_pattern(&finding);

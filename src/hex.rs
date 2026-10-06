@@ -52,6 +52,12 @@ fn show_inspector(app: &mut ViewerApp, ui: &mut Ui) {
             ui.label(RichText::new("end of file — typed hex appends").color(theme::TEXT_DIM));
         }
     });
+    if let Some(summary) = app.selection_summary() {
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("Selection").color(theme::TEXT_DIM));
+            ui.label(RichText::new(summary).color(theme::ACCENT));
+        });
+    }
     if window.is_empty() {
         return;
     }
@@ -307,13 +313,17 @@ fn show_hex_dump(app: &mut ViewerApp, ui: &mut Ui) {
         && !response.secondary_clicked()
     {
         let byte = byte_at_pointer(pointer, app.hex_top_row, app.document.len());
-        let shift = ui.input(|i| i.modifiers.shift);
+        let modifiers = ui.input(|i| i.modifiers);
         if response.drag_started() {
-            app.begin_drag_selection(byte, shift);
+            // Start where the button went down, not where the drag was noticed.
+            let press = ui.input(|i| i.pointer.press_origin()).filter(|press| press.y >= body.min.y);
+            let origin_byte = press.map_or(byte, |press| byte_at_pointer(press, app.hex_top_row, app.document.len()));
+            crate::view::begin_drag(app, origin_byte, modifiers);
+            app.drag_selection_to(byte);
         } else if response.dragged() {
             app.drag_selection_to(byte);
         } else if response.clicked() {
-            app.set_cursor(byte, shift);
+            crate::view::click_byte(app, byte, modifiers);
         }
         if response.drag_stopped() {
             app.end_drag_selection();
@@ -339,7 +349,7 @@ fn show_hex_dump(app: &mut ViewerApp, ui: &mut Ui) {
         Stroke::new(1.0, theme::OUTLINE),
     );
 
-    let selection = if app.layer_visible(LayerKind::Selection) { app.selection_ranges() } else { Vec::new() };
+    let selection = if app.layer_visible(LayerKind::Selection) { app.selection_ranges_in(app.hex_top_row * BYTES_PER_ROW, (app.hex_top_row + rows) * BYTES_PER_ROW) } else { Vec::new() };
     let show_cursor = app.layer_visible(LayerKind::Cursor);
     let cursor = app.cursor;
     let pending = app.pending_low_nibble;

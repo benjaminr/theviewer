@@ -728,5 +728,18 @@ fn the_packet_viewer_finds_an_embedded_capture_filters_it_and_selects_a_packet_i
     let packet = app.bench.panels.packets.packet_set().unwrap().packets[2].clone();
     assert_eq!(app.selection(), Some((packet.offset, packet.len)), "the packet's bytes are selected in the document");
     assert_eq!(&document[packet.offset..packet.end()], frames[2].as_slice());
+
+    // Cmd-clicking a second packet selects both packets' bytes as two ranges.
+    harness.get_by_label_contains("4001 → 9999").scroll_to_me();
+    steps(&mut harness, 2);
+    harness.event(egui::Event::ModifiersChanged(egui::Modifiers::COMMAND));
+    harness.get_by_label_contains("4001 → 9999").click_accesskit();
+    harness.step();
+    harness.event(egui::Event::ModifiersChanged(egui::Modifiers::NONE));
+    steps(&mut harness, 3);
+    let app = harness.state();
+    let packets = &app.bench.panels.packets.packet_set().unwrap().packets;
+    assert_eq!(app.bench.panels.packets.selected_packets(), vec![1, 2]);
+    assert_eq!(app.selection_ranges(), vec![(packets[1].offset, packets[1].len), (packets[2].offset, packets[2].len)]);
     std::fs::remove_file(path).ok();
 }

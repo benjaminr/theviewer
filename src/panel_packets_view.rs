@@ -189,6 +189,19 @@ pub(crate) fn click_row(state: &mut PacketsState, app: &mut ViewerApp, index: us
         state.selected = BTreeSet::from([index]);
     }
     focus_packet(state, app, index);
+    if state.selected.len() > 1 {
+        select_packets_in_document(state, app);
+    }
+}
+
+/// Several packets are selected: select all their bytes in the document as
+/// one multi-range selection, the focused packet being the primary range.
+fn select_packets_in_document(state: &mut PacketsState, app: &mut ViewerApp) {
+    let Some(set) = &state.set else { return };
+    let range = |index: usize| set.packets.get(index).map(|packet| (packet.offset, packet.len));
+    let ranges = state.selected.iter().filter_map(|&index| range(index)).collect();
+    app.select_ranges(ranges, state.focus.and_then(range));
+    panel::remember_main_selection(state, app);
 }
 
 /// Make `index` the packet shown in detail and select its bytes.

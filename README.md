@@ -132,6 +132,10 @@ with its shortcut, or right-click a byte for the actions that apply to it.
   hex.
 
 **Edit**
+- Select a range, a column of every record (`Alt`+drag), or several
+  ranges at once (`Cmd`+click findings, packets or search matches, or
+  *All matches* in the Find box). The raster, the hex dump and the packet
+  viewer show and change the same selection.
 - Overwrite or insert hex, delete, fill, invert, reverse, mirror bits, shift
   a selection's bits across byte boundaries, and move blocks.
 - Unlimited undo, on files of any size: edits are recorded, not copied.
@@ -283,6 +287,8 @@ the full list.
 | `0`–`9` `A`–`F` | Type hex at the cursor |
 | `Ins` | Switch between overwrite and insert |
 | Arrow keys | Move by a pixel or a row (`Shift` extends the selection) |
+| `Alt`+drag | Select a column: the same bytes in every record (raster or hex) |
+| `Cmd`+click, `Cmd`+drag | Add a search match, finding, packet or range to the selection |
 | `PgUp` `PgDn` `Home` `End` | Move by a page, or to either end |
 | `Delete` `Backspace` | Delete the selection or byte |
 | `Cmd+C` `Cmd+X` `Cmd+V` `Cmd+A` | Copy as hex, cut, paste, select all |
