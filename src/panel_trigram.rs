@@ -64,18 +64,6 @@ const REGION_SEARCH_LIMIT: usize = 16 * 1024 * 1024;
 const STRIP_HEIGHT: f32 = 14.0;
 /// Opacity kept by points outside the selection, or outside the hovered type.
 const DIMMED_ALPHA_FACTOR: f32 = 0.18;
-/// Font size of the cluster labels.
-const CLUSTER_LABEL_FONT_SIZE: f32 = 12.0;
-/// Padding around a cluster label's text.
-const CLUSTER_LABEL_PADDING: f32 = 3.0;
-/// Space kept between cluster labels nudged apart.
-const CLUSTER_LABEL_GAP: f32 = 2.0;
-/// Radius of the dot marking a cluster's centre.
-const CLUSTER_CENTRE_RADIUS: f32 = 3.0;
-/// Space between the cube and the column of labels beside it.
-const LABEL_COLUMN_GAP: f32 = 12.0;
-/// Space kept between a label and the edge of the view.
-const LABEL_EDGE_MARGIN: f32 = 4.0;
 
 /// What a point's colour shows.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -203,8 +191,6 @@ pub struct TrigramState {
     pub whole_file: bool,
     /// Dim trigrams that do not occur in the highlighted selection.
     pub highlight_selection: bool,
-    /// Name each region type's cluster beside the cube.
-    pub show_labels: bool,
     /// Region groups whose points are hidden.
     pub hidden: [bool; MAX_GROUPS],
     pending: Option<Receiver<Counted>>,
@@ -226,7 +212,6 @@ impl Default for TrigramState {
             label_source: LabelSource::default(),
             whole_file: false,
             highlight_selection: true,
-            show_labels: true,
             hidden: [false; MAX_GROUPS],
             pending: None,
             cloud: None,
@@ -413,9 +398,6 @@ fn show_toolbar(state: &mut TrigramState, app: &mut ViewerApp, ui: &mut Ui) {
                 state.camera = Camera { zoom: state.camera.zoom, ..preset };
             }
         }
-        if state.colouring == PointColouring::Region && !state.groups.is_empty() {
-            ui.checkbox(&mut state.show_labels, "Labels");
-        }
         if app.selection().is_some() {
             ui.checkbox(&mut state.whole_file, "Whole file, selection highlighted")
                 .on_hover_text("Plot everything and pick out the selection's trigrams against the rest");
@@ -507,7 +489,6 @@ fn show_cube(state: &mut TrigramState, ui: &mut Ui, hovered_group: &mut Option<u
     for point in &placed {
         painter.circle_filled(point.position, point.radius, point_colour(state, &visible[point.index]));
     }
-    draw_cluster_labels(state, &visible, &painter, rect, &to_screen);
 
     let hovered_point = hovered.map(|placed_index| &placed[placed_index]);
     if let Some(point) = hovered_point {
@@ -590,135 +571,6 @@ fn point_colour(state: &TrigramState, point: &TrigramPoint) -> Color32 {
         alpha *= DIMMED_ALPHA_FACTOR;
     }
     Color32::from_rgba_unmultiplied(base.r(), base.g(), base.b(), alpha as u8)
-}
-
-/// Where each region type's trigrams sit on average, in unit cube
-/// coordinates, weighting each cell by its trigrams from that type. Types
-/// with no points give `None`.
-pub fn cluster_centres(points: &[TrigramPoint], group_count: usize) -> Vec<Option<[f32; 3]>> {
-    let mut sums = vec![([0.0f64; 3], 0.0f64); group_count];
-    for point in points {
-        let position = point.unit_position();
-        for &(group, count) in &point.groups {
-            if let Some((sum, weight)) = sums.get_mut(group as usize) {
-                let point_weight = (1.0 + count as f64).ln();
-                for axis in 0..3 {
-                    sum[axis] += position[axis] as f64 * point_weight;
-                }
-                *weight += point_weight;
-            }
-        }
-    }
-    sums.into_iter()
-        .map(|(sum, weight)| (weight > 0.0).then(|| sum.map(|value| (value / weight) as f32)))
-        .collect()
-}
-
-/// A short label for a region type: its name and, for a single region, where
-/// it is; for several, how many.
-fn group_caption(group: &RegionGroup) -> String {
-    match group.spans.as_slice() {
-        [(start, len)] => format!("{} · {start:#x}–{:#x}", group.label, start + len),
-        spans => format!("{} · {} regions", group.label, spans.len()),
-    }
-}
-
-/// Name each visible region type in a column beside the cube, on the side
-/// nearer its cluster, with a line to a dot at the cluster's centre, so the
-/// labels never sit on the points.
-fn draw_cluster_labels(
-    state: &TrigramState,
-    points: &[TrigramPoint],
-    painter: &Painter,
-    view: egui::Rect,
-    to_screen: &impl Fn([f32; 3]) -> (Pos2, f32),
-) {
-    if state.colouring != PointColouring::Region || !state.show_labels {
-        return;
-    }
-    let cube = cube_bounds(to_screen);
-    let font = FontId::proportional(CLUSTER_LABEL_FONT_SIZE);
-    let mut labels = Vec::new();
-    for (index, centre) in cluster_centres(points, state.groups.len()).into_iter().enumerate() {
-        let (Some(centre), Some(group)) = (centre, state.groups.get(index)) else { continue };
-        if state.hidden[index] {
-            continue;
-        }
-        let emphasised = state.hovered_group == Some(index as u8);
-        let galley = painter.layout_no_wrap(group_caption(group), font.clone(), if emphasised { theme::CURSOR } else { theme::TEXT });
-        let anchor = to_screen(centre).0;
-        let size = galley.size() + Vec2::splat(CLUSTER_LABEL_PADDING * 2.0);
-        labels.push((index, anchor, column_position(anchor, size, cube, view), galley));
-    }
-    let placed = place_in_columns(labels.iter().map(|(_, anchor, rect, _)| (*anchor, *rect)).collect(), cube, view);
-    for ((index, anchor, _, galley), box_rect) in labels.into_iter().zip(placed) {
-        let colour = state.groups[index].colour;
-        painter.circle_filled(anchor, CLUSTER_CENTRE_RADIUS, colour);
-        if !box_rect.contains(anchor) {
-            let edge = Pos2::new(anchor.x.clamp(box_rect.left(), box_rect.right()), anchor.y.clamp(box_rect.top(), box_rect.bottom()));
-            painter.line_segment([anchor, edge], Stroke::new(1.0, colour));
-        }
-        painter.rect_filled(box_rect, 3.0, theme::SURFACE.gamma_multiply(0.9));
-        painter.rect_stroke(box_rect, 3.0, Stroke::new(1.5, colour), egui::StrokeKind::Outside);
-        painter.galley(box_rect.min + Vec2::splat(CLUSTER_LABEL_PADDING), galley, theme::TEXT);
-    }
-}
-
-/// The screen rectangle the cube's eight corners span.
-fn cube_bounds(to_screen: &impl Fn([f32; 3]) -> (Pos2, f32)) -> egui::Rect {
-    let corners = [0.0, 1.0].into_iter().flat_map(|x| [0.0, 1.0].into_iter().flat_map(move |y| [0.0, 1.0].map(|z| [x, y, z])));
-    corners.fold(egui::Rect::NOTHING, |bounds, corner| bounds.union(egui::Rect::from_center_size(to_screen(corner).0, Vec2::ZERO)))
-}
-
-/// Where a label of `size` goes before spreading: level with its cluster, in
-/// the margin on the side of the cube nearer it, kept inside the view.
-fn column_position(anchor: Pos2, size: Vec2, cube: egui::Rect, view: egui::Rect) -> egui::Rect {
-    let left_side = anchor.x < cube.center().x;
-    let x = if left_side {
-        (cube.left() - LABEL_COLUMN_GAP - size.x).max(view.left() + LABEL_EDGE_MARGIN)
-    } else {
-        (cube.right() + LABEL_COLUMN_GAP).min(view.right() - LABEL_EDGE_MARGIN - size.x)
-    };
-    egui::Rect::from_min_size(Pos2::new(x, anchor.y - size.y / 2.0), size)
-}
-
-/// Spread each side's column of labels so none overlap, then keep each column
-/// inside the view. Returns the boxes in the order given.
-pub fn place_in_columns(labels: Vec<(Pos2, egui::Rect)>, cube: egui::Rect, view: egui::Rect) -> Vec<egui::Rect> {
-    let mut placed: Vec<egui::Rect> = labels.iter().map(|&(_, rect)| rect).collect();
-    for left_side in [true, false] {
-        let members: Vec<usize> = (0..labels.len()).filter(|&index| (labels[index].0.x < cube.center().x) == left_side).collect();
-        let spread = spread_labels(members.iter().map(|&index| placed[index]).collect());
-        let overflow = spread.iter().map(|rect| rect.bottom()).fold(f32::NEG_INFINITY, f32::max) - (view.bottom() - LABEL_EDGE_MARGIN);
-        let room_above = spread.iter().map(|rect| rect.top()).fold(f32::INFINITY, f32::min) - (view.top() + LABEL_EDGE_MARGIN);
-        let lift = overflow.max(0.0).min(room_above.max(0.0));
-        for (&index, rect) in members.iter().zip(spread) {
-            placed[index] = rect.translate(vec2(0.0, -lift));
-        }
-    }
-    placed
-}
-
-/// Move label boxes apart so none overlap: taken top to bottom, each box that
-/// overlaps one already placed moves down just below it. Boxes keep their
-/// horizontal position, so each stays near its cluster. Returns the boxes in
-/// the order given.
-pub fn spread_labels(boxes: Vec<egui::Rect>) -> Vec<egui::Rect> {
-    let mut order: Vec<usize> = (0..boxes.len()).collect();
-    order.sort_by(|&a, &b| boxes[a].top().total_cmp(&boxes[b].top()));
-    let mut placed: Vec<egui::Rect> = boxes.clone();
-    let mut settled: Vec<usize> = Vec::new();
-    for index in order {
-        let mut rect = boxes[index];
-        // Each move clears one overlap; with n boxes that is at most n moves.
-        for _ in 0..=settled.len() {
-            let Some(blocker) = settled.iter().map(|&other| placed[other]).find(|other| other.intersects(rect)) else { break };
-            rect = rect.translate(vec2(0.0, blocker.bottom() + CLUSTER_LABEL_GAP - rect.top()));
-        }
-        placed[index] = rect;
-        settled.push(index);
-    }
-    placed
 }
 
 /// Hover text for a point: its trigram, the cell it stands for, its count and
@@ -1080,7 +932,7 @@ mod tests {
     }
 
     #[test]
-    fn plotting_labels_each_region_type_and_centres_its_cluster() {
+    fn plotting_attributes_each_kind_of_data_to_its_own_region_type() {
         let (bytes, _) = three_part_file();
         let mut harness = harness_for(bytes);
         plot_whole_file(&mut harness);
@@ -1088,14 +940,9 @@ mod tests {
         assert!(state.groups.len() >= 2, "{:?}", state.groups.iter().map(|g| &g.label).collect::<Vec<_>>());
         let cloud = state.cloud.as_ref().unwrap();
         assert!(cloud.points.iter().any(|point| point.dominant_group().is_some()));
-        let centres = cluster_centres(&cloud.points, state.groups.len());
         let text_group = cloud.points.iter().find(|point| point.exemplar == *b"Rea").and_then(TrigramPoint::dominant_group).expect("text is labelled");
-        let text_centre = centres[text_group as usize].expect("the text cluster has a centre");
-        let printable = (0x20 as f32 / 255.0)..=(0x7E as f32 / 255.0);
-        assert!(text_centre.iter().all(|axis| printable.contains(axis)), "{text_centre:?}");
-        let zero_group = cloud.points.iter().find(|point| point.exemplar == [0, 0, 0]).and_then(TrigramPoint::dominant_group).unwrap();
-        let zero_centre = centres[zero_group as usize].unwrap();
-        assert!(zero_centre.iter().all(|&axis| axis < 0.1), "zeros sit at the origin: {zero_centre:?}");
+        let zero_group = cloud.points.iter().find(|point| point.exemplar == [0, 0, 0]).and_then(TrigramPoint::dominant_group).expect("zeros are labelled");
+        assert_ne!(text_group, zero_group, "text and padding are different region types");
     }
 
     #[test]
@@ -1144,43 +991,6 @@ mod tests {
     }
 
     #[test]
-    fn overlapping_cluster_labels_are_moved_apart_and_stay_in_their_column() {
-        let label = |x: f32, y: f32| egui::Rect::from_min_size(Pos2::new(x, y), vec2(120.0, 18.0));
-        let boxes = vec![label(100.0, 100.0), label(110.0, 104.0), label(90.0, 98.0), label(400.0, 100.0)];
-        let placed = spread_labels(boxes.clone());
-        for (a, first) in placed.iter().enumerate() {
-            for second in &placed[a + 1..] {
-                assert!(!first.intersects(*second), "{first:?} overlaps {second:?}");
-            }
-        }
-        for (before, after) in boxes.iter().zip(&placed) {
-            assert_eq!(before.left(), after.left(), "labels only move vertically");
-        }
-        assert_eq!(placed[3], boxes[3], "a label with room of its own does not move");
-    }
-
-    #[test]
-    fn cluster_labels_sit_beside_the_cube_not_on_it() {
-        let view = egui::Rect::from_min_size(Pos2::ZERO, vec2(900.0, 400.0));
-        let cube = egui::Rect::from_center_size(view.center(), vec2(300.0, 300.0));
-        let size = vec2(120.0, 20.0);
-        let anchors = [Pos2::new(420.0, 200.0), Pos2::new(430.0, 205.0), Pos2::new(500.0, 190.0), Pos2::new(380.0, 390.0)];
-        let labels: Vec<(Pos2, egui::Rect)> = anchors.iter().map(|&anchor| (anchor, column_position(anchor, size, cube, view))).collect();
-        let placed = place_in_columns(labels, cube, view);
-        for rect in &placed {
-            assert!(!rect.intersects(cube), "{rect:?} covers the cube {cube:?}");
-            assert!(view.contains_rect(*rect), "{rect:?} leaves the view");
-        }
-        for (a, first) in placed.iter().enumerate() {
-            for second in &placed[a + 1..] {
-                assert!(!first.intersects(*second));
-            }
-        }
-        assert!(placed[0].right() <= cube.left(), "a cluster left of centre is labelled on the left");
-        assert!(placed[2].left() >= cube.right(), "one right of centre on the right");
-    }
-
-    #[test]
     fn in_a_narrow_pane_every_legend_entry_wraps_into_reach_and_can_be_ticked() {
         let (bytes, _) = three_part_file();
         let mut app = ViewerApp::new(Launch::default());
@@ -1202,5 +1012,18 @@ mod tests {
             harness.step();
             assert!(harness.state().0.hidden[index], "ticking {} hides it", group.label);
         }
+    }
+
+    #[test]
+    fn hovering_a_legend_entry_highlights_that_region_type() {
+        let (bytes, _) = three_part_file();
+        let mut harness = harness_for(bytes);
+        plot_whole_file(&mut harness);
+        let label = harness.state().0.groups[0].label.clone();
+        let needle = format!("{label} (");
+        harness.get_by_label_contains(&needle).hover();
+        harness.step();
+        harness.step();
+        assert_eq!(harness.state().0.hovered_group, Some(0), "the hovered type is highlighted");
     }
 }
