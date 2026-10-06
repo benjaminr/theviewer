@@ -247,12 +247,12 @@ pub fn tool_definitions() -> Value {
         },
         {
             "name": "format_reference",
-            "description": "Look up the app's reference notes on a file format or protocol: how its bytes are organised, what each field means, and which RFC or specification defines it (with section numbers). Pass an id such as \"ipv4\", \"png\" or \"zip\", a finding id, or a packet layer name; when nothing matches, the known ids are listed.",
+            "description": "Look up the app's reference notes on a file format or protocol: how its bytes are organised, what each field means, and which RFC or specification defines it (with section numbers). Pass an id such as \"ipv4\", \"png\" or \"zip\", a finding id, a packet layer name, or a port such as \"udp/67\" or a bare number (a port, IP protocol number or EtherType) to learn what usually travels there; when nothing matches, the known ids are listed.",
             "strict": true,
             "eager_input_streaming": true,
             "input_schema": {
                 "type": "object",
-                "properties": { "name": { "type": "string", "description": "Format id, finding id or layer name, such as \"udp\" or \"User Datagram Protocol\"." } },
+                "properties": { "name": { "type": "string", "description": "Format id, finding id, layer name or port, such as \"udp\", \"User Datagram Protocol\", \"tcp/502\" or \"502\"." } },
                 "required": ["name"],
                 "additionalProperties": false
             }

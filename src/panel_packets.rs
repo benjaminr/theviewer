@@ -734,6 +734,19 @@ pub struct PacketLayers {
     pub offset: usize,
     pub len: usize,
     pub layers: Vec<Layer>,
+    /// Addresses, ports and transport, for naming a payload not dissected.
+    pub flow: Option<Flow>,
+    /// The transport payload as `(offset, len)` from the packet's first byte.
+    pub payload: Option<(usize, usize)>,
+    /// The EtherType after the Ethernet header and any VLAN tags.
+    pub ether_type: Option<u16>,
+}
+
+impl PacketLayers {
+    /// The layers of a packet at document offset `offset`.
+    pub fn from_dissection(offset: usize, len: usize, dissection: &Dissection) -> PacketLayers {
+        PacketLayers { offset, len, layers: dissection.layers.clone(), flow: dissection.flow, payload: dissection.payload, ether_type: dissection.ether_type }
+    }
 }
 
 /// The layers of the viewer's packet holding document offset `position`:
@@ -753,12 +766,12 @@ pub(crate) fn layers_at(app: &mut ViewerApp, position: usize) -> Option<PacketLa
         && detail.link_choice == state.link_choice
         && detail.raw_generation == state.raw_generation
     {
-        return Some(PacketLayers { offset: packet.offset, len: packet.len, layers: detail.dissection.layers.clone() });
+        return Some(PacketLayers::from_dissection(packet.offset, packet.len, &detail.dissection));
     }
     let link = state.link_choice.apply(packet.link);
     let raw = state.raw.clone();
     let bytes = app.document.read_range(packet.offset, packet.len.min(PACKET_READ_LIMIT));
-    Some(PacketLayers { offset: packet.offset, len: packet.len, layers: packets::dissect_with(&bytes, link, &raw).layers })
+    Some(PacketLayers::from_dissection(packet.offset, packet.len, &packets::dissect_with(&bytes, link, &raw)))
 }
 
 /// Note the main view's selection as one the panel made, so it is not

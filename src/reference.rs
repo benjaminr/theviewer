@@ -9,10 +9,26 @@
 //! for this project; the specifications themselves are cited by number,
 //! section and link, and RFC sections can be fetched on request (see
 //! [`rfc_text_url`] and [`rfc_section`]).
+//!
+//! Your own notes, in the same TOML form, are read once at startup from
+//! `~/.config/theviewer/reference/*.toml` (see [`user_notes_dir`]). An entry
+//! whose `id` matches an embedded one replaces it; other entries are added.
+//!
+//! Entries are listed for browsing under their `group`. The groups in use,
+//! which new entries should share where they fit:
+//!
+//! - Network: "Capture files", "Link layer", "Internet layer", "Transport",
+//!   "Naming and time", "Web and remote access", "Messaging",
+//!   "Industrial control".
+//! - Files: "Images", "Archives", "Executables", "Disks and filesystems",
+//!   "Firmware", "Serialisation", "Text", "Certificates and keys",
+//!   "Compression", "Media streams".
+//!
+//! Entries without a group are listed under "Other".
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::RwLock;
 
 use serde::Deserialize;
 
@@ -135,6 +151,35 @@ struct ReferenceFile {
     format: Vec<FormatReference>,
 }
 
+/// The entries of one reference file, with their ports checked.
+fn parse_file(text: &str) -> Result<Vec<FormatReference>, String> {
+    let file: ReferenceFile = toml::from_str(text).map_err(|error| error.to_string())?;
+    for entry in &file.format {
+        if let Some(text) = entry.ports.iter().find(|text| parse_port(text).is_none()) {
+            return Err(format!("reference '{}' lists port '{text}'; write ports as tcp/N, udp/N or sctp/N", entry.id));
+        }
+    }
+    Ok(file.format)
+}
+
+/// What to do when two entries claim one key.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum KeyClash {
+    /// Fail, so a mistake in the embedded notes shows up in the tests.
+    Reject,
+    /// The later entry takes the key, so your own notes can claim a name.
+    LaterWins,
+}
+
+/// The library in use, with what became of your own notes.
+pub struct LoadedNotes {
+    pub library: Library,
+    /// Your reference files that were read.
+    pub user_files: usize,
+    /// Your reference files that could not be read, as "path: error".
+    pub problems: Vec<String>,
+}
+
 /// Every embedded entry, with indexes from lower-case key, port, EtherType
 /// and IP protocol number to entries.
 pub struct Library {
@@ -151,19 +196,56 @@ impl Library {
     pub fn parse(sources: &[(&str, &str)]) -> Result<Library, String> {
         let mut entries = Vec::new();
         for (name, text) in sources {
-            let file: ReferenceFile = toml::from_str(text).map_err(|error| format!("reference/{name}: {error}"))?;
-            entries.extend(file.format);
+            entries.extend(parse_file(text).map_err(|error| format!("reference/{name}: {error}"))?);
         }
-        let mut by_key: HashMap<String, usize> = HashMap::new();
         let mut ids = HashMap::new();
         for (index, entry) in entries.iter().enumerate() {
             if let Some(previous) = ids.insert(entry.id.clone(), index) {
                 return Err(format!("reference id '{}' is used twice (entries {previous} and {index})", entry.id));
             }
+        }
+        Library::index(entries, KeyClash::Reject)
+    }
+
+    /// The embedded `sources` with your own reference files laid over them:
+    /// an entry whose id is already known replaces that entry, and any other
+    /// entry is added. A key your entry shares with another entry becomes
+    /// yours. A file that cannot be read or parsed is left out and described
+    /// in [`LoadedNotes::problems`]; only invalid embedded files are an error.
+    pub fn with_user_notes(sources: &[(&str, &str)], user_files: &[(PathBuf, Result<String, String>)]) -> Result<LoadedNotes, String> {
+        let mut entries = Library::parse(sources)?.entries;
+        let mut problems = Vec::new();
+        let mut loaded_files = 0;
+        for (path, text) in user_files {
+            let parsed = text.as_ref().map_err(String::clone).and_then(|text| parse_file(text));
+            let user_entries = match parsed {
+                Ok(user_entries) => user_entries,
+                Err(error) => {
+                    problems.push(format!("{}: {error}", path.display()));
+                    continue;
+                }
+            };
+            loaded_files += 1;
+            for entry in user_entries {
+                match entries.iter_mut().find(|existing| existing.id == entry.id) {
+                    Some(existing) => *existing = entry,
+                    None => entries.push(entry),
+                }
+            }
+        }
+        let library = Library::index(entries, KeyClash::LaterWins)?;
+        Ok(LoadedNotes { library, user_files: loaded_files, problems })
+    }
+
+    /// Index entries by key, port, EtherType and IP protocol number.
+    fn index(entries: Vec<FormatReference>, clash: KeyClash) -> Result<Library, String> {
+        let mut by_key: HashMap<String, usize> = HashMap::new();
+        for (index, entry) in entries.iter().enumerate() {
             for key in entry.keys.iter().chain(std::iter::once(&entry.id)) {
                 let key = key.to_lowercase();
                 if let Some(&other) = by_key.get(&key)
                     && other != index
+                    && clash == KeyClash::Reject
                 {
                     return Err(format!("reference key '{key}' is claimed by both '{}' and '{}'", entries[other].id, entry.id));
                 }
@@ -227,12 +309,79 @@ impl Library {
         self.entries.iter().find(|entry| entry.id == id)
     }
 
+    /// Entries on a port number over any transport.
+    pub fn by_port_number(&self, port: u16) -> Vec<&FormatReference> {
+        let mut found = Vec::new();
+        for transport in [Transport::Tcp, Transport::Udp, Transport::Sctp] {
+            for entry in self.by_port(transport, port) {
+                if !found.iter().any(|known: &&FormatReference| known.id == entry.id) {
+                    found.push(entry);
+                }
+            }
+        }
+        found
+    }
+
+    /// Entries a number may name: a port on any transport, an IP protocol
+    /// number or an EtherType. Written `0x…`, it is read as hexadecimal.
+    fn by_number(&self, text: &str) -> Option<Vec<&FormatReference>> {
+        let text = text.trim();
+        let number = match text.strip_prefix("0x").or_else(|| text.strip_prefix("0X")) {
+            Some(hex) => u32::from_str_radix(hex, 16).ok()?,
+            None => text.parse::<u32>().ok()?,
+        };
+        let number = u16::try_from(number).ok()?;
+        let mut found = self.by_port_number(number);
+        let others = u8::try_from(number).map_or_else(|_| Vec::new(), |protocol| self.by_ip_protocol(protocol)).into_iter().chain(self.by_ethertype(number));
+        for entry in others {
+            if !found.iter().any(|known| known.id == entry.id) {
+                found.push(entry);
+            }
+        }
+        Some(found)
+    }
+
+    /// Entries matching what the user typed: a port such as `udp/67`; a
+    /// number, as a port, IP protocol number or EtherType; or else words found
+    /// in an entry's id, name, keys, summary, group or cited documents. Every
+    /// entry for an empty query.
+    pub fn search(&self, query: &str) -> Vec<&FormatReference> {
+        let query = query.trim();
+        if query.is_empty() {
+            return self.entries.iter().collect();
+        }
+        if let Some((transport, port)) = parse_port(query) {
+            return self.by_port(transport, port);
+        }
+        if let Some(found) = self.by_number(query) {
+            return found;
+        }
+        let words: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
+        self.entries.iter().filter(|entry| words.iter().all(|word| entry.mentions(word))).collect()
+    }
+
     /// An entry's notes as plain text for the assistant, looked up by id or
-    /// any of its keys; when nothing matches, the ids that are known.
+    /// any of its keys, or by a port (`udp/67`) or number (a port, IP protocol
+    /// number or EtherType); when nothing matches, the ids that are known.
     pub fn describe_for_assistant(&self, name: &str) -> String {
-        match self.lookup(name) {
-            Some(entry) => entry.to_plain_text(),
-            None => {
+        if let Some(entry) = self.lookup(name) {
+            return entry.to_plain_text();
+        }
+        let by_number = parse_port(name).map(|(transport, port)| self.by_port(transport, port)).or_else(|| self.by_number(name));
+        match by_number {
+            Some(found) if !found.is_empty() => {
+                let mut text = format!("Notes on what '{}' usually carries:\n", name.trim());
+                for entry in found.iter().take(ASSISTANT_MATCHES_IN_FULL) {
+                    text.push('\n');
+                    text.push_str(&entry.to_plain_text());
+                }
+                let rest: Vec<&str> = found.iter().skip(ASSISTANT_MATCHES_IN_FULL).map(|entry| entry.id.as_str()).collect();
+                if !rest.is_empty() {
+                    text.push_str(&format!("\nAlso: {}.\n", rest.join(", ")));
+                }
+                text
+            }
+            _ => {
                 let ids: Vec<&str> = self.entries.iter().map(|entry| entry.id.as_str()).collect();
                 format!("No reference notes for '{}'. Known ids: {}.", name.trim(), ids.join(", "))
             }
@@ -240,18 +389,88 @@ impl Library {
     }
 }
 
-/// The embedded library, parsed once.
-pub fn library() -> &'static Library {
-    static LIBRARY: OnceLock<Library> = OnceLock::new();
-    LIBRARY.get_or_init(|| Library::parse(&SOURCES).unwrap_or_else(|error| panic!("embedded reference notes are invalid: {error}")))
+/// Most entries matching a port or number sent to the assistant in full.
+const ASSISTANT_MATCHES_IN_FULL: usize = 3;
+
+/// The heading of entries without a group.
+pub const OTHER_GROUP: &str = "Other";
+
+/// Entries under their groups, groups in alphabetical order with
+/// [`OTHER_GROUP`] last, entries by name within each.
+pub fn grouped<'a>(entries: &[&'a FormatReference]) -> Vec<(&'a str, Vec<&'a FormatReference>)> {
+    let mut groups: Vec<(&'a str, Vec<&'a FormatReference>)> = Vec::new();
+    for &entry in entries {
+        let group = entry.group.as_deref().filter(|group| !group.trim().is_empty()).unwrap_or(OTHER_GROUP);
+        match groups.iter_mut().find(|(name, _)| *name == group) {
+            Some((_, members)) => members.push(entry),
+            None => groups.push((group, vec![entry])),
+        }
+    }
+    groups.sort_by_key(|(name, _)| (*name == OTHER_GROUP, name.to_lowercase()));
+    for (_, members) in &mut groups {
+        members.sort_by_key(|entry| entry.name.to_lowercase());
+    }
+    groups
 }
 
-/// The entry for `key` in the embedded library.
+/// Where your own reference files live: `~/.config/theviewer/reference`.
+pub fn user_notes_dir() -> Option<PathBuf> {
+    crate::config::config_file("reference")
+}
+
+/// Every `*.toml` file in `dir`, in name order, with its text or why it
+/// could not be read. A missing folder holds no files.
+pub fn read_user_notes(dir: &Path) -> Vec<(PathBuf, Result<String, String>)> {
+    let Ok(listing) = std::fs::read_dir(dir) else { return Vec::new() };
+    let mut paths: Vec<PathBuf> = listing.filter_map(Result::ok).map(|entry| entry.path()).filter(|path| path.extension().is_some_and(|ext| ext == "toml")).collect();
+    paths.sort();
+    paths
+        .into_iter()
+        .map(|path| {
+            let text = std::fs::read_to_string(&path).map_err(|error| error.to_string());
+            (path, text)
+        })
+        .collect()
+}
+
+/// The embedded notes with your own from [`user_notes_dir`].
+fn load_notes() -> LoadedNotes {
+    let user_files = user_notes_dir().map(|dir| read_user_notes(&dir)).unwrap_or_default();
+    Library::with_user_notes(&SOURCES, &user_files).unwrap_or_else(|error| panic!("embedded reference notes are invalid: {error}"))
+}
+
+/// The notes in use. Loaded on first use and replaced by
+/// [`reload_user_notes`]; each version is leaked so entries handed out
+/// earlier stay valid, which costs little as reloading is rare.
+static LOADED: RwLock<Option<&'static LoadedNotes>> = RwLock::new(None);
+
+/// The notes in use, with what became of your own.
+pub fn loaded_notes() -> &'static LoadedNotes {
+    if let Some(loaded) = *LOADED.read().unwrap_or_else(|poisoned| poisoned.into_inner()) {
+        return loaded;
+    }
+    let mut slot = LOADED.write().unwrap_or_else(|poisoned| poisoned.into_inner());
+    slot.get_or_insert_with(|| Box::leak(Box::new(load_notes())))
+}
+
+/// Read your own notes again, for when you have edited them.
+pub fn reload_user_notes() -> &'static LoadedNotes {
+    let loaded: &'static LoadedNotes = Box::leak(Box::new(load_notes()));
+    *LOADED.write().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(loaded);
+    loaded
+}
+
+/// The library in use: the embedded notes and your own.
+pub fn library() -> &'static Library {
+    &loaded_notes().library
+}
+
+/// The entry for `key` in the library in use.
 pub fn lookup(key: &str) -> Option<&'static FormatReference> {
     library().lookup(key)
 }
 
-/// The entry for a finding, by id or else title, in the embedded library.
+/// The entry for a finding, by id or else title, in the library in use.
 pub fn lookup_finding(id: &str, title: &str) -> Option<&'static FormatReference> {
     library().lookup_finding(id, title)
 }
@@ -309,6 +528,18 @@ impl FormatReference {
             .map_or(self.name.as_str(), String::as_str)
     }
 
+    /// Whether a lower-case `word` appears in the entry's id, name, keys,
+    /// summary, group, ports or cited documents.
+    fn mentions(&self, word: &str) -> bool {
+        let contains = |text: &str| text.to_lowercase().contains(word);
+        contains(&self.id)
+            || contains(&self.name)
+            || contains(&self.summary)
+            || self.group.as_deref().is_some_and(contains)
+            || self.keys.iter().chain(&self.ports).any(|text| contains(text))
+            || self.specs.iter().any(|spec| contains(&spec.document) || contains(&spec.title))
+    }
+
     /// The whole entry as plain text, for the assistant's context.
     pub fn to_plain_text(&self) -> String {
         let mut text = format!("{}\n{}\n\n{}\n", self.name, self.summary, self.organisation.trim());
@@ -360,11 +591,17 @@ pub fn rfc_cache_dir() -> Option<PathBuf> {
 /// there, otherwise from `fetch` (given the download URL), which is then
 /// cached. Only called when the user asks for an RFC's text.
 pub fn load_rfc_text(cache_dir: Option<&Path>, number: u32, fetch: impl FnOnce(&str) -> Result<String, String>) -> Result<String, String> {
-    let cached = cache_dir.map(|dir| dir.join(format!("rfc{number}.txt")));
+    load_cached_text(cache_dir, &format!("rfc{number}.txt"), &rfc_text_url(number), fetch)
+}
+
+/// The text kept as `file_name` in `cache_dir` when it is there, otherwise
+/// fetched from `url` with `fetch` and then cached.
+pub fn load_cached_text(cache_dir: Option<&Path>, file_name: &str, url: &str, fetch: impl FnOnce(&str) -> Result<String, String>) -> Result<String, String> {
+    let cached = cache_dir.map(|dir| dir.join(file_name));
     if let Some(text) = cached.as_ref().and_then(|path| std::fs::read_to_string(path).ok()).filter(|text| !text.trim().is_empty()) {
         return Ok(text);
     }
-    let text = fetch(&rfc_text_url(number))?;
+    let text = fetch(url)?;
     if let Some(path) = &cached {
         // A cache that cannot be written only means fetching again next time.
         let _ = path.parent().map(std::fs::create_dir_all);
@@ -522,6 +759,92 @@ ip_protocols = [47]
         let bad = extra.replace("udp/67", "port 67");
         let error = Library::parse(&[("bad.toml", &bad)]).err().unwrap();
         assert!(error.contains("tcp/N"), "{error}");
+    }
+
+    const DHCP: &str = r#"
+[[format]]
+id = "dhcp"
+name = "Dynamic Host Configuration Protocol"
+keys = ["DHCP"]
+summary = "Hands out addresses."
+organisation = "A BOOTP message with options."
+group = "Addressing"
+ports = ["udp/67", "udp/68"]
+ip_protocols = [99]
+"#;
+
+    #[test]
+    fn the_library_is_searched_by_port_number_or_words() {
+        let library = Library::parse(&[("sample.toml", SAMPLE), ("dhcp.toml", DHCP)]).unwrap();
+        let ids = |query: &str| library.search(query).iter().map(|entry| entry.id.as_str()).collect::<Vec<_>>();
+        assert_eq!(ids(""), ["udp", "dhcp"]);
+        assert_eq!(ids("udp/67"), ["dhcp"]);
+        assert!(ids("tcp/67").is_empty());
+        assert_eq!(ids("68"), ["dhcp"], "a bare number is a port on any transport");
+        assert_eq!(ids("99"), ["dhcp"], "or an IP protocol number");
+        assert_eq!(ids("datagram"), ["udp"]);
+        assert_eq!(ids("host addresses"), ["dhcp"], "every word must appear");
+        assert_eq!(ids("RFC 768"), ["udp"], "cited documents are searched");
+        let groups: Vec<(&str, usize)> = grouped(&library.search("")).iter().map(|(name, members)| (*name, members.len())).collect();
+        assert_eq!(groups, [("Addressing", 1), (OTHER_GROUP, 1)]);
+    }
+
+    #[test]
+    fn the_assistant_can_ask_by_port_or_number() {
+        let library = Library::parse(&[("sample.toml", SAMPLE), ("dhcp.toml", DHCP)]).unwrap();
+        assert!(library.describe_for_assistant("udp/67").contains("Dynamic Host Configuration Protocol\nHands out addresses."));
+        assert!(library.describe_for_assistant("68").contains("Dynamic Host Configuration Protocol"));
+        assert!(library.describe_for_assistant("tcp/67").starts_with("No reference notes for 'tcp/67'"));
+    }
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("theviewer-reference-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn your_notes_replace_an_entry_with_the_same_id_and_add_new_ones() {
+        let dir = temp_dir("override");
+        let mine = r#"
+[[format]]
+id = "udp"
+name = "UDP, my way"
+keys = ["UDP", "my datagrams"]
+summary = "My own summary."
+organisation = "As I see it."
+"#;
+        std::fs::write(dir.join("b-mine.toml"), mine).unwrap();
+        std::fs::write(dir.join("a-dhcp.toml"), DHCP).unwrap();
+        std::fs::write(dir.join("notes.txt"), "not a reference file").unwrap();
+        let loaded = Library::with_user_notes(&[("sample.toml", SAMPLE)], &read_user_notes(&dir)).unwrap();
+        assert!(loaded.problems.is_empty(), "{:?}", loaded.problems);
+        assert_eq!(loaded.user_files, 2);
+        let library = &loaded.library;
+        assert_eq!(library.entries().len(), 2, "udp is replaced, not doubled");
+        assert_eq!(library.lookup("udp").unwrap().summary, "My own summary.");
+        assert_eq!(library.lookup("my datagrams").unwrap().id, "udp", "the new keys are indexed");
+        assert!(library.lookup("User Datagram Protocol").is_none(), "the replaced entry's keys are dropped");
+        assert_eq!(library.by_port(Transport::Udp, 67)[0].id, "dhcp");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_broken_file_of_your_notes_is_skipped_and_reported() {
+        let dir = temp_dir("broken");
+        std::fs::write(dir.join("broken.toml"), "[[format]]\nid = \"x\"\nname = ").unwrap();
+        std::fs::write(dir.join("bad-port.toml"), DHCP.replace("udp/67", "port 67")).unwrap();
+        std::fs::write(dir.join("good.toml"), DHCP.replace("\"udp/67\", ", "")).unwrap();
+        let loaded = Library::with_user_notes(&[("sample.toml", SAMPLE)], &read_user_notes(&dir)).unwrap();
+        assert_eq!(loaded.problems.len(), 2, "{:?}", loaded.problems);
+        assert!(loaded.problems.iter().any(|problem| problem.contains("broken.toml: ")));
+        assert!(loaded.problems.iter().any(|problem| problem.contains("bad-port.toml: ") && problem.contains("tcp/N")));
+        assert_eq!(loaded.user_files, 1);
+        assert_eq!(loaded.library.entries().len(), 2, "the good file still loads");
+        let missing = Library::with_user_notes(&[("sample.toml", SAMPLE)], &read_user_notes(&dir.join("absent"))).unwrap();
+        assert!(missing.problems.is_empty() && missing.user_files == 0);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

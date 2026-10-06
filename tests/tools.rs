@@ -803,6 +803,32 @@ fn the_reference_tab_explains_the_udp_header_under_the_cursor() {
 }
 
 #[test]
+fn the_reference_tab_names_an_undissected_payload_by_its_port() {
+    // SSH is not dissected, so an encrypted SSH packet's payload is plain
+    // bytes; port 22 still says what they probably are.
+    let builder = etherparse::PacketBuilder::ethernet2([2, 0, 0, 0, 0, 1], [2, 0, 0, 0, 0, 2]).ipv4([10, 0, 0, 2], [10, 0, 0, 1], 64).tcp(50_000, 22, 1000, 4096);
+    let mut frame = Vec::new();
+    builder.write(&mut frame, &xorshift_bytes(48, 7)).unwrap();
+    let path = temp_path("reference-guess.pcap");
+    std::fs::write(&path, pcap_of(&[frame])).unwrap();
+    let mut harness = harness_for(path.clone());
+    wait_for(&mut harness, |app| app.patterns.iter().any(|finding| finding.id == "pcap"));
+
+    let payload_at = 24 + 16 + 14 + 20 + 20;
+    harness.state_mut().set_cursor(payload_at + 4, false);
+    harness.state_mut().dock.toggle(DockTab::Reference);
+    wait_for_label(&mut harness, "Not dissected; the notes describe what this port usually carries.");
+    let reference = &harness.state().bench.panels.reference;
+    let chosen = reference.chosen_entry().expect("the guess is shown");
+    let ssh = theviewer::reference::lookup("ssh-banner").unwrap();
+    assert_eq!(chosen.label, format!("{}?", ssh.short_name()));
+    assert_eq!((chosen.start, chosen.len), (payload_at, 48), "the guess covers the payload");
+    assert_eq!(chosen.guess.as_ref().map(|guess| guess.reason.as_str()), Some("TCP port 22 is registered to it"));
+    assert!(harness.query_by_label(&ssh.name).is_some(), "the notes' name is the heading");
+    std::fs::remove_file(path).ok();
+}
+
+#[test]
 fn picking_a_layer_in_the_packet_viewer_turns_the_reference_tab_to_that_protocol() {
     let dns_query = b"\x12\x34\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00\x07example\x03com\x00\x00\x01\x00\x01";
     let path = temp_path("reference-follow.pcap");

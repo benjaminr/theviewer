@@ -19,7 +19,7 @@ use eframe::egui::{self, Align2, Color32, FontId, Rect, RichText, Sense, Stroke,
 
 use crate::app::ViewerApp;
 use crate::dock::DockTab;
-use crate::packets::{self, PacketSet};
+use crate::packets::{self, Flow, Layer, PacketSet};
 use crate::panel_packets::{self, PacketLayers};
 use crate::plugin::{Category, Field, Finding};
 use crate::reference::{self, FormatReference, Library};
@@ -73,6 +73,20 @@ pub struct StackEntry {
     pub len: usize,
     /// The instance's fields, with document offsets.
     pub fields: Vec<Field>,
+    /// Set when the format was not dissected but guessed, from the port,
+    /// EtherType or IP protocol number of the packet carrying it.
+    pub guess: Option<Guess>,
+}
+
+/// Why an undissected payload is thought to be a format.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Guess {
+    /// Such as "UDP port 67 is registered to it".
+    pub reason: String,
+    /// What the guess rests on: "port", "EtherType" or "IP protocol number".
+    pub evidence: &'static str,
+    /// Other entries the same evidence points to, as (reference id, reason).
+    pub alternatives: Vec<(String, String)>,
 }
 
 impl StackEntry {
@@ -84,6 +98,132 @@ impl StackEntry {
     fn is_same_instance(&self, other: &StackEntry) -> bool {
         self.start == other.start && (self.key == other.key || self.reference_id.is_some() && self.reference_id == other.reference_id)
     }
+
+    /// Of two entries for one instance, whether this one should replace
+    /// `kept`: it has more fields, or it was found where `kept` was guessed.
+    fn is_better_than(&self, kept: &StackEntry) -> bool {
+        self.fields.len() > kept.fields.len() || kept.guess.is_some() && self.guess.is_none()
+    }
+
+    /// Take a guess's alternative `id` as the guess, keeping the current one
+    /// among the alternatives.
+    fn pick_alternative(&mut self, library: &Library, id: &str) {
+        let Some(guess) = &mut self.guess else { return };
+        let Some(at) = guess.alternatives.iter().position(|(alternative, _)| alternative == id) else { return };
+        let Some(notes) = library.by_id(id) else { return };
+        let (_, reason) = guess.alternatives.remove(at);
+        let previous_reason = std::mem::replace(&mut guess.reason, reason);
+        if let Some(previous) = self.reference_id.replace(notes.id.clone()) {
+            guess.alternatives.insert(at, (previous, previous_reason));
+        }
+        self.label = guessed_label(notes);
+        self.key = notes.id.clone();
+    }
+}
+
+/// A guessed format's breadcrumb, such as "DHCP?".
+fn guessed_label(notes: &FormatReference) -> String {
+    format!("{}?", notes.short_name())
+}
+
+// ---------------------------------------------------------------------------
+// Naming a payload that was not dissected
+// ---------------------------------------------------------------------------
+
+/// The layer names the dissector gives bytes it could not decode: a
+/// transport payload no application parser claimed, and an Ethernet payload
+/// of an unknown EtherType. A payload of an undecoded IP protocol is named
+/// after the protocol instead, such as "GRE".
+const UNDISSECTED_PAYLOAD: &str = "Payload";
+const UNDISSECTED_FRAME_DATA: &str = "Data";
+
+/// Port numbers below this are the IANA's well-known (system) ports.
+const WELL_KNOWN_PORT_LIMIT: u16 = 1024;
+
+/// What an undissected payload probably is.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PayloadGuess {
+    /// The packet layer holding the payload.
+    pub layer: usize,
+    /// Candidate reference ids with why each is likely, likeliest first.
+    pub candidates: Vec<(String, String)>,
+    /// What the guess rests on: "port", "EtherType" or "IP protocol number".
+    pub evidence: &'static str,
+}
+
+/// The format a packet's undissected payload most likely holds, from the
+/// flow's ports, the EtherType or the IP protocol number, by the ports,
+/// EtherTypes and IP protocols the notes in `library` list. `None` when the
+/// payload was dissected, its layer's name already has notes, or nothing in
+/// the library claims the evidence.
+pub fn guess_payload(library: &Library, packet: &PacketLayers) -> Option<PayloadGuess> {
+    let (layer, payload) = packet.layers.iter().enumerate().find(|(_, layer)| is_undissected(packet, layer))?;
+    if library.lookup(&payload.name).is_some() {
+        return None;
+    }
+    let (candidates, evidence) = match packet.flow {
+        Some(flow) if flow.transport.has_ports() => (candidates_by_port(library, &flow), "port"),
+        Some(Flow { transport: packets::Transport::Other(protocol), .. }) => {
+            let reason = format!("IP protocol {protocol} announces it");
+            (library.by_ip_protocol(protocol).iter().map(|notes| (notes.id.clone(), reason.clone())).collect(), "IP protocol number")
+        }
+        _ => {
+            let ether_type = packet.ether_type?;
+            let reason = format!("EtherType {ether_type:#06x} announces it");
+            (library.by_ethertype(ether_type).iter().map(|notes| (notes.id.clone(), reason.clone())).collect(), "EtherType")
+        }
+    };
+    (!candidates.is_empty()).then_some(PayloadGuess { layer, candidates, evidence })
+}
+
+/// Whether `layer` holds bytes the dissector could not decode: the
+/// transport payload when no parser claimed it, or an Ethernet payload of
+/// an unknown EtherType.
+fn is_undissected(packet: &PacketLayers, layer: &Layer) -> bool {
+    match packet.flow {
+        Some(flow) if flow.transport.has_ports() => layer.name == UNDISSECTED_PAYLOAD,
+        Some(Flow { transport: packets::Transport::Other(_), .. }) => packet.payload.is_some_and(|(offset, _)| offset == layer.offset),
+        Some(_) => false,
+        None => packet.ether_type.is_some() && layer.name == UNDISSECTED_FRAME_DATA,
+    }
+}
+
+/// Entries on the flow's ports: a well-known port's before the other's, and
+/// the destination's before the source's, each entry once.
+fn candidates_by_port(library: &Library, flow: &Flow) -> Vec<(String, String)> {
+    let transport = match flow.transport {
+        packets::Transport::Tcp => reference::Transport::Tcp,
+        packets::Transport::Udp => reference::Transport::Udp,
+        _ => return Vec::new(),
+    };
+    let mut ports: Vec<(u16, bool)> = [flow.destination.port.map(|port| (port, true)), flow.source.port.map(|port| (port, false))].into_iter().flatten().collect();
+    ports.sort_by_key(|&(port, is_destination)| (port >= WELL_KNOWN_PORT_LIMIT, !is_destination));
+    let mut candidates: Vec<(String, String)> = Vec::new();
+    for (port, _) in ports {
+        for notes in library.by_port(transport, port) {
+            if !candidates.iter().any(|(id, _)| *id == notes.id) {
+                candidates.push((notes.id.clone(), format!("{} port {port} is registered to it", transport.name().to_uppercase())));
+            }
+        }
+    }
+    candidates
+}
+
+/// The stack entry for a guessed payload, its first candidate chosen.
+fn guessed_entry(library: &Library, packet: &PacketLayers, guess: PayloadGuess) -> Option<StackEntry> {
+    let layer = &packet.layers[guess.layer];
+    let mut candidates = guess.candidates.into_iter();
+    let (id, reason) = candidates.next()?;
+    let notes = library.by_id(&id)?;
+    Some(StackEntry {
+        label: guessed_label(notes),
+        key: notes.id.clone(),
+        reference_id: Some(notes.id.clone()),
+        start: packet.offset + layer.offset,
+        len: layer.len,
+        fields: Vec::new(),
+        guess: Some(Guess { reason, evidence: guess.evidence, alternatives: candidates.collect() }),
+    })
 }
 
 /// Whether a finding names a format worth explaining, rather than a pattern
@@ -143,6 +283,7 @@ pub fn build_stack(library: &Library, findings: &[Finding], packet: Option<&Pack
             start: finding.start,
             len: finding.len,
             fields: finding.fields.clone(),
+            guess: None,
         };
         scoped.push((finding.len, entry));
     }
@@ -158,8 +299,16 @@ pub fn build_stack(library: &Library, findings: &[Finding], packet: Option<&Pack
                 start,
                 len: layer.len,
                 fields: layer.fields.iter().map(|field| shifted(field, packet.offset)).collect(),
+                guess: None,
             };
             scoped.push((packet_end.saturating_sub(start), entry));
+        }
+        // Pushed after the payload's own layer, which encloses as much, so it
+        // follows that layer in the stack.
+        if let Some(guessed) = guess_payload(library, packet).and_then(|guess| guessed_entry(library, packet, guess))
+            && guessed.start <= position
+        {
+            scoped.push((packet_end.saturating_sub(guessed.start), guessed));
         }
     }
     // Widest first; the sort is stable, so equals keep their order.
@@ -167,7 +316,7 @@ pub fn build_stack(library: &Library, findings: &[Finding], packet: Option<&Pack
     let mut stack: Vec<StackEntry> = Vec::new();
     for (_, entry) in scoped {
         match stack.iter_mut().find(|kept| kept.is_same_instance(&entry)) {
-            Some(kept) if entry.fields.len() > kept.fields.len() => *kept = entry,
+            Some(kept) if entry.is_better_than(kept) => *kept = entry,
             Some(_) => {}
             None => stack.push(entry),
         }
@@ -235,7 +384,7 @@ fn packet_at(app: &mut ViewerApp, position: usize, findings: &[Finding], cache: 
     let set = cache.as_ref()?.set.as_ref()?;
     let packet = set.packets.iter().find(|packet| position >= packet.offset && position < packet.end())?.clone();
     let bytes = app.document.read_range(packet.offset, packet.len.min(panel_packets::PACKET_READ_LIMIT));
-    Some(PacketLayers { offset: packet.offset, len: packet.len, layers: packets::dissect(&bytes, packet.link).layers })
+    Some(PacketLayers::from_dissection(packet.offset, packet.len, &packets::dissect(&bytes, packet.link)))
 }
 
 /// The stack at the cursor, worked out afresh (for the assistant).
@@ -403,8 +552,12 @@ pub struct ReferenceState {
     /// A format asked for by another panel or a click, by key; chosen when
     /// the stack next holds it.
     wanted: Option<String>,
-    /// A reference entry opened from "Carries", shown without an instance.
+    /// A reference entry opened from "Carries" or the list of every entry,
+    /// shown without an instance.
     browsing: Option<String>,
+    /// The list of every entry is shown, filtered by `filter`.
+    listing: bool,
+    filter: String,
     rfc: Option<RfcView>,
     capture: Option<CaptureCache>,
 }
@@ -501,6 +654,10 @@ enum Action {
     SelectBytes { start: usize, len: usize, name: String },
     FetchRfc { reference_id: String, number: u32, section: Option<String> },
     HideRfc,
+    /// Take another entry on the same evidence as a guessed format.
+    PickAlternative { index: usize, id: String },
+    ShowList,
+    ReloadUserNotes,
 }
 
 /// Draw the Reference panel.
@@ -508,10 +665,13 @@ pub fn show_reference(state: &mut ReferenceState, app: &mut ViewerApp, ui: &mut 
     poll_rfc(state, ui.ctx());
     refresh_stack(state, app);
     let mut actions = Vec::new();
-    egui::ScrollArea::vertical()
-        .id_salt("reference-panel")
-        .auto_shrink([false, false])
-        .show(ui, |ui| show_body(state, app, ui, &mut actions));
+    egui::ScrollArea::vertical().id_salt("reference-panel").auto_shrink([false, false]).show(ui, |ui| {
+        if state.listing {
+            show_list(state, ui, &mut actions);
+        } else {
+            show_body(state, app, ui, &mut actions);
+        }
+    });
     for action in actions {
         act(state, app, action);
     }
@@ -524,8 +684,28 @@ fn act(state: &mut ReferenceState, app: &mut ViewerApp, action: Action) {
             state.browsing = None;
             state.wanted = None;
         }
-        Action::Browse(id) => state.browsing = Some(id),
-        Action::StopBrowsing => state.browsing = None,
+        Action::Browse(id) => {
+            state.browsing = Some(id);
+            state.listing = false;
+        }
+        Action::StopBrowsing => {
+            state.browsing = None;
+            state.listing = false;
+        }
+        Action::PickAlternative { index, id } => {
+            if let Some(entry) = state.stack.get_mut(index) {
+                entry.pick_alternative(reference::library(), &id);
+            }
+        }
+        Action::ShowList => state.listing = true,
+        Action::ReloadUserNotes => {
+            let loaded = reference::reload_user_notes();
+            app.status = match loaded.problems.len() {
+                0 => format!("Reloaded your reference notes ({} files)", loaded.user_files),
+                count => format!("Reloaded your reference notes; {count} could not be read"),
+            };
+            state.stack_key = None;
+        }
         Action::SelectBytes { start, len, name } => {
             // Stay on this format while the cursor moves into the field.
             state.wanted = state.chosen_entry().map(|entry| entry.key.clone());
@@ -541,9 +721,14 @@ fn show_body(state: &ReferenceState, app: &mut ViewerApp, ui: &mut Ui, actions: 
     show_breadcrumb(state, app, ui, actions);
     ui.separator();
     if let Some(notes) = state.browsing.as_deref().and_then(|id| reference::library().by_id(id)) {
-        if ui.small_button("← Back to the cursor").clicked() {
-            actions.push(Action::StopBrowsing);
-        }
+        ui.horizontal(|ui| {
+            if ui.small_button("← Back to the cursor").clicked() {
+                actions.push(Action::StopBrowsing);
+            }
+            if ui.small_button("All notes").clicked() {
+                actions.push(Action::ShowList);
+            }
+        });
         show_heading(ui, notes);
         ui.add_space(4.0);
         show_background(state, ui, notes, actions);
@@ -566,6 +751,9 @@ fn show_body(state: &ReferenceState, app: &mut ViewerApp, ui: &mut Ui, actions: 
             ui.label(RichText::new(format!("No notes on {} yet; its fields are listed below as the parser reads them.", entry.label)).color(theme::TEXT_DIM));
         }
     }
+    if let Some(guess) = &entry.guess {
+        show_guess(state, ui, guess, actions);
+    }
     // The live instance comes first, so a short pane still shows the bytes
     // under the cursor; the background reading follows.
     if !entry.fields.is_empty() {
@@ -584,11 +772,32 @@ fn show_body(state: &ReferenceState, app: &mut ViewerApp, ui: &mut Ui, actions: 
     }
 }
 
-/// The stack as a clickable path, outermost first.
+/// Why a format was guessed rather than dissected, and the other entries
+/// the same evidence points to, which can be taken instead.
+fn show_guess(state: &ReferenceState, ui: &mut Ui, guess: &Guess, actions: &mut Vec<Action>) {
+    let carried = match guess.evidence {
+        "port" => "what this port usually carries",
+        "EtherType" => "what this EtherType usually announces",
+        _ => "what this IP protocol number usually carries",
+    };
+    ui.label(RichText::new(format!("Not dissected; the notes describe {carried}.")).color(theme::TEXT_DIM));
+    let name = state.chosen_entry().and_then(StackEntry::reference).map_or("", |notes| notes.short_name());
+    ui.label(RichText::new(format!("Likely {name}: {}.", guess.reason)).small().color(theme::TEXT_DIM));
+    let Some(index) = state.chosen.filter(|_| !guess.alternatives.is_empty()) else { return };
+    ui.horizontal_wrapped(|ui| {
+        ui.label(RichText::new("Or perhaps:").color(theme::TEXT_DIM));
+        for (id, reason) in &guess.alternatives {
+            let Some(notes) = reference::library().by_id(id) else { continue };
+            if ui.link(notes.short_name()).on_hover_text(format!("{}: {reason}", notes.name)).clicked() {
+                actions.push(Action::PickAlternative { index, id: id.clone() });
+            }
+        }
+    });
+}
+
+/// The stack as a clickable path, outermost first, then a link to the list
+/// of every entry.
 fn show_breadcrumb(state: &ReferenceState, app: &mut ViewerApp, ui: &mut Ui, actions: &mut Vec<Action>) {
-    if state.stack.is_empty() {
-        return;
-    }
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing.x = 4.0;
         for (index, entry) in state.stack.iter().enumerate() {
@@ -597,7 +806,11 @@ fn show_breadcrumb(state: &ReferenceState, app: &mut ViewerApp, ui: &mut Ui, act
             }
             let text = if entry.reference_id.is_some() { RichText::new(&entry.label) } else { RichText::new(&entry.label).color(theme::TEXT_DIM) };
             let selected = state.browsing.is_none() && state.chosen == Some(index);
-            let notes = if entry.reference_id.is_some() { "" } else { " · no notes yet" };
+            let notes = match (&entry.guess, entry.reference()) {
+                (Some(guess), Some(notes)) => format!(" · likely {}: {}", notes.short_name(), guess.reason),
+                (None, None) => " · no notes yet".to_string(),
+                _ => String::new(),
+            };
             let response = ui.selectable_label(selected, text).on_hover_text(format!("{} bytes at {:#x}{notes}", entry.len, entry.start));
             if response.hovered() {
                 app.point_at_bytes(entry.start, entry.len);
@@ -606,7 +819,76 @@ fn show_breadcrumb(state: &ReferenceState, app: &mut ViewerApp, ui: &mut Ui, act
                 actions.push(Action::Choose(index));
             }
         }
+        if !state.stack.is_empty() {
+            ui.add_space(8.0);
+        }
+        let count = reference::library().entries().len();
+        if ui.link("Browse all…").on_hover_text(format!("List and search all {count} reference notes")).clicked() {
+            actions.push(Action::ShowList);
+        }
     });
+}
+
+/// Every entry under its group, filtered by what the user types: words,
+/// a port such as `udp/67`, or a number. Clicking an entry opens its notes.
+fn show_list(state: &mut ReferenceState, ui: &mut Ui, actions: &mut Vec<Action>) {
+    let loaded = reference::loaded_notes();
+    let library = &loaded.library;
+    ui.horizontal(|ui| {
+        if ui.small_button("← Back to the cursor").clicked() {
+            actions.push(Action::StopBrowsing);
+        }
+        ui.add(egui::TextEdit::singleline(&mut state.filter).hint_text("Search names, keys or ports (udp/67, 502)").desired_width(260.0));
+    });
+    let found = library.search(&state.filter);
+    let filtering = !state.filter.trim().is_empty();
+    let count = if filtering { format!("{} of {} notes", found.len(), library.entries().len()) } else { format!("{} notes", found.len()) };
+    ui.label(RichText::new(count).small().color(theme::TEXT_DIM));
+    show_user_notes_status(loaded, ui, actions);
+    ui.separator();
+    for (group, entries) in reference::grouped(&found) {
+        // Groups stay folded until the user searches, so the list is short.
+        let header = egui::CollapsingHeader::new(RichText::new(format!("{group} ({})", entries.len())).strong()).id_salt(("reference-group", group));
+        let header = if filtering { header.open(Some(true)) } else { header };
+        header.show(ui, |ui| {
+            for notes in entries {
+                ui.horizontal_wrapped(|ui| {
+                    if ui.link(notes.short_name()).on_hover_text(&notes.summary).clicked() {
+                        actions.push(Action::Browse(notes.id.clone()));
+                    }
+                    let mut detail = if notes.short_name() == notes.name { String::new() } else { notes.name.clone() };
+                    if !notes.ports.is_empty() {
+                        detail = format!("{detail} {}", notes.ports.join(" ")).trim().to_string();
+                    }
+                    ui.label(RichText::new(detail).small().color(theme::TEXT_DIM));
+                });
+            }
+        });
+    }
+}
+
+/// Where your own notes come from, which of them could not be read, and a
+/// way to read them again.
+fn show_user_notes_status(loaded: &reference::LoadedNotes, ui: &mut Ui, actions: &mut Vec<Action>) {
+    let folder = reference::user_notes_dir().map_or_else(|| "~/.config/theviewer/reference".to_string(), |dir| dir.display().to_string());
+    ui.horizontal_wrapped(|ui| {
+        let files = match loaded.user_files {
+            1 => "1 file".to_string(),
+            count => format!("{count} files"),
+        };
+        ui.label(RichText::new(format!("Your notes: {files} from {folder}")).small().color(theme::TEXT_DIM))
+            .on_hover_text("Write entries in the same TOML form as the built-in notes; an entry with a built-in id replaces it.");
+        if ui.small_button("Reload your notes").clicked() {
+            actions.push(Action::ReloadUserNotes);
+        }
+    });
+    if !loaded.problems.is_empty() {
+        let files = if loaded.problems.len() == 1 { "1 file".to_string() } else { format!("{} files", loaded.problems.len()) };
+        ui.label(RichText::new(format!("{files} of your notes could not be read:")).color(theme::DANGER));
+        for problem in &loaded.problems {
+            ui.label(RichText::new(problem).small().color(theme::DANGER));
+        }
+    }
 }
 
 /// Name and summary.
@@ -921,7 +1203,6 @@ mod tests {
         let names: Vec<&str> = diagram_fields(&fields, 64).iter().map(|field| field.name.as_str()).collect();
         assert_eq!(names, ["magic", "version", "record header"], "leaves only, and nothing past the rows drawn");
     }
-    use crate::packets::Layer;
 
     const NOTES: &str = r#"
 [[format]]
@@ -954,6 +1235,7 @@ organisation = "A file header, then records."
             offset: 140,
             len: 80,
             layers: vec![layer("Ethernet II", 0, 14), layer("Internet Protocol version 4", 14, 20), layer("User Datagram Protocol", 34, 8), layer("DNS", 42, 38)],
+            ..PacketLayers::default()
         }
     }
 
@@ -1004,6 +1286,7 @@ organisation = "A file header, then records."
             start: 0,
             len: 8,
             fields: Vec::new(),
+            guess: None,
         };
         let stack = vec![entry("Ethernet II", None), entry("udp", Some("udp")), entry("User Datagram Protocol", Some("udp"))];
         let notes = notes_for_assistant(&stack);
@@ -1033,5 +1316,107 @@ organisation = "A file header, then records."
         assert_eq!(layout.hidden_bytes, 1024 - 64);
         let last = layout.boxes.last().unwrap();
         assert_eq!((last.group, last.row, last.continues), (1, 15, true));
+    }
+
+    const PORT_NOTES: &str = r#"
+[[format]]
+id = "dhcp"
+name = "Dynamic Host Configuration Protocol"
+keys = ["DHCP"]
+summary = "Hands out addresses."
+organisation = "A BOOTP message with options."
+ports = ["udp/67", "udp/68"]
+
+[[format]]
+id = "rogue"
+name = "Something else on port 67"
+keys = ["Rogue"]
+summary = "Shares a port."
+organisation = "Unknown."
+ports = ["udp/67"]
+
+[[format]]
+id = "gre-tunnel"
+name = "Generic Routing Encapsulation"
+keys = ["Generic Routing Encapsulation"]
+summary = "Tunnels packets."
+organisation = "Four bytes of flags and protocol type."
+ip_protocols = [47]
+ethertypes = [0x88be]
+"#;
+
+    fn port_library() -> Library {
+        Library::parse(&[("ports.toml", PORT_NOTES)]).unwrap()
+    }
+
+    /// An IPv4 packet at 100 from 10.0.0.2:`source` to 10.0.0.1:`destination`
+    /// whose 20-byte payload, after an 8-byte UDP header, was not dissected.
+    fn udp_packet(source: u16, destination: u16) -> PacketLayers {
+        let address = |last: u8| std::net::IpAddr::from([10, 0, 0, last]);
+        let layer = |name: &str, offset: usize, len: usize| Layer { name: name.to_string(), offset, len, fields: vec![Field::new("Data", offset, len, "")] };
+        PacketLayers {
+            offset: 100,
+            len: 62,
+            layers: vec![layer("Ethernet II", 0, 14), layer("Internet Protocol version 4", 14, 20), layer("User Datagram Protocol", 34, 8), layer("Payload", 42, 20)],
+            flow: Some(Flow {
+                transport: packets::Transport::Udp,
+                source: packets::Endpoint { address: address(2), port: Some(source) },
+                destination: packets::Endpoint { address: address(1), port: Some(destination) },
+                tcp_sequence: None,
+            }),
+            payload: Some((42, 20)),
+            ether_type: Some(0x0800),
+        }
+    }
+
+    #[test]
+    fn an_undissected_payload_is_named_by_its_well_known_port_as_a_guess() {
+        let library = port_library();
+        let stack = build_stack(&library, &[], Some(&udp_packet(50_000, 67)), 100 + 45);
+        let guessed = stack.last().unwrap();
+        assert_eq!(labels(&stack), ["Ethernet II", "Internet Protocol version 4", "User Datagram Protocol", "Payload", "DHCP?"]);
+        assert_eq!((guessed.start, guessed.len, guessed.fields.len()), (142, 20, 0), "the payload's bytes, with no fields");
+        let guess = guessed.guess.as_ref().unwrap();
+        assert_eq!(guess.reason, "UDP port 67 is registered to it");
+        assert_eq!(guess.alternatives, [("rogue".to_string(), "UDP port 67 is registered to it".to_string())]);
+        assert_eq!(default_choice(&stack), Some(4));
+
+        // A reply from 67 to 68 is named by the well-known destination first.
+        let reply = guess_payload(&library, &udp_packet(67, 68)).unwrap();
+        assert_eq!(reply.candidates[0], ("dhcp".to_string(), "UDP port 68 is registered to it".to_string()));
+        assert!(guess_payload(&library, &udp_packet(4000, 9999)).is_none(), "nothing claims either port");
+        assert!(build_stack(&library, &[], Some(&udp_packet(50_000, 67)), 100 + 40).iter().all(|entry| entry.guess.is_none()), "not before the payload");
+    }
+
+    #[test]
+    fn another_entry_on_the_same_port_can_be_picked_instead() {
+        let library = port_library();
+        let mut stack = build_stack(&library, &[], Some(&udp_packet(50_000, 67)), 145);
+        let guessed = stack.last_mut().unwrap();
+        guessed.pick_alternative(&library, "rogue");
+        assert_eq!((guessed.label.as_str(), guessed.reference_id.as_deref()), ("Rogue?", Some("rogue")));
+        assert_eq!(guessed.guess.as_ref().unwrap().alternatives[0].0, "dhcp", "the first guess stays on offer");
+    }
+
+    #[test]
+    fn undecoded_ip_protocols_and_ethertypes_are_named_too_unless_their_layer_has_notes() {
+        let library = port_library();
+        let mut gre = udp_packet(1, 2);
+        gre.layers.truncate(2);
+        gre.layers.push(Layer { name: "GRE".to_string(), offset: 34, len: 28, fields: Vec::new() });
+        gre.flow = gre.flow.map(|flow| Flow { transport: packets::Transport::Other(47), ..flow });
+        gre.payload = Some((34, 28));
+        let guess = guess_payload(&library, &gre).unwrap();
+        assert_eq!((guess.layer, guess.candidates[0].0.as_str(), guess.evidence), (2, "gre-tunnel", "IP protocol number"));
+
+        let mut frame = udp_packet(1, 2);
+        frame.layers.truncate(1);
+        frame.layers.push(Layer { name: "Data".to_string(), offset: 14, len: 48, fields: Vec::new() });
+        (frame.flow, frame.payload, frame.ether_type) = (None, None, Some(0x88be));
+        assert_eq!(guess_payload(&library, &frame).unwrap().candidates[0].1, "EtherType 0x88be announces it");
+
+        let mut named = gre.clone();
+        named.layers[2].name = "Generic Routing Encapsulation".to_string();
+        assert!(guess_payload(&library, &named).is_none(), "a layer whose name has notes is left as it is");
     }
 }

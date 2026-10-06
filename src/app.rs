@@ -630,6 +630,13 @@ impl ViewerApp {
         if !failed.is_empty() {
             app.status = format!("Some plugins failed to load: {failed}");
         }
+        let unread_notes = &crate::reference::loaded_notes().problems;
+        if !unread_notes.is_empty() {
+            for problem in unread_notes {
+                eprintln!("theviewer: reference notes ignored: {problem}");
+            }
+            app.status = format!("{} file(s) of your reference notes could not be read; see Reference › Browse all", unread_notes.len());
+        }
         if let Some(path) = &launch.path {
             app.load_path(path);
             // A layout that opens on the packets lists them from the start.

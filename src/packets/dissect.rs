@@ -82,6 +82,8 @@ pub struct Dissection {
     pub flow: Option<Flow>,
     /// The transport payload as `(offset, len)`, for following streams.
     pub payload: Option<(usize, usize)>,
+    /// The EtherType of what follows the Ethernet header and any VLAN tags.
+    pub ether_type: Option<u16>,
     /// The link type actually used, after auto-detection.
     pub link: LinkKind,
     /// Problems met, such as truncation or a bad checksum.
@@ -317,6 +319,7 @@ impl Walk<'_> {
             self.out.protocols.push("vlan");
             at += VLAN_TAG_LEN;
         }
+        self.out.ether_type = Some(ether_type);
         self.set_top("Ethernet", format!("EtherType {ether_type:#06x} ({})", ether_type_name(ether_type)));
         match ether_type {
             ETHERTYPE_IPV4 | ETHERTYPE_IPV6 => {
