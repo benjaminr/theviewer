@@ -838,7 +838,7 @@ section = "2.1"
 [[format]]
 id = "ppp"
 name = "Point-to-Point Protocol"
-keys = ["PPP", "Point-to-Point Protocol", "LINKTYPE_PPP", "LINKTYPE_PPP_HDLC", "PPP in HDLC-like framing", "LCP", "Link Control Protocol", "IPCP"]
+keys = ["PPP", "Point-to-Point Protocol", "LINKTYPE_PPP", "LINKTYPE_PPP_HDLC", "PPP in HDLC-like framing", "LCP", "Link Control Protocol", "IPCP", "IPV6CP"]
 wireshark = "ppp"
 summary = "A link protocol for carrying IP and other network protocols over a point-to-point link: serial lines, DSL (inside PPPoE), L2TP and PPTP tunnels and mobile data, with its own negotiation of link options, authentication and addresses."
 group = "Link layer"

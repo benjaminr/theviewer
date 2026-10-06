@@ -1,8 +1,9 @@
 //! Packets taken from the document, and what can be learned from them.
 //!
 //! A [`Packet`] is a range of the document with an optional timestamp and a
-//! link type saying what its first byte is: an Ethernet header, an IP header,
-//! or an application frame of unknown format. Packets are gathered into a
+//! link type saying what its first byte is: an Ethernet, Linux cooked,
+//! loopback, PPP, 802.11 or radiotap header, an IP header, or an
+//! application frame of unknown format. Packets are gathered into a
 //! [`PacketSet`] from one of several sources ([`sources`]): the messages of
 //! the protocol analysis, a pcap or pcapng capture inside the document, a
 //! range cut into fixed-length records, at a delimiter or pattern, or by a
@@ -42,14 +43,26 @@ pub use sources::{CaptureLocation, SourceError};
 pub const MAX_PACKETS: usize = 200_000;
 
 /// pcap link-layer header type numbers (from tcpdump.org's LINKTYPE list).
+pub const LINKTYPE_NULL: u32 = 0;
 pub const LINKTYPE_ETHERNET: u32 = 1;
+pub const LINKTYPE_PPP: u32 = 9;
+/// The numbers some systems wrote for raw IP before `LINKTYPE_RAW_IP` was
+/// assigned: 12 on most, 14 on OpenBSD.
+pub const LINKTYPE_RAW_IP_OLD: u32 = 12;
+pub const LINKTYPE_RAW_IP_OPENBSD: u32 = 14;
+pub const LINKTYPE_PPP_HDLC: u32 = 50;
 pub const LINKTYPE_RAW_IP: u32 = 101;
+pub const LINKTYPE_IEEE802_11: u32 = 105;
+pub const LINKTYPE_LOOP: u32 = 108;
+pub const LINKTYPE_LINUX_SLL: u32 = 113;
+pub const LINKTYPE_IEEE802_11_RADIOTAP: u32 = 127;
 /// The first of the link types reserved for private use; Wireshark lets the
 /// user say which dissector to apply to it.
 pub const LINKTYPE_USER0: u32 = 147;
 /// Raw IPv4 and raw IPv6, which some captures use instead of `LINKTYPE_RAW_IP`.
 pub const LINKTYPE_IPV4: u32 = 228;
 pub const LINKTYPE_IPV6: u32 = 229;
+pub const LINKTYPE_LINUX_SLL2: u32 = 276;
 
 /// What a packet's first byte is.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -58,18 +71,56 @@ pub enum LinkKind {
     Ethernet,
     /// An IPv4 or IPv6 header.
     RawIp,
+    /// A Linux cooked capture header (SLL, 16 bytes).
+    LinuxSll,
+    /// A Linux cooked capture v2 header (SLL2, 20 bytes).
+    LinuxSll2,
+    /// BSD loopback: a 4-byte protocol family in the capturing machine's
+    /// byte order.
+    BsdLoopback,
+    /// OpenBSD loopback: the same family, always big-endian.
+    OpenBsdLoopback,
+    /// A PPP frame, with or without the HDLC address and control bytes.
+    Ppp,
+    /// A PPP frame in HDLC-like framing (or a Cisco HDLC frame), without
+    /// flags or frame check sequence.
+    PppHdlc,
+    /// An IEEE 802.11 frame.
+    Ieee80211,
+    /// A radiotap header followed by an IEEE 802.11 frame.
+    Radiotap,
     /// An application frame of unknown format, such as a serial message.
     #[default]
     Unknown,
 }
 
 impl LinkKind {
-    pub const ALL: [LinkKind; 3] = [LinkKind::Ethernet, LinkKind::RawIp, LinkKind::Unknown];
+    pub const ALL: [LinkKind; 11] = [
+        LinkKind::Ethernet,
+        LinkKind::RawIp,
+        LinkKind::LinuxSll,
+        LinkKind::LinuxSll2,
+        LinkKind::BsdLoopback,
+        LinkKind::OpenBsdLoopback,
+        LinkKind::Ppp,
+        LinkKind::PppHdlc,
+        LinkKind::Ieee80211,
+        LinkKind::Radiotap,
+        LinkKind::Unknown,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
             LinkKind::Ethernet => "Ethernet",
             LinkKind::RawIp => "Raw IP",
+            LinkKind::LinuxSll => "Linux cooked capture",
+            LinkKind::LinuxSll2 => "Linux cooked capture v2",
+            LinkKind::BsdLoopback => "BSD loopback",
+            LinkKind::OpenBsdLoopback => "OpenBSD loopback",
+            LinkKind::Ppp => "PPP",
+            LinkKind::PppHdlc => "PPP in HDLC framing",
+            LinkKind::Ieee80211 => "IEEE 802.11",
+            LinkKind::Radiotap => "802.11 with radiotap",
             LinkKind::Unknown => "Raw frames",
         }
     }
@@ -79,16 +130,32 @@ impl LinkKind {
         match self {
             LinkKind::Ethernet => LINKTYPE_ETHERNET,
             LinkKind::RawIp => LINKTYPE_RAW_IP,
+            LinkKind::LinuxSll => LINKTYPE_LINUX_SLL,
+            LinkKind::LinuxSll2 => LINKTYPE_LINUX_SLL2,
+            LinkKind::BsdLoopback => LINKTYPE_NULL,
+            LinkKind::OpenBsdLoopback => LINKTYPE_LOOP,
+            LinkKind::Ppp => LINKTYPE_PPP,
+            LinkKind::PppHdlc => LINKTYPE_PPP_HDLC,
+            LinkKind::Ieee80211 => LINKTYPE_IEEE802_11,
+            LinkKind::Radiotap => LINKTYPE_IEEE802_11_RADIOTAP,
             LinkKind::Unknown => LINKTYPE_USER0,
         }
     }
 
-    /// The kind for a pcap link type; anything not Ethernet or raw IP is
-    /// treated as frames of unknown format.
+    /// The kind for a pcap link type; link types the dissector does not
+    /// read are treated as frames of unknown format.
     pub fn from_pcap_link_type(link_type: u32) -> LinkKind {
         match link_type {
             LINKTYPE_ETHERNET => LinkKind::Ethernet,
-            LINKTYPE_RAW_IP | LINKTYPE_IPV4 | LINKTYPE_IPV6 => LinkKind::RawIp,
+            LINKTYPE_RAW_IP | LINKTYPE_RAW_IP_OLD | LINKTYPE_RAW_IP_OPENBSD | LINKTYPE_IPV4 | LINKTYPE_IPV6 => LinkKind::RawIp,
+            LINKTYPE_LINUX_SLL => LinkKind::LinuxSll,
+            LINKTYPE_LINUX_SLL2 => LinkKind::LinuxSll2,
+            LINKTYPE_NULL => LinkKind::BsdLoopback,
+            LINKTYPE_LOOP => LinkKind::OpenBsdLoopback,
+            LINKTYPE_PPP => LinkKind::Ppp,
+            LINKTYPE_PPP_HDLC => LinkKind::PppHdlc,
+            LINKTYPE_IEEE802_11 => LinkKind::Ieee80211,
+            LINKTYPE_IEEE802_11_RADIOTAP => LinkKind::Radiotap,
             _ => LinkKind::Unknown,
         }
     }
@@ -244,7 +311,10 @@ mod tests {
             assert_eq!(LinkKind::from_pcap_link_type(kind.pcap_link_type()), kind);
         }
         assert_eq!(LinkKind::from_pcap_link_type(LINKTYPE_IPV6), LinkKind::RawIp);
-        assert_eq!(LinkKind::from_pcap_link_type(113), LinkKind::Unknown);
+        assert_eq!(LinkKind::from_pcap_link_type(LINKTYPE_RAW_IP_OLD), LinkKind::RawIp);
+        assert_eq!(LinkKind::from_pcap_link_type(113), LinkKind::LinuxSll);
+        assert_eq!(LinkKind::from_pcap_link_type(105), LinkKind::Ieee80211);
+        assert_eq!(LinkKind::from_pcap_link_type(189), LinkKind::Unknown, "USB is not read");
     }
 
     #[test]

@@ -2,10 +2,13 @@
 //! and a one-line summary for the packet list.
 //!
 //! Ethernet, IPv4, IPv6, TCP and UDP headers are read with `etherparse`;
-//! ARP and ICMP are small enough to read directly; application protocols are
-//! chosen by port ([`super::application`]). Frames of unknown format are
-//! decoded with a template, or with the field guesses of the protocol
-//! analysis. Every offset is relative to the packet's first byte.
+//! ARP and ICMP are small enough to read directly, as are the other link
+//! layers a capture may use, from Linux cooked captures to 802.11 and
+//! radiotap ([`link`]);
+//! application protocols are chosen by port ([`super::application`]).
+//! Frames of unknown format are decoded with a template, or with the field
+//! guesses of the protocol analysis. Every offset is relative to the
+//! packet's first byte.
 
 use std::net::{IpAddr, Ipv4Addr};
 
@@ -17,6 +20,8 @@ use super::{LinkKind, hex_preview};
 use crate::plugin::Field;
 use crate::protocol::MessageField;
 use crate::templates::Template;
+
+mod link;
 
 const ETHERNET_HEADER_LEN: usize = 14;
 const VLAN_TAG_LEN: usize = 4;
@@ -48,6 +53,12 @@ const IPV6_ROUTING: u8 = 43;
 const IPV6_FRAGMENT: u8 = 44;
 const IPV6_DESTINATION_OPTIONS: u8 = 60;
 const IPV6_NO_NEXT_HEADER: u8 = 59;
+/// The largest value of an Ethernet type field that is an IEEE 802.3
+/// length rather than an EtherType.
+const MAX_IEEE802_3_LENGTH: u16 = 1500;
+/// An IPX header's unused checksum, which starts Novell's "raw" 802.3
+/// frames where an LLC header would otherwise be.
+const NOVELL_RAW_IPX_CHECKSUM: [u8; 2] = [0xFF, 0xFF];
 
 /// One protocol layer of a packet.
 #[derive(Clone, Debug, PartialEq)]
@@ -154,6 +165,14 @@ pub fn dissect_with(bytes: &[u8], link: LinkKind, raw: &RawFrames) -> Dissection
         LinkKind::RawIp => {
             walk.ip(0);
         }
+        LinkKind::LinuxSll => walk.linux_sll(),
+        LinkKind::LinuxSll2 => walk.linux_sll2(),
+        LinkKind::BsdLoopback => walk.bsd_loopback(false),
+        LinkKind::OpenBsdLoopback => walk.bsd_loopback(true),
+        LinkKind::Ppp => walk.ppp(),
+        LinkKind::PppHdlc => walk.ppp_hdlc(),
+        LinkKind::Ieee80211 => walk.ieee80211(0, bytes.len(), 0),
+        LinkKind::Radiotap => walk.radiotap(0),
         LinkKind::Unknown => walk.raw_frame(raw),
     }
     walk.finish()
@@ -317,26 +336,44 @@ impl Walk<'_> {
         };
         let source = mac(header.source());
         let destination = mac(header.destination());
-        let mut ether_type = header.ether_type().0;
+        let ether_type = header.ether_type().0;
+        // Values up to 1500 are not an EtherType but the length of the IEEE
+        // 802.3 frame's LLC payload.
+        let is_length = ether_type <= MAX_IEEE802_3_LENGTH;
+        let type_value = if is_length { format!("{ether_type:#06x} (length {ether_type}, IEEE 802.3)") } else { format!("{ether_type:#06x} ({})", ether_type_name(ether_type)) };
         self.push_layer(
             "Ethernet II",
             0,
             ETHERNET_HEADER_LEN,
-            vec![
-                Field::new("Destination", 0, 6, destination.clone()),
-                Field::new("Source", 6, 6, source.clone()),
-                Field::new("Type", 12, 2, format!("{ether_type:#06x} ({})", ether_type_name(ether_type))),
-            ],
+            vec![Field::new("Destination", 0, 6, destination.clone()), Field::new("Source", 6, 6, source.clone()), Field::new("Type", 12, 2, type_value)],
         );
         self.out.protocols.push("eth");
         self.out.summary.source = source;
         self.out.summary.destination = destination;
-        let mut at = ETHERNET_HEADER_LEN;
+        if is_length {
+            let llc_end = (ETHERNET_HEADER_LEN + ether_type as usize).min(self.bytes.len());
+            self.set_top("Ethernet", format!("IEEE 802.3, length {ether_type}"));
+            if self.bytes[ETHERNET_HEADER_LEN..llc_end].starts_with(&NOVELL_RAW_IPX_CHECKSUM) {
+                // Novell's "raw" 802.3: IPX straight after the length, no LLC.
+                self.data_layer(ETHERNET_HEADER_LEN, llc_end, "IPX");
+            } else {
+                self.llc(ETHERNET_HEADER_LEN, llc_end);
+            }
+            self.padding(llc_end, self.bytes.len());
+            return;
+        }
+        self.ether_type_payload(ether_type, ETHERNET_HEADER_LEN, self.bytes.len(), "Ethernet");
+    }
+
+    /// What follows an EtherType at `at`: any VLAN tags, then IPv4, IPv6,
+    /// ARP or data, up to `end`. `carrier` names the layer holding the
+    /// EtherType, for the summary when nothing inside it is understood.
+    fn ether_type_payload(&mut self, mut ether_type: u16, mut at: usize, end: usize, carrier: &str) {
         for _ in 0..MAX_VLAN_TAGS {
             if !matches!(ether_type, ETHERTYPE_VLAN | ETHERTYPE_QINQ | ETHERTYPE_QINQ_OLD) {
                 break;
             }
-            let Ok(tag) = SingleVlanHeaderSlice::from_slice(&self.bytes[at..]) else {
+            let Ok(tag) = SingleVlanHeaderSlice::from_slice(&self.bytes[at.min(end)..end]) else {
                 self.malformed(at, "802.1Q VLAN", "The VLAN tag is cut short".to_string());
                 return;
             };
@@ -355,26 +392,27 @@ impl Walk<'_> {
             at += VLAN_TAG_LEN;
         }
         self.out.ether_type = Some(ether_type);
-        self.set_top("Ethernet", format!("EtherType {ether_type:#06x} ({})", ether_type_name(ether_type)));
+        self.set_top(carrier, format!("EtherType {ether_type:#06x} ({})", ether_type_name(ether_type)));
         match ether_type {
             ETHERTYPE_IPV4 | ETHERTYPE_IPV6 => {
-                let end = self.ip(at);
-                self.padding(end);
+                let ip_end = self.ip(at).min(end);
+                self.padding(ip_end, end);
             }
-            ETHERTYPE_ARP => self.arp(at),
-            _ => self.data_layer(at, self.bytes.len(), "Data"),
+            ETHERTYPE_ARP => self.arp(at, end),
+            _ => self.data_layer(at, end, "Data"),
         }
     }
 
-    /// Bytes after the network packet, such as Ethernet padding.
-    fn padding(&mut self, end: usize) {
-        if end < self.bytes.len() {
-            let len = self.bytes.len() - end;
-            self.push_layer("Padding", end, len, vec![Field::new("Padding", end, len, hex_preview(&self.bytes[end..], DATA_PREVIEW_BYTES))]);
+    /// Bytes from `start` to `end` after the network packet, such as
+    /// Ethernet padding.
+    fn padding(&mut self, start: usize, end: usize) {
+        if start < end {
+            let len = end - start;
+            self.push_layer("Padding", start, len, vec![Field::new("Padding", start, len, hex_preview(&self.bytes[start..end], DATA_PREVIEW_BYTES))]);
         }
     }
 
-    fn arp(&mut self, at: usize) {
+    fn arp(&mut self, at: usize, end: usize) {
         let bytes = self.bytes;
         let Some(fixed) = bytes.get(at..at + ARP_FIXED_LEN) else {
             self.malformed(at, "ARP", "The ARP header is cut short".to_string());
@@ -431,7 +469,7 @@ impl Walk<'_> {
             _ => format!("ARP operation {operation}"),
         };
         self.set_top("ARP", info);
-        self.padding(at + total);
+        self.padding(at + total, end);
     }
 
     // -- Network layer -----------------------------------------------------
@@ -1069,4 +1107,5 @@ mod tests {
             }
         }
     }
+
 }

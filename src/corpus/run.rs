@@ -490,7 +490,7 @@ fn run_tshark(file: &str, path: &Path, tshark: &Path, ours: &OurSide, result: &m
             tshark_layers::merge(dissection.clone(), &layers, TsharkMode::FillGaps);
             tshark_layers::merge(dissection.clone(), &layers, TsharkMode::Everything);
         });
-        if matches!(dissection.link, LinkKind::Ethernet | LinkKind::RawIp) {
+        if dissection.link != LinkKind::Unknown {
             result.comparisons.add_packet(file, index + 1, dissection, theirs);
         } else {
             // Frames we cannot read still count towards coverage.

@@ -29,7 +29,22 @@ const fn layer(ours: &'static str, tshark: &'static [&'static str]) -> LayerMapp
     LayerMapping { ours, tshark, spans_all: false }
 }
 
-pub const LAYER_MAP: [LayerMapping; 14] = [
+pub const LAYER_MAP: [LayerMapping; 26] = [
+    // tshark names the cooked header of a netlink device `netlink`.
+    layer("Linux cooked capture", &["sll", "netlink"]),
+    layer("Linux cooked capture v2", &["sll", "netlink"]),
+    layer("BSD loopback", &["null"]),
+    layer("Point-to-Point Protocol", &["ppp"]),
+    layer("LCP", &["lcp"]),
+    layer("IPCP", &["ipcp"]),
+    layer("IPV6CP", &["ipv6cp"]),
+    layer("Cisco HDLC", &["chdlc"]),
+    layer("Radiotap", &["radiotap"]),
+    layer("IEEE 802.11", &["wlan"]),
+    // tshark's management body is `wlan.mgt`, but its protocol stack ends
+    // at `wlan`, so that counts as the same innermost protocol.
+    layer("IEEE 802.11 (management)", &["wlan.mgt", "wlan"]),
+    layer("LLC", &["llc"]),
     layer("Ethernet II", &["eth"]),
     layer("802.1Q VLAN", &["vlan"]),
     layer("Address Resolution Protocol", &["arp"]),
@@ -47,7 +62,36 @@ pub const LAYER_MAP: [LayerMapping; 14] = [
 ];
 
 /// `(our layer, our field, tshark filter name)` for fields both sides name.
-pub const FIELD_MAP: [(&str, &str, &str); 66] = [
+pub const FIELD_MAP: [(&str, &str, &str); 95] = [
+    ("Linux cooked capture", "Packet type", "sll.pkttype"),
+    ("Linux cooked capture", "ARPHRD type", "sll.hatype"),
+    ("Linux cooked capture", "Link-layer address length", "sll.halen"),
+    ("Linux cooked capture", "Protocol", "sll.etype"),
+    ("Linux cooked capture v2", "Protocol", "sll.etype"),
+    ("Linux cooked capture v2", "Reserved", "sll.reserved"),
+    ("Linux cooked capture v2", "Interface index", "sll.ifindex"),
+    ("Linux cooked capture v2", "ARPHRD type", "sll.hatype"),
+    ("Linux cooked capture v2", "Packet type", "sll.pkttype"),
+    ("Linux cooked capture v2", "Link-layer address length", "sll.halen"),
+    ("BSD loopback", "Family", "null.family"),
+    ("Point-to-Point Protocol", "Address", "ppp.address"),
+    ("Point-to-Point Protocol", "Control", "ppp.control"),
+    ("Point-to-Point Protocol", "Protocol", "ppp.protocol"),
+    ("LCP", "Code", "ppp.code"),
+    ("LCP", "Identifier", "ppp.identifier"),
+    ("LCP", "Length", "ppp.length"),
+    ("Radiotap", "Header revision", "radiotap.version"),
+    ("Radiotap", "Header length", "radiotap.length"),
+    ("Radiotap", "Present flags", "radiotap.present"),
+    ("IEEE 802.11", "Frame Control", "wlan.fc"),
+    ("IEEE 802.11", "Duration/ID", "wlan.duration"),
+    ("IEEE 802.11", "Address 1", "wlan.ra"),
+    ("IEEE 802.11", "Address 2", "wlan.ta"),
+    ("IEEE 802.11", "FCS", "wlan.fcs"),
+    ("LLC", "DSAP", "llc.dsap"),
+    ("LLC", "SSAP", "llc.ssap"),
+    ("LLC", "Control", "llc.control"),
+    ("LLC", "OUI", "llc.oui"),
     ("Ethernet II", "Destination", "eth.dst"),
     ("Ethernet II", "Source", "eth.src"),
     ("Ethernet II", "Type", "eth.type"),
