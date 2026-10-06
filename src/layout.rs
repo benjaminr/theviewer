@@ -383,6 +383,7 @@ impl ViewerApp {
     /// Save the arrangement if this run restores layouts (the app, not tests).
     pub fn save_layout(&self) {
         if self.persist_layout
+            && !self.layout_for_session_only
             && let Some(path) = layout_path()
         {
             let _ = save(&path, &self.layout);

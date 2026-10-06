@@ -236,6 +236,9 @@ pub struct ViewerApp {
     pub pane_request: Option<Pane>,
     /// Whether the layout is saved and restored (the app, not tests).
     pub persist_layout: bool,
+    /// The panel layout came from `--layout` for this session only, so it is
+    /// not saved over the arrangement the person keeps.
+    pub layout_for_session_only: bool,
     /// Startup defaults chosen in Settings.
     pub preferences: Preferences,
     /// An open or save dialog that is showing, and what to do with its answer.
@@ -490,6 +493,7 @@ impl ViewerApp {
             raster_rect: None,
             hex_body_rect: None,
             persist_layout: false,
+            layout_for_session_only: false,
             toolbar_rows: None,
             preferences: Preferences::default(),
             file_request: None,
@@ -544,6 +548,7 @@ impl ViewerApp {
                 _ => Preset::Default,
             };
             app.apply_preset(preset);
+            app.layout_for_session_only = true;
         }
         app.refresh_credentials();
         let (host, reports) = load_plugin_host();

@@ -282,7 +282,7 @@ theviewer firmware.bin --json > report.json
 | `--detect` | Look for the record width straight away |
 | `--open` | Open the image, audio or video at the cursor |
 | `--tool NAME` | Open a tool: `report` `ask` `template` `columns` `protocol` `statistics` `strings` `xor` `checksums` `disassembly` `unpacked` `diff` `live` |
-| `--layout NAME` | Start with a panel layout: `default` `right` `left` `focus` |
+| `--layout NAME` | Start with a panel layout for this session: `default` `right` `left` `focus`. Your saved arrangement is left as it is. |
 | `--report` | Print the file's report as text and exit, without opening a window |
 | `--json` | Print the report as JSON and exit: the summary, regions, likely record widths and confident findings, for scripts and CI |
 
