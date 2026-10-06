@@ -36,7 +36,8 @@ const REQUIRED_FRACTION: f64 = 0.9;
 const INTEGER_CEILING: f64 = 0.8;
 
 /// What a field's bytes represent.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
 pub enum NumberKind {
     Unsigned,
     Signed,
@@ -73,7 +74,7 @@ impl NumberKind {
 }
 
 /// One way of reading a field.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct Interpretation {
     pub kind: NumberKind,
     /// Bytes: 1, 2, 4 or 8.

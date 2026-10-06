@@ -5,6 +5,7 @@
 use std::collections::HashSet;
 use std::path::Path;
 
+use schemars::JsonSchema;
 use serde::Serialize;
 
 use crate::analysis;
@@ -26,7 +27,7 @@ const PERIODS_REPORTED: usize = 5;
 const MAX_FINDINGS: usize = 2000;
 
 /// Everything the headless report says about a file.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema)]
 pub struct FileReport {
     pub file: String,
     pub size: usize,
@@ -40,14 +41,14 @@ pub struct FileReport {
     pub findings: Vec<ReportFinding>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema)]
 pub struct ReportSentence {
     pub text: String,
     pub start: usize,
     pub len: usize,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema)]
 pub struct ReportRegion {
     pub start: usize,
     pub len: usize,
@@ -58,14 +59,14 @@ pub struct ReportRegion {
     pub confident: bool,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema)]
 pub struct RecordWidth {
     pub bytes: usize,
     /// Similarity at that width, 0 to 1.
     pub score: f32,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema)]
 pub struct ReportFinding {
     pub start: usize,
     pub len: usize,

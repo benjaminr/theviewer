@@ -74,7 +74,8 @@ pub const LINKTYPE_IPV6: u32 = 229;
 pub const LINKTYPE_LINUX_SLL2: u32 = 276;
 
 /// What a packet's first byte is.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
 pub enum LinkKind {
     /// An Ethernet II header.
     Ethernet,
@@ -171,7 +172,7 @@ impl LinkKind {
 }
 
 /// One packet: a range of the document.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct Packet {
     /// Document offset of the packet's first byte.
     pub offset: usize,

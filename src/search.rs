@@ -3,10 +3,12 @@
 use crate::document::Document;
 
 /// How the search box text is interpreted.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
 pub enum SearchMode {
     Hex,
     Text,
+    #[serde(rename = "utf16")]
     TextUtf16,
     Integer,
 }

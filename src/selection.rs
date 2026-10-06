@@ -8,7 +8,7 @@
 //! packets or search matches picked with Cmd-click.
 
 /// The same span of bytes in each of a run of records.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct ColumnSelection {
     /// Document offset where the first selected record starts.
     pub first_row_start: usize,
@@ -125,7 +125,8 @@ pub fn total_bytes(ranges: &[(usize, usize)]) -> usize {
 }
 
 /// What is selected.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
 pub enum Selection {
     /// One run of bytes, as `(start, len)`.
     Range(usize, usize),
@@ -200,6 +201,18 @@ impl Selection {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn selections_are_written_as_json_by_kind() {
+        let range = serde_json::to_value(Selection::Range(16, 4)).unwrap();
+        assert_eq!(range, serde_json::json!({"range": [16, 4]}));
+        let ranges = serde_json::to_value(Selection::Ranges(vec![(0, 2), (8, 2)])).unwrap();
+        assert_eq!(ranges, serde_json::json!({"ranges": [[0, 2], [8, 2]]}));
+        let column = ColumnSelection { first_row_start: 32, stride: 16, column: 2, width: 4, rows: 3 };
+        let json = serde_json::to_value(Selection::Columns(column)).unwrap();
+        assert_eq!(json["columns"]["stride"], 16);
+        assert_eq!(serde_json::from_value::<Selection>(json).unwrap(), Selection::Columns(column));
+    }
 
     #[test]
     fn a_column_drag_selects_the_same_bytes_in_every_row_between_its_corners() {

@@ -68,7 +68,7 @@ const MAX_IEEE802_3_LENGTH: u16 = 1500;
 const NOVELL_RAW_IPX_CHECKSUM: [u8; 2] = [0xFF, 0xFF];
 
 /// One protocol layer of a packet.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct Layer {
     pub name: String,
     /// Where the layer starts in the packet.
@@ -79,7 +79,7 @@ pub struct Layer {
 }
 
 /// The packet list's columns for one packet.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct Summary {
     pub source: String,
     pub destination: String,

@@ -15,7 +15,8 @@ pub const STREAM_LIMIT: usize = 16 * 1024 * 1024;
 const SEGMENT_TEXT_LIMIT: usize = 64 * 1024;
 
 /// The transport a flow uses.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
 pub enum Transport {
     Tcp,
     Udp,
@@ -41,7 +42,7 @@ impl Transport {
 }
 
 /// An address and, for TCP and UDP, a port.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct Endpoint {
     pub address: IpAddr,
     pub port: Option<u16>,
@@ -58,7 +59,7 @@ impl fmt::Display for Endpoint {
 }
 
 /// One packet's place in a conversation.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct Flow {
     pub transport: Transport,
     pub source: Endpoint,

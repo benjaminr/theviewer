@@ -19,8 +19,10 @@ const DECOMPRESS_OUTPUT_LIMIT: usize = 64 * 1024 * 1024;
 /// Byte ranges as `(start, len)`.
 pub type Ranges = Vec<(usize, usize)>;
 
-/// Something done to each selected range.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// Something done to each selected range. In JSON it is tagged by `op`,
+/// such as `{"op": "xor", "key": "5a"}`, with bytes as hex.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(into = "OperationJson", from = "OperationJson")]
 pub enum Operation {
     /// Remove the bytes.
     Delete,
@@ -100,6 +102,123 @@ impl Operation {
                 | Operation::Compress(_)
                 | Operation::Decompress
         )
+    }
+}
+
+/// How an [`Operation`] is written in JSON: every variant named, its values
+/// named too, and bytes as hex strings.
+#[derive(Clone, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
+enum OperationJson {
+    /// Remove the bytes.
+    Delete,
+    /// Insert bytes before each range.
+    InsertBefore {
+        #[serde(with = "crate::ops::hex_bytes")]
+        #[schemars(with = "String")]
+        bytes: Vec<u8>,
+    },
+    /// Insert bytes after each range.
+    InsertAfter {
+        #[serde(with = "crate::ops::hex_bytes")]
+        #[schemars(with = "String")]
+        bytes: Vec<u8>,
+    },
+    /// Repeat a pattern over the bytes.
+    Fill {
+        #[serde(with = "crate::ops::hex_bytes")]
+        #[schemars(with = "String")]
+        pattern: Vec<u8>,
+    },
+    /// Flip every bit.
+    Invert,
+    /// XOR with a key, repeated from the start of each range.
+    Xor {
+        #[serde(with = "crate::ops::hex_bytes")]
+        #[schemars(with = "String")]
+        key: Vec<u8>,
+    },
+    /// Add a key byte by byte, wrapping, repeated from the start of each range.
+    Add {
+        #[serde(with = "crate::ops::hex_bytes")]
+        #[schemars(with = "String")]
+        key: Vec<u8>,
+    },
+    /// Subtract a key byte by byte, wrapping.
+    Subtract {
+        #[serde(with = "crate::ops::hex_bytes")]
+        #[schemars(with = "String")]
+        key: Vec<u8>,
+    },
+    /// Reverse the order of the bytes.
+    Reverse,
+    /// Reverse the bits within each byte.
+    MirrorBits,
+    /// Shift the range's bits; positive moves them towards the start.
+    ShiftBits { amount: i64 },
+    /// Rotate the range's bits; positive moves them towards the start.
+    RotateBits { amount: i64 },
+    /// Rotate the range's bytes; positive moves them towards the start.
+    RotateBytes { amount: i64 },
+    /// Swap the byte order of the 2, 4 or 8 byte numbers in the range.
+    SwapByteOrder { width: usize },
+    /// Write `start + step × index` into each range, numbering records.
+    Counter { start: u64, step: u64, little_endian: bool },
+    /// Follow each range with a copy of itself.
+    Duplicate,
+    /// Replace each range with its compressed form.
+    Compress { codec: Codec },
+    /// Replace each range with its decompressed contents.
+    Decompress,
+}
+
+impl From<Operation> for OperationJson {
+    fn from(operation: Operation) -> Self {
+        match operation {
+            Operation::Delete => OperationJson::Delete,
+            Operation::InsertBefore(bytes) => OperationJson::InsertBefore { bytes },
+            Operation::InsertAfter(bytes) => OperationJson::InsertAfter { bytes },
+            Operation::Fill(pattern) => OperationJson::Fill { pattern },
+            Operation::Invert => OperationJson::Invert,
+            Operation::Xor(key) => OperationJson::Xor { key },
+            Operation::Add(key) => OperationJson::Add { key },
+            Operation::Subtract(key) => OperationJson::Subtract { key },
+            Operation::Reverse => OperationJson::Reverse,
+            Operation::MirrorBits => OperationJson::MirrorBits,
+            Operation::ShiftBits(amount) => OperationJson::ShiftBits { amount },
+            Operation::RotateBits(amount) => OperationJson::RotateBits { amount },
+            Operation::RotateBytes(amount) => OperationJson::RotateBytes { amount },
+            Operation::SwapByteOrder(width) => OperationJson::SwapByteOrder { width },
+            Operation::Counter { start, step, little_endian } => OperationJson::Counter { start, step, little_endian },
+            Operation::Duplicate => OperationJson::Duplicate,
+            Operation::Compress(codec) => OperationJson::Compress { codec },
+            Operation::Decompress => OperationJson::Decompress,
+        }
+    }
+}
+
+impl From<OperationJson> for Operation {
+    fn from(operation: OperationJson) -> Self {
+        match operation {
+            OperationJson::Delete => Operation::Delete,
+            OperationJson::InsertBefore { bytes } => Operation::InsertBefore(bytes),
+            OperationJson::InsertAfter { bytes } => Operation::InsertAfter(bytes),
+            OperationJson::Fill { pattern } => Operation::Fill(pattern),
+            OperationJson::Invert => Operation::Invert,
+            OperationJson::Xor { key } => Operation::Xor(key),
+            OperationJson::Add { key } => Operation::Add(key),
+            OperationJson::Subtract { key } => Operation::Subtract(key),
+            OperationJson::Reverse => Operation::Reverse,
+            OperationJson::MirrorBits => Operation::MirrorBits,
+            OperationJson::ShiftBits { amount } => Operation::ShiftBits(amount),
+            OperationJson::RotateBits { amount } => Operation::RotateBits(amount),
+            OperationJson::RotateBytes { amount } => Operation::RotateBytes(amount),
+            OperationJson::SwapByteOrder { width } => Operation::SwapByteOrder(width),
+            OperationJson::Counter { start, step, little_endian } => Operation::Counter { start, step, little_endian },
+            OperationJson::Duplicate => Operation::Duplicate,
+            OperationJson::Compress { codec } => Operation::Compress(codec),
+            OperationJson::Decompress => Operation::Decompress,
+        }
     }
 }
 
@@ -303,6 +422,30 @@ mod tests {
 
     fn apply(operation: Operation, bytes: &[u8]) -> Vec<u8> {
         transform_range(&operation, bytes, 0).unwrap()
+    }
+
+    #[test]
+    fn operations_are_written_as_json_tagged_by_name_with_bytes_as_hex() {
+        let xor = serde_json::to_value(Operation::Xor(vec![0xDE, 0xAD])).unwrap();
+        assert_eq!(xor, serde_json::json!({"op": "xor", "key": "dead"}));
+        let shift = serde_json::to_value(Operation::ShiftBits(-3)).unwrap();
+        assert_eq!(shift, serde_json::json!({"op": "shift_bits", "amount": -3}));
+        let compress = serde_json::to_value(Operation::Compress(Codec::Zlib)).unwrap();
+        assert_eq!(compress, serde_json::json!({"op": "compress", "codec": "zlib"}));
+        for operation in [
+            Operation::Invert,
+            Operation::Fill(vec![0, 1]),
+            Operation::Counter { start: 1, step: 2, little_endian: true },
+            Operation::SwapByteOrder(4),
+            Operation::Decompress,
+        ] {
+            let json = serde_json::to_value(&operation).unwrap();
+            assert_eq!(serde_json::from_value::<Operation>(json).unwrap(), operation);
+        }
+        let typed: Operation = serde_json::from_value(serde_json::json!({"op": "add", "key": "01 02"})).unwrap();
+        assert_eq!(typed, Operation::Add(vec![1, 2]), "hex is read loosely, as typed in the app");
+        assert!(serde_json::from_value::<Operation>(serde_json::json!({"op": "xor", "key": "xyz"})).is_err());
+        assert!(serde_json::from_value::<Operation>(serde_json::json!({"op": "melt"})).is_err());
     }
 
     #[test]

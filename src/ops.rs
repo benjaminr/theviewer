@@ -96,6 +96,28 @@ pub fn parse_offset(text: &str) -> Option<usize> {
     text.parse().ok()
 }
 
+/// Bytes as compact lower-case hex ("deadbeef"), the form the data API uses
+/// for bytes in JSON.
+pub fn to_compact_hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+/// Serde support for byte vectors written as hex strings: written compact
+/// ("deadbeef"), read loosely, as [`parse_hex`] reads them. Use with
+/// `#[serde(with = "crate::ops::hex_bytes")]` and `#[schemars(with = "String")]`.
+pub mod hex_bytes {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(bytes: &[u8], serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&super::to_compact_hex(bytes))
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<u8>, D::Error> {
+        let text = String::deserialize(deserializer)?;
+        super::parse_hex(&text).ok_or_else(|| serde::de::Error::custom(format!("'{text}' is not hex bytes, such as \"de ad be ef\"")))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

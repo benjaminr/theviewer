@@ -16,7 +16,8 @@ use eframe::egui::Color32;
 
 /// Broad kinds of finding. Fixed so colours and filters are predictable;
 /// plugins describe specifics in a finding's `id` and `title`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
 pub enum Category {
     Signature,
     Executable,
@@ -133,7 +134,7 @@ impl Category {
 
 /// One parsed field of a structure, with its byte extent so the UI can
 /// highlight it. `children` nests sub-structures.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct Field {
     pub name: String,
     pub offset: usize,
@@ -170,7 +171,7 @@ impl Field {
 }
 
 /// Extra facts about a strided sequence (counters, timestamps, arrays).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct Sequence {
     /// Bytes between elements.
     pub stride: usize,
@@ -180,7 +181,7 @@ pub struct Sequence {
 }
 
 /// Something recognised in the bytes.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct Finding {
     /// Stable identifier such as `signature:image/png` or `stream:zlib`.
     pub id: String,
@@ -306,7 +307,8 @@ pub trait Parser: Send + Sync {
 }
 
 /// Whether a codec is compression (sizes matter) or a representation change.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
 pub enum CodecKind {
     Compression,
     Encoding,
@@ -433,6 +435,18 @@ fn isolated<T: Default>(work: impl FnOnce() -> T) -> T {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn findings_round_trip_through_json_with_categories_in_snake_case() {
+        let finding = Finding::new("signature:image/png", "catalogue", Category::OffsetTable, 0x40, 16)
+            .title("PNG image")
+            .sequence(4, 4, 4)
+            .fields(vec![Field::new("width", 0x50, 4, "640").with_children(vec![Field::new("high", 0x50, 2, "0")])]);
+        let json = serde_json::to_value(&finding).unwrap();
+        assert_eq!(json["category"], "offset_table");
+        assert_eq!(json["fields"][0]["children"][0]["name"], "high");
+        assert_eq!(serde_json::from_value::<Finding>(json).unwrap(), finding);
+    }
 
     struct Faulty;
     impl Detector for Faulty {

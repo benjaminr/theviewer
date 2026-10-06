@@ -34,12 +34,14 @@ const MAX_CANDIDATES: usize = 12;
 const WORD_BITS: usize = 64;
 
 /// The order in which the bits of each byte enter the stream.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub enum BitOrder {
     /// Bit 7 of each byte first (most serial protocols and image formats).
     #[default]
+    #[serde(rename = "msb")]
     MsbFirst,
     /// Bit 0 of each byte first (UARTs, many radio links).
+    #[serde(rename = "lsb")]
     LsbFirst,
 }
 

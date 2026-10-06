@@ -53,7 +53,8 @@ const TFTP_WRITE_REQUEST: u16 = 2;
 const RTP_MIN_SHARED_SSRC: f64 = 0.5;
 
 /// What a frame of unknown format is decoded as, from its first byte.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
 pub enum FrameProtocol {
     Ethernet,
     RawIp,

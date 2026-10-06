@@ -9,7 +9,8 @@ use std::sync::Arc;
 
 use crate::plugin::{CodecKind, CodecPlugin, Decoded};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
 pub enum Codec {
     Zlib,
     Gzip,

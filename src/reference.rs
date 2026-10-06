@@ -33,7 +33,8 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::RwLock;
 
-use serde::Deserialize;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 
 /// The embedded reference files, by name.
 const SOURCES: [(&str, &str); 5] = [
@@ -48,7 +49,7 @@ const SOURCES: [(&str, &str); 5] = [
 const RFC_TEXT_BASE: &str = "https://www.rfc-editor.org/rfc";
 
 /// Notes on one format or protocol.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct FormatReference {
     /// Stable identifier, such as `ipv4`.
@@ -121,7 +122,7 @@ pub fn parse_port(text: &str) -> Option<(Transport, u16)> {
 }
 
 /// A document that defines a format.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Specification {
     /// Short citation, such as "RFC 791" or "PKWARE APPNOTE 6.3.10".
@@ -137,7 +138,7 @@ pub struct Specification {
 }
 
 /// What one field means.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct FieldNote {
     /// The field's name as the app shows it. A trailing `*` matches any
