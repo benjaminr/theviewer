@@ -1,6 +1,6 @@
 //! Where packets come from: the protocol analysis's messages, captures inside
-//! the document (pcap and pcapng, and the older formats in [`snoop`] and
-//! [`netmon`]), a range
+//! the document (pcap and pcapng, and the formats in [`snoop`], [`netmon`]
+//! and [`erf`]), a range
 //! cut into records, a single range, or a cluster of aligned messages. Each
 //! source is a pure function returning a [`PacketSet`] whose offsets are
 //! document offsets.
@@ -14,6 +14,7 @@ use super::{LinkKind, Packet, PacketSet};
 use crate::parsers::guarded;
 use crate::protocol::{self, Framing, Message};
 
+pub mod erf;
 pub mod netmon;
 pub mod snoop;
 
@@ -329,6 +330,8 @@ pub enum CaptureFormat {
     Snoop,
     /// Microsoft Network Monitor 2.x.
     NetMon,
+    /// Endace ERF records.
+    Erf,
 }
 
 impl CaptureFormat {
@@ -338,6 +341,7 @@ impl CaptureFormat {
             CaptureFormat::PcapNg => "pcapng",
             CaptureFormat::Snoop => "snoop",
             CaptureFormat::NetMon => "Network Monitor",
+            CaptureFormat::Erf => "ERF",
         }
     }
 }
@@ -361,8 +365,14 @@ impl CaptureLocation {
     }
 }
 
-/// Which capture format `bytes` starts with, if any.
+/// Which capture format `bytes` starts with, if any. ERF, which has no
+/// magic number, is recognised by several plausible records in a row.
 pub fn capture_format(bytes: &[u8]) -> Option<CaptureFormat> {
+    format_by_magic(bytes).or_else(|| erf::looks_like(bytes).then_some(CaptureFormat::Erf))
+}
+
+/// Which capture format with a magic number `bytes` start with, if any.
+fn format_by_magic(bytes: &[u8]) -> Option<CaptureFormat> {
     let start = bytes.get(..4)?;
     if PCAP_MAGICS.iter().any(|magic| magic == start) {
         return Some(CaptureFormat::Pcap);
@@ -392,6 +402,7 @@ fn read_capture(bytes: &[u8], base: usize) -> Result<(PacketSet, usize), SourceE
         Some(CaptureFormat::PcapNg) => read_pcapng(bytes, base),
         Some(CaptureFormat::Snoop) => snoop::read(bytes, base)?,
         Some(CaptureFormat::NetMon) => netmon::read(bytes, base)?,
+        Some(CaptureFormat::Erf) => erf::read(bytes, base)?,
         None => return Err(SourceError::NotACapture { offset: base }),
     };
     if set.is_empty() {
@@ -538,7 +549,10 @@ pub fn find_captures(bytes: &[u8], base: usize) -> Vec<CaptureLocation> {
     let mut at = 0;
     while at + 4 <= bytes.len() && found.len() < MAX_CAPTURES {
         let format = match bytes[at] {
-            0xD4 | 0xA1 | 0x4D | 0x0A | b's' | b'G' => capture_format(&bytes[at..]),
+            // ERF has no magic number, so it is only looked for where a
+            // whole file would start.
+            _ if base + at == 0 => capture_format(bytes),
+            0xD4 | 0xA1 | 0x4D | 0x0A | b's' | b'G' => format_by_magic(&bytes[at..]),
             _ => None,
         };
         let Some(format) = format else {
@@ -695,6 +709,21 @@ mod tests {
         assert_eq!(found.len(), 1, "{found:?}");
         assert_eq!((found[0].offset, found[0].format, found[0].link, found[0].packets, found[0].len), (at, CaptureFormat::NetMon, LinkKind::Ethernet, 2, capture_end - at));
         let set = from_capture(&document[at..], at).expect("a capture");
+        assert_eq!(&document[set.packets[1].offset..set.packets[1].end()], b"frame two");
+    }
+
+    #[test]
+    fn erf_records_are_found_at_the_start_of_a_document_but_not_inside_it() {
+        let mut records = erf::tests::ethernet_record(1_700_000_000, b"frame one");
+        records.extend(erf::tests::ethernet_record(1_700_000_001, b"frame two"));
+        let found = find_captures(&records, 0);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!((found[0].format, found[0].link, found[0].packets), (CaptureFormat::Erf, LinkKind::Ethernet, 2));
+        let mut document = b"leading bytes".to_vec();
+        document.extend_from_slice(&records);
+        assert!(find_captures(&document, 0).is_empty(), "no magic to find it by");
+        assert!(find_captures(&records, 0x100).is_empty(), "a region that does not start the document");
+        let set = from_capture(&document[13..], 13).expect("read when asked for");
         assert_eq!(&document[set.packets[1].offset..set.packets[1].end()], b"frame two");
     }
 
