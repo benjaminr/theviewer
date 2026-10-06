@@ -22,6 +22,9 @@ const ZIP_STORED: u16 = 0;
 const ZIP_DEFLATED: u16 = 8;
 const TAR_BLOCK: usize = 512;
 const TAR_REGULAR_FILE: [u8; 2] = [b'0', 0];
+/// "ustar" at this offset of a tar header.
+const TAR_MAGIC_AT: usize = 257;
+const TAR_MAGIC: &[u8] = b"ustar";
 
 /// Unpack `bytes`, downloaded as `name`, keeping at most `limit` bytes of
 /// any one file. Names ending in a compression suffix are decompressed (and
@@ -29,6 +32,11 @@ const TAR_REGULAR_FILE: [u8; 2] = [b'0', 0];
 pub fn unpack(name: &str, bytes: Vec<u8>, limit: usize) -> Unpacked {
     let lower = name.to_lowercase();
     let mut unpacked = Unpacked::default();
+    // Some servers send a ".tar.gz" already decompressed.
+    if bytes.get(TAR_MAGIC_AT..TAR_MAGIC_AT + TAR_MAGIC.len()) == Some(TAR_MAGIC) && !lower.ends_with(".tar") {
+        let stem = lower.trim_end_matches(".gz").trim_end_matches(".tgz").trim_end_matches(".tar");
+        return unpack(&format!("{}.tar", &name[..stem.len()]), bytes, limit);
+    }
     let decompressed = if let Some(stem) = lower.strip_suffix(".tgz") {
         decompress_gzip(&bytes, limit).map(|data| (format!("{}.tar", &name[..stem.len()]), data))
     } else if let Some(stem) = lower.strip_suffix(".gz") {
@@ -270,6 +278,7 @@ mod tests {
         let size = format!("{:011o}\0", data.len());
         header[124..136].copy_from_slice(size.as_bytes());
         header[156] = b'0';
+        header[TAR_MAGIC_AT..TAR_MAGIC_AT + 6].copy_from_slice(b"ustar\0");
         let mut tar = header.to_vec();
         tar.extend_from_slice(data);
         tar.resize(tar.len().div_ceil(TAR_BLOCK) * TAR_BLOCK, 0);
@@ -294,6 +303,12 @@ mod tests {
         assert_eq!(unpacked.files, vec![("bundle__inner.pcapng".to_string(), b"pcapng bytes".to_vec())]);
         let unpacked = unpack("set.tgz", gzip(&tar_of("set/one.cap", b"one")), LIMIT);
         assert_eq!(unpacked.files, vec![("set__one.cap".to_string(), b"one".to_vec())], "{:?}", unpacked.problems);
+    }
+
+    #[test]
+    fn a_tarball_sent_already_decompressed_is_still_unpacked() {
+        let unpacked = unpack("set.tar.gz", tar_of("one.pcap", b"one"), LIMIT);
+        assert_eq!(unpacked.files, vec![("set__one.pcap".to_string(), b"one".to_vec())], "{:?}", unpacked.problems);
     }
 
     #[test]
