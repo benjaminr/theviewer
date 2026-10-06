@@ -328,7 +328,7 @@ summary = "The framing used on almost every wired local network and in most pack
 organisation = """
 The header is three fields: a 6-byte destination MAC address, a 6-byte source MAC address and a 2-byte big-endian EtherType. The payload starts at byte 14. Captures normally leave out the preamble and start-of-frame delimiter, and often the 4-byte frame check sequence at the end as well.
 
-The EtherType names the payload: 0x0800 is IPv4, 0x86DD IPv6, 0x0806 ARP, and 0x8100 or 0x88A8 mean a VLAN tag comes next, with the real EtherType after it. Values of 1500 and below are instead an IEEE 802.3 length followed by an LLC header, which this app does not decode.
+The EtherType names the payload: 0x0800 is IPv4, 0x86DD IPv6, 0x0806 ARP, and 0x8100 or 0x88A8 mean a VLAN tag comes next, with the real EtherType after it. Values of 1500 and below are instead an IEEE 802.3 length followed by an 802.2 LLC header, often with a SNAP header naming the protocol after it.
 
 A frame on the wire is at least 64 bytes including the check sequence, so payloads shorter than 46 bytes are padded. The IP or ARP length fields say where the real payload ends; the bytes after it appear as Padding.
 """
@@ -678,6 +678,45 @@ meaning = "The type of the header after this one: another extension header or th
 name = "Length"
 meaning = "The size of this extension header in bytes. On the wire it is stored as the number of 8-byte units after the first 8."
 
+[[format.fields]]
+name = "Options"
+meaning = "The header's options, each a type byte, a length byte and that many bytes of data. The top two bits of the type say what a node that does not know the option must do: skip it, drop the packet, or drop it and report back."
+wireshark = "ipv6.opt"
+
+[[format.fields]]
+name = "Pad1"
+meaning = "A single zero byte of padding, keeping the header a multiple of eight bytes."
+
+[[format.fields]]
+name = "PadN"
+meaning = "Two or more bytes of padding: type 1, a length, then that many zero bytes."
+wireshark = "ipv6.opt.padn"
+
+[[format.fields]]
+name = "Router alert"
+meaning = "Asks every router on the path to look inside the packet, as MLD and RSVP need; the value says which protocol."
+wireshark = "ipv6.opt.router_alert"
+
+[[format.fields]]
+name = "Jumbo payload"
+meaning = "The real payload length for a packet over 65,535 bytes, whose IPv6 payload length is then zero."
+wireshark = "ipv6.opt.jumbo"
+
+[[format.fields]]
+name = "Routing type"
+meaning = "Which kind of routing header follows: 0 (deprecated for security reasons), 2 for Mobile IPv6, 3 for RPL, 4 for segment routing."
+wireshark = "ipv6.routing.type"
+
+[[format.fields]]
+name = "Segments left"
+meaning = "How many listed addresses are still to be visited before the final destination."
+wireshark = "ipv6.routing.segleft"
+
+[[format.fields]]
+name = "Type-specific data"
+meaning = "The rest of the routing header, laid out as its routing type defines: usually the list of addresses to visit."
+
+
 [[format]]
 id = "ipv6-fragment"
 name = "IPv6 fragment header"
@@ -704,6 +743,16 @@ section = "4.5"
 name = "Fragment offset"
 wireshark = "ipv6.fraghdr.offset"
 meaning = "Where this fragment's data belongs in the original packet, shown in bytes; stored as a 13-bit count of 8-byte units."
+
+[[format.fields]]
+name = "Identification"
+meaning = "A 32-bit number shared by every fragment of one original packet, so the receiver knows which fragments belong together."
+wireshark = "ipv6.fraghdr.ident"
+
+[[format.fields]]
+name = "Next header"
+meaning = "The protocol of the original packet's payload, the same in every fragment; only the first fragment actually holds its header."
+wireshark = "ipv6.fraghdr.nxt"
 
 [[format]]
 id = "icmp"
@@ -829,6 +878,27 @@ meaning = "Four bytes that depend on the type: the MTU for packet too big, a poi
 # ---------------------------------------------------------------------------
 # Transport layer
 # ---------------------------------------------------------------------------
+
+[[format.fields]]
+name = "Target address"
+meaning = "In neighbour solicitations and advertisements and in redirects, the IPv6 address being resolved or announced."
+wireshark = "icmpv6.nd.ns.target_address"
+
+[[format.fields]]
+name = "Option *"
+meaning = "A neighbour discovery option: a type byte, a length in units of eight bytes, and its value; source or target link-layer address (the MAC address), prefix information for address autoconfiguration, or the link's MTU."
+wireshark = "icmpv6.opt"
+
+[[format.fields]]
+name = "Reachable time"
+meaning = "In router advertisements: how many milliseconds a neighbour stays reachable after it was last confirmed; zero leaves it unspecified."
+wireshark = "icmpv6.nd.ra.reachable_time"
+
+[[format.fields]]
+name = "Retransmission timer"
+meaning = "In router advertisements: milliseconds between repeated neighbour solicitations; zero leaves it unspecified."
+wireshark = "icmpv6.nd.ra.retrans_timer"
+
 
 [[format]]
 id = "tcp"
@@ -1198,6 +1268,126 @@ meaning = "The client software making the request."
 name = "Server"
 wireshark = "http.server"
 meaning = "The server software that produced the response."
+
+[[format.fields]]
+name = "Accept"
+meaning = "Media types the client will take in the response, most wanted first or ranked by q weights, such as text/html or */*."
+wireshark = "http.accept"
+
+[[format.fields]]
+name = "Accept-Encoding"
+meaning = "Content codings the client can undo, such as gzip, deflate or br; the server picks one for Content-Encoding."
+wireshark = "http.accept_encoding"
+
+[[format.fields]]
+name = "Accept-Language"
+meaning = "Natural languages the client prefers, ranked by q weights, such as en-GB, en;q=0.8."
+wireshark = "http.accept_language"
+
+[[format.fields]]
+name = "Accept-Charset"
+meaning = "Character sets the client accepts; obsolete, as everything now assumes UTF-8."
+
+[[format.fields]]
+name = "Accept-Ranges"
+meaning = "From the server: whether it serves parts of the resource on request; 'bytes' if it does, 'none' if not."
+
+[[format.fields]]
+name = "Date"
+meaning = "When the message was sent, in the fixed form 'Tue, 06 Oct 2026 09:10:00 GMT'."
+wireshark = "http.date"
+
+[[format.fields]]
+name = "Cache-Control"
+meaning = "Caching rules for this message, such as no-store, no-cache, private or max-age=3600."
+wireshark = "http.cache_control"
+
+[[format.fields]]
+name = "Pragma"
+meaning = "The HTTP/1.0 forerunner of Cache-Control; 'no-cache' is the only value seen."
+
+[[format.fields]]
+name = "Keep-Alive"
+meaning = "Hints for a persistent connection, such as timeout=5, max=100; the connection itself is kept open by Connection."
+
+[[format.fields]]
+name = "Expires"
+meaning = "When a cached copy goes stale; Cache-Control's max-age takes precedence."
+
+[[format.fields]]
+name = "Last-Modified"
+meaning = "When the server believes the resource last changed, for conditional requests with If-Modified-Since."
+wireshark = "http.last_modified"
+
+[[format.fields]]
+name = "ETag"
+meaning = "An opaque tag for this version of the resource, sent back in If-None-Match to ask whether it changed; W/ marks a weak tag."
+
+[[format.fields]]
+name = "Vary"
+meaning = "Which request headers the response depends on, so a cache stores one copy per combination of them."
+
+[[format.fields]]
+name = "Referer"
+meaning = "The address of the page the request came from (the misspelling is the standard's own)."
+wireshark = "http.referer"
+
+[[format.fields]]
+name = "Cookie"
+meaning = "Name=value pairs the client stores for this site and sends back with each request, separated by semicolons."
+wireshark = "http.cookie"
+
+[[format.fields]]
+name = "Set-Cookie"
+meaning = "From the server: one cookie to store, with attributes such as Expires, Path, Secure and HttpOnly."
+wireshark = "http.set_cookie"
+
+[[format.fields]]
+name = "Authorization"
+meaning = "The client's credentials: a scheme then its data, such as 'Basic' with base64 of user:password (readable by anyone who sees it), or 'Bearer' with a token."
+wireshark = "http.authorization"
+
+[[format.fields]]
+name = "WWW-Authenticate"
+meaning = "From the server with a 401 response: the authentication schemes it accepts and their parameters, such as a realm."
+wireshark = "http.www_authenticate"
+
+[[format.fields]]
+name = "Location"
+meaning = "Where to go instead: the target of a redirect (3xx) or the address of a newly created resource (201)."
+wireshark = "http.location"
+
+[[format.fields]]
+name = "Content-Encoding"
+meaning = "The coding applied to the body, such as gzip; undo it to see the content Content-Type describes."
+wireshark = "http.content_encoding"
+
+[[format.fields]]
+name = "Range"
+meaning = "A request for part of the resource, such as bytes=0-1023, used to resume downloads."
+wireshark = "http.range"
+
+[[format.fields]]
+name = "Content-Range"
+meaning = "Which part of the resource a 206 response carries and the whole size, such as bytes 0-1023/52000."
+wireshark = "http.content_range"
+
+[[format.fields]]
+name = "Upgrade-Insecure-Requests"
+meaning = "A browser's signal (1) that it would rather be sent to the HTTPS version of the page."
+
+[[format.fields]]
+name = "Expect"
+meaning = "Usually '100-continue': the client waits for the server's go-ahead before sending a large body."
+
+[[format.fields]]
+name = "TE"
+meaning = "Transfer codings the client accepts besides chunked; 'trailers' says it can take header fields after the body."
+
+[[format.fields]]
+name = "X-Powered-By"
+meaning = "A non-standard banner naming the server software or framework, useful for fingerprinting."
+
 
 [[format]]
 id = "tls-record"
