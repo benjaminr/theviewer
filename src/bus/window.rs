@@ -113,6 +113,7 @@ pub fn builtin_reactions() -> Vec<Reaction> {
         Reaction { topic: Topic::DocumentEdited, name: "Tools note the edit and refresh once it settles", react: crate::freshness::note_edit },
         Reaction { topic: Topic::TemplateApplied, name: "The views outline the template applied", react: crate::workbench::follow_applied_template },
         Reaction { topic: Topic::TemplateApplied, name: "Packets decodes raw frames with the template applied again", react: crate::panel_packets::follow_applied_template },
+        Reaction { topic: Topic::ViewPointed, name: "The views outline the bytes pointed at", react: outline_pointed_bytes },
         Reaction { topic: Topic::RegionsMapped, name: "The views colour and label by the report's regions", react: keep_mapped_regions },
         Reaction { topic: Topic::PluginLog, name: "The status bar shows plugin errors", react: show_plugin_error },
     ]
@@ -314,6 +315,13 @@ pub fn job_finished(job: &str, title: &str, ok: bool, outcome: impl Into<String>
     Draft::new(format!("tool:{kind}"), Payload::JobFinished(JobFinished { job: job.to_string(), title: title.to_string(), ok, outcome: outcome.into() }))
 }
 
+/// Outline the bytes a panel, a plugin or a client points at, in both views.
+fn outline_pointed_bytes(app: &mut ViewerApp, message: &Arc<Message>) {
+    if let Some(pointed) = message.payload_as::<ViewPointed>() {
+        app.pointed = pointed.bytes.map(|span| (span.start, span.len.max(1)));
+    }
+}
+
 /// Keep the regions mapped for the document shown, for the raster's and the
 /// curves' colours, the size map and the trigrams' labels, whether or not
 /// the report is showing.
@@ -477,5 +485,24 @@ mod tests {
         app.run_bus();
         assert!(app.bus.facts().all(|fact| fact.topic() != Topic::TemplateApplied && fact.topic() != Topic::StructureIdentified));
         assert!(!app.bench.pinned.iter().any(|finding| finding.id.starts_with("template:")));
+    }
+
+    #[test]
+    fn pointing_at_bytes_is_said_once_on_the_bus_and_outlined_until_it_stops() {
+        let mut app = app_with(&[0u8; 64]);
+        let cursor = app.bus.cursor();
+        for _ in 0..3 {
+            app.point_at_bytes(4, 2);
+            app.publish_pointed();
+            app.run_bus();
+        }
+        assert_eq!(app.pointed_bytes(), Some((4, 2)));
+        assert_eq!(topics_since(&app, cursor), [Topic::ViewPointed], "said once while it stays the same");
+        assert!(app.publish_pointed(), "a frame without pointing says it stopped");
+        app.run_bus();
+        assert_eq!(app.pointed_bytes(), None);
+        app.publish("plugin:acme.lua", Payload::ViewPointed(ViewPointed { bytes: Some(crate::bus::Span { start: 8, len: 4 }) }));
+        app.run_bus();
+        assert_eq!(app.pointed_bytes(), Some((8, 4)), "anyone may point the views at bytes");
     }
 }

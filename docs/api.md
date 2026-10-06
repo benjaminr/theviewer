@@ -946,6 +946,7 @@ What tools, panels and plugins publish on the workspace bus. Facts are kept, the
 | [`document.closed`](#documentclosed) | event | A document was closed or replaced; what was known about it is forgotten. |
 | [`document.edited`](#documentedited) | event | The document's bytes changed: each change's offset, bytes removed and bytes inserted, undo and redo included. |
 | [`cursor.moved`](#cursormoved) | event | The cursor moved in the main view. |
+| [`view.pointed`](#viewpointed) | event | Bytes a panel points at (a field row under the pointer), which the views outline, or that it stopped pointing; published when it changes. |
 | [`selection.changed`](#selectionchanged) | event | What is selected changed, in the main view or by a tool selecting bytes in the document. |
 | [`findings.published`](#findingspublished) | fact | What one producer recognises in the document: the scan, signatures, templates, the structure map, crypto constants, a comparison, checksums or protocol messages. |
 | [`structure.identified`](#structureidentified) | fact | A structure parsed at the cursor, or a template applied, with its field tree. |
@@ -995,6 +996,14 @@ The cursor moved in the main view.
 | Payload field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `offset` | integer | yes | Document offset of the cursor. |
+
+### view.pointed
+
+Bytes a panel points at (a field row under the pointer), which the views outline, or that it stopped pointing; published when it changes.
+
+| Payload field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `bytes` | Span | no | The bytes, or nothing once nothing is pointed at. |
 
 ### selection.changed
 

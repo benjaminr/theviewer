@@ -146,6 +146,7 @@ fn summary(payload: &Payload, document_len: usize) -> String {
         Payload::DocumentClosed(closed) => closed.name.clone(),
         Payload::DocumentEdited(edited) => format!("{} change(s){}", edited.edits.len(), if edited.complete { "" } else { ", some forgotten" }),
         Payload::CursorMoved(cursor) => format!("{:#x}", cursor.offset),
+        Payload::ViewPointed(pointed) => pointed.bytes.map_or_else(|| "nothing".to_string(), |span| format!("{} bytes at {:#x}", span.len, span.start)),
         Payload::SelectionChanged(changed) => match &changed.selection {
             Some(selection) => format!("{} from {:#x}", selection.describe(document_len), selection.ranges(document_len).first().map_or(changed.cursor, |&(start, _)| start)),
             None => format!("nothing selected, cursor at {:#x}", changed.cursor),

@@ -300,10 +300,11 @@ pub struct ViewerApp {
     emphasis: Option<LayerKind>,
     /// The layer the legend pointed at during this frame, for the next one.
     emphasis_next: Option<LayerKind>,
-    /// Bytes a panel points at (a field row under the pointer), as
-    /// `(start, len)`, outlined in both views this frame.
-    pointed: Option<(usize, usize)>,
-    /// The bytes pointed at during this frame, for the next one.
+    /// Bytes pointed at (a panel's field row under the pointer), as
+    /// `(start, len)`, outlined in both views: what `view.pointed` last said.
+    pub(crate) pointed: Option<(usize, usize)>,
+    /// The bytes panels point at during this frame, published on
+    /// `view.pointed` at its end when they changed.
     pointed_next: Option<(usize, usize)>,
     /// Overlay rectangles the raster drew last frame, per layer; read by
     /// tests and handy when checking what a toggle does.
@@ -1623,15 +1624,28 @@ impl ViewerApp {
         self.emphasis
     }
 
-    /// Outline `len` bytes at `start` in both views on the next frame, while
-    /// a panel's row for them is under the pointer.
+    /// Outline `len` bytes at `start` in both views from the next frame,
+    /// while a panel's row for them is under the pointer: said on
+    /// `view.pointed` at the end of the frame, when it changed.
     pub fn point_at_bytes(&mut self, start: usize, len: usize) {
         self.pointed_next = Some((start, len.max(1)));
     }
 
-    /// The bytes a panel is pointing at this frame, as `(start, len)`.
+    /// The bytes pointed at, as `(start, len)`.
     pub fn pointed_bytes(&self) -> Option<(usize, usize)> {
         self.pointed
+    }
+
+    /// Say what the panels pointed at this frame, when it differs from what
+    /// the views outline, and start the next frame afresh.
+    pub(crate) fn publish_pointed(&mut self) -> bool {
+        let pointed = self.pointed_next.take();
+        if pointed == self.pointed {
+            return false;
+        }
+        let bytes = pointed.map(|(start, len)| crate::bus::Span { start, len });
+        self.publish(crate::bus::window::MAIN_VIEW, Payload::ViewPointed(crate::bus::topics::ViewPointed { bytes }));
+        true
     }
 
     // ------------------------------------------------------------------
@@ -3806,8 +3820,6 @@ impl eframe::App for ViewerApp {
         self.hover = None;
         // The legend sets the layer to pick out while it is pointed at.
         self.emphasis = self.emphasis_next.take();
-        // Panels set the bytes they point at during the frame (see the end).
-        self.pointed = self.pointed_next.take();
         egui::Panel::top("menu").show(ui, |ui| self.show_menu_bar(ui));
         egui::Panel::top("toolbar").show(ui, |ui| self.show_toolbar(ui));
         egui::Panel::bottom("status").show(ui, |ui| self.show_status_bar(ui));
@@ -3826,9 +3838,9 @@ impl eframe::App for ViewerApp {
         self.show_bookmark_prompt(&ctx);
         crate::selection_menu::show_insert_dialog(self, &ctx);
         commands::show_palette(self, &ctx);
-        // Draw once more when a panel starts or stops pointing at bytes, so
-        // the views catch up without waiting for the pointer to move.
-        if self.pointed_next != self.pointed {
+        // When a panel starts or stops pointing at bytes, say so and draw
+        // once more, so the views catch up without waiting for the pointer.
+        if self.publish_pointed() {
             ctx.request_repaint();
         }
     }

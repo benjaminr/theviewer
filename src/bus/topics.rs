@@ -8,6 +8,7 @@ use schemars::{JsonSchema, Schema};
 use serde::{Deserialize, Serialize};
 
 use crate::document::Edit;
+use super::Span;
 use crate::plugin::{Field, Finding};
 use crate::protocol::{Framing, MessageField};
 use crate::selection::Selection;
@@ -98,6 +99,7 @@ topics! {
     DocumentClosed(DocumentClosed) = "document.closed", Event, "A document was closed or replaced; what was known about it is forgotten.";
     DocumentEdited(DocumentEdited) = "document.edited", Event, "The document's bytes changed: each change's offset, bytes removed and bytes inserted, undo and redo included.";
     CursorMoved(CursorMoved) = "cursor.moved", Event, "The cursor moved in the main view.";
+    ViewPointed(ViewPointed) = "view.pointed", Event, "Bytes a panel points at (a field row under the pointer), which the views outline, or that it stopped pointing; published when it changes.";
     SelectionChanged(SelectionChanged) = "selection.changed", Event, "What is selected changed, in the main view or by a tool selecting bytes in the document.";
     FindingsPublished(FindingsPublished) = "findings.published", Fact, "What one producer recognises in the document: the scan, signatures, templates, the structure map, crypto constants, a comparison, checksums or protocol messages.";
     StructureIdentified(StructureIdentified) = "structure.identified", Fact, "A structure parsed at the cursor, or a template applied, with its field tree.";
@@ -198,6 +200,7 @@ impl Payload {
             Payload::FramesDefined(defined) => defined.frames.iter_mut().for_each(|frame| moved(&mut frame.start)),
             Payload::ProtocolIdentified(identified) => identified.frames.iter_mut().for_each(|frame| moved(&mut frame.start)),
             Payload::CursorMoved(cursor) => moved(&mut cursor.offset),
+            Payload::ViewPointed(pointed) => pointed.bytes.iter_mut().for_each(|span| moved(&mut span.start)),
             Payload::DocumentOpened(_)
             | Payload::DocumentClosed(_)
             | Payload::DocumentEdited(_)
@@ -246,6 +249,13 @@ pub struct DocumentEdited {
 pub struct CursorMoved {
     /// Document offset of the cursor.
     pub offset: usize,
+}
+
+/// Bytes pointed at.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct ViewPointed {
+    /// The bytes, or nothing once nothing is pointed at.
+    pub bytes: Option<Span>,
 }
 
 /// What is selected now.
