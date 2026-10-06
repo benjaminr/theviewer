@@ -393,7 +393,7 @@ fn run_ours(file: &str, bytes: &[u8], registry: &Registry, result: &mut FileResu
         });
         if index < REFERENCE_PACKETS {
             working_on(file, "reference", Some(index + 1));
-            let layers = PacketLayers { offset: packet.offset, len: packet.len, layers: dissection.layers.clone() };
+            let layers = PacketLayers::from_dissection(packet.offset, packet.len, &dissection);
             for layer in &dissection.layers {
                 guarded(|| crate::panel_reference::build_stack(reference::library(), &findings, Some(&layers), packet.offset + layer.offset));
             }
