@@ -230,6 +230,23 @@ then invert, fill, XOR, add to, set, number, byte-swap, copy (hex or CSV)
 or delete those bytes in every packet of the selection at once, as one
 undoable edit.
 
+**More protocols with Wireshark's tshark (optional).** When Wireshark is
+installed, *Decode with tshark* in *Packets* hands the shown packets (or,
+from the detail view, one packet) to its command-line dissector, tshark, and
+adds the layers it decodes where ours stop: a DHCP, SNMP or TLS packet that
+we list as UDP or TCP payload gains its own layer, with every field at its
+exact bytes, so pointing at or clicking a field selects it in the view and
+the *Reference* tab follows it like any other layer. Such layers carry a
+small *tshark* tag; the packet list shows tshark's protocol, and
+`proto:dhcp` filters by any protocol tshark named. *Use tshark for
+everything* shows tshark's layers in place of ours. tshark runs on this
+computer only, always with `-n` (no name lookups), on a temporary pcap of
+the packets, in the background with a time limit and a *Cancel* button. It
+never runs unless you click the button or turn on *Use tshark when installed*
+in Settings, where you can also say where tshark is when it is not found on
+the `PATH` or in the usual install locations. Results are dropped when the
+document is edited.
+
 **Reference: what the bytes at the cursor mean.** The *Reference* tab lists
 every known format enclosing the cursor, outermost first, as a path you can
 click: inside a DNS packet of a capture it reads *pcap capture › Ethernet II
@@ -489,7 +506,39 @@ cargo run --bin render_logo -- assets/logo.png   # redraw the logo
 window, using `egui_kittest`. They click, drag and type through the view,
 the toolbar, every tool, the panel layouts and the settings, so a change
 that breaks an interaction fails a test. They use a temporary key store,
-never your Keychain.
+never your Keychain. The tshark test is skipped when tshark is not installed.
+
+**A corpus of real captures.** `capture_corpus` tests the packet code against
+Wireshark's sample captures and against tshark:
+
+```sh
+cargo run --release --bin capture_corpus -- fetch   # download the samples
+cargo run --release --bin capture_corpus -- run     # read, dissect, compare, report
+```
+
+`fetch` downloads the captures linked from
+[wiki.wireshark.org/SampleCaptures](https://wiki.wireshark.org/SampleCaptures)
+(about 600 files, at most 50 MB each and 1.5 GB in all, one at a time with a
+pause between them, backing off when the wiki asks) into
+`~/.cache/theviewer/corpus/` (or `$THEVIEWER_CORPUS_DIR`), unpacks gzip,
+bzip2, xz, zip and tar files, and records each file's URL, size and SHA-256
+in `manifest.json`. Run again, it fetches only what is missing. The sample
+captures carry no licence statement, so they stay in that cache: the tool
+refuses a directory inside the source tree, nothing in the repository reads
+them, and the tests use captures built by hand.
+
+`run` reads the first 2,000 packets of every capture with our readers and
+dissectors, filters, flows, pcap export, the Reference stack and the
+detectors, catching and recording any panic with its file and packet, and
+listing slow files. When tshark is installed it decodes the same packets and
+compares them with ours: the innermost protocol, each layer's start and
+length, and each field both name (mapped by hand in `corpus/compare.rs`),
+then counts which protocols tshark found that we do not decode and whether
+the reference notes name them by filter name, port, EtherType or IP
+protocol. Reports go to the cache's `report/` directory: `summary.md`,
+`coverage.csv`, `mismatches.csv` and `failures.csv`. They hold counts,
+protocol filter names and our own layer and field names, never tshark's
+text.
 
 <details>
 <summary><strong>How the code is organised</strong></summary>
@@ -510,7 +559,8 @@ never your Keychain.
 | `media.rs` `player.rs` | Media detection and decoding; the image, audio and video viewer. |
 | `explain.rs` `hilbert.rs` `region_colours.rs` | The whole-file report and map; the Hilbert and Morton curve layouts; colours by region, block class and entropy. |
 | `columns.rs` `protocol.rs` `templates.rs` | Record profiling, protocol analysis, and the template language. |
-| `packets.rs` `packets/` `panel_packets.rs` `panel_packets_view.rs` `panel_packets_grid.rs` | Packet sources (framing, pcap and pcapng, splits by width, length field or pattern), packets laid out as rows with column operations, dissection, conversations and streams, the filter language, pcap export and in-place editing; the packet viewer panel. |
+| `packets.rs` `packets/` `panel_packets.rs` `panel_packets_view.rs` `panel_packets_grid.rs` `panel_packets_tshark.rs` | Packet sources (framing, pcap and pcapng, splits by width, length field or pattern), packets laid out as rows with column operations, dissection, conversations and streams, the filter language, pcap export and in-place editing, decoding with tshark; the packet viewer panel. |
+| `corpus.rs` `corpus/` `bin/capture_corpus.rs` | The developer tool that fetches sample captures and compares our dissection with tshark's. |
 | `stats.rs` `strings.rs` `xor.rs` | Statistics and randomness tests, strings, XOR key recovery. |
 | `disasm.rs` `pointers.rs` `checksums.rs` `diff.rs` | Disassembly, the pointer graph, checksums, file comparison. |
 | `sources.rs` `plot.rs` | Live sources, watching and recording; plots and bytes as audio. |
