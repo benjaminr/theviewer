@@ -390,6 +390,7 @@ fn run_ours(file: &str, bytes: &[u8], registry: &Registry, result: &mut FileResu
                 summary: &dissection.summary,
                 bytes: data,
                 len: packet.len,
+                fields: None,
             })
         });
         if index < REFERENCE_PACKETS {

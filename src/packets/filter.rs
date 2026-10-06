@@ -10,13 +10,21 @@
 //! | `ip:10.0.0.2` | come from or go to that address |
 //! | `len>100` (also `<`, `>=`, `<=`, `=`) | have that many bytes |
 //! | `hex:DEADBEEF` | contain those bytes |
+//! | `ip.ttl==64` (also `!=`, `<`, `<=`, `>`, `>=`, `~` for "contains") | have a field, by its Wireshark name, with that value |
+//! | `dns.qry.name` | have that field at all |
 //! | anything else | mention the text in their summary (ignoring case) |
+//!
+//! Wireshark field names reach our own fields through the reference notes,
+//! which give each field its Wireshark name, and tshark's fields directly
+//! when a packet was decoded with tshark.
 
 use std::fmt;
 use std::net::IpAddr;
 
-use super::dissect::Summary;
+use super::dissect::{Dissection, Summary};
 use super::flows::Flow;
+use crate::plugin::Field;
+use crate::reference;
 
 /// Protocol names the filter knows; any other bare word is free text.
 pub const PROTOCOL_NAMES: [&str; 18] =
@@ -44,6 +52,29 @@ impl Comparison {
     }
 }
 
+/// How a field's value is tested.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FieldTest {
+    Equal,
+    NotEqual,
+    Less,
+    LessOrEqual,
+    Greater,
+    GreaterOrEqual,
+    Contains,
+}
+
+/// Operators of field terms, longest first so `>=` is not read as `>`.
+const FIELD_OPERATORS: [(&str, FieldTest); 7] = [
+    ("==", FieldTest::Equal),
+    ("!=", FieldTest::NotEqual),
+    (">=", FieldTest::GreaterOrEqual),
+    ("<=", FieldTest::LessOrEqual),
+    (">", FieldTest::Greater),
+    ("<", FieldTest::Less),
+    ("~", FieldTest::Contains),
+];
+
 /// One term of a filter.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Term {
@@ -54,6 +85,9 @@ pub enum Term {
     Address(IpAddr),
     Length(Comparison, usize),
     Bytes(Vec<u8>),
+    /// A field by its Wireshark display-filter name, such as `ip.ttl`, and
+    /// the test its value must pass (none: the field need only be there).
+    Field { name: String, test: Option<(FieldTest, String)> },
     /// Lower-case text looked for in the summary.
     Text(String),
 }
@@ -80,8 +114,11 @@ pub struct Filter {
     pub terms: Vec<Term>,
 }
 
+/// Gives the values of a field by its Wireshark name, such as `ip.ttl`.
+pub type FieldValues<'a> = dyn Fn(&str) -> Vec<String> + 'a;
+
 /// What a filter looks at in one packet.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy)]
 pub struct FilterSubject<'a> {
     pub protocols: &'a [&'static str],
     /// Protocols tshark named, when the packet was decoded with it.
@@ -91,6 +128,9 @@ pub struct FilterSubject<'a> {
     /// The packet's bytes as read (possibly fewer than `len`).
     pub bytes: &'a [u8],
     pub len: usize,
+    /// The values of a field, by its Wireshark name, for field terms; see
+    /// [`wireshark_values`]. Without it field terms match nothing.
+    pub fields: Option<&'a FieldValues<'a>>,
 }
 
 impl Filter {
@@ -116,10 +156,98 @@ fn term_matches(term: &Term, subject: &FilterSubject<'_>) -> bool {
         }
         Term::Length(comparison, limit) => comparison.holds(subject.len, *limit),
         Term::Bytes(needle) => !needle.is_empty() && subject.bytes.windows(needle.len()).any(|window| window == needle.as_slice()),
+        Term::Field { name, test } => {
+            let values = subject.fields.map(|values_of| values_of(name)).unwrap_or_default();
+            match test {
+                None => !values.is_empty(),
+                Some((FieldTest::NotEqual, wanted)) => !values.is_empty() && !values.iter().any(|value| value_equals(value, wanted)),
+                Some((test, wanted)) => values.iter().any(|value| value_passes(value, *test, wanted)),
+            }
+        }
         Term::Text(text) => {
             let summary = subject.summary;
             [&summary.info, &summary.protocol, &summary.source, &summary.destination].iter().any(|field| field.to_lowercase().contains(text))
         }
+    }
+}
+
+fn value_passes(value: &str, test: FieldTest, wanted: &str) -> bool {
+    match test {
+        FieldTest::Equal => value_equals(value, wanted),
+        FieldTest::NotEqual => !value_equals(value, wanted),
+        FieldTest::Contains => value.to_lowercase().contains(&wanted.to_lowercase()),
+        ordering => match (leading_number(value), leading_number(wanted)) {
+            (Some(value), Some(wanted)) => match ordering {
+                FieldTest::Less => value < wanted,
+                FieldTest::LessOrEqual => value <= wanted,
+                FieldTest::Greater => value > wanted,
+                _ => value >= wanted,
+            },
+            _ => false,
+        },
+    }
+}
+
+/// Values are shown with extra words ("6 (TCP)", "0x0800 IPv4"), so a value
+/// equals what was asked for when the whole of it does, its first word does,
+/// or the two are the same number written in decimal or hex.
+fn value_equals(value: &str, wanted: &str) -> bool {
+    let first_word = value.split([' ', '(', ',']).next().unwrap_or("");
+    value.eq_ignore_ascii_case(wanted)
+        || first_word.eq_ignore_ascii_case(wanted)
+        || leading_number(value).is_some_and(|number| leading_number(wanted) == Some(number))
+}
+
+/// The number a value starts with, in decimal or `0x` hex.
+fn leading_number(text: &str) -> Option<u64> {
+    let text = text.trim();
+    if let Some(hex) = text.strip_prefix("0x").or_else(|| text.strip_prefix("0X")) {
+        let digits: String = hex.chars().take_while(char::is_ascii_hexdigit).collect();
+        return u64::from_str_radix(&digits, 16).ok();
+    }
+    let digits: String = text.chars().take_while(char::is_ascii_digit).collect();
+    let rest = &text[digits.len()..];
+    // "10.0.0.1" and "3.5" are not numbers to compare.
+    if rest.starts_with('.') {
+        return None;
+    }
+    digits.parse().ok()
+}
+
+/// Every value in `dissection` of the field Wireshark calls `name`: from
+/// tshark's layers by the names tshark gave them, and from ours by the names
+/// the reference notes give our fields.
+pub fn wireshark_values(dissection: &Dissection, name: &str) -> Vec<String> {
+    let mut values = Vec::new();
+    for (index, layer) in dissection.layers.iter().enumerate() {
+        match dissection.wireshark_names(index) {
+            Some(names) => collect_tshark_values(&layer.fields, &mut Vec::new(), names, name, &mut values),
+            None => {
+                let Some(notes) = reference::lookup(&layer.name) else { continue };
+                collect_noted_values(&layer.fields, notes, name, &mut values);
+            }
+        }
+    }
+    values
+}
+
+fn collect_tshark_values(fields: &[Field], path: &mut Vec<usize>, names: &super::dissect::WiresharkNames, name: &str, values: &mut Vec<String>) {
+    for (index, field) in fields.iter().enumerate() {
+        path.push(index);
+        if names.field(path).is_some_and(|field_name| field_name.eq_ignore_ascii_case(name)) {
+            values.push(field.value.clone());
+        }
+        collect_tshark_values(&field.children, path, names, name, values);
+        path.pop();
+    }
+}
+
+fn collect_noted_values(fields: &[Field], notes: &reference::FormatReference, name: &str, values: &mut Vec<String>) {
+    for field in fields {
+        if notes.field(&field.name).and_then(|note| note.wireshark.as_deref()).is_some_and(|field_name| field_name.eq_ignore_ascii_case(name)) {
+            values.push(field.value.clone());
+        }
+        collect_noted_values(&field.children, notes, name, values);
     }
 }
 
@@ -154,7 +282,41 @@ fn parse_term(term: &str) -> Result<Term, FilterError> {
     if PROTOCOL_NAMES.contains(&lower.as_str()) {
         return Ok(Term::Protocol(if lower == "payload" { "data".to_string() } else { lower }));
     }
+    if let Some(field) = parse_field(term)? {
+        return Ok(field);
+    }
     Ok(Term::Text(lower))
+}
+
+/// A Wireshark field term such as `ip.ttl>=64` or `dns.qry.name`, if the
+/// term is one. A dotted word without an operator is a field only when it
+/// starts with a protocol the notes know, so "example.com" stays text.
+fn parse_field(term: &str) -> Result<Option<Term>, FilterError> {
+    let operator = FIELD_OPERATORS.iter().filter_map(|&(symbol, test)| term.find(symbol).map(|at| (at, symbol, test))).min_by_key(|&(at, symbol, _)| (at, std::cmp::Reverse(symbol.len())));
+    let name = operator.map_or(term, |(at, _, _)| &term[..at]).to_lowercase();
+    let looks_like_field = name.contains('.')
+        && name.starts_with(|c: char| c.is_ascii_alphabetic())
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+        && name.split('.').all(|part| !part.is_empty());
+    if !looks_like_field {
+        return Ok(None);
+    }
+    let protocol = name.split('.').next().unwrap_or_default();
+    match operator {
+        None if reference::library().by_wireshark(protocol).is_none() => Ok(None),
+        None => Ok(Some(Term::Field { name, test: None })),
+        Some((at, symbol, test)) => {
+            let wanted = term[at + symbol.len()..].trim_matches('"');
+            if wanted.is_empty() {
+                return Err(error(term, format!("give a value after {symbol}, such as ip.ttl==64")));
+            }
+            let ordering = matches!(test, FieldTest::Less | FieldTest::LessOrEqual | FieldTest::Greater | FieldTest::GreaterOrEqual);
+            if ordering && leading_number(wanted).is_none() {
+                return Err(error(term, format!("{symbol} compares numbers; '{wanted}' is not one")));
+            }
+            Ok(Some(Term::Field { name, test: Some((test, wanted.to_string())) }))
+        }
+    }
 }
 
 fn parse_length(term: &str, rest: &str) -> Result<Term, FilterError> {
@@ -191,6 +353,7 @@ mod tests {
                 summary: &self.summary,
                 bytes: &self.bytes,
                 len: self.bytes.len(),
+                fields: None,
             }
         }
     }
@@ -265,5 +428,46 @@ mod tests {
             assert!(error.to_string().contains(expected), "{filter}: {error}");
         }
         assert_eq!(parse_filter("length").map(|f| f.terms), Ok(vec![Term::Text("length".to_string())]));
+    }
+
+    #[test]
+    fn wireshark_field_names_filter_on_our_own_fields_through_the_notes() {
+        use crate::packets::{LinkKind, dissect};
+        // An IPv4/UDP datagram with a TTL of 64 to port 53.
+        let mut packet = vec![0x45, 0, 0, 36, 0, 1, 0, 0, 64, 17, 0, 0, 10, 0, 0, 2, 10, 0, 0, 1];
+        packet.extend_from_slice(&[0x9c, 0x40, 0, 53, 0, 16, 0, 0]);
+        packet.extend_from_slice(b"anything");
+        let dissection = dissect(&packet, LinkKind::RawIp);
+        let values = |name: &str| wireshark_values(&dissection, name);
+        let example = dns_packet();
+        let subject = FilterSubject { fields: Some(&values), ..example.subject() };
+        let holds = |filter: &str| parse_filter(filter).expect(filter).matches(&subject);
+        assert!(holds("ip.ttl==64"), "{:?}", values("ip.ttl"));
+        assert!(holds("ip.ttl>=60 ip.ttl<65 udp.dstport==53"));
+        assert!(!holds("ip.ttl==63"));
+        assert!(holds("ip.ttl!=63"));
+        assert!(holds("ip.src==10.0.0.2"));
+        assert!(holds("ip.ttl"), "a bare field name asks only that the field is there");
+        assert!(!holds("tcp.srcport"), "no TCP here");
+    }
+
+    #[test]
+    fn field_terms_are_told_apart_from_text_and_explained_when_wrong() {
+        assert_eq!(parse_filter("ip.ttl>=64").unwrap().terms, vec![Term::Field { name: "ip.ttl".into(), test: Some((FieldTest::GreaterOrEqual, "64".into())) }]);
+        assert_eq!(parse_filter("dns.qry.name~example").unwrap().terms, vec![Term::Field { name: "dns.qry.name".into(), test: Some((FieldTest::Contains, "example".into())) }]);
+        assert_eq!(parse_filter("example.com").unwrap().terms, vec![Term::Text("example.com".into())], "not a protocol the notes know");
+        assert_eq!(parse_filter("10.0.0.1").unwrap().terms, vec![Term::Text("10.0.0.1".into())]);
+        assert!(parse_filter("ip.ttl==").unwrap_err().to_string().contains("give a value"));
+        assert!(parse_filter("ip.ttl>lots").unwrap_err().to_string().contains("compares numbers"));
+    }
+
+    #[test]
+    fn values_match_by_whole_text_first_word_or_number() {
+        assert!(value_equals("6 (TCP)", "6"));
+        assert!(value_equals("0x0800 (IPv4)", "2048"));
+        assert!(value_equals("example.com", "EXAMPLE.COM"));
+        assert!(!value_equals("10.0.0.1", "10"));
+        assert!(value_passes("1500 bytes", FieldTest::Greater, "1000"));
+        assert!(value_passes("Standard query", FieldTest::Contains, "QUERY"));
     }
 }

@@ -882,16 +882,29 @@ pub(crate) fn refresh_filter(state: &mut PacketsState) {
     match packets::parse_filter(&state.filter_text) {
         Ok(filter) => {
             state.filter_error = None;
-            state.visible = (0..state.rows.len())
+            // Rows keep no fields, so a packet is dissected again, once, only
+            // when a term asks for a field by its Wireshark name.
+            let asks_for_fields = filter.terms.iter().any(|term| matches!(term, packets::filter::Term::Field { .. }));
+            let state_now: &PacketsState = state;
+            state.visible = (0..state_now.rows.len())
                 .filter(|&index| {
-                    let row = &state.rows[index];
+                    let row = &state_now.rows[index];
+                    let dissection = std::cell::OnceCell::new();
+                    let values = |name: &str| {
+                        let dissection = dissection.get_or_init(|| {
+                            let ours = packets::dissect_with(state_now.bytes.packet(index), row.link, &state_now.raw);
+                            crate::panel_packets_tshark::merged(state_now, index, ours)
+                        });
+                        packets::filter::wireshark_values(dissection, name)
+                    };
                     let subject = packets::FilterSubject {
                         protocols: &row.protocols,
                         tshark_protocols: &row.tshark_protocols,
                         flow: row.flow.as_ref(),
                         summary: &row.summary,
-                        bytes: state.bytes.packet(index),
+                        bytes: state_now.bytes.packet(index),
                         len: set.packets.get(index).map_or(0, |p| p.len),
+                        fields: asks_for_fields.then_some(&values as &packets::filter::FieldValues),
                     };
                     filter.matches(&subject)
                 })

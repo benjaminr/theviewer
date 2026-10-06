@@ -938,3 +938,23 @@ fn decoding_with_tshark_adds_a_dhcp_layer_whose_fields_select_their_bytes() {
     assert_eq!(harness.state().selection(), Some((transaction_id_at, 4)));
     std::fs::remove_file(path).ok();
 }
+
+#[test]
+fn the_packet_list_filters_by_wireshark_field_names() {
+    let dns_query = b"\x12\x34\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00\x07example\x03com\x00\x00\x01\x00\x01";
+    let frames = vec![ethernet_udp(4000, 53, dns_query), ethernet_udp(4001, 9999, b"telemetry one"), ethernet_udp(4002, 9999, b"telemetry two")];
+    let path = temp_path("wireshark-filter.pcap");
+    std::fs::write(&path, pcap_of(&frames)).unwrap();
+    let mut harness = harness_for(path.clone());
+    // The network layout shows the packets, which loads the capture.
+    harness.state_mut().apply_recommended(theviewer::layouts::Recommended::Network);
+    wait_for(&mut harness, |app| app.bench.panels.packets.rows().len() == 3 && !app.bench.panels.packets.is_busy());
+
+    for (filter, shown) in [("udp.dstport==53", 1), ("udp.dstport>1000", 2), ("udp.srcport!=4001", 2), ("udp.dstport", 3), ("ip.ttl==1", 0)] {
+        harness.state_mut().bench.panels.packets.set_filter(filter);
+        steps(&mut harness, 3);
+        let packets = &harness.state().bench.panels.packets;
+        assert_eq!(packets.visible_rows().len(), shown, "{filter}");
+    }
+    std::fs::remove_file(path).ok();
+}

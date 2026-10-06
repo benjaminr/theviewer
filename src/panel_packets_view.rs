@@ -93,7 +93,7 @@ fn show_filter(state: &mut PacketsState, ui: &mut Ui) {
     ui.horizontal_wrapped(|ui| {
         ui.add(
             egui::TextEdit::singleline(&mut state.filter_text)
-                .hint_text("Filter: udp port:53 ip:10.0.0.2 len>100 hex:DEADBEEF text")
+                .hint_text("Filter: udp port:53 ip:10.0.0.2 len>100 hex:DEADBEEF ip.ttl==64 text")
                 .desired_width(ui.available_width().clamp(160.0, 420.0)),
         )
         .on_hover_text("Space-separated terms, all of which must match: a protocol (tcp, dns…), port:N, ip:ADDRESS, len>N (or <, >=, <=, =), hex:BYTES, or text from the summary");
