@@ -16,10 +16,11 @@ use crate::app::{DialogKind, FileAction, ViewerApp};
 use crate::panels::{self, PanelStates};
 use crate::assistant::{self, FileContext, ToolCall, ToolReply};
 use crate::bus::{Message, Payload};
-use crate::bus::topics::{MappedRegion, RegionsMapped, TemplateApplied};
+use crate::api::tools::report::REPORT_PRODUCER;
+use crate::bus::topics::{RegionsMapped, TemplateApplied};
 use crate::document::Document;
 use crate::dock::{self, DockTab};
-use crate::explain::{self, Region, Report};
+use crate::explain::{Region, Report};
 use crate::hilbert;
 use crate::plot::{self, PcmFormat};
 use crate::plugin::{Category, Field, Finding};
@@ -408,49 +409,51 @@ impl ViewerApp {
     // Report and file map
     // -----------------------------------------------------------------------
 
-    /// Map and explain the whole file on a background thread.
-    pub fn start_report(&mut self) {
-        if self.bench.busy(|p| matches!(p, Pending::Report(_))) || self.document.is_empty() {
+    /// Explain the whole file because the person asked to, through
+    /// `report.run`; nothing happens while a report is being worked out or
+    /// when the document is empty.
+    pub fn explain_file(&mut self) {
+        if self.report_running() || self.document.is_empty() {
             return;
+        }
+        let _ = self.perform("report.run", serde_json::json!({}));
+    }
+
+    /// The report the app starts by itself, as the Report tool's: on launch
+    /// with the tool asked for, and to refresh it after an edit.
+    pub fn start_report(&mut self) {
+        self.report_as(REPORT_PRODUCER);
+    }
+
+    /// Map and explain the whole file on a background thread, as a job of
+    /// `producer`'s, showing the report and the file map when done: what
+    /// `report.run` does in the window. Returns the job, or nothing while a
+    /// report is being worked out or when the document is empty.
+    pub fn report_as(&mut self, producer: &str) -> Option<String> {
+        if self.report_running() || self.document.is_empty() {
+            return None;
         }
         let bytes = self.document.read_range(0, ANALYSIS_READ_LIMIT);
         let name = self.display_name();
         let registry = Arc::clone(&self.registry);
         let (sender, receiver) = mpsc::channel();
-        let job = self.start_job("report", "Report");
+        let job = self.bus.start_job("report", "Report", producer, Some((self.document_id(), self.document.version())));
+        let id = job.id().to_string();
         thread::spawn(move || {
-            let regions = explain::map_file(&bytes, &registry);
-            if job.is_cancelled() {
-                return job.finish_cancelled();
+            if let Some(found) = crate::api::tools::report::run_report(&bytes, &name, &registry, &job) {
+                let _ = sender.send(found);
             }
-            let report = explain::explain(&bytes, &name, &regions);
-            if job.is_cancelled() {
-                return job.finish_cancelled();
-            }
-            job.finish(true, format!("{} regions: {}", regions.len(), report.headline));
-            let _ = sender.send((regions, report));
         });
         self.bench.pending.push(Pending::Report(receiver));
         self.note_tool_result(DockTab::Report);
+        Some(id)
     }
 
     /// Publish the report's map of the file.
     fn publish_regions(&mut self) {
-        let regions: Vec<MappedRegion> = self
-            .bench
-            .regions
-            .iter()
-            .map(|region| MappedRegion {
-                start: region.start,
-                len: region.len,
-                kind: region.kind.label().to_string(),
-                label: region.label.clone(),
-                detail: region.detail.clone(),
-                confident: region.confident,
-            })
-            .collect();
+        let regions = crate::api::tools::report::mapped_regions(&self.bench.regions);
         let end = regions.last().map_or(0, |region| region.start + region.len);
-        self.bus.publish(self.draft("tool:report", Payload::RegionsMapped(RegionsMapped { regions })).span(0, end));
+        self.bus.publish(self.draft(REPORT_PRODUCER, Payload::RegionsMapped(RegionsMapped { regions })).span(0, end));
     }
 
     pub fn report_running(&self) -> bool {
@@ -460,7 +463,7 @@ impl ViewerApp {
     fn show_report_tab(&mut self, ui: &mut Ui) {
         ui.horizontal(|ui| {
             if ui.button(if self.bench.report.is_some() { "Re-analyse" } else { "Explain this file" }).clicked() {
-                self.start_report();
+                self.explain_file();
             }
             if self.report_running() {
                 ui.spinner();
@@ -487,10 +490,7 @@ impl ViewerApp {
                     ui.painter().rect_filled(rect, 2.0, kind);
                     dock::linked_text(self, ui, &sentence.text);
                     if sentence.len > 0 && ui.small_button("select").clicked() {
-                        self.anchor = Some(sentence.start);
-                        self.cursor = sentence.start + sentence.len;
-                        self.reveal_cursor_centred();
-                        self.reveal_cursor_in_hex(true);
+                        self.select_from_tool(sentence.start, sentence.len);
                     }
                 });
             }
@@ -528,7 +528,7 @@ impl ViewerApp {
             }
         }
         if out_of_date && response.secondary_clicked() {
-            self.start_report();
+            self.explain_file();
         }
     }
 
@@ -633,7 +633,7 @@ impl ViewerApp {
             if needs_report && ui.button("Run the report").on_hover_text("Explain this file: find its regions so cells can be coloured by them").clicked() {
                 self.dock.open = true;
                 self.dock.tab = DockTab::Report;
-                self.start_report();
+                self.explain_file();
             }
         });
     }
@@ -1565,6 +1565,39 @@ mod tests {
         assert_eq!(take_performed(), [("templates.clear".to_string(), json!({}))]);
         assert!(app.bench.template_result.is_none());
         assert!(!app.bench.pinned.iter().any(|pinned| pinned.id.starts_with("template:")));
+    }
+
+    #[test]
+    fn explaining_the_file_is_a_report_job_of_the_person_s_that_fills_the_report_and_the_file_map() {
+        let mut bytes = b"The quick brown fox jumps over the lazy dog. ".repeat(100);
+        bytes.extend(vec![0; 4096]);
+        let mut app = app_with(&bytes);
+        app.explain_file();
+        app.explain_file();
+        assert_eq!(take_performed(), [("report.run".to_string(), json!({}))], "once while it is being worked out");
+        let ctx = Context::default();
+        let begun = Instant::now();
+        while app.bench.report.is_none() && begun.elapsed() < Duration::from_secs(30) {
+            app.poll_workbench(&ctx);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(app.bench.report.is_some() && !app.bench.regions.is_empty());
+        app.run_bus();
+        assert!(!app.mapped_regions.is_empty(), "the file map is published");
+        let job = app.bus.jobs().list().into_iter().find(|job| job.title == "Report").expect("a job");
+        assert_eq!(job.producer, "panel");
+        assert!(job.result.as_ref().is_some_and(|result| !result["regions"].as_array().unwrap().is_empty()), "the job's result carries the report");
+    }
+
+    #[test]
+    fn a_report_of_an_empty_file_or_the_app_s_own_refresh_calls_nothing() {
+        let mut app = app_with(b"");
+        app.explain_file();
+        assert!(take_performed().is_empty());
+        let mut app = app_with(b"some text to explain");
+        app.start_report();
+        assert!(take_performed().is_empty(), "the app's own report is not the person's step");
+        assert!(app.report_running());
     }
 
     #[test]

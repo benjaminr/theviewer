@@ -35,22 +35,38 @@ pub mod unpack;
 pub mod characterise;
 pub mod columns;
 pub mod protocol;
+pub mod report;
 
 /// This module's methods, in the order `api.describe` lists them within
 /// their namespace. A new method is added here, and only here.
-pub(super) const METHODS: &[super::Method] = &join::join::<{ statistics::METHODS.len() + strings::METHODS.len() + xor::METHODS.len() + checksums::METHODS.len() + diff::METHODS.len() + disasm::METHODS.len() + crypto::METHODS.len() + bits::METHODS.len() + compare::METHODS.len() + dotplot::METHODS.len() + images::METHODS.len() + trigrams::METHODS.len() + firmware::METHODS.len() + forensics::METHODS.len() + unpack::METHODS.len() + characterise::METHODS.len() + columns::METHODS.len() + protocol::METHODS.len() }>(&[statistics::METHODS, strings::METHODS, xor::METHODS, checksums::METHODS, diff::METHODS, disasm::METHODS, crypto::METHODS, bits::METHODS, compare::METHODS, dotplot::METHODS, images::METHODS, trigrams::METHODS, firmware::METHODS, forensics::METHODS, unpack::METHODS, characterise::METHODS, columns::METHODS, protocol::METHODS]);
+pub(super) const METHODS: &[super::Method] = &join::join::<{ statistics::METHODS.len() + strings::METHODS.len() + xor::METHODS.len() + checksums::METHODS.len() + diff::METHODS.len() + disasm::METHODS.len() + crypto::METHODS.len() + bits::METHODS.len() + compare::METHODS.len() + dotplot::METHODS.len() + images::METHODS.len() + trigrams::METHODS.len() + firmware::METHODS.len() + forensics::METHODS.len() + unpack::METHODS.len() + characterise::METHODS.len() + columns::METHODS.len() + protocol::METHODS.len() + report::METHODS.len() }>(&[statistics::METHODS, strings::METHODS, xor::METHODS, checksums::METHODS, diff::METHODS, disasm::METHODS, crypto::METHODS, bits::METHODS, compare::METHODS, dotplot::METHODS, images::METHODS, trigrams::METHODS, firmware::METHODS, forensics::METHODS, unpack::METHODS, characterise::METHODS, columns::METHODS, protocol::METHODS, report::METHODS]);
 
 /// An example call of each of [`METHODS`], run in order on a fresh
 /// document by the API's tests, whose results must fit the result schema.
 #[cfg(test)]
 pub(super) fn examples() -> Vec<(&'static str, serde_json::Value)> {
-    [statistics::examples(), strings::examples(), xor::examples(), checksums::examples(), diff::examples(), disasm::examples(), crypto::examples(), bits::examples(), compare::examples(), dotplot::examples(), images::examples(), trigrams::examples(), firmware::examples(), forensics::examples(), unpack::examples(), characterise::examples(), columns::examples(), protocol::examples()].concat()
+    [statistics::examples(), strings::examples(), xor::examples(), checksums::examples(), diff::examples(), disasm::examples(), crypto::examples(), bits::examples(), compare::examples(), dotplot::examples(), images::examples(), trigrams::examples(), firmware::examples(), forensics::examples(), unpack::examples(), characterise::examples(), columns::examples(), protocol::examples(), report::examples()].concat()
+}
+
+/// The status of the job `started` names once it has stopped running (or
+/// after half a minute), delivering the bus meanwhile: for tests of jobs.
+#[cfg(test)]
+pub(crate) fn finished_job(workspace: &mut super::HeadlessWorkspace, started: &serde_json::Value) -> serde_json::Value {
+    let begun = std::time::Instant::now();
+    loop {
+        workspace.bus().deliver_all();
+        let status = super::test_support::call(workspace, "jobs.status", serde_json::json!({"job": started["job"]})).unwrap();
+        if status["state"] != "running" || begun.elapsed() > std::time::Duration::from_secs(30) {
+            return status;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
 }
 
 /// What a call to one of this module's methods would do, in plain words,
 /// for the window that asks the person to confirm it; `None` leaves it to
 /// the general "Call method with params".
 pub(super) fn describe_call(workspace: &mut dyn Workspace, method: &str, params: &serde_json::Value) -> Option<String> {
-    let describers: [super::DescribeCall; 3] = [disasm::describe_call, columns::describe_call, protocol::describe_call];
+    let describers: [super::DescribeCall; 4] = [disasm::describe_call, columns::describe_call, protocol::describe_call, report::describe_call];
     describers.into_iter().find_map(|describe| describe(workspace, method, params))
 }

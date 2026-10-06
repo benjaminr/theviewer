@@ -3347,7 +3347,7 @@ impl ViewerApp {
                 ui.label(RichText::new("Drag a toolbar group by its caption or edge to move it.").small().color(theme::TEXT_DIM));
             });
             ui.menu_button("Tools", |ui| {
-                if ui.button("Explain this file").clicked() { self.dock.open = true; self.dock.tab = DockTab::Report; self.start_report(); ui.close(); }
+                if ui.button("Explain this file").clicked() { self.dock.open = true; self.dock.tab = DockTab::Report; self.explain_file(); ui.close(); }
                 if ui.button("Reference for the format at the cursor").clicked() { self.dock.toggle(DockTab::Reference); ui.close(); }
                 if ui.button("Structure map: segments, find similar, feature tracks").clicked() { self.dock.toggle(DockTab::StructureMap); ui.close(); }
                 if ui.button("Dot plot (self-similarity)").clicked() { self.dock.toggle(DockTab::DotPlot); ui.close(); }

@@ -81,7 +81,7 @@ pub fn commands() -> Vec<Command> {
         Command { id: "media.open", title: "View image / play audio or video at the cursor", keys: "Cmd+Enter", run: |app, _| app.open_media() },
         Command { id: "media.toggle", title: "Play or pause media", keys: "Space", run: |app, _| app.media.toggle_play() },
         Command { id: "media.close", title: "Close the media window", keys: "", run: |app, _| app.media.close() },
-        Command { id: "tools.explain", title: "Explain this file (report and file map)", keys: "", run: |app, _| { app.dock.open = true; app.dock.tab = crate::dock::DockTab::Report; app.start_report(); } },
+        Command { id: "tools.explain", title: "Explain this file (report and file map)", keys: "", run: |app, _| { app.dock.open = true; app.dock.tab = crate::dock::DockTab::Report; app.explain_file(); } },
         Command { id: "tools.ask", title: "Ask Claude about this file", keys: "Cmd+L", run: |app, _| { app.dock.open = true; app.dock.tab = crate::dock::DockTab::Assistant; } },
         Command { id: "tools.ask_characterise", title: "Characterise this file with Ask", keys: "", run: |app, _| app.characterise_with_ask() },
         Command { id: "tools.template", title: "Templates", keys: "", run: |app, _| app.dock.toggle(crate::dock::DockTab::Template) },
