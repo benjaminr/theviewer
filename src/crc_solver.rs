@@ -372,6 +372,8 @@ pub struct SolveReport {
     pub solutions: Vec<CrcSolution>,
     /// Caveats: messages ignored, ambiguity, truncation.
     pub notes: Vec<String>,
+    /// Candidate polynomials tested: the work the search did.
+    pub polynomials_tried: u64,
 }
 
 /// Why a solve could not run or finish.
@@ -492,7 +494,7 @@ pub fn solve(messages: &[&[u8]], options: &SolverOptions) -> Result<SolveReport,
     if messages.len() < 4 && !solutions.is_empty() {
         notes.push("Few messages: some of these solutions may be coincidences.".to_string());
     }
-    Ok(SolveReport { solutions, notes })
+    Ok(SolveReport { solutions, notes, polynomials_tried: search.polynomials_tried })
 }
 
 /// Check every message can hold the CRC and that the covered range is bounded.
@@ -1000,10 +1002,14 @@ mod tests {
         let modbus = catalogue("CRC-16/MODBUS");
         let lengths: Vec<usize> = (6..18).collect();
         let messages = messages_with_trailer(&modbus, lengths.len(), &lengths, false, &[], 0);
-        let started = Instant::now();
-        let report = solve(&as_slices(&messages), &options(CrcWidth::W16)).expect("solves within the budget");
-        assert!(started.elapsed() < DEFAULT_TIME_BUDGET);
+        // The work is checked rather than the time, which a busy machine
+        // stretches: at most the 32,768 odd 16-bit polynomials in each of the
+        // 20 setups (skips 0 to 4, either byte order, reflected or not), a
+        // search that fits the default budget on an idle machine.
+        let generous = SolverOptions { time_budget: Duration::from_secs(120), ..options(CrcWidth::W16) };
+        let report = solve(&as_slices(&messages), &generous).expect("solves");
         assert!(report.solutions.iter().any(|s| s.params == modbus));
+        assert!(report.polynomials_tried <= 20 * 32_768, "{} polynomials tried", report.polynomials_tried);
     }
 
     #[test]
