@@ -1,6 +1,6 @@
 # Shared knowledge, one data API, and MCP
 
-Status: proposal for review. Nothing here is built yet.
+Status: accepted; being built in the phases below.
 
 ## Why
 
@@ -408,13 +408,13 @@ Each phase is useful on its own and keeps the app working.
    - Retire the request fields and per-panel polling where the bus covers
      them.
 
-## Decisions to make
+## Decisions
 
-1. **MCP scope first:** standalone over stdio only (simplest, safest), or
-   attached to the running app as well? The proposal builds standalone first.
-2. **Edits by remote clients and plugins:** off by default with a per-client
-   setting, as proposed, or a confirmation prompt per edit?
-3. **Plugin languages:** Lua only, or plan for WebAssembly plugins later?
-   The method table would serve both.
-4. **Schema crate:** `schemars` for JSON Schema generation (proposed), or
-   hand-written schemas?
+1. **MCP**: standalone over stdio (`theviewer mcp FILE…`). Attaching to the
+   running app over local HTTP may follow later.
+2. **Edits by plugins, Ask and MCP clients** ask for confirmation in the app
+   (or, for standalone MCP, are allowed for the files the client opened),
+   with a per-client setting to always allow, always ask or never allow.
+3. **Plugin language**: Lua only for now. The method table does not depend
+   on it, so WebAssembly plugins could be added later.
+4. **Schemas** are generated from the Rust types with `schemars`.
