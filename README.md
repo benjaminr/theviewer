@@ -204,8 +204,10 @@ a question.
 Panels with many tabs wrap them onto extra rows.
 
 **Arrange the toolbar.** The toolbar's groups pack themselves into as few
-rows as the window allows. Drag a group by its caption to put it somewhere
-else; *View › Layout › Arrange toolbar automatically* undoes that.
+rows as the window allows. Drag a group by its caption to change their
+order (drop it below the last row to move it to the end); the groups still
+fill each row before starting the next. *View › Layout › Arrange toolbar
+automatically* goes back to the automatic order.
 
 **Choose the defaults.** In **Settings** (`Cmd+,`), choose what a new window
 starts with:

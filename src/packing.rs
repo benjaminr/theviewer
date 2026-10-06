@@ -124,24 +124,22 @@ fn adjust_rows(
     (still_fits && rows.len() <= fresh_rows).then_some(rows)
 }
 
-/// Uses the arrangement the person chose, as far as the current width allows.
+/// Uses the order the person chose: groups run left to right in that order
+/// and a new row starts only when the next group does not fit, so no row is
+/// left short when the group after it would have fitted.
 ///
-/// Groups the arrangement does not mention go into the first row with room.
-/// A row that has become too wide flows onto extra rows in the same order,
-/// so narrowing the window never hides anything and widening restores it.
+/// Groups the order does not mention (one that appears only sometimes, say)
+/// come at the end.
 fn preferred_rows(
     preferred: &[Vec<usize>],
     widths: &[f32],
     gap: f32,
     row_width: f32,
 ) -> Vec<Vec<usize>> {
-    let (mut rows, placed) = surviving_rows(preferred, widths.len());
-    for item in (0..widths.len()).filter(|&item| !placed[item]) {
-        place_first_fit(&mut rows, item, widths, gap, row_width);
-    }
-    rows.into_iter()
-        .flat_map(|row| flow_row(row, widths, gap, row_width))
-        .collect()
+    let (rows, placed) = surviving_rows(preferred, widths.len());
+    let mut order: Vec<usize> = rows.into_iter().flatten().collect();
+    order.extend((0..widths.len()).filter(|&item| !placed[item]));
+    flow_row(order, widths, gap, row_width)
 }
 
 /// Splits one row into as many rows as it needs, keeping its order.
@@ -161,7 +159,7 @@ fn flow_row(row: Vec<usize>, widths: &[f32], gap: f32, row_width: f32) -> Vec<Ve
 pub enum DropSpot {
     /// Before the `index`th of the other groups in `row`.
     InRow { row: usize, index: usize },
-    /// On a new row of its own, below the others.
+    /// After all the others (dropped below the last row).
     NewRow,
 }
 
@@ -532,10 +530,11 @@ mod tests {
     }
 
     #[test]
-    fn a_chosen_arrangement_is_kept_when_it_fits() {
+    fn a_chosen_order_is_kept_and_packed_without_short_rows() {
         let widths = [40.0, 40.0, 40.0];
+        // Saved on two rows, but all three fit on one: no short row is left.
         let rows = preferred_rows(&[vec![2], vec![1, 0]], &widths, GAP, 200.0);
-        assert_eq!(rows, vec![vec![2], vec![1, 0]]);
+        assert_eq!(rows, vec![vec![2, 1, 0]]);
     }
 
     #[test]
@@ -546,7 +545,7 @@ mod tests {
     }
 
     #[test]
-    fn groups_missing_from_a_chosen_arrangement_still_appear() {
+    fn groups_missing_from_a_chosen_arrangement_still_appear_at_the_end() {
         let widths = [40.0, 40.0, 40.0];
         let rows = preferred_rows(&[vec![1]], &widths, GAP, 90.0);
         assert_eq!(rows, vec![vec![1, 0], vec![2]]);
@@ -577,7 +576,7 @@ mod tests {
     }
 
     #[test]
-    fn dropping_below_every_row_starts_a_new_row() {
+    fn dropping_below_every_row_moves_the_group_to_the_end() {
         let rows = placed(&[&[("a", 0.0), ("b", 50.0)]]);
         let spot = drop_spot(&rows, "a", pos2(10.0, 200.0));
         assert_eq!(spot, DropSpot::NewRow);
