@@ -88,6 +88,7 @@ pub mod preferences;
 pub mod protocol;
 pub mod raster;
 pub mod reference;
+pub mod reference_check;
 pub mod region_colours;
 pub mod search;
 pub mod segments;

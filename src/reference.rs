@@ -433,6 +433,11 @@ pub fn read_user_notes(dir: &Path) -> Vec<(PathBuf, Result<String, String>)> {
         .collect()
 }
 
+/// The embedded notes alone, without your own.
+pub fn embedded_library() -> Result<Library, String> {
+    Library::parse(&SOURCES)
+}
+
 /// The embedded notes with your own from [`user_notes_dir`].
 fn load_notes() -> LoadedNotes {
     let user_files = user_notes_dir().map(|dir| read_user_notes(&dir)).unwrap_or_default();
