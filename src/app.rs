@@ -24,6 +24,7 @@ use crate::settings::{KeySource, SettingsWindow};
 use crate::dock::{DockState, DockTab};
 use crate::layout::{self, Pane, Preset};
 use crate::findings::FindingsFilter;
+use crate::legend::{LayerKind, LayerVisibility};
 use crate::plot::PlotWindow;
 use crate::workbench::{CurveColour, Layout, Workbench};
 use crate::media::{self, MediaFormat};
@@ -268,6 +269,17 @@ pub struct ViewerApp {
     /// Which kinds of pattern are shown, in highlights and in Findings.
     pub pattern_kinds: [bool; Category::ALL.len()],
     pub pattern_list_open: bool,
+    /// Which highlight layers are drawn (patterns keep their own flags above).
+    pub layers: LayerVisibility,
+    /// The layer the legend is pointing at, picked out in both views this frame.
+    emphasis: Option<LayerKind>,
+    /// The layer the legend pointed at during this frame, for the next one.
+    emphasis_next: Option<LayerKind>,
+    /// Overlay rectangles the raster drew last frame, per layer; read by
+    /// tests and handy when checking what a toggle does.
+    pub overlays_drawn: std::collections::BTreeMap<LayerKind, usize>,
+    /// Matches of the Find box in and around the visible bytes.
+    search_highlight: Option<SearchHighlight>,
 
     texture: Option<TextureHandle>,
     raster_key: Option<RasterKey>,
@@ -307,6 +319,15 @@ pub struct ViewerApp {
     shift_amount: i64,
     move_amount: i64,
     scroll_accumulator: f32,
+}
+
+/// Matches of the Find box within a window of the document, for highlighting.
+struct SearchHighlight {
+    version: u64,
+    needle: Vec<u8>,
+    start: usize,
+    len: usize,
+    matches: Vec<usize>,
 }
 
 /// Cached media lookup: the (cursor, document version) it was computed for,
@@ -506,6 +527,11 @@ impl ViewerApp {
             pattern_kinds: [true; Category::ALL.len()],
             // Findings has its own pane now, so its list starts open.
             pattern_list_open: true,
+            layers: LayerVisibility::default(),
+            emphasis: None,
+            emphasis_next: None,
+            overlays_drawn: std::collections::BTreeMap::new(),
+            search_highlight: None,
             texture: None,
             raster_key: None,
             byte_buffer: Vec::new(),
@@ -830,6 +856,17 @@ impl ViewerApp {
         let start = anchor.min(self.cursor);
         let end = anchor.max(self.cursor).min(self.document.len());
         (end > start).then_some((start, end - start))
+    }
+
+    /// Every selected range; one for a plain selection.
+    pub fn selection_ranges(&self) -> Vec<(usize, usize)> {
+        self.selection().into_iter().collect()
+    }
+
+    /// A short description of the selection for the legend and status bar,
+    /// such as "312 B", or `None` when nothing is selected.
+    pub fn selection_summary(&self) -> Option<String> {
+        self.selection().map(|(_, len)| format!("{len} B"))
     }
 
     /// The range an operation acts on: the selection, or the byte at the cursor.
@@ -1206,6 +1243,59 @@ impl ViewerApp {
             Some(at) => self.show_match(at, needle.len(), ""),
             None => self.status = "No match".to_string(),
         }
+    }
+
+    /// Start and length of the bytes search matches are highlighted in: the
+    /// raster's visible rows and the hex dump's, capped.
+    fn search_highlight_window(&self) -> (usize, usize) {
+        let raster_start = self.raster_first_byte();
+        let raster_end = raster_start + self.visible_rows.max(1) * self.shape.row_stride();
+        let hex_start = self.hex_top_row * Self::HEX_ROW;
+        let hex_end = hex_start + self.hex_visible_rows.max(1) * Self::HEX_ROW;
+        let start = raster_start.min(hex_start).min(self.document.len());
+        let end = raster_end.max(hex_end).min(self.document.len()).min(start + PATTERN_WINDOW_MAX);
+        (start, end.saturating_sub(start))
+    }
+
+    /// Where the Find box's needle occurs in and around the visible bytes,
+    /// worked out again only when the needle, the view or the bytes change.
+    pub fn search_highlights(&mut self) -> &[usize] {
+        let needle = if self.search_text.trim().is_empty() {
+            None
+        } else {
+            search::needle_for(self.search_mode, &self.search_text, self.search_little_endian).ok()
+        };
+        let Some(needle) = needle else {
+            self.search_highlight = None;
+            return &[];
+        };
+        let (start, len) = self.search_highlight_window();
+        let version = self.document.version();
+        let current = self
+            .search_highlight
+            .as_ref()
+            .is_some_and(|cached| cached.version == version && cached.needle == needle && cached.start == start && cached.len == len);
+        if !current {
+            let bytes = self.document.read_range(start, len + needle.len().saturating_sub(1));
+            let matches = search::find_all(&bytes, &needle, crate::legend::MAX_SEARCH_HIGHLIGHTS).into_iter().map(|at| start + at).collect();
+            self.search_highlight = Some(SearchHighlight { version, needle, start, len, matches });
+        }
+        self.search_highlight.as_ref().map_or(&[], |cached| cached.matches.as_slice())
+    }
+
+    /// Length of a highlighted search match.
+    pub fn search_highlight_len(&self) -> usize {
+        self.search_highlight.as_ref().map_or(1, |cached| cached.needle.len().max(1))
+    }
+
+    /// Pick out `kind`'s overlays in both views on the next frame.
+    pub fn emphasise_layer(&mut self, kind: LayerKind) {
+        self.emphasis_next = Some(kind);
+    }
+
+    /// The layer being picked out this frame, if the legend points at one.
+    pub fn emphasised_layer(&self) -> Option<LayerKind> {
+        self.emphasis
     }
 
     // ------------------------------------------------------------------
@@ -3139,12 +3229,6 @@ impl ViewerApp {
                         .on_hover_text("Heatmap range: the 1st to 99th percentile of the visible values (symmetric about zero for signed formats). NaN and infinities are magenta.");
                     ui.label(RichText::new("range").color(dim));
                 }
-                if self.colours_regions_now() && self.bench.layout == Layout::Rows {
-                    ui.separator();
-                    let source = if self.bench.regions.is_empty() { "block class and entropy" } else { "report regions" };
-                    ui.label(RichText::new(format!("zoomed out: coloured by {source}")).color(dim))
-                        .on_hover_text("Turn off in View ▸ Colour by region when zoomed out");
-                }
                 ui.separator();
                 ui.label(RichText::new(&self.status).color(dim));
             });
@@ -3279,6 +3363,8 @@ impl eframe::App for ViewerApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         // Whichever view the pointer is over sets this during the frame.
         self.hover = None;
+        // The legend sets the layer to pick out while it is pointed at.
+        self.emphasis = self.emphasis_next.take();
         egui::Panel::top("menu").show(ui, |ui| self.show_menu_bar(ui));
         egui::Panel::top("toolbar").show(ui, |ui| self.show_toolbar(ui));
         egui::Panel::bottom("status").show(ui, |ui| self.show_status_bar(ui));

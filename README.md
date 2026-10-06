@@ -91,6 +91,11 @@ with its shortcut, or right-click a byte for the actions that apply to it.
   regions, or block class and entropy) rather than showing noise.
 - Any width, row padding, and a starting offset down to the bit.
 - A hex dump and value inspector that follow the cursor.
+- A legend bar above the view (and a condensed one over the hex dump) that
+  always says how the pixels are coloured and lists every highlight drawn:
+  the selection, cursor, search matches, bookmarks, pattern kinds,
+  structure fields, and findings pinned by each tool. Click a layer to hide
+  or show it; point at one to pick out exactly its highlights.
 - Hilbert and Morton (Z-order) curve layouts that show structure without
   choosing a width, coloured by bytes, entropy, region type or byte class,
   and arrows from values that look like offsets to the bytes they point at.
@@ -378,6 +383,7 @@ never your Keychain.
 | `analysis_tools.rs` `analysis_stats.rs` `analysis_tabs.rs` `dock.rs` `workbench.rs` | The tool panels and the state behind them. |
 | `assistant.rs` | *Ask*: a streaming Claude API client with tools, on a background thread. |
 | `layout.rs` `packing.rs` | Dockable panels and presets; toolbar packing and reordering. |
+| `legend.rs` | The legend bar: the colouring in effect and each highlight layer, with toggles. |
 | `search.rs` `bookmarks.rs` `findings.rs` `commands.rs` | Search, bookmarks and the sidecar file, the findings list, the command palette. |
 | `settings.rs` `preferences.rs` `config.rs` | The settings window and API key storage; startup defaults; where settings live. |
 | `theme.rs` `logo.rs` | Colours and shared widgets; the logo, drawn in code. |

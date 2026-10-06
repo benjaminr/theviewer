@@ -4,6 +4,7 @@
 use eframe::egui::{self, Align2, Color32, FontId, Rect, RichText, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
 
 use crate::app::ViewerApp;
+use crate::legend::{self, LayerKind};
 use crate::patterns;
 use crate::plugin::{Category, Field};
 use crate::raster::byte_class_colour;
@@ -24,24 +25,16 @@ pub fn show_inspector_pane(app: &mut ViewerApp, ui: &mut Ui) {
     show_inspector(app, ui);
 }
 
-/// The hex dump pane, with its colour legend.
+/// The hex dump pane, with its condensed legend.
 pub fn show_hex_dump_pane(app: &mut ViewerApp, ui: &mut Ui) {
     ui.set_max_width(ui.available_width().min(PANEL_MAX_WIDTH));
-    show_legend(ui);
+    legend::show_compact_legend(app, ui);
     show_hex_dump(app, ui);
 }
 
-fn show_legend(ui: &mut Ui) {
-    ui.horizontal(|ui| {
-        theme::swatch(ui, theme::CLASS_NULL, "00");
-        theme::swatch(ui, theme::CLASS_TEXT, "text");
-        theme::swatch(ui, theme::CLASS_CONTROL, "control");
-        theme::swatch(ui, theme::CLASS_HIGH, "≥ 80");
-        theme::swatch(ui, theme::CLASS_FULL, "FF");
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.label(RichText::new("click to place the cursor · drag to select · scroll to move both views").small().color(theme::TEXT_DIM));
-        });
-    });
+/// Whether `offset` lies in any of `ranges`, given as `(start, len)`.
+fn in_ranges(ranges: &[(usize, usize)], offset: usize) -> bool {
+    ranges.iter().any(|&(start, len)| offset >= start && offset < start + len)
 }
 
 fn show_inspector(app: &mut ViewerApp, ui: &mut Ui) {
@@ -346,7 +339,8 @@ fn show_hex_dump(app: &mut ViewerApp, ui: &mut Ui) {
         Stroke::new(1.0, theme::OUTLINE),
     );
 
-    let selection = app.selection();
+    let selection = if app.layer_visible(LayerKind::Selection) { app.selection_ranges() } else { Vec::new() };
+    let show_cursor = app.layer_visible(LayerKind::Cursor);
     let cursor = app.cursor;
     let pending = app.pending_low_nibble;
     let hover = app.hover;
@@ -358,14 +352,27 @@ fn show_hex_dump(app: &mut ViewerApp, ui: &mut Ui) {
     let start = app.hex_top_row * BYTES_PER_ROW;
     let bytes = app.document.read_range(start, rows * BYTES_PER_ROW);
     let cursor_column_x = hex_cell_x(cursor % BYTES_PER_ROW) - char_width * 0.5;
-    let nearby: Vec<(usize, usize, Color32)> = if app.highlight_patterns {
-        app.patterns_in(start, start + bytes.len())
-            .map(|pattern| (pattern.start, pattern.end(), pattern.category.colour()))
-            .collect()
+    let end = start + bytes.len();
+    let nearby: Vec<(usize, usize, Color32)> = app
+        .patterns
+        .iter()
+        .filter(|finding| app.highlight_patterns && app.pattern_kind_enabled(finding.category))
+        .chain(app.bench.pinned.iter().filter(|finding| app.pinned_visible(finding)))
+        .filter(|finding| finding.start < end && finding.end() > start)
+        .map(|finding| (finding.start, finding.end(), finding.category.colour()))
+        .collect();
+    let marks: Vec<(usize, usize)> = if app.layer_visible(LayerKind::Bookmarks) {
+        app.bookmarks.bookmarks.iter().map(|b| (b.offset, b.end())).collect()
     } else {
         Vec::new()
     };
-    let marks: Vec<(usize, usize)> = app.bookmarks.bookmarks.iter().map(|b| (b.offset, b.end())).collect();
+    let matches = if app.layer_visible(LayerKind::SearchMatches) { app.layer_ranges(LayerKind::SearchMatches, start, end) } else { Vec::new() };
+    let packets = if app.layer_visible(LayerKind::PacketSelection) && app.packet_selection_ranges().len() > 1 {
+        app.layer_ranges(LayerKind::PacketSelection, start, end)
+    } else {
+        Vec::new()
+    };
+    let emphasised = app.emphasised_layer().map(|kind| app.layer_ranges(kind, start, end));
 
     for (row_index, row_bytes) in bytes.chunks(BYTES_PER_ROW).enumerate() {
         let y = body.min.y + row_index as f32 * row_height;
@@ -394,8 +401,7 @@ fn show_hex_dump(app: &mut ViewerApp, ui: &mut Ui) {
             let hex_cell = Rect::from_min_size(pos2(hex_cell_x(col) - char_width * 0.5, y), vec2(cell_width, row_height));
             let ascii_cell = Rect::from_min_size(pos2(ascii_x + col as f32 * char_width, y), vec2(char_width, row_height));
 
-            let selected = selection.is_some_and(|(s, len)| offset >= s && offset < s + len);
-            if selected {
+            if in_ranges(&selection, offset) {
                 painter.rect_filled(hex_cell, 0.0, theme::SELECTION);
                 painter.rect_filled(ascii_cell, 0.0, theme::SELECTION);
             }
@@ -409,10 +415,17 @@ fn show_hex_dump(app: &mut ViewerApp, ui: &mut Ui) {
                 let band = Rect::from_min_max(hex_cell.min, pos2(hex_cell.max.x, hex_cell.min.y + 2.0));
                 painter.rect_filled(band, 0.0, theme::CURSOR);
             }
+            if in_ranges(&matches, offset) {
+                painter.rect_stroke(hex_cell, 2.0, Stroke::new(1.0, legend::SEARCH_COLOUR), StrokeKind::Inside);
+            }
+            if in_ranges(&packets, offset) {
+                let band = Rect::from_min_max(pos2(hex_cell.min.x, hex_cell.min.y), pos2(hex_cell.min.x + 2.0, hex_cell.max.y));
+                painter.rect_filled(band, 0.0, legend::PACKET_SELECTION_COLOUR);
+            }
             if hover == Some(offset) && offset != cursor {
                 painter.rect_stroke(hex_cell, 2.0, Stroke::new(1.0, theme::ACCENT_DIM), StrokeKind::Inside);
             }
-            if offset == cursor {
+            if offset == cursor && show_cursor {
                 painter.rect_filled(hex_cell, 3.0, theme::CURSOR_FILL);
                 painter.rect_stroke(hex_cell, 3.0, Stroke::new(1.0, theme::CURSOR), StrokeKind::Inside);
                 painter.rect_stroke(ascii_cell, 0.0, Stroke::new(1.0, theme::CURSOR), StrokeKind::Inside);
@@ -431,6 +444,15 @@ fn show_hex_dump(app: &mut ViewerApp, ui: &mut Ui) {
             let printable = if (0x20..0x7F).contains(&byte) { byte as char } else { '·' };
             let ascii_colour = if printable == '·' { theme::CLASS_NULL } else { colour };
             painter.text(pos2(ascii_x + col as f32 * char_width, y + 1.0), Align2::LEFT_TOP, printable.to_string(), font.clone(), ascii_colour);
+            if let Some(ranges) = &emphasised {
+                // The legend points at a layer: dim every other byte.
+                if in_ranges(ranges, offset) {
+                    painter.rect_stroke(hex_cell, 2.0, Stroke::new(1.5, legend::EMPHASIS_OUTLINE), StrokeKind::Inside);
+                } else {
+                    painter.rect_filled(hex_cell, 0.0, legend::EMPHASIS_VEIL);
+                    painter.rect_filled(ascii_cell, 0.0, legend::EMPHASIS_VEIL);
+                }
+            }
         }
     }
 

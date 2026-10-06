@@ -4,6 +4,7 @@
 use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, Ui, Vec2, pos2, vec2};
 
 use crate::app::{Shape, ViewerApp};
+use crate::legend::{self, LayerKind, PinnedGroup};
 use crate::plugin::{Category, Field, Finding};
 use crate::raster::{self, PixelFormat};
 use crate::theme;
@@ -16,6 +17,8 @@ const GRID_MIN_ZOOM: f32 = 8.0;
 pub fn show_raster(app: &mut ViewerApp, ui: &mut Ui) {
     app.hex_labels_drawn = 0;
     app.field_outlines_drawn = 0;
+    app.overlays_drawn.clear();
+    legend::show_legend_bar(app, ui);
     app.show_file_map(ui);
     if app.bench.layout != crate::workbench::Layout::Rows {
         let (rect, _) = ui.allocate_exact_size(ui.available_size(), Sense::hover());
@@ -103,35 +106,39 @@ pub fn show_raster(app: &mut ViewerApp, ui: &mut Ui) {
     }
 
     draw_hex_window(app, &painter, origin, zoom);
-    draw_pattern_overlays(app, &painter, origin, zoom);
+    let geometry = Geometry { shape, top_row, visible_rows, origin, zoom };
+    draw_pattern_overlays(app, &painter, &geometry);
+    draw_pinned_overlays(app, &painter, &geometry);
     {
-        let rects_of = |start: usize, len: usize| byte_range_rects(&shape, start, len, top_row, visible_rows, origin, zoom);
+        let rects_of = |start: usize, len: usize| geometry.rects(start, len);
         crate::analysis_tabs::draw_pointer_graph(app, &painter, &rects_of);
     }
     if let Some(description) = app.hover.and_then(|offset| app.pattern_at(offset)).map(|p| p.description()) {
         image_response.clone().on_hover_text(description);
     }
-
-    if let Some((start, len)) = app.selection() {
-        for rect in byte_range_rects(&shape, start, len, top_row, visible_rows, origin, zoom) {
-            painter.rect_filled(rect, 0.0, theme::SELECTION);
-            painter.rect_stroke(rect, 0.0, Stroke::new(1.0, theme::ACCENT), StrokeKind::Inside);
+    draw_search_matches(app, &painter, &geometry);
+    draw_packet_selection(app, &painter, &geometry);
+    draw_selection(app, &painter, &geometry);
+    if app.layer_visible(LayerKind::Bookmarks) {
+        let mut drawn = 0;
+        for bookmark in app.bookmarks.bookmarks.clone() {
+            for rect in geometry.rects(bookmark.offset, bookmark.len.max(1)) {
+                painter.rect_stroke(rect.expand(2.0), 2.0, Stroke::new(1.0, theme::CURSOR), StrokeKind::Outside);
+                drawn += 1;
+            }
         }
-    }
-    for bookmark in app.bookmarks.bookmarks.clone() {
-        for rect in byte_range_rects(&shape, bookmark.offset, bookmark.len.max(1), top_row, visible_rows, origin, zoom) {
-            painter.rect_stroke(rect.expand(2.0), 2.0, Stroke::new(1.0, theme::CURSOR), StrokeKind::Outside);
-        }
+        note_drawn(app, LayerKind::Bookmarks, drawn);
     }
     if let Some(hovered) = app.hover.filter(|&offset| offset != app.cursor) {
-        for rect in byte_range_rects(&shape, hovered, 1, top_row, visible_rows, origin, zoom) {
+        for rect in geometry.rects(hovered, 1) {
             painter.rect_stroke(rect.expand(0.5), 0.0, Stroke::new(1.0, theme::ACCENT), StrokeKind::Outside);
         }
     }
-    if app.cursor < app.document.len() {
-        for rect in byte_range_rects(&shape, app.cursor, 1, top_row, visible_rows, origin, zoom) {
-            let rect = rect.expand(1.0);
-            painter.rect_stroke(rect, 0.0, Stroke::new(2.0, theme::CURSOR), StrokeKind::Outside);
+    if app.cursor < app.document.len() && app.layer_visible(LayerKind::Cursor) {
+        let rects = geometry.rects(app.cursor, 1);
+        note_drawn(app, LayerKind::Cursor, rects.len());
+        for rect in rects {
+            painter.rect_stroke(rect.expand(1.0), 0.0, Stroke::new(2.0, theme::CURSOR), StrokeKind::Outside);
         }
     }
     if zoom >= HEX_LABEL_MIN_ZOOM {
@@ -141,6 +148,7 @@ pub fn show_raster(app: &mut ViewerApp, ui: &mut Ui) {
         }
         app.field_outlines_drawn = draw_field_outlines(app, &painter, origin, &mut budget);
     }
+    draw_emphasis(app, &painter, &geometry, image_rect);
 
     draw_scrollbar(app, ui, &bar_response, bar_rect);
     if strip_width > 0.0 {
@@ -175,7 +183,7 @@ const FIELD_LABEL_PADDING: f32 = 2.0;
 /// Fields outlined in one frame at most, so huge templates stay fast.
 const MAX_FIELD_OUTLINES_PER_FRAME: usize = 4000;
 /// Outline of a template or structure field at high zoom.
-const FIELD_OUTLINE: Color32 = Color32::from_rgb(255, 214, 102);
+pub const FIELD_OUTLINE: Color32 = Color32::from_rgb(255, 214, 102);
 /// Backing behind a field's name, so it reads over any pixel colour.
 const FIELD_LABEL_BACKING: Color32 = Color32::from_rgba_premultiplied(0, 0, 0, 190);
 /// Perceived brightness (0 to 255) above which dark text reads better.
@@ -287,7 +295,7 @@ fn draw_field_outlines(app: &ViewerApp, painter: &egui::Painter, origin: Pos2, b
     let stride = shape.row_stride();
     let visible_start = shape.byte_offset + app.top_row * stride;
     let visible_end = visible_start + app.visible_rows * stride + 1;
-    let mut structures: Vec<&Finding> = app.bench.pinned.iter().filter(|finding| !finding.fields.is_empty()).collect();
+    let mut structures: Vec<&Finding> = app.bench.pinned.iter().filter(|finding| !finding.fields.is_empty() && app.pinned_visible(finding)).collect();
     if app.show_structure_fields
         && let Some(structure) = app.cursor_structure.as_ref()
         && !structures.iter().any(|pinned| pinned.id == structure.id && pinned.start == structure.start)
@@ -449,27 +457,148 @@ fn draw_hex_window(app: &ViewerApp, painter: &egui::Painter, origin: Pos2, zoom:
     painter.rect_stroke(bounds, 0.0, Stroke::new(1.0, theme::ACCENT_DIM), StrokeKind::Outside);
 }
 
-fn draw_pattern_overlays(app: &ViewerApp, painter: &egui::Painter, origin: Pos2, zoom: f32) {
+/// Where the raster's rows sit on screen this frame, for turning byte
+/// ranges into rectangles.
+pub struct Geometry {
+    pub shape: Shape,
+    pub top_row: usize,
+    pub visible_rows: usize,
+    pub origin: Pos2,
+    pub zoom: f32,
+}
+
+impl Geometry {
+    /// Screen rectangles covering bytes `[start, start + len)`, one per row.
+    pub fn rects(&self, start: usize, len: usize) -> Vec<Rect> {
+        byte_range_rects(&self.shape, start, len, self.top_row, self.visible_rows, self.origin, self.zoom)
+    }
+
+    /// The document bytes the visible rows cover, as `(start, end)`.
+    pub fn visible_bytes(&self) -> (usize, usize) {
+        let stride = self.shape.row_stride();
+        let start = self.shape.byte_offset + self.top_row * stride;
+        (start, start + self.visible_rows * stride + 1)
+    }
+}
+
+/// Count `rects` overlay rectangles towards `kind` for this frame.
+fn note_drawn(app: &mut ViewerApp, kind: LayerKind, rects: usize) {
+    if rects > 0 {
+        *app.overlays_drawn.entry(kind).or_default() += rects;
+    }
+}
+
+/// Fill (and for confident findings outline) one finding's bytes in its
+/// category colour. Returns the rectangles drawn.
+fn draw_finding(painter: &egui::Painter, geometry: &Geometry, finding: &Finding) -> usize {
+    let colour = finding.category.colour();
+    let (fill_alpha, outline) = match finding.category {
+        Category::Padding | Category::HighEntropy => (45, false),
+        _ if finding.weak() => (50, false),
+        _ => (90, true),
+    };
+    let fill = Color32::from_rgba_unmultiplied(colour.r(), colour.g(), colour.b(), fill_alpha);
+    let rects = geometry.rects(finding.start, finding.len);
+    for rect in &rects {
+        painter.rect_filled(*rect, 0.0, fill);
+        if outline {
+            painter.rect_stroke(*rect, 0.0, Stroke::new(1.0, colour.gamma_multiply(0.8)), StrokeKind::Inside);
+        }
+    }
+    rects.len()
+}
+
+/// Pattern highlights: the findings of the scan, by kind, when shown.
+fn draw_pattern_overlays(app: &mut ViewerApp, painter: &egui::Painter, geometry: &Geometry) {
     if !app.highlight_patterns {
         return;
     }
-    let shape = app.shape;
-    let stride = shape.row_stride();
-    let visible_start = shape.byte_offset + app.top_row * stride;
-    let visible_end = visible_start + app.visible_rows * stride + 1;
-    for pattern in app.patterns_in(visible_start, visible_end) {
-        let colour = pattern.category.colour();
-        let (fill_alpha, outline) = match pattern.category {
-            Category::Padding | Category::HighEntropy => (45, false),
-            _ if pattern.weak() => (50, false),
-            _ => (90, true),
-        };
-        let fill = Color32::from_rgba_unmultiplied(colour.r(), colour.g(), colour.b(), fill_alpha);
-        for rect in byte_range_rects(&shape, pattern.start, pattern.len, app.top_row, app.visible_rows, origin, zoom) {
+    let (visible_start, visible_end) = geometry.visible_bytes();
+    let mut drawn: Vec<(LayerKind, usize)> = Vec::new();
+    for finding in app.patterns.iter().filter(|f| app.pattern_kind_enabled(f.category) && f.start < visible_end && f.end() > visible_start) {
+        drawn.push((LayerKind::Pattern(finding.category), draw_finding(painter, geometry, finding)));
+    }
+    for (kind, rects) in drawn {
+        note_drawn(app, kind, rects);
+    }
+}
+
+/// Findings pinned by the tools, each group when shown.
+fn draw_pinned_overlays(app: &mut ViewerApp, painter: &egui::Painter, geometry: &Geometry) {
+    let (visible_start, visible_end) = geometry.visible_bytes();
+    let mut drawn: Vec<(LayerKind, usize)> = Vec::new();
+    for finding in app.bench.pinned.iter().filter(|f| f.start < visible_end && f.end() > visible_start) {
+        let kind = LayerKind::Pinned(PinnedGroup::of(&finding.id));
+        if app.layer_visible(kind) {
+            drawn.push((kind, draw_finding(painter, geometry, finding)));
+        }
+    }
+    for (kind, rects) in drawn {
+        note_drawn(app, kind, rects);
+    }
+}
+
+/// Outline every match of the Find box on screen.
+fn draw_search_matches(app: &mut ViewerApp, painter: &egui::Painter, geometry: &Geometry) {
+    if !app.layer_visible(LayerKind::SearchMatches) {
+        return;
+    }
+    let (start, end) = geometry.visible_bytes();
+    let ranges = app.layer_ranges(LayerKind::SearchMatches, start, end);
+    let mut drawn = 0;
+    let fill = legend::SEARCH_COLOUR.gamma_multiply(0.35);
+    for (at, len) in ranges {
+        for rect in geometry.rects(at, len) {
             painter.rect_filled(rect, 0.0, fill);
-            if outline {
-                painter.rect_stroke(rect, 0.0, Stroke::new(1.0, colour.gamma_multiply(0.8)), StrokeKind::Inside);
-            }
+            painter.rect_stroke(rect, 0.0, Stroke::new(1.0, legend::SEARCH_COLOUR), StrokeKind::Inside);
+            drawn += 1;
+        }
+    }
+    note_drawn(app, LayerKind::SearchMatches, drawn);
+}
+
+/// Outline the packets selected in the packet viewer, when there are several.
+fn draw_packet_selection(app: &mut ViewerApp, painter: &egui::Painter, geometry: &Geometry) {
+    let ranges = app.packet_selection_ranges();
+    if ranges.len() < 2 || !app.layer_visible(LayerKind::PacketSelection) {
+        return;
+    }
+    let mut drawn = 0;
+    for (start, len) in ranges {
+        for rect in geometry.rects(start, len) {
+            painter.rect_stroke(rect, 0.0, Stroke::new(1.5, legend::PACKET_SELECTION_COLOUR), StrokeKind::Inside);
+            drawn += 1;
+        }
+    }
+    note_drawn(app, LayerKind::PacketSelection, drawn);
+}
+
+/// Fill and outline the selected bytes.
+fn draw_selection(app: &mut ViewerApp, painter: &egui::Painter, geometry: &Geometry) {
+    if !app.layer_visible(LayerKind::Selection) {
+        return;
+    }
+    let mut drawn = 0;
+    for (start, len) in app.selection_ranges() {
+        for rect in geometry.rects(start, len) {
+            painter.rect_filled(rect, 0.0, theme::SELECTION);
+            painter.rect_stroke(rect, 0.0, Stroke::new(1.0, theme::ACCENT), StrokeKind::Inside);
+            drawn += 1;
+        }
+    }
+    note_drawn(app, LayerKind::Selection, drawn);
+}
+
+/// While the legend points at a layer, darken the picture and outline only
+/// that layer's overlays, so it is obvious which highlights it means.
+fn draw_emphasis(app: &mut ViewerApp, painter: &egui::Painter, geometry: &Geometry, image_rect: Rect) {
+    let Some(kind) = app.emphasised_layer() else { return };
+    let (start, end) = geometry.visible_bytes();
+    let ranges = app.layer_ranges(kind, start, end);
+    painter.rect_filled(image_rect, 0.0, legend::EMPHASIS_VEIL);
+    for (range_start, len) in ranges {
+        for rect in geometry.rects(range_start, len) {
+            painter.rect_stroke(rect.expand(1.0), 1.0, Stroke::new(2.0, legend::EMPHASIS_OUTLINE), StrokeKind::Outside);
         }
     }
 }

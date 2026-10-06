@@ -127,6 +127,25 @@ pub fn count_matches(document: &mut Document, needle: &[u8], cap: usize) -> usiz
     count
 }
 
+/// Every offset in `haystack` where `needle` starts, overlapping matches
+/// included, up to `cap` of them.
+pub fn find_all(haystack: &[u8], needle: &[u8], cap: usize) -> Vec<usize> {
+    let mut found = Vec::new();
+    if needle.is_empty() {
+        return found;
+    }
+    let finder = memchr_like::Finder::new(needle);
+    let mut from = 0;
+    while found.len() < cap
+        && from < haystack.len()
+        && let Some(position) = finder.find(&haystack[from..])
+    {
+        found.push(from + position);
+        from += position + 1;
+    }
+    found
+}
+
 /// A small substring finder; the needle is short and the haystack chunked, so
 /// a first-byte scan with a comparison is plenty fast.
 mod memchr_like {
@@ -209,5 +228,13 @@ mod tests {
         let mut document = Document::from_bytes(bytes);
         assert_eq!(find_next(&mut document, b"NEED", 0), Some(CHUNK - 2));
         assert_eq!(find_previous(&mut document, b"NEED", CHUNK + 10), Some(CHUNK - 2));
+    }
+
+    #[test]
+    fn find_all_lists_every_match_including_overlaps_up_to_the_cap() {
+        assert_eq!(find_all(b"ab-ab-ab", b"ab", 10), vec![0, 3, 6]);
+        assert_eq!(find_all(b"AAAA", b"AA", 10), vec![0, 1, 2]);
+        assert_eq!(find_all(b"AAAA", b"AA", 2), vec![0, 1]);
+        assert!(find_all(b"abc", b"", 10).is_empty());
     }
 }

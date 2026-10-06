@@ -46,6 +46,7 @@ pub mod image_finder;
 pub mod keys;
 pub mod layout;
 pub mod learn;
+pub mod legend;
 pub mod linecode;
 pub mod logo;
 pub mod media;

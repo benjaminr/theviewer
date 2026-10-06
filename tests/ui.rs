@@ -1187,3 +1187,38 @@ fn row_difference_redraws_records_so_repeated_markers_turn_to_zero() {
     assert_eq!(harness.state().row_difference, RowDifference::None);
     assert_eq!(&harness.state().raster_bytes()[..2], &[0xAA, 0x55], "bytes are back as they are");
 }
+
+#[test]
+fn the_legend_bar_lists_the_active_layers_and_toggling_one_hides_its_overlay() {
+    use theviewer::legend::{LayerKind, PinnedGroup};
+    let mut harness = harness(sample_file("legend"));
+    harness.state_mut().add_bookmark(0x40, 4, "marker".to_string());
+    harness.state_mut().bench.pinned.push(Finding::new("segment:text", "structure map", Category::Text, 0x80, 64).title("Text"));
+    steps(&mut harness, 3);
+    assert!(harness.state().overlays_drawn.get(&LayerKind::Bookmarks).is_some_and(|&n| n > 0), "the bookmark is outlined");
+    assert!(harness.state().overlays_drawn.contains_key(&LayerKind::Pinned(PinnedGroup::Segments)));
+
+    // The legend names the colouring and each layer with its count.
+    harness.get_by_label("8-bit grey · Grey");
+    harness.get_by_label("Bookmarks 1");
+    harness.get_by_label("Segments 1");
+
+    // Pointing at a layer picks it out in the views.
+    let chip = harness.get_by_label("Bookmarks 1").rect().center();
+    harness.hover_at(chip);
+    steps(&mut harness, 2);
+    assert_eq!(harness.state().emphasised_layer(), Some(LayerKind::Bookmarks));
+
+    harness.get_by_label("Bookmarks 1").click();
+    harness.get_by_label("Segments 1").click();
+    steps(&mut harness, 3);
+    assert!(!harness.state().layer_visible(LayerKind::Bookmarks));
+    assert!(!harness.state().overlays_drawn.contains_key(&LayerKind::Bookmarks), "a hidden layer is not drawn");
+    assert!(!harness.state().overlays_drawn.contains_key(&LayerKind::Pinned(PinnedGroup::Segments)));
+
+    // Clicking again shows it once more.
+    harness.get_by_label("Bookmarks 1").click();
+    steps(&mut harness, 3);
+    assert!(harness.state().overlays_drawn.contains_key(&LayerKind::Bookmarks));
+    harness.state_mut().remove_bookmark(0x40);
+}
