@@ -2,8 +2,8 @@
 //! and a one-line summary for the packet list.
 //!
 //! Ethernet, IPv4, IPv6, TCP and UDP headers are read with `etherparse`;
-//! ARP is small enough to read directly, as are ICMP and ICMPv6 ([`icmp`])
-//! and the other link layers a capture may use,
+//! ARP and IPv6 extension headers are small enough to read directly, as are
+//! ICMP and ICMPv6 ([`icmp`]) and the other link layers a capture may use,
 //! from Linux cooked captures to 802.11 and radiotap ([`link`]);
 //! application protocols are chosen by port ([`super::application`]).
 //! Frames of unknown format are decoded with a template, or with the field
@@ -53,6 +53,11 @@ const IPV6_ROUTING: u8 = 43;
 const IPV6_FRAGMENT: u8 = 44;
 const IPV6_DESTINATION_OPTIONS: u8 = 60;
 const IPV6_NO_NEXT_HEADER: u8 = 59;
+const IPV6_FRAGMENT_HEADER_LEN: usize = 8;
+const IPV6_OPTION_PAD1: u8 = 0;
+const IPV6_OPTION_PADN: u8 = 1;
+const IPV6_OPTION_ROUTER_ALERT: u8 = 5;
+const IPV6_OPTION_JUMBO_PAYLOAD: u8 = 0xC2;
 /// The largest value of an Ethernet type field that is an IEEE 802.3
 /// length rather than an EtherType.
 const MAX_IEEE802_3_LENGTH: u16 = 1500;
@@ -311,6 +316,45 @@ fn ipv6_header_fields(at: usize, header: &Ipv6HeaderSlice<'_>) -> Vec<Field> {
     ]
 }
 
+/// The options of a hop-by-hop or destination options header, from `start`
+/// to `end`, each a type, a length and a value (RFC 8200 §4.2), as one
+/// field with a child per option.
+fn ipv6_options_field(bytes: &[u8], start: usize, end: usize) -> Field {
+    let mut options = Vec::new();
+    let mut at = start;
+    while at < end {
+        let option_type = bytes[at];
+        let len = if option_type == IPV6_OPTION_PAD1 { 1 } else { bytes.get(at + 1).map_or(1, |&data_len| 2 + data_len as usize).min(end - at) };
+        let name = match option_type {
+            IPV6_OPTION_PAD1 => "Pad1".to_string(),
+            IPV6_OPTION_PADN => "PadN".to_string(),
+            IPV6_OPTION_ROUTER_ALERT => "Router alert".to_string(),
+            IPV6_OPTION_JUMBO_PAYLOAD => "Jumbo payload".to_string(),
+            other => format!("Option {other:#04x}"),
+        };
+        let value = if len > 2 { hex_preview(&bytes[at + 2..at + len], DATA_PREVIEW_BYTES) } else { format!("{len} bytes") };
+        options.push(Field::new(name, at, len, value));
+        at += len;
+    }
+    let count = options.len();
+    Field::new("Options", start, end - start, format!("{count} option{}", if count == 1 { "" } else { "s" })).with_children(options)
+}
+
+/// Where a chain of IPv6 extension headers ends, and what follows it.
+struct ExtensionChain {
+    end: usize,
+    outcome: ChainOutcome,
+}
+
+enum ChainOutcome {
+    /// The upper-layer protocol starts at the chain's end.
+    Upper { protocol: u8 },
+    /// The packet is one fragment of a larger one.
+    Fragment { protocol: u8, offset: usize },
+    /// An extension header could not be read.
+    Malformed,
+}
+
 /// The dissection in progress.
 struct Walk<'a> {
     bytes: &'a [u8],
@@ -536,7 +580,7 @@ impl Walk<'_> {
         let (fields, checksum_problem) = ipv4_header_fields(bytes, at, &header);
         self.out.notes.extend(checksum_problem);
         let protocol = header.protocol().0;
-        let fragment_offset = header.fragments_offset().value();
+        let fragment_offset = header.fragments_offset().value() as usize * 8;
         let source = header.source_addr();
         let destination = header.destination_addr();
         self.push_layer("Internet Protocol version 4", at, header_len, fields);
@@ -546,12 +590,18 @@ impl Walk<'_> {
         self.set_top("IPv4", format!("{} packet", ip_protocol_name(protocol)));
         let payload_at = at + header_len;
         if fragment_offset != 0 {
-            self.data_layer(payload_at, end, "Fragment");
-            self.set_top("IPv4", format!("Fragmented {} packet, offset {}", ip_protocol_name(protocol), fragment_offset as usize * 8));
+            self.fragment("IPv4", protocol, fragment_offset, payload_at, end);
             return end;
         }
         self.transport(protocol, IpAddr::V4(source), IpAddr::V4(destination), payload_at, end);
         end
+    }
+
+    /// The data of a fragment after the first, which holds no transport
+    /// header.
+    fn fragment(&mut self, version: &str, protocol: u8, offset: usize, at: usize, end: usize) {
+        self.data_layer(at, end, "Fragment");
+        self.set_top(version, format!("Fragmented {} packet, offset {offset}", ip_protocol_name(protocol)));
     }
 
     fn ipv6(&mut self, at: usize) -> usize {
@@ -570,53 +620,96 @@ impl Walk<'_> {
         }
         let source = header.source_addr();
         let destination = header.destination_addr();
-        let mut next = header.next_header().0;
+        let next = header.next_header().0;
+        let ipv6_layer = self.out.layers.len();
         self.push_layer("Internet Protocol version 6", at, IPV6_HEADER_LEN, ipv6_header_fields(at, &header));
         self.out.protocols.extend(["ip", "ipv6"]);
         self.out.summary.source = source.to_string();
         self.out.summary.destination = destination.to_string();
         self.set_top("IPv6", format!("{} packet", ip_protocol_name(next)));
-        let mut cursor = at + IPV6_HEADER_LEN;
+        let chain = self.ipv6_extensions(next, at + IPV6_HEADER_LEN, end);
+        // The IPv6 layer spans its extension headers too, as Wireshark's does;
+        // each extension header is also a layer of its own inside it.
+        self.out.layers[ipv6_layer].len = chain.end - at;
+        match chain.outcome {
+            ChainOutcome::Upper { protocol } if chain.end <= end && protocol != IPV6_NO_NEXT_HEADER => {
+                self.transport(protocol, IpAddr::V6(source), IpAddr::V6(destination), chain.end, end);
+            }
+            ChainOutcome::Fragment { protocol, offset } => self.fragment("IPv6", protocol, offset, chain.end, end),
+            ChainOutcome::Upper { .. } | ChainOutcome::Malformed => {}
+        }
+        end
+    }
+
+    /// Follow the IPv6 extension headers from `at`, the first being `next`,
+    /// each as a layer of its own.
+    fn ipv6_extensions(&mut self, mut next: u8, mut at: usize, end: usize) -> ExtensionChain {
+        let bytes = self.bytes;
         for _ in 0..MAX_IPV6_EXTENSIONS {
             match next {
                 IPV6_HOP_BY_HOP | IPV6_ROUTING | IPV6_DESTINATION_OPTIONS => {
-                    let Some(&[following, units]) = bytes.get(cursor..cursor + 2).and_then(|s| <&[u8; 2]>::try_from(s).ok()) else {
-                        self.malformed(cursor, "IPv6 extension", "An IPv6 extension header is cut short".to_string());
-                        return end;
+                    let Some(&[following, units]) = bytes.get(at..at + 2).and_then(|s| <&[u8; 2]>::try_from(s).ok()) else {
+                        self.malformed(at, "IPv6 extension", "An IPv6 extension header is cut short".to_string());
+                        return ExtensionChain { end: at, outcome: ChainOutcome::Malformed };
                     };
                     let len = (units as usize + 1) * 8;
+                    if at + len > end {
+                        self.malformed(at, "IPv6 extension", format!("An IPv6 extension header of {len} bytes runs past the end of the packet"));
+                        return ExtensionChain { end: at, outcome: ChainOutcome::Malformed };
+                    }
+                    let mut fields = vec![Field::new("Next header", at, 1, format!("{following} ({})", ip_protocol_name(following))), Field::new("Length", at + 1, 1, format!("{len} bytes"))];
                     let name = match next {
-                        IPV6_HOP_BY_HOP => "IPv6 hop-by-hop options",
-                        IPV6_ROUTING => "IPv6 routing header",
-                        _ => "IPv6 destination options",
+                        IPV6_HOP_BY_HOP => {
+                            fields.push(ipv6_options_field(bytes, at + 2, at + len));
+                            "IPv6 hop-by-hop options"
+                        }
+                        IPV6_ROUTING => {
+                            fields.push(Field::new("Routing type", at + 2, 1, bytes[at + 2].to_string()));
+                            fields.push(Field::new("Segments left", at + 3, 1, bytes[at + 3].to_string()));
+                            if len > 4 {
+                                fields.push(Field::new("Type-specific data", at + 4, len - 4, hex_preview(&bytes[at + 4..at + len], DATA_PREVIEW_BYTES)));
+                            }
+                            "IPv6 routing header"
+                        }
+                        _ => {
+                            fields.push(ipv6_options_field(bytes, at + 2, at + len));
+                            "IPv6 destination options"
+                        }
                     };
-                    self.push_layer(name, cursor, len, vec![Field::new("Next header", cursor, 1, ip_protocol_name(following)), Field::new("Length", cursor + 1, 1, format!("{len} bytes"))]);
+                    self.push_layer(name, at, len, fields);
                     next = following;
-                    cursor += len;
+                    at += len;
                 }
                 IPV6_FRAGMENT => {
-                    let Some(fragment) = bytes.get(cursor..cursor + 8) else {
-                        self.malformed(cursor, "IPv6 fragment", "The IPv6 fragment header is cut short".to_string());
-                        return end;
+                    let Some(fragment) = bytes.get(at..at + IPV6_FRAGMENT_HEADER_LEN).filter(|_| at + IPV6_FRAGMENT_HEADER_LEN <= end) else {
+                        self.malformed(at, "IPv6 fragment", "The IPv6 fragment header is cut short".to_string());
+                        return ExtensionChain { end: at, outcome: ChainOutcome::Malformed };
                     };
-                    let offset = (u16::from_be_bytes([fragment[2], fragment[3]]) >> 3) as usize * 8;
-                    self.push_layer("IPv6 fragment header", cursor, 8, vec![Field::new("Fragment offset", cursor + 2, 2, offset.to_string())]);
-                    next = fragment[0];
-                    cursor += 8;
+                    let offset_and_flag = u16::from_be_bytes([fragment[2], fragment[3]]);
+                    let offset = (offset_and_flag >> 3) as usize * 8;
+                    let more_fragments = offset_and_flag & 1 == 1;
+                    let following = fragment[0];
+                    let identification = u32::from_be_bytes([fragment[4], fragment[5], fragment[6], fragment[7]]);
+                    self.push_layer(
+                        "IPv6 fragment header",
+                        at,
+                        IPV6_FRAGMENT_HEADER_LEN,
+                        vec![
+                            Field::new("Next header", at, 1, format!("{following} ({})", ip_protocol_name(following))),
+                            Field::new("Fragment offset", at + 2, 2, format!("{offset}{}", if more_fragments { ", more fragments" } else { ", last fragment" })),
+                            Field::new("Identification", at + 4, 4, format!("{identification:#010x}")),
+                        ],
+                    );
+                    at += IPV6_FRAGMENT_HEADER_LEN;
                     if offset != 0 {
-                        self.data_layer(cursor, end, "Fragment");
-                        self.set_top("IPv6", format!("Fragmented {} packet, offset {offset}", ip_protocol_name(next)));
-                        return end;
+                        return ExtensionChain { end: at, outcome: ChainOutcome::Fragment { protocol: following, offset } };
                     }
+                    next = following;
                 }
                 _ => break,
             }
         }
-        if cursor > end || next == IPV6_NO_NEXT_HEADER {
-            return end;
-        }
-        self.transport(next, IpAddr::V6(source), IpAddr::V6(destination), cursor, end);
-        end
+        ExtensionChain { end: at, outcome: ChainOutcome::Upper { protocol: next } }
     }
 
     // -- Transport layer ---------------------------------------------------
@@ -1057,6 +1150,71 @@ mod tests {
                 let _ = dissect_with(&bytes, link, &raw);
             }
         }
+    }
+
+    /// A raw IPv6 packet whose payload is `payload`, starting with the
+    /// header `next_header` names.
+    fn ipv6_packet(next_header: u8, payload: &[u8]) -> Vec<u8> {
+        let header = etherparse::Ipv6Header {
+            payload_length: payload.len() as u16,
+            next_header: etherparse::IpNumber(next_header),
+            hop_limit: 64,
+            source: [0xFE, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+            destination: [0xFF, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x16],
+            ..etherparse::Ipv6Header::default()
+        };
+        let mut packet = header.to_bytes().to_vec();
+        packet.extend_from_slice(payload);
+        packet
+    }
+
+    /// A UDP header from port 546 to 547 and `data`, with no checksum.
+    fn udp_datagram(data: &[u8]) -> Vec<u8> {
+        let mut datagram = vec![0x02, 0x22, 0x02, 0x23];
+        datagram.extend_from_slice(&((8 + data.len()) as u16).to_be_bytes());
+        datagram.extend_from_slice(&[0, 0]);
+        datagram.extend_from_slice(data);
+        datagram
+    }
+
+    #[test]
+    fn the_ipv6_layer_spans_its_extension_headers_which_are_also_layers_of_their_own() {
+        // Hop-by-hop options holding a router alert and two bytes of padding.
+        let mut payload = vec![IP_PROTOCOL_UDP, 0, IPV6_OPTION_ROUTER_ALERT, 2, 0, 0, IPV6_OPTION_PADN, 0];
+        payload.extend_from_slice(&udp_datagram(b"solicit"));
+        let packet = ipv6_packet(IPV6_HOP_BY_HOP, &payload);
+        let dissection = dissect(&packet, LinkKind::RawIp);
+        let ipv6 = layer(&dissection, "Internet Protocol version 6");
+        assert_eq!((ipv6.offset, ipv6.len), (0, 48), "the fixed header and the hop-by-hop options");
+        let options = layer(&dissection, "IPv6 hop-by-hop options");
+        assert_eq!((options.offset, options.len), (40, 8));
+        assert_eq!(field(options, "Next header").value, "17 (UDP)");
+        let children: Vec<&str> = field(options, "Options").children.iter().map(|option| option.name.as_str()).collect();
+        assert_eq!(children, ["Router alert", "PadN"]);
+        let udp = layer(&dissection, "User Datagram Protocol");
+        assert_eq!(udp.offset, 48);
+        assert_eq!(crate::reference::lookup(&options.name).map(|notes| notes.id.as_str()), Some("ipv6-extension"));
+    }
+
+    #[test]
+    fn a_routing_header_then_destination_options_are_followed_to_the_transport() {
+        let mut payload = vec![IPV6_DESTINATION_OPTIONS, 0, 0, 1, 0, 0, 0, 0];
+        payload.extend_from_slice(&[IP_PROTOCOL_UDP, 0, IPV6_OPTION_PADN, 4, 0, 0, 0, 0]);
+        payload.extend_from_slice(&udp_datagram(b"x"));
+        let dissection = dissect(&ipv6_packet(IPV6_ROUTING, &payload), LinkKind::RawIp);
+        assert_eq!(layer(&dissection, "Internet Protocol version 6").len, 56);
+        assert_eq!(field(layer(&dissection, "IPv6 routing header"), "Segments left").value, "1");
+        assert_eq!(layer(&dissection, "IPv6 destination options").offset, 48);
+        assert_eq!(dissection.summary.protocol, "UDP");
+    }
+
+    #[test]
+    fn an_extension_header_longer_than_the_packet_is_malformed_and_stops_the_chain() {
+        let payload = [IP_PROTOCOL_UDP, 4, 0, 0, 0, 0, 0, 0];
+        let dissection = dissect(&ipv6_packet(IPV6_HOP_BY_HOP, &payload), LinkKind::RawIp);
+        assert_eq!(layer(&dissection, "Internet Protocol version 6").len, 40);
+        assert!(dissection.layers.iter().any(|l| l.name == "IPv6 extension (malformed)"));
+        assert!(!dissection.has_protocol("udp"));
     }
 
 }
