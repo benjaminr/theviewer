@@ -697,7 +697,14 @@ fn the_packet_viewer_finds_an_embedded_capture_filters_it_and_selects_a_packet_i
     harness.state_mut().dock.toggle(DockTab::Packets);
     steps(&mut harness, 3);
     harness.get_by_label("Find captures").click();
-    wait_for(&mut harness, |app| !app.bench.panels.packets.is_busy());
+    // The click starts a background search on the next frame, so wait for its
+    // result to be listed rather than for the panel to be idle.
+    let capture_label = format!("pcap at {capture_at:#x}");
+    let started = Instant::now();
+    while harness.query_by_label_contains(&capture_label).is_none() && started.elapsed() < Duration::from_secs(10) {
+        std::thread::sleep(Duration::from_millis(20));
+        harness.step();
+    }
     steps(&mut harness, 2);
     harness.get_by_label_contains(&format!("pcap at {capture_at:#x}")).scroll_to_me();
     steps(&mut harness, 2);
