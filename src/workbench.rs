@@ -145,6 +145,8 @@ pub struct Workbench {
     pub template_result: Option<Applied>,
     pub template_error: Option<String>,
     pub template_records: usize,
+    /// The source of the template last applied, for applying it again.
+    pub template_applied_source: String,
 
     pub unpacked: Option<Node>,
 
@@ -170,6 +172,8 @@ pub struct Workbench {
     pub analysis: crate::analysis_tabs::AnalysisState,
     /// Columns, protocol, statistics, strings and XOR.
     pub tools: crate::analysis_tools::ToolsState,
+    /// The document versions the tools' results describe.
+    pub freshness: crate::freshness::Freshness,
 }
 
 impl Default for Workbench {
@@ -188,6 +192,7 @@ impl Default for Workbench {
             template_result: None,
             template_error: None,
             template_records: 8,
+            template_applied_source: String::new(),
             unpacked: None,
             panels: PanelStates::default(),
             serial: None,
@@ -205,6 +210,7 @@ impl Default for Workbench {
             pcm_channels: 1,
             analysis: Default::default(),
             tools: Default::default(),
+            freshness: Default::default(),
         }
     }
 }
@@ -222,6 +228,7 @@ impl Workbench {
         self.analysis.document_changed();
         self.tools.document_changed();
         self.panels.packets.document_replaced();
+        self.freshness.forget_all();
         self.pending.retain(|pending| matches!(pending, Pending::Source(_)));
     }
 
@@ -392,6 +399,7 @@ impl ViewerApp {
             let _ = sender.send((regions, report));
         });
         self.bench.pending.push(Pending::Report(receiver));
+        self.note_tool_result(DockTab::Report);
     }
 
     pub fn report_running(&self) -> bool {
@@ -453,6 +461,12 @@ impl ViewerApp {
         }
         let cursor_x = rect.min.x + rect.width() * self.cursor as f32 / total;
         painter.line_segment([pos2(cursor_x, rect.min.y), pos2(cursor_x, rect.max.y)], Stroke::new(2.0, theme::CURSOR));
+        let out_of_date = self.tool_out_of_date(DockTab::Report);
+        if out_of_date {
+            // The map comes from the report; say so when the bytes have moved on.
+            painter.rect_filled(rect, 0.0, Color32::from_black_alpha(110));
+            painter.text(rect.right_center() - vec2(4.0, 0.0), egui::Align2::RIGHT_CENTER, "file map out of date — Refresh in Report", egui::FontId::proportional(10.0), theme::CURSOR);
+        }
         if let Some(pointer) = response.hover_pos() {
             let offset = ((pointer.x - rect.min.x) / rect.width() * total) as usize;
             if let Some(region) = self.bench.regions.iter().find(|r| offset >= r.start && offset < r.end()) {
@@ -461,6 +475,9 @@ impl ViewerApp {
             if response.clicked() {
                 self.jump_to_offset(offset);
             }
+        }
+        if out_of_date && response.secondary_clicked() {
+            self.start_report();
         }
     }
 
@@ -587,10 +604,8 @@ impl ViewerApp {
         match Template::parse(source) {
             Ok(template) => {
                 let origin = self.template_origin();
-                let bytes = self.document.read_range(origin, TEMPLATE_READ);
-                let applied = template.apply(&bytes, origin);
-                self.bench.pinned.retain(|f| !f.id.starts_with("template:"));
-                self.bench.pinned.push(applied.finding.clone());
+                let applied = self.apply_template_at(&template, origin);
+                self.bench.template_applied_source = source.to_string();
                 self.cursor_structure = Some(applied.finding.clone());
                 self.status = format!(
                     "{} applied at {origin:#x}: {} records{}",
@@ -606,6 +621,25 @@ impl ViewerApp {
                 self.status = format!("Template error: {error}");
             }
         }
+    }
+
+    /// Apply `template` at `origin`, pinning the decoded records.
+    fn apply_template_at(&mut self, template: &Template, origin: usize) -> Applied {
+        let bytes = self.document.read_range(origin, TEMPLATE_READ);
+        let applied = template.apply(&bytes, origin);
+        self.bench.pinned.retain(|f| !f.id.starts_with("template:"));
+        self.bench.pinned.push(applied.finding.clone());
+        self.note_tool_result(DockTab::Template);
+        applied
+    }
+
+    /// Decode the applied template again where it was applied, after an
+    /// edit changed the bytes under it.
+    pub fn reapply_template(&mut self) {
+        let Some(origin) = self.bench.template_result.as_ref().map(|applied| applied.finding.start) else { return };
+        let Ok(template) = Template::parse(&self.bench.template_applied_source) else { return };
+        let applied = self.apply_template_at(&template, origin);
+        self.bench.template_result = Some(applied);
     }
 
     /// Propose a struct for the selected records.
@@ -733,6 +767,7 @@ impl ViewerApp {
             let _ = sender.send(unpack::unpack(bytes, &name, &unpack::Limits::default()));
         });
         self.bench.pending.push(Pending::Unpack(receiver));
+        self.note_tool_result(DockTab::Unpacked);
         self.status = "Unpacking nested containers…".to_string();
     }
 

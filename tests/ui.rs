@@ -1470,3 +1470,62 @@ fn alt_arrows_nudge_the_selected_bytes_and_quick_keys_insert_and_skip() {
     steps(&mut harness, 2);
     assert!(harness.query_by_label_contains("nudge its bytes").is_some());
 }
+
+/// Step until `done` holds or ten seconds pass.
+fn step_until(harness: &mut Harness<'static, ViewerApp>, done: impl Fn(&ViewerApp) -> bool) {
+    let started = std::time::Instant::now();
+    while !done(harness.state()) && started.elapsed() < std::time::Duration::from_secs(10) {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        harness.step();
+    }
+}
+
+#[test]
+fn an_edit_marks_the_report_out_of_date_and_the_segments_refresh_themselves() {
+    use theviewer::dock::DockTab;
+    let mut harness = harness(sample_file("freshness"));
+
+    // Segments, pinned on the file map.
+    harness.state_mut().dock.toggle(DockTab::StructureMap);
+    steps(&mut harness, 3);
+    harness.get_by_label_contains("Segment file").click();
+    step_until(&mut harness, segments_finished);
+    steps(&mut harness, 2);
+    harness.get_by_label("Show on file map").click();
+    steps(&mut harness, 2);
+    let segments_end = |app: &ViewerApp| app.bench.pinned.iter().filter(|f| f.id.starts_with("segment:")).map(|f| f.end()).max();
+    assert_eq!(segments_end(harness.state()), Some(SAMPLE_LEN));
+
+    // The report.
+    harness.state_mut().dock.toggle(DockTab::Report);
+    harness.state_mut().start_report();
+    step_until(&mut harness, |app| app.bench.report.is_some() && !app.report_running());
+    steps(&mut harness, 2);
+    assert!(!harness.state().tool_out_of_date(DockTab::Report));
+    assert!(harness.query_by_label("Out of date").is_none());
+
+    // An edit anywhere.
+    harness.state_mut().document.insert(0, &[0u8; 4096]);
+    steps(&mut harness, 2);
+    assert!(harness.state().tool_out_of_date(DockTab::Report));
+    assert!(harness.query_by_label("Out of date").is_some(), "the report says it is out of date");
+    assert_eq!(harness.state().pane_title(theviewer::layout::Pane::Tool(DockTab::Report)), "Report •", "its tab is marked");
+
+    // Once the edits settle, the segments work themselves out again and the
+    // pinned ones follow; the report waits for Refresh.
+    step_until(&mut harness, |app| app.bench.pinned.iter().filter(|f| f.id.starts_with("segment:")).map(|f| f.end()).max() == Some(SAMPLE_LEN + 4096));
+    assert_eq!(segments_end(harness.state()), Some(SAMPLE_LEN + 4096), "the pinned segments cover the edited document");
+    assert!(!harness.state().tool_out_of_date(DockTab::StructureMap));
+    assert!(harness.state().tool_out_of_date(DockTab::Report), "the report is not redone by itself");
+
+    harness.get_by_label("Refresh").click();
+    step_until(&mut harness, |app| !app.report_running() && !app.tool_out_of_date(DockTab::Report));
+    steps(&mut harness, 2);
+    assert!(harness.query_by_label("Out of date").is_none());
+    assert_eq!(harness.state().pane_title(theviewer::layout::Pane::Tool(DockTab::Report)), "Report");
+}
+
+/// Whether the structure map's segmentation has been run and has finished.
+fn segments_finished(app: &ViewerApp) -> bool {
+    app.bench.freshness.described(theviewer::dock::DockTab::StructureMap).is_some() && !app.bench.panels.structure_map.is_busy()
+}

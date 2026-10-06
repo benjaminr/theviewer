@@ -38,6 +38,7 @@ pub mod explain;
 pub mod features;
 pub mod findings;
 pub mod folds;
+pub mod freshness;
 pub mod fragments;
 pub mod fuzzy;
 pub mod headless;

@@ -231,6 +231,7 @@ pub fn show_checksums(app: &mut ViewerApp, ui: &mut Ui) {
     if app.bench.analysis.digests.as_ref().map(|d| (d.0, d.1)) != Some((start, len)) {
         let bytes = app.document.read_range(start, len);
         app.bench.analysis.digests = Some((start, len, checksums::digests(&bytes)));
+        app.note_tool_result(crate::dock::DockTab::Checksums);
     }
     let digests = app.bench.analysis.digests.as_ref().expect("filled above").2.clone();
     let rows = [
@@ -262,6 +263,7 @@ pub fn show_checksums(app: &mut ViewerApp, ui: &mut Ui) {
                 .filter(|&b| b > 0 && b < len)
                 .collect();
             app.bench.analysis.checksum_matches = Some(checksums::find_checksums(&bytes, start, &[], &boundaries));
+            app.note_tool_result(crate::dock::DockTab::Checksums);
         }
         ui.label(RichText::new("tests header and trailer fields against the bytes before, after and around them").small().color(theme::TEXT_DIM));
     });
@@ -307,6 +309,7 @@ pub fn show_checksums(app: &mut ViewerApp, ui: &mut Ui) {
 
 /// Compare the open document with another file on a background thread.
 pub fn start_diff(app: &mut ViewerApp, other_path: std::path::PathBuf) {
+    app.note_tool_result(crate::dock::DockTab::Diff);
     let own = match app.document.path().filter(|_| !app.document.is_modified()).map(|p| p.to_path_buf()) {
         Some(path) => DiffSide::Path(path),
         None => DiffSide::Bytes(app.document.read_range(0, DIFF_COPY_LIMIT)),

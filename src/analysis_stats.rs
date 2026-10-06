@@ -111,6 +111,7 @@ pub fn start_statistics(app: &mut ViewerApp) {
         let _ = sender.send(result);
     });
     app.bench.tools.stats.pending = Some(receiver);
+    app.note_tool_result(crate::dock::DockTab::Statistics);
 }
 
 pub fn show_statistics(app: &mut ViewerApp, ui: &mut Ui) {
@@ -245,7 +246,8 @@ pub fn show_statistics(app: &mut ViewerApp, ui: &mut Ui) {
 // Strings
 // ---------------------------------------------------------------------------
 
-fn start_strings(app: &mut ViewerApp) {
+pub(crate) fn start_strings(app: &mut ViewerApp) {
+    app.note_tool_result(crate::dock::DockTab::Strings);
     let (start, len, _) = scope(app, SCAN_LIMIT);
     let bytes = app.document.read_range(start, len);
     let min_chars = app.bench.tools.stats.min_chars.max(2);
@@ -316,15 +318,28 @@ pub fn show_strings(app: &mut ViewerApp, ui: &mut Ui) {
 // XOR
 // ---------------------------------------------------------------------------
 
+/// Recover XOR keys for the bytes at `start`.
+fn find_xor_keys(app: &mut ViewerApp, start: usize, len: usize) {
+    let bytes = app.document.read_range(start, len);
+    let candidates = xor::recover_keys(&bytes, 32, 12);
+    let lengths = xor::guess_key_lengths(&bytes, 32).into_iter().take(6).collect();
+    app.bench.tools.stats.xor_candidates = Some((start, len, candidates, lengths));
+    app.note_tool_result(crate::dock::DockTab::Xor);
+}
+
+/// Recover the keys again for the same bytes, after an edit.
+pub(crate) fn refresh_xor(app: &mut ViewerApp) {
+    if let Some((start, len, ..)) = app.bench.tools.stats.xor_candidates.clone() {
+        find_xor_keys(app, start, len);
+    }
+}
+
 pub fn show_xor(app: &mut ViewerApp, ui: &mut Ui) {
     let (start, len) = app.selection().map(|(s, l)| (s, l.min(XOR_LIMIT))).unwrap_or((app.cursor, XOR_LIMIT.min(64 * 1024)));
     let len = len.min(app.document.len().saturating_sub(start));
     ui.horizontal(|ui| {
         if ui.button(format!("Find XOR keys for {} bytes at {start:#x}", len)).clicked() {
-            let bytes = app.document.read_range(start, len);
-            let candidates = xor::recover_keys(&bytes, 32, 12);
-            let lengths = xor::guess_key_lengths(&bytes, 32).into_iter().take(6).collect();
-            app.bench.tools.stats.xor_candidates = Some((start, len, candidates, lengths));
+            find_xor_keys(app, start, len);
         }
         ui.label(RichText::new("select the suspect bytes first; without a selection, 64 KiB from the cursor").small().color(theme::TEXT_DIM));
     });

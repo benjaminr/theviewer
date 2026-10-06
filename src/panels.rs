@@ -57,3 +57,11 @@ pub fn show<S: Default>(
     draw(&mut state, app, ui);
     *slot(&mut app.bench.panels) = state;
 }
+
+/// Run `work` with a panel's state lent out of `app`, outside drawing (for
+/// refreshing a panel's result after an edit).
+pub fn with<S: Default>(app: &mut ViewerApp, slot: fn(&mut PanelStates) -> &mut S, work: fn(&mut S, &mut ViewerApp)) {
+    let mut state = std::mem::take(slot(&mut app.bench.panels));
+    work(&mut state, app);
+    *slot(&mut app.bench.panels) = state;
+}

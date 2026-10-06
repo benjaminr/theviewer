@@ -3626,6 +3626,8 @@ impl eframe::App for ViewerApp {
         self.poll_analysis(ctx);
         self.handle_shortcuts(ctx);
         self.folds.clamp_to(self.document.len());
+        self.follow_edits(ctx);
+        crate::panels::with(self, |panels| &mut panels.structure_map, crate::panel_structure_map::follow_document);
         self.poll_workbench(ctx);
         self.refresh_cursor_structure();
         self.update_title(ctx);

@@ -98,13 +98,19 @@ pub struct StructureMapState {
 }
 
 impl StructureMapState {
-    fn is_busy(&self) -> bool {
+    /// Whether segments, matches or tracks are being worked out.
+    pub fn is_busy(&self) -> bool {
         self.segments_pending.is_some() || self.similar_pending.is_some() || self.tracks_pending.is_some()
     }
 
-    /// Collect any finished background results.
-    fn poll(&mut self) {
+    /// Collect any finished background results. New segments replace the
+    /// pinned ones, if they were pinned.
+    fn poll(&mut self, app: &mut ViewerApp) {
         if let Some(job) = receive(&mut self.segments_pending) {
+            if app.bench.pinned.iter().any(|finding| finding.id.starts_with(SEGMENT_ID_PREFIX)) {
+                unpin(app, SEGMENT_ID_PREFIX);
+                app.bench.pinned.extend(segment_findings(&job.result));
+            }
             self.segments = Some(job);
         }
         if let Some(job) = receive(&mut self.similar_pending) {
@@ -146,7 +152,7 @@ enum Action {
 
 /// Show the structure map panel.
 pub fn show_structure_map(state: &mut StructureMapState, app: &mut ViewerApp, ui: &mut egui::Ui) {
-    state.poll();
+    state.poll(app);
     if state.is_busy() {
         ui.ctx().request_repaint_after(POLL_INTERVAL);
     }
@@ -225,7 +231,26 @@ fn offset_at(rect: Rect, x: f32, total: usize) -> usize {
 // Segments
 // ---------------------------------------------------------------------------
 
+/// Work out again, from the edited document, what had been worked out:
+/// the segments and the feature tracks. Results arrive in the background
+/// and replace pinned segments.
+pub(crate) fn refresh(state: &mut StructureMapState, app: &mut ViewerApp) {
+    if state.segments.is_some() || state.segments_pending.is_some() {
+        start_segmentation(state, app);
+    }
+    if state.tracks.is_some() || state.tracks_pending.is_some() {
+        start_tracks(state, app);
+    }
+}
+
+/// Collect finished results while the panel is not drawn, so pinned
+/// segments follow edits even when the panel is hidden.
+pub fn follow_document(state: &mut StructureMapState, app: &mut ViewerApp) {
+    state.poll(app);
+}
+
 fn start_segmentation(state: &mut StructureMapState, app: &mut ViewerApp) {
+    app.note_tool_result(crate::dock::DockTab::StructureMap);
     let (key, bytes) = read_scanned(app);
     let (sender, receiver) = mpsc::channel();
     thread::spawn(move || {
@@ -455,6 +480,7 @@ fn similar_list(ui: &mut Ui, regions: &[SimilarRegion], actions: &mut Vec<Action
 // ---------------------------------------------------------------------------
 
 fn start_tracks(state: &mut StructureMapState, app: &mut ViewerApp) {
+    app.note_tool_result(crate::dock::DockTab::StructureMap);
     let (key, bytes) = read_scanned(app);
     let (sender, receiver) = mpsc::channel();
     thread::spawn(move || {

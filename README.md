@@ -186,6 +186,14 @@ right-click menu. Each one is a panel you can dock anywhere.
 | **Live** | Opens a URL, a serial port (`serial:/dev/cu.usbserial@115200`), a block device (`/dev/rdisk2`, needs sudo) or process memory (`pid:1234`, Linux only). Can watch a file as it grows and record its history. |
 | **Ask** | Ask Claude about the file (see below). *Characterise* has Claude run the analysis tools and describe the whole file. |
 
+**Every view keeps up with edits.** Segments, an applied template, record
+columns, checksums and a small trigram cloud work themselves out again a
+moment after the last edit (pinned segments follow). Tools whose results
+take longer (the report and file map, dot plot, statistics, strings, XOR,
+unpacked tree, image finder, protocol analysis, diff and comparison) show
+*Out of date* with a *Refresh* button instead, and their tab is marked
+with •, so nothing stale is shown without saying so.
+
 **The packet viewer follows the document.** Selecting a packet or a field in
 *Packets* selects its bytes in the view, and moving the cursor in the view
 into a packet selects that packet and the field under the cursor. Edit a
@@ -404,6 +412,7 @@ never your Keychain.
 | `assistant.rs` | *Ask*: a streaming Claude API client with tools, on a background thread. |
 | `layout.rs` `packing.rs` | Dockable panels and presets; toolbar packing and reordering. |
 | `legend.rs` | The legend bar: the colouring in effect and each highlight layer, with toggles. |
+| `freshness.rs` | Which document version each tool's result describes; refreshing cheap views after edits and marking the rest out of date. |
 | `selection.rs` `selection_ops.rs` `selection_menu.rs` `selection_drag.rs` `folds.rs` | Range, column and multi-range selections; the byte operations on them; the Selection menu and floating toolbar; moving, resizing and nudging by hand; skipped (folded) ranges. |
 | `search.rs` `bookmarks.rs` `findings.rs` `commands.rs` | Search, bookmarks and the sidecar file, the findings list, the command palette. |
 | `settings.rs` `preferences.rs` `config.rs` | The settings window and API key storage; startup defaults; where settings live. |

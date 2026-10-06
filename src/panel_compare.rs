@@ -362,7 +362,21 @@ fn show_files(state: &mut CompareState, app: &mut ViewerApp, ui: &mut Ui) {
 // Variation
 // ---------------------------------------------------------------------------
 
+/// Compare again after the open document was edited: whichever of the
+/// variation and correlation had been worked out.
+pub(crate) fn refresh(state: &mut CompareState, app: &mut ViewerApp) {
+    if state.variation.is_some() || state.variation_pending.is_some() {
+        start_variation(state, app);
+    }
+    if (state.correlation.is_some() || state.correlation_pending.is_some())
+        && let Err(message) = start_correlation(state, app)
+    {
+        state.messages.push(message);
+    }
+}
+
 fn start_variation(state: &mut CompareState, app: &mut ViewerApp) {
+    app.note_tool_result(crate::dock::DockTab::Compare);
     let inputs = comparison_inputs(state, app);
     state.variation_inputs = inputs.clone();
     state.selected_region = None;
@@ -494,6 +508,7 @@ fn parse_outside_values(state: &CompareState) -> Result<Vec<f64>, String> {
 
 fn start_correlation(state: &mut CompareState, app: &mut ViewerApp) -> Result<(), String> {
     let outside = parse_outside_values(state)?;
+    app.note_tool_result(crate::dock::DockTab::Compare);
     let inputs = comparison_inputs(state, app);
     let from = state.correlation_from;
     let (sender, receiver) = mpsc::channel();

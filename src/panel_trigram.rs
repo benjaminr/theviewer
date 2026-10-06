@@ -251,6 +251,7 @@ fn scope(state: &TrigramState, app: &ViewerApp) -> (usize, usize, &'static str) 
 /// labelling trigrams by region and highlighting the selection when the whole
 /// file is plotted around it.
 pub fn start_counting(state: &mut TrigramState, app: &mut ViewerApp) {
+    app.note_tool_result(crate::dock::DockTab::Trigrams);
     let (start, len, _) = scope(state, app);
     let windows: Vec<(usize, Vec<u8>)> = trigram::sample_windows(len, trigram::SAMPLE_LIMIT, trigram::SAMPLE_WINDOW)
         .into_iter()

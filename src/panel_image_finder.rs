@@ -42,7 +42,8 @@ fn scope(app: &ViewerApp) -> (usize, usize, &'static str) {
     }
 }
 
-fn start_search(state: &mut ImageFinderState, app: &mut ViewerApp) {
+pub(crate) fn start_search(state: &mut ImageFinderState, app: &mut ViewerApp) {
+    app.note_tool_result(crate::dock::DockTab::Images);
     let (start, len, _) = scope(app);
     let bytes = app.document.read_range(start, len);
     let (sender, receiver) = mpsc::channel();

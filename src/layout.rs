@@ -257,6 +257,9 @@ impl TabViewer for Panes<'_> {
 
     fn title(&mut self, tab: &mut Pane) -> WidgetText {
         let unavailable = *tab == Pane::Tool(DockTab::Assistant) && !self.app.assistant_available();
+        if self.app.pane_out_of_date(*tab) {
+            return RichText::new(self.app.pane_title(*tab)).color(theme::CURSOR).into();
+        }
         if unavailable {
             RichText::new(tab.title()).color(theme::TEXT_DIM).into()
         } else {
@@ -303,6 +306,17 @@ impl TabViewer for Panes<'_> {
 }
 
 impl ViewerApp {
+    /// Whether a pane shows a result older than the document.
+    pub fn pane_out_of_date(&self, pane: Pane) -> bool {
+        matches!(pane, Pane::Tool(tool) if self.tool_out_of_date(tool))
+    }
+
+    /// A pane's tab title, marked with "•" when the document has been
+    /// edited since the pane worked its result out.
+    pub fn pane_title(&self, pane: Pane) -> String {
+        if self.pane_out_of_date(pane) { format!("{} •", pane.title()) } else { pane.title().to_string() }
+    }
+
     /// Draw the whole workspace into `ui`.
     pub fn show_workspace(&mut self, ui: &mut Ui) {
         self.apply_pane_requests();

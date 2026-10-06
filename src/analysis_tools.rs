@@ -139,6 +139,7 @@ pub fn show_columns(app: &mut ViewerApp, ui: &mut Ui) {
         let profiles = columns::profile(bytes, record_len, PROFILE_RECORDS);
         let fields = columns::group_fields(bytes, record_len, &profiles, app.document.len());
         app.bench.tools.columns = Some((origin, record_len, profiles, fields));
+        app.note_tool_result(crate::dock::DockTab::Columns);
     }
     let (_, _, profiles, fields) = app.bench.tools.columns.clone().expect("filled above");
     if profiles.is_empty() {
@@ -218,6 +219,7 @@ pub fn show_columns(app: &mut ViewerApp, ui: &mut Ui) {
 // ---------------------------------------------------------------------------
 
 pub fn start_protocol(app: &mut ViewerApp) {
+    app.note_tool_result(crate::dock::DockTab::Protocol);
     let (start, len) = app.selection().unwrap_or((0, app.document.len()));
     let bytes = app.document.read_range(start, len.min(PROTOCOL_LIMIT));
     let (sender, receiver) = mpsc::channel();

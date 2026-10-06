@@ -48,7 +48,8 @@ fn scope(app: &ViewerApp) -> (usize, usize, &'static str) {
     }
 }
 
-fn start_plot(state: &mut DotPlotState, app: &mut ViewerApp) {
+pub(crate) fn start_plot(state: &mut DotPlotState, app: &mut ViewerApp) {
+    app.note_tool_result(crate::dock::DockTab::DotPlot);
     let (start, len, _) = scope(app);
     let bytes = app.document.read_range(start, len);
     let mode = state.mode;

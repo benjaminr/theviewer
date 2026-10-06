@@ -184,6 +184,7 @@ impl DockState {
 
 /// Draw one tool's pane.
 pub fn show_tool(app: &mut ViewerApp, ui: &mut Ui, tool: DockTab) {
+    crate::freshness::show_out_of_date_chip(app, ui, tool);
     match tool {
         DockTab::Assistant => show_assistant(app, ui),
         DockTab::Live => show_live(app, ui),
