@@ -10,6 +10,7 @@ use std::time::Duration;
 
 use super::run::{Comparisons, Failure, FileResult, ProtocolTally};
 use crate::packets::LinkKind;
+use crate::packets::tshark::is_data_protocol;
 
 /// Rows in each "top" list of the summary.
 const TOP_PROTOCOLS: usize = 40;
@@ -281,7 +282,8 @@ impl CorpusReport {
 
 /// Protocols with packets none of our layers covered, most such packets first.
 fn undecoded_protocols(comparisons: &Comparisons) -> Vec<(&String, &ProtocolTally)> {
-    let mut list: Vec<(&String, &ProtocolTally)> = comparisons.protocols.iter().filter(|(_, tally)| tally.packets > tally.decoded_by_us).collect();
+    let mut list: Vec<(&String, &ProtocolTally)> =
+        comparisons.protocols.iter().filter(|(name, tally)| tally.packets > tally.decoded_by_us && !is_data_protocol(name)).collect();
     list.sort_by_key(|(name, tally)| (std::cmp::Reverse(tally.packets - tally.decoded_by_us), name.to_string()));
     list
 }
@@ -362,6 +364,7 @@ mod tests {
         comparisons.protocols.insert("dhcp".to_string(), ProtocolTally { packets: 10, files: ["a".to_string()].into(), over_port: 10, port_named: 10, ..ProtocolTally::default() });
         comparisons.protocols.insert("snmp".to_string(), ProtocolTally { packets: 30, files: ["b".to_string()].into(), ..ProtocolTally::default() });
         comparisons.protocols.insert("udp".to_string(), ProtocolTally { packets: 40, decoded_by_us: 40, ..ProtocolTally::default() });
+        comparisons.protocols.insert("data".to_string(), ProtocolTally { packets: 99, ..ProtocolTally::default() });
         comparisons.fields.insert(("User Datagram Protocol".into(), "Length".into(), "udp.length".into()), FieldTally { compared: 40, differs: 2, example: None });
         let result = FileResult {
             file: "a.pcap".to_string(),
@@ -376,10 +379,11 @@ mod tests {
         let dhcp = summary.find("| dhcp | 10 |").expect("dhcp listed");
         assert!(snmp < dhcp, "most packets first");
         assert!(!summary.contains("| udp |"), "protocols we decode are left out");
+        assert!(!summary.contains("| data |"), "bytes tshark did not dissect are not a protocol");
         assert!(summary.contains("10/10"), "{summary}");
         assert!(summary.contains("Panics: 1 (1 distinct)"));
         assert!(summary.contains("udp.length: 2 of 40 differ"));
         assert!(report.failures_csv().contains("a.pcap,dissect,3,panic: index out of bounds at src/x.rs:1"));
-        assert!(report.coverage_csv().lines().nth(1).unwrap().starts_with("udp,40,"));
+        assert!(report.coverage_csv().lines().nth(2).unwrap().starts_with("udp,40,"), "most packets first, data included");
     }
 }
