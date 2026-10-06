@@ -189,6 +189,7 @@ right-click menu. Each one is a panel you can dock anywhere.
 | **Compare** | Many files at once (captures, firmware versions, saved states): which byte ranges stay constant, vary or count up across them; which fields follow a value you enter for each file, such as a temperature or a setting; and, for a live recording, a timeline of which bytes changed when. |
 | **Live** | Opens a URL, a serial port (`serial:/dev/cu.usbserial@115200`), a block device (`/dev/rdisk2`, needs sudo) or process memory (`pid:1234`, Linux only). Can watch a file as it grows and record its history. |
 | **Ask** | Ask Claude about the file (see below). *Characterise* has Claude run the analysis tools and describe the whole file. |
+| **Workspace** | What the tools have learnt about the file and published for each other, and what just happened (see below). |
 
 **Every view keeps up with edits.** Segments, an applied template, record
 columns, checksums and a small trigram cloud work themselves out again a
@@ -197,6 +198,22 @@ take longer (the report and file map, dot plot, statistics, strings, XOR,
 unpacked tree, image finder, protocol analysis, diff and comparison) show
 *Out of date* with a *Refresh* button instead, and their tab is marked
 with •, so nothing stale is shown without saying so.
+
+**What the tools share.** Tools publish what they learn on a shared
+workspace bus, so others can use it without being on screen: the scan's
+and pinned findings, the structure at the cursor and applied templates, the
+report's regions, the record width the period scan found, frames from the
+protocol tool or *Packets*, the protocol frames turn out to be (detected,
+guessed from a port, or named by tshark), background jobs starting and
+finishing, plugin log lines, and every edit, cursor move and selection.
+*Columns* takes its record length from the published width, *Packets*
+follows the selection and *Reference* follows the layer picked in *Packets*
+even while they are hidden. The *Workspace* tab lists what is known, by
+topic and by whom, dimming what describes the file before its last edit
+(what an edit did not touch moves with it instead); clicking a span selects
+those bytes, and *why* shows what led to a fact. Below is a log of recent
+events, filtered by topic. The same facts and events can be read through
+the data API (`events.facts` and `events.poll`; see [docs/api.md](docs/api.md)).
 
 **The packet viewer follows the document.** Selecting a packet or a field in
 *Packets* selects its bytes in the view, and moving the cursor in the view
@@ -521,6 +538,8 @@ built-in ones use the same interfaces as yours.
 - **Lua plugins:** scripts can add detectors, parsers, codecs and actions
   through a small sandboxed API; see [docs/plugins.md](docs/plugins.md) and
   the examples in `plugins/`. *View › Reload plugins* picks up changes.
+  An error in a plugin, even in a background scan, is shown in the status
+  bar, and every line a plugin logs is in the *Workspace* tab.
 - **Rust:** implement `Detector`, `Parser` or `CodecPlugin` from
   `src/plugin.rs` and register it in the `Registry`.
 
