@@ -1469,7 +1469,7 @@ impl ViewerApp {
     // Editing operations
     // ------------------------------------------------------------------
 
-    fn after_edit(&mut self, cursor: usize) {
+    pub(crate) fn after_edit(&mut self, cursor: usize) {
         self.cursor = cursor.min(self.document.len());
         self.anchor = None;
         self.clear_secondary_selection();
@@ -1479,19 +1479,23 @@ impl ViewerApp {
         self.reveal_cursor_in_hex(false);
     }
 
+    /// Undo the last step, as `history.undo`.
     pub fn undo(&mut self) {
-        let label = self.document.undo_label().map(str::to_string);
-        if let Some(position) = self.document.undo() {
-            self.after_edit(position);
-            self.status = label.map_or_else(|| "Undid the last edit".to_string(), |label| format!("Undid {label}"));
+        if !self.document.can_undo() {
+            return;
+        }
+        if let Some(undone) = self.step_history("history.undo") {
+            self.status = undone.label.map_or_else(|| "Undid the last edit".to_string(), |label| format!("Undid {label}"));
         }
     }
 
+    /// Redo the last step undone, as `history.redo`.
     pub fn redo(&mut self) {
-        let label = self.document.redo_label().map(str::to_string);
-        if let Some(position) = self.document.redo() {
-            self.after_edit(position);
-            self.status = label.map_or_else(|| "Redid the edit".to_string(), |label| format!("Redid {label}"));
+        if !self.document.can_redo() {
+            return;
+        }
+        if let Some(redone) = self.step_history("history.redo") {
+            self.status = redone.label.map_or_else(|| "Redid the edit".to_string(), |label| format!("Redid {label}"));
         }
     }
 
@@ -1504,30 +1508,36 @@ impl ViewerApp {
         }
     }
 
-    fn backspace(&mut self) {
+    /// Backspace: delete the selection, or the byte before the cursor as
+    /// `bytes.delete`.
+    pub(crate) fn backspace(&mut self) {
         if self.current_selection().is_some() {
             self.delete_target();
         } else if self.cursor > 0 {
-            self.document.delete(self.cursor - 1, 1);
-            self.after_edit(self.cursor - 1);
+            let at = self.cursor.min(self.document.len()) - 1;
+            if self.perform("bytes.delete", serde_json::json!({ "start": at, "len": 1 })).is_ok() {
+                self.after_edit(at);
+            }
         }
     }
 
-    fn insert_bytes_at_cursor(&mut self, bytes: &[u8]) {
+    /// Insert `bytes` at the cursor, as `bytes.insert`. Returns whether
+    /// they were inserted.
+    fn insert_bytes_at_cursor(&mut self, bytes: &[u8]) -> bool {
         let at = self.cursor.min(self.document.len());
-        self.document.insert(at, bytes);
+        if self.perform("bytes.insert", serde_json::json!({ "at": at, "data": ops::to_compact_hex(bytes) })).is_err() {
+            return false;
+        }
         self.after_edit(at + bytes.len());
         self.status = format!("Inserted {} bytes at {at:#x}", bytes.len());
+        true
     }
 
+    /// Insert the Insert fields' bytes at the cursor.
     pub fn insert_from_fields(&mut self) {
-        let Some(pattern) = ops::parse_hex(&self.insert_value_text) else {
-            self.status = "Insert value must be hex, e.g. 00 or DEADBEEF".to_string();
-            return;
-        };
-        let pattern = if pattern.is_empty() { vec![0u8] } else { pattern };
-        let bytes: Vec<u8> = pattern.iter().cycle().take(self.insert_count.max(1)).copied().collect();
-        self.insert_bytes_at_cursor(&bytes);
+        if let Some(bytes) = self.insert_bytes_from_fields() {
+            self.insert_bytes_at_cursor(&bytes);
+        }
     }
 
     /// Fill every selected range (or the cursor byte) with the Fill pattern.
@@ -2163,17 +2173,24 @@ impl ViewerApp {
             self.status = "Clipboard is empty".to_string();
             return;
         }
-        if let Some((start, len)) = self.selection() {
-            self.document.replace(start, len, &bytes);
-            self.after_edit(start + bytes.len());
+        let data = ops::to_compact_hex(&bytes);
+        let pasted = if let Some((start, len)) = self.selection() {
+            self.paste_step("bytes.replace", serde_json::json!({ "start": start, "len": len, "data": data }), start + bytes.len())
         } else if self.edit_mode == EditMode::Insert {
-            self.insert_bytes_at_cursor(&bytes);
+            self.insert_bytes_at_cursor(&bytes)
         } else {
-            let at = self.cursor;
-            self.document.overwrite(at, &bytes);
-            self.after_edit(at + bytes.len());
+            // Overwriting runs on past the end, growing the document there.
+            let at = self.cursor.min(self.document.len());
+            let fits = self.document.len() - at;
+            if bytes.len() <= fits {
+                self.paste_step("bytes.write", serde_json::json!({ "start": at, "data": data }), at + bytes.len())
+            } else {
+                self.paste_step("bytes.replace", serde_json::json!({ "start": at, "len": fits, "data": data }), at + bytes.len())
+            }
+        };
+        if pasted {
+            self.status = format!("Pasted {} bytes", bytes.len());
         }
-        self.status = format!("Pasted {} bytes", bytes.len());
     }
 
     /// Handle a typed hex digit: overwrite or insert one nibble at the
@@ -2205,9 +2222,13 @@ impl ViewerApp {
         self.scroll_cursor_into_view();
     }
 
+    /// Flip bit `bit` (0 the lowest) of the byte at the cursor, as
+    /// `bits.write`.
     pub fn toggle_bit_at_cursor(&mut self, bit: u32) {
         if let Some(byte) = self.document.byte_at(self.cursor) {
-            self.document.overwrite(self.cursor, &[byte ^ (1 << bit)]);
+            let flipped = if (byte >> bit) & 1 == 1 { "0" } else { "1" };
+            let bit_start = self.cursor * 8 + bit as usize;
+            let _ = self.perform("bits.write", serde_json::json!({ "bit_start": bit_start, "bits": flipped, "order": "lsb" }));
         }
     }
 

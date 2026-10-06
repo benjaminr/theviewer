@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use eframe::egui::{self, Color32, Frame, Id, Order, Pos2, Rect, RichText, Ui, vec2};
 
-use crate::api::edits::EditResult;
+use crate::api::edits::{EditResult, HistoryResult};
 use crate::app::{DialogKind, FileAction, ViewerApp};
 use crate::compress::{self, Codec};
 use crate::document::Document;
@@ -207,6 +207,33 @@ impl ViewerApp {
         let hex_top_row = self.hex_top_row;
         let done = action(self);
         self.hex_top_row = hex_top_row;
+        done
+    }
+}
+
+impl ViewerApp {
+    /// Undo or redo through `method` (`history.undo` or `history.redo`),
+    /// putting the cursor where the step was and keeping the hex dump still
+    /// as the keys always have. Returns what the API said, or `None` when
+    /// it failed (the status bar says why).
+    pub(crate) fn step_history(&mut self, method: &str) -> Option<HistoryResult> {
+        let mut stepped = None;
+        self.keeping_the_hex_dump_still(|app| {
+            stepped = app.perform_typed::<HistoryResult>(method, serde_json::json!({})).ok();
+            stepped.is_some()
+        });
+        let at = stepped.as_ref()?.at as usize;
+        self.after_edit(at);
+        stepped
+    }
+
+    /// One way of pasting, as `method`, leaving the cursor at `cursor`.
+    /// Returns whether it was pasted.
+    pub(crate) fn paste_step(&mut self, method: &str, params: serde_json::Value, cursor: usize) -> bool {
+        let done = self.perform(method, params).is_ok();
+        if done {
+            self.after_edit(cursor);
+        }
         done
     }
 }
@@ -761,6 +788,110 @@ mod tests {
         assert_eq!(app.document.undo_label(), Some("Insert 1 byte"));
         app.document.undo();
         assert_eq!(app.document.read_range(0, 3), [0x12, 0x34]);
+    }
+
+    fn performed(method: &str, params: serde_json::Value) -> (String, serde_json::Value) {
+        (method.to_string(), params)
+    }
+
+    #[test]
+    fn inserting_the_fields_bytes_at_the_cursor_is_one_step_through_the_api() {
+        let mut app = app_with(b"abcd");
+        app.set_cursor(1, false);
+        app.insert_value_text = "DE AD".to_string();
+        app.insert_count = 3;
+        app.insert_from_fields();
+        assert_eq!(take_performed(), [performed("bytes.insert", json!({"at": 1, "data": "deadde"}))]);
+        assert_eq!(app.document.read_range(0, 7), [b'a', 0xDE, 0xAD, 0xDE, b'b', b'c', b'd']);
+        assert_eq!((app.cursor, app.status.as_str()), (4, "Inserted 3 bytes at 0x1"));
+        app.insert_value_text = "not hex".to_string();
+        app.insert_from_fields();
+        assert!(take_performed().is_empty());
+        assert!(app.status.starts_with("Insert value must be hex"), "{}", app.status);
+    }
+
+    #[test]
+    fn backspace_with_nothing_selected_deletes_the_byte_before_the_cursor_through_the_api() {
+        let mut app = app_with(b"abcd");
+        app.set_cursor(2, false);
+        app.backspace();
+        assert_eq!(take_performed(), [performed("bytes.delete", json!({"start": 1, "len": 1}))]);
+        assert_eq!((app.document.read_range(0, 3), app.cursor), (b"acd".to_vec(), 1));
+        app.set_cursor(0, false);
+        app.backspace();
+        assert!(take_performed().is_empty(), "at the start there is nothing to delete");
+    }
+
+    #[test]
+    fn flipping_a_bit_in_the_inspector_writes_that_bit_through_the_api() {
+        let mut app = app_with(&[0x00, 0x00]);
+        app.set_cursor(1, false);
+        app.toggle_bit_at_cursor(7);
+        app.toggle_bit_at_cursor(0);
+        assert_eq!(app.document.read_range(0, 2), [0x00, 0x81]);
+        app.toggle_bit_at_cursor(7);
+        assert_eq!(app.document.read_range(0, 2), [0x00, 0x01]);
+        assert_eq!(
+            take_performed(),
+            [
+                performed("bits.write", json!({"bit_start": 15, "bits": "1", "order": "lsb"})),
+                performed("bits.write", json!({"bit_start": 8, "bits": "1", "order": "lsb"})),
+                performed("bits.write", json!({"bit_start": 15, "bits": "0", "order": "lsb"})),
+            ]
+        );
+    }
+
+    #[test]
+    fn pasting_replaces_the_selection_overwrites_or_inserts_through_the_api() {
+        let mut app = app_with(b"abcd");
+        app.restore_selection(1, 2);
+        app.paste(Some("AA BB CC".to_string()));
+        assert_eq!(app.document.read_range(0, 8), [b'a', 0xAA, 0xBB, 0xCC, b'd']);
+        assert_eq!((app.cursor, app.status.as_str()), (4, "Pasted 3 bytes"));
+        app.paste(Some("0102".to_string()));
+        assert_eq!(app.document.read_range(0, 8), [b'a', 0xAA, 0xBB, 0xCC, 0x01, 0x02], "overwriting runs on past the end");
+        app.edit_mode = EditMode::Insert;
+        app.set_cursor(0, false);
+        app.paste(Some("ff".to_string()));
+        assert_eq!(app.document.read_range(0, 2), [0xFF, b'a']);
+        assert_eq!(
+            take_performed(),
+            [
+                performed("bytes.replace", json!({"start": 1, "len": 2, "data": "aabbcc"})),
+                performed("bytes.replace", json!({"start": 4, "len": 1, "data": "0102"})),
+                performed("bytes.insert", json!({"at": 0, "data": "ff"})),
+            ]
+        );
+        app.edit_mode = EditMode::Overwrite;
+        app.set_cursor(2, false);
+        app.paste(Some("0000".to_string()));
+        assert_eq!(take_performed(), [performed("bytes.write", json!({"start": 2, "data": "0000"}))]);
+    }
+
+    #[test]
+    fn cutting_copies_the_selection_and_deletes_it_through_the_api() {
+        let mut app = app_with(b"abcdef");
+        app.restore_selection(1, 2);
+        app.cut(&eframe::egui::Context::default());
+        assert_eq!(take_performed(), [performed("transform.apply", json!({"selection": {"range": [1, 2]}, "operation": crate::selection_ops::Operation::Delete}))]);
+        assert_eq!((app.document.read_range(0, 6), app.clipboard.clone()), (b"adef".to_vec(), b"bc".to_vec()));
+    }
+
+    #[test]
+    fn undo_and_redo_go_through_the_api_and_say_what_they_undid() {
+        let mut app = app_with(&[0x12, 0x34]);
+        app.undo();
+        assert!(take_performed().is_empty(), "with nothing to undo nothing is called");
+        app.type_hex_digit(0xA);
+        app.type_hex_digit(0xB);
+        take_performed();
+        app.undo();
+        assert_eq!((app.document.read_range(0, 2), app.cursor, app.status.as_str()), (vec![0x12, 0x34], 0, "Undid Overwrite 1 byte"));
+        app.redo();
+        assert_eq!((app.document.read_range(0, 2), app.status.as_str()), (vec![0xAB, 0x34], "Redid Overwrite 1 byte"));
+        assert_eq!(take_performed(), [performed("history.undo", json!({})), performed("history.redo", json!({}))]);
+        app.redo();
+        assert!(take_performed().is_empty());
     }
 
     #[test]
