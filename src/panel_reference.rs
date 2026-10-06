@@ -789,12 +789,32 @@ fn show_field_table(app: &mut ViewerApp, ui: &mut Ui, entry: &StackEntry, notes:
     }
 }
 
-/// The instance's top-level fields as an RFC-style diagram: 32 bits a row,
+/// The fields a diagram draws, up to document offset `end`: the most
+/// detailed ones, so a header made of named parts shows each part rather than
+/// one box for the whole header.
+fn diagram_fields(fields: &[Field], end: usize) -> Vec<&Field> {
+    let mut leaves = Vec::new();
+    collect_leaf_fields(fields, end, &mut leaves);
+    leaves
+}
+
+fn collect_leaf_fields<'a>(fields: &'a [Field], end: usize, out: &mut Vec<&'a Field>) {
+    for field in fields.iter().filter(|field| field.offset < end) {
+        if field.children.is_empty() {
+            out.push(field);
+        } else {
+            collect_leaf_fields(&field.children, end, out);
+        }
+    }
+}
+
+/// The instance's most detailed fields as an RFC-style diagram: 32 bits a row,
 /// each field a box over its bytes. Pointing at a box outlines its bytes and
 /// explains it; clicking selects them.
 fn show_diagram(app: &mut ViewerApp, ui: &mut Ui, entry: &StackEntry, notes: Option<&FormatReference>, position: usize, actions: &mut Vec<Action>) {
+    let fields = diagram_fields(&entry.fields, entry.start + DIAGRAM_BYTES_PER_ROW * DIAGRAM_MAX_ROWS);
     // Fields that start before the instance (none should) are left out.
-    let spans: Vec<(usize, usize)> = entry.fields.iter().map(|field| field.offset.checked_sub(entry.start).map_or((0, 0), |relative| (relative, field.len))).collect();
+    let spans: Vec<(usize, usize)> = fields.iter().map(|field| field.offset.checked_sub(entry.start).map_or((0, 0), |relative| (relative, field.len))).collect();
     let layout = layout_diagram(&spans, entry.len, DIAGRAM_BYTES_PER_ROW, DIAGRAM_MAX_ROWS);
     if layout.boxes.is_empty() {
         ui.label(RichText::new("No fields to draw.").small().color(theme::TEXT_DIM));
@@ -838,7 +858,7 @@ fn show_diagram(app: &mut ViewerApp, ui: &mut Ui, entry: &StackEntry, notes: Opt
         painter.rect_filled(area, 3.0, fill);
         let stroke = if under_cursor { Stroke::new(2.0, theme::CURSOR) } else { Stroke::new(1.0, theme::OUTLINE) };
         painter.rect_stroke(area, 3.0, stroke, StrokeKind::Inside);
-        let names: Vec<&str> = group.fields.iter().map(|&index| entry.fields[index].name.as_str()).collect();
+        let names: Vec<&str> = group.fields.iter().map(|&index| fields[index].name.as_str()).collect();
         let mut label = names.join(" / ");
         if diagram_box.continued {
             label = format!("… {label}");
@@ -856,12 +876,12 @@ fn show_diagram(app: &mut ViewerApp, ui: &mut Ui, entry: &StackEntry, notes: Opt
     if let Some(group) = hovered.map(|index| &layout.groups[index]) {
         app.point_at_bytes(entry.start + group.offset, group.len);
         if response.clicked() {
-            let name = group.fields.iter().map(|&index| entry.fields[index].name.as_str()).collect::<Vec<_>>().join(" / ");
+            let name = group.fields.iter().map(|&index| fields[index].name.as_str()).collect::<Vec<_>>().join(" / ");
             actions.push(Action::SelectBytes { start: entry.start + group.offset, len: group.len, name });
         }
         response.on_hover_ui_at_pointer(|ui| {
             for &index in &group.fields {
-                let field = &entry.fields[index];
+                let field = fields[index];
                 ui.label(RichText::new(format!("{} = {}", field.name, shortened(&field.value, TABLE_VALUE_CHARS))).strong());
                 ui.label(RichText::new(format!("+{} · {} bytes", group.offset, group.len)).small().color(theme::TEXT_DIM));
                 if let Some(explanation) = notes.and_then(|notes| notes.explain_field(&field.name)) {
@@ -891,6 +911,16 @@ fn paint_ruler(painter: &egui::Painter, rect: Rect, left: f32, byte_width: f32) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_diagram_draws_a_headers_named_parts_rather_than_one_box() {
+        let header = Field::new("file header", 0, 8, "").with_children(vec![Field::new("magic", 0, 4, "a1b2c3d4"), Field::new("version", 4, 4, "2.4")]);
+        let record = Field::new("packet 1", 8, 100, "").with_children(vec![Field::new("record header", 8, 16, "")]);
+        let late = Field::new("packet 2", 500, 10, "");
+        let fields = [header, record, late];
+        let names: Vec<&str> = diagram_fields(&fields, 64).iter().map(|field| field.name.as_str()).collect();
+        assert_eq!(names, ["magic", "version", "record header"], "leaves only, and nothing past the rows drawn");
+    }
     use crate::packets::Layer;
 
     const NOTES: &str = r#"
