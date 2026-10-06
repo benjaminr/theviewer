@@ -216,7 +216,10 @@ pub fn dissect_netbios_session(payload: &[u8], direct_tcp: bool) -> Vec<AppLayer
         (false, NBSS_SESSION_MESSAGE | NBSS_SESSION_REQUEST | NBSS_POSITIVE_RESPONSE | NBSS_NEGATIVE_RESPONSE | NBSS_RETARGET_RESPONSE | NBSS_KEEP_ALIVE) => flags & !NBSS_LENGTH_EXTENSION == 0,
         _ => false,
     };
-    if !valid {
+    // A session message carries SMB; four bytes that only look like the
+    // framing (the middle of a long message, say) carry no SMB header.
+    let carries_smb_header = payload.get(NBSS_HEADER_LEN + 1..NBSS_HEADER_LEN + 4) == Some(&b"SMB"[..]) && (0xFC..=0xFF).contains(&payload[NBSS_HEADER_LEN]);
+    if !valid || (kind == NBSS_SESSION_MESSAGE && length > 0 && !carries_smb_header) {
         return Vec::new();
     }
     let end = (NBSS_HEADER_LEN + length).min(payload.len());
@@ -503,6 +506,9 @@ mod tests {
         assert!(dissect_netbios_session(&[0x42, 0, 0, 0], false).is_empty(), "unknown message type");
         assert!(dissect_netbios_session(&[0x81, 0], false).is_empty());
         assert!(dissect_netbios_session(&[0x85, 0, 0, 0], true).is_empty(), "port 445 carries session messages only");
+        let continuation = [0, 0, 0x05, 0xDC, 0x41, 0x42, 0x43, 0x44, 0x45];
+        assert!(dissect_netbios_session(&continuation, true).is_empty(), "the middle of a long message is not a new one");
+        assert_eq!(dissect_netbios_session(&[0x85, 0, 0, 0], false).len(), 1, "a keep-alive carries nothing");
         let whole = framed(&smb2(8, false, 0, 3));
         for cut in 0..whole.len() {
             let layers = dissect_netbios_session(&whole[..cut], true);
