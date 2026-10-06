@@ -261,6 +261,15 @@ are offered beside it.
 Images, Archives and so on), with a search box that matches names, keys and
 summaries, or ports: `udp/67` or `502` finds what runs there.
 
+**Wireshark names.** The notes give each protocol and field its Wireshark
+display-filter name where Wireshark has one: the IPv4 notes say
+*Wireshark: `ip`*, and the *Time to live* field `ip.ttl`. The names appear
+under a note's heading, in a column of the field table and in field
+tooltips, and clicking one copies it for a Wireshark or tshark filter. The
+search box finds notes by them too (`dhcp`, `ip.ttl`), and the checker below
+verifies every name against the installed tshark. Only the names are taken
+from Wireshark; the notes' own text is written for this project.
+
 **Your own notes.** Put TOML files in `~/.config/theviewer/reference/`, in
 the same form as the built-in ones; they are read at startup, and *Reload
 your notes* in the *Browse all* list reads them again. An entry with the
@@ -287,9 +296,12 @@ url = "https://example.com/rig-manual.pdf"
 built-in note against its sources: each cited RFC exists, has the title
 given and is not obsoleted (a warning), each cited section is found in the
 RFC's text, each port is registered with the IANA to something like the
-protocol (a warning), and every link is https. The RFC Editor's index, the
-IANA registry and RFC text are kept in `~/.cache/theviewer/rfc`;
-`-- --offline` uses only what is kept there. Errors make it exit non-zero.
+protocol (a warning), every link is https, and every Wireshark name is one
+that `tshark -G protocols` or `tshark -G fields` lists. The RFC Editor's
+index, the IANA registry and RFC text are kept in `~/.cache/theviewer/rfc`,
+and tshark's names in `~/.cache/theviewer/wireshark`; `-- --offline` uses
+only what is kept there, and without tshark or kept names the Wireshark
+names are skipped with a note. Errors make it exit non-zero.
 
 Also in the menus: *Plot selection* draws bytes as a time series, histogram,
 scatter or frequency spectrum, and *Play selection as audio* plays any bytes

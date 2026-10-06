@@ -2,13 +2,14 @@
 //! `check_reference` tool: that each cited RFC exists under the title given
 //! and is not obsoleted, that each cited section can be found in the RFC's
 //! text, that each port is registered with the IANA to something like the
-//! protocol, and that every link is https.
+//! protocol, that every link is https, and that every Wireshark name is one
+//! the installed tshark knows.
 //!
-//! The sources (the RFC Editor's index, RFC text and the IANA port registry)
-//! are passed in already fetched, so the checks need no network and can be
-//! tested on small samples.
+//! The sources (the RFC Editor's index, RFC text, the IANA port registry and
+//! tshark's lists of names) are passed in already fetched, so the checks need
+//! no network and can be tested on small samples.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::reference::{self, FormatReference, Transport};
 
@@ -103,6 +104,59 @@ fn csv_records(text: &str) -> Vec<Vec<String>> {
     records
 }
 
+/// The display-filter names a Wireshark installation knows.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct WiresharkNames {
+    /// Protocol names, such as `ip` and `dhcp`.
+    pub protocols: HashSet<String>,
+    /// Field names, such as `ip.ttl`.
+    pub fields: HashSet<String>,
+}
+
+impl WiresharkNames {
+    /// The names in the output of `tshark -G protocols` (each line a full
+    /// name, a short name and the filter name, separated by tabs) and
+    /// `tshark -G fields` (a `P` line for each protocol and an `F` line for
+    /// each field, the filter name third). A line without tabs is a name by
+    /// itself, as [`WiresharkNames::to_cache`] writes them.
+    pub fn parse(protocols: &str, fields: &str) -> WiresharkNames {
+        let mut names = WiresharkNames::default();
+        for line in protocols.lines() {
+            let columns: Vec<&str> = line.split('\t').collect();
+            let name = if columns.len() == 1 { columns[0] } else { columns.get(2).copied().unwrap_or_default() };
+            insert_name(&mut names.protocols, name);
+        }
+        for line in fields.lines() {
+            let columns: Vec<&str> = line.split('\t').collect();
+            match columns.as_slice() {
+                [name] => insert_name(&mut names.fields, name),
+                ["P", _, name, ..] => insert_name(&mut names.protocols, name),
+                ["F", _, name, ..] => insert_name(&mut names.fields, name),
+                _ => {}
+            }
+        }
+        names
+    }
+
+    /// The protocol and field names, one a line in name order, for the
+    /// cache that `--offline` reads.
+    pub fn to_cache(&self) -> (String, String) {
+        let lines = |names: &HashSet<String>| {
+            let mut sorted: Vec<&str> = names.iter().map(String::as_str).collect();
+            sorted.sort_unstable();
+            sorted.join("\n") + "\n"
+        };
+        (lines(&self.protocols), lines(&self.fields))
+    }
+}
+
+fn insert_name(names: &mut HashSet<String>, name: &str) {
+    let name = name.trim();
+    if !name.is_empty() {
+        names.insert(name.to_string());
+    }
+}
+
 /// Whether a cited title is the official one, ignoring case, punctuation
 /// and spacing. Citing only the main title, before a colon or " -- ", is
 /// enough: RFC 826 is "An Ethernet Address Resolution Protocol: Or
@@ -161,6 +215,8 @@ pub struct Sources<'a> {
     pub services: Option<&'a ServiceRegistry>,
     /// The plain text of an RFC, or why it is not available.
     pub rfc_text: &'a dyn Fn(u32) -> Result<String, String>,
+    /// The names the installed Wireshark knows.
+    pub wireshark: Option<&'a WiresharkNames>,
 }
 
 /// How much was checked, for the report.
@@ -170,6 +226,7 @@ pub struct Counts {
     pub sections: usize,
     pub ports: usize,
     pub links: usize,
+    pub wireshark_names: usize,
 }
 
 impl std::ops::AddAssign for Counts {
@@ -178,6 +235,7 @@ impl std::ops::AddAssign for Counts {
         self.sections += other.sections;
         self.ports += other.ports;
         self.links += other.links;
+        self.wireshark_names += other.wireshark_names;
     }
 }
 
@@ -247,6 +305,23 @@ pub fn check_entry(entry: &FormatReference, sources: &Sources) -> (Vec<Problem>,
                     problem(Severity::Warning, format!("{text} is registered to {}", names.join(", ")));
                 }
                 Some(_) => {}
+            }
+        }
+    }
+    if let Some(known) = sources.wireshark {
+        if let Some(name) = &entry.wireshark {
+            counts.wireshark_names += 1;
+            if !known.protocols.contains(name) {
+                problem(Severity::Error, format!("Wireshark has no protocol called '{name}'"));
+            }
+        }
+        // A display filter can name a protocol where a field would go, so a
+        // field may be given a protocol's name.
+        for note in &entry.fields {
+            let Some(name) = &note.wireshark else { continue };
+            counts.wireshark_names += 1;
+            if !known.fields.contains(name) && !known.protocols.contains(name) {
+                problem(Severity::Error, format!("Wireshark has no field called '{name}' (given for field \"{}\")", note.name));
             }
         }
     }
@@ -349,7 +424,7 @@ section = "5.1"
         let index = parse_rfc_index(INDEX).unwrap();
         let services = parse_service_registry(SERVICES);
         let rfc_text = |number: u32| if number == 2616 { Ok(RFC_2616.to_string()) } else { Err("not cached".to_string()) };
-        let sources = Sources { rfc_index: Some(&index), services: Some(&services), rfc_text: &rfc_text };
+        let sources = Sources { rfc_index: Some(&index), services: Some(&services), rfc_text: &rfc_text, wireshark: None };
         let (problems, counts) = check_entry(&library.entries()[0], &sources);
         assert_eq!(
             messages(&problems, Severity::Error),
@@ -369,17 +444,86 @@ section = "5.1"
             ],
             "tcp/8080 is http-alt, which resembles HTTP"
         );
-        assert_eq!(counts, Counts { rfcs: 3, sections: 2, ports: 3, links: 3 });
+        assert_eq!(counts, Counts { rfcs: 3, sections: 2, ports: 3, links: 3, wireshark_names: 0 });
     }
 
     #[test]
     fn sources_left_out_are_not_checked() {
         let library = Library::parse(&[("notes.toml", NOTES)]).unwrap();
         let rfc_text = |_: u32| Err("offline".to_string());
-        let sources = Sources { rfc_index: None, services: None, rfc_text: &rfc_text };
+        let sources = Sources { rfc_index: None, services: None, rfc_text: &rfc_text, wireshark: None };
         let (problems, counts) = check_entry(&library.entries()[0], &sources);
         assert_eq!(messages(&problems, Severity::Error), ["RFC 768 links to http://example.com/rfc768, which is not https"]);
         assert_eq!(messages(&problems, Severity::Warning), ["RFC 2616's sections were not checked: offline"]);
         assert_eq!(counts.ports, 0);
+        assert_eq!(counts.wireshark_names, 0);
+    }
+
+    const TSHARK_PROTOCOLS: &str = "Internet Protocol Version 4\tIPv4\tip\tT\tT\tT\n\
+Dynamic Host Configuration Protocol\tDHCP\tdhcp\tT\tT\tT\n";
+
+    const TSHARK_FIELDS: &str = "P\tInternet Protocol Version 4\tip\n\
+F\tTime to Live\tip.ttl\tFT_UINT8\tip\t\t0x0\t\n\
+F\tTotal Length\tip.len\tFT_UINT16\tip\t\t0x0\t\n\
+P\tFragment Header for IPv6\tipv6.fraghdr\n";
+
+    const WIRESHARK_NOTES: &str = r#"
+[[format]]
+id = "ipv4"
+name = "Internet Protocol version 4"
+keys = ["IPv4"]
+wireshark = "ip"
+summary = "Datagrams."
+organisation = "A header."
+[[format.fields]]
+name = "Time to live"
+wireshark = "ip.ttl"
+meaning = "Hops left."
+[[format.fields]]
+name = "Fragment header"
+wireshark = "ipv6.fraghdr"
+meaning = "A protocol's name standing for a field."
+[[format.fields]]
+name = "Total length"
+wireshark = "ip.total_length"
+meaning = "Bytes in the packet."
+[[format]]
+id = "gopher"
+name = "Gopher"
+keys = ["Gopher"]
+wireshark = "gopher"
+summary = "Menus."
+organisation = "Lines."
+"#;
+
+    #[test]
+    fn tsharks_lists_give_protocol_and_field_names_and_survive_the_cache() {
+        let names = WiresharkNames::parse(TSHARK_PROTOCOLS, TSHARK_FIELDS);
+        let sorted = |set: &HashSet<String>| {
+            let mut names: Vec<String> = set.iter().cloned().collect();
+            names.sort();
+            names
+        };
+        assert_eq!(sorted(&names.protocols), ["dhcp", "ip", "ipv6.fraghdr"]);
+        assert_eq!(sorted(&names.fields), ["ip.len", "ip.ttl"]);
+        let (protocols, fields) = names.to_cache();
+        assert_eq!(fields, "ip.len\nip.ttl\n");
+        assert_eq!(WiresharkNames::parse(&protocols, &fields), names, "the cache reads back the same names");
+    }
+
+    #[test]
+    fn a_wireshark_name_tshark_does_not_know_is_an_error() {
+        let library = Library::parse(&[("notes.toml", WIRESHARK_NOTES)]).unwrap();
+        let names = WiresharkNames::parse(TSHARK_PROTOCOLS, TSHARK_FIELDS);
+        let rfc_text = |_: u32| Err("offline".to_string());
+        let sources = Sources { rfc_index: None, services: None, rfc_text: &rfc_text, wireshark: Some(&names) };
+        let (problems, counts) = check_entry(&library.entries()[0], &sources);
+        assert_eq!(messages(&problems, Severity::Error), ["Wireshark has no field called 'ip.total_length' (given for field \"Total length\")"]);
+        assert_eq!(counts.wireshark_names, 4);
+        let (problems, _) = check_entry(&library.entries()[1], &sources);
+        assert_eq!(messages(&problems, Severity::Error), ["Wireshark has no protocol called 'gopher'"]);
+        let unchecked = Sources { wireshark: None, ..sources };
+        let (problems, counts) = check_entry(&library.entries()[1], &unchecked);
+        assert!(problems.is_empty() && counts.wireshark_names == 0, "without tshark's lists nothing is checked");
     }
 }
