@@ -958,10 +958,11 @@ fn match_at(window: &[u8], m: &CompiledMatch, candidate: usize) -> bool {
     }
     let mut position = first;
     while position <= last && position + m.value.len() <= window.len() {
-        if bytes_equal(&window[position..], &m.value, m.mask.as_deref(), m.ignore_case)
-            && (m.children.is_empty() || m.children.iter().any(|child| match_at(window, child, candidate)))
-        {
-            return true;
+        if bytes_equal(&window[position..], &m.value, m.mask.as_deref(), m.ignore_case) {
+            // Children are placed from the candidate, not from where this
+            // value was found, so their answer is the same at every place:
+            // decide it once rather than again for each place.
+            return m.children.is_empty() || m.children.iter().any(|child| match_at(window, child, candidate));
         }
         position += 1;
     }
@@ -1228,6 +1229,22 @@ magic = [
 
         assert!(Catalog::from_toml("[[signature]]\nid='x'\nname='x'\ncategory='Nope'\nmagic=[{bytes='00'}]").is_err());
         assert!(Catalog::from_toml("[[signature]]\nid='x'\nname='x'\nmagic=[{bytes='0'}]").is_err());
+    }
+
+    #[test]
+    fn nested_range_matches_over_repetitive_bytes_are_decided_quickly() {
+        // A match anywhere in 4 KiB whose child may also be anywhere in 4 KiB,
+        // and whose grandchild never holds, over 8 KiB of zeros: trying the
+        // children again at every place the parent matched took hours.
+        let ranged = |value: u8, children: Vec<CompiledMatch>| CompiledMatch { start: 0, end: 4096, value: vec![value], mask: None, ignore_case: false, pointer: None, children };
+        let rule = ranged(0x00, vec![ranged(0x00, vec![ranged(0xFF, Vec::new())])]);
+        let zeros = vec![0u8; 8192];
+        let started = std::time::Instant::now();
+        assert!(!match_at(&zeros, &rule, 0));
+        assert!(started.elapsed() < std::time::Duration::from_secs(5), "took {:?}", started.elapsed());
+        let mut with_marker = zeros.clone();
+        with_marker[3000] = 0xFF;
+        assert!(match_at(&with_marker, &rule, 0), "the grandchild is found anywhere in its range");
     }
 
     #[test]
