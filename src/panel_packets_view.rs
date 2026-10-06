@@ -16,6 +16,7 @@ use crate::packets::{self, ConversationKey, ExportPacket, Layer};
 use crate::plugin::Field;
 use crate::panel_packets::{self as panel, FieldEdit, PacketsState, PacketsView, Statistics};
 use crate::panel_packets_grid::{self as grid, PacketLayout};
+use crate::reference::{self, FormatReference};
 use crate::theme;
 
 /// Most bytes one undoable edit may span; wider operations are split into
@@ -474,6 +475,8 @@ enum TreeAction {
     StartEdit { offset: usize, len: usize, little_endian: bool, text: String },
     ApplyEdit,
     CancelEdit,
+    /// Open the Reference tab on a layer's format.
+    Reference { offset: usize, len: usize, name: String },
 }
 
 fn show_detail(state: &mut PacketsState, app: &mut ViewerApp, ui: &mut Ui) {
@@ -537,10 +540,19 @@ fn show_detail(state: &mut PacketsState, app: &mut ViewerApp, ui: &mut Ui) {
 fn act_on_tree(state: &mut PacketsState, app: &mut ViewerApp, action: TreeAction, packet_offset: usize) {
     match action {
         TreeAction::Select { offset, len, name } => {
+            // The Reference tab follows the layer the chosen field belongs to.
+            let layer = state.detail.as_ref().and_then(|detail| detail.dissection.layers.iter().rev().find(|layer| offset >= layer.offset && offset < layer.offset + layer.len.max(1)));
+            if let Some(layer) = layer {
+                app.bench.panels.reference.follow(&layer.name);
+            }
             state.selected_field = Some((offset, len));
             state.hex.position = offset;
             state.hex.pending_low_nibble = false;
             panel::select_in_document(state, app, packet_offset + offset, len, name);
+        }
+        TreeAction::Reference { offset, len, name } => {
+            act_on_tree(state, app, TreeAction::Select { offset, len, name: name.clone() }, packet_offset);
+            crate::panel_reference::open_reference_for(app, &name);
         }
         TreeAction::StartEdit { offset, len, little_endian, text } => {
             state.selected_field = Some((offset, len));
@@ -571,23 +583,41 @@ fn show_layer(
     actions: &mut Vec<TreeAction>,
 ) {
     let title = RichText::new(format!("{} · {} bytes at +{}", layer.name, layer.len, layer.offset)).strong();
-    let header = egui::CollapsingHeader::new(title).id_salt(("packet-layer", number, layer.name.as_str())).default_open(true).show(ui, |ui| {
-        for field in &layer.fields {
-            show_field(ui, field, selected, cursor, field_edit, actions);
-        }
-    });
-    if header.header_response.clicked() {
-        actions.push(TreeAction::Select { offset: layer.offset, len: layer.len, name: layer.name.clone() });
-    }
+    let notes = reference::lookup(&layer.name);
+    let id = ui.make_persistent_id(("packet-layer", number, layer.name.as_str()));
+    egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, true)
+        .show_header(ui, |ui| {
+            if ui.add(egui::Label::new(title).selectable(false).sense(Sense::click())).on_hover_text("Click to select the layer's bytes").clicked() {
+                actions.push(TreeAction::Select { offset: layer.offset, len: layer.len, name: layer.name.clone() });
+            }
+            if notes.is_some() && ui.small_button("Reference").on_hover_text("How this protocol is organised, what its fields mean and where it is specified").clicked() {
+                actions.push(TreeAction::Reference { offset: layer.offset, len: layer.len, name: layer.name.clone() });
+            }
+        })
+        .body(|ui| {
+            for field in &layer.fields {
+                show_field(ui, field, notes, selected, cursor, field_edit, actions);
+            }
+        });
 }
 
-fn show_field(ui: &mut Ui, field: &Field, selected: Option<(usize, usize)>, cursor: Option<usize>, field_edit: &mut Option<FieldEdit>, actions: &mut Vec<TreeAction>) {
+/// One field of a layer; hovering its name explains it when the layer's
+/// reference notes do.
+fn show_field(
+    ui: &mut Ui,
+    field: &Field,
+    notes: Option<&FormatReference>,
+    selected: Option<(usize, usize)>,
+    cursor: Option<usize>,
+    field_edit: &mut Option<FieldEdit>,
+    actions: &mut Vec<TreeAction>,
+) {
     let is_selected = selected == Some((field.offset, field.len));
     if !field.children.is_empty() {
         let title = RichText::new(format!("{}: {}", field.name, field.value));
         let header = egui::CollapsingHeader::new(title).id_salt(("packet-field", field.offset, field.len, field.name.as_str())).default_open(true).show(ui, |ui| {
             for child in &field.children {
-                show_field(ui, child, selected, cursor, field_edit, actions);
+                show_field(ui, child, notes, selected, cursor, field_edit, actions);
             }
         });
         if header.header_response.clicked() {
@@ -598,7 +628,12 @@ fn show_field(ui: &mut Ui, field: &Field, selected: Option<(usize, usize)>, curs
     let under_cursor = cursor.is_some_and(|at| at >= field.offset && at < field.offset + field.len.max(1));
     ui.horizontal_wrapped(|ui| {
         let name = RichText::new(format!("{}:", field.name)).color(if under_cursor { theme::CURSOR } else { theme::TEXT });
-        if ui.selectable_label(is_selected, name).on_hover_text(format!("+{} · {} bytes · click to select them", field.offset, field.len)).clicked() {
+        let extent = format!("+{} · {} bytes · click to select them", field.offset, field.len);
+        let hover = match notes.and_then(|notes| notes.explain_field(&field.name)) {
+            Some(explanation) => format!("{explanation}\n\n{extent}"),
+            None => extent,
+        };
+        if ui.selectable_label(is_selected, name).on_hover_text(hover).clicked() {
             actions.push(TreeAction::Select { offset: field.offset, len: field.len, name: field.name.clone() });
         }
         let editing = field_edit.as_ref().is_some_and(|edit| edit.offset == field.offset && edit.len == field.len);

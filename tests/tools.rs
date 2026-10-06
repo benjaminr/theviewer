@@ -795,3 +795,33 @@ fn the_reference_tab_explains_the_udp_header_under_the_cursor() {
     assert_eq!(chosen.as_deref(), Some("UDP"), "the tab stays on the format the field belongs to");
     std::fs::remove_file(path).ok();
 }
+
+#[test]
+fn picking_a_layer_in_the_packet_viewer_turns_the_reference_tab_to_that_protocol() {
+    let dns_query = b"\x12\x34\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00\x07example\x03com\x00\x00\x01\x00\x01";
+    let path = temp_path("reference-follow.pcap");
+    std::fs::write(&path, pcap_of(&[ethernet_udp(4000, 53, dns_query)])).unwrap();
+    let mut harness = harness_for(path.clone());
+    theviewer::panel_packets::open_capture_at(harness.state_mut(), 0);
+    wait_for(&mut harness, |app| app.bench.panels.packets.rows().len() == 1 && !app.bench.panels.packets.is_busy());
+
+    // The cursor in the DNS message, with the Reference tab beside the packets.
+    let dns_at = 24 + 16 + 14 + 20 + 8;
+    harness.state_mut().set_cursor(dns_at + 4, false);
+    harness.state_mut().dock.toggle(DockTab::Reference);
+    steps(&mut harness, 3);
+    harness.state_mut().dock.toggle(DockTab::Packets);
+    let ipv4_title = "Internet Protocol version 4 · 20 bytes at +14";
+    wait_for_label(&mut harness, ipv4_title);
+    assert!(harness.state().bench.panels.reference.stack().len() >= 4, "capture, Ethernet, IPv4, UDP and DNS are stacked");
+
+    harness.get_by_label(ipv4_title).scroll_to_me();
+    steps(&mut harness, 10);
+    harness.get_by_label(ipv4_title).click_accesskit();
+    steps(&mut harness, 4);
+    let ipv4_at = 24 + 16 + 14;
+    assert_eq!(harness.state().selection(), Some((ipv4_at, 20)), "the layer's bytes are selected");
+    let chosen = harness.state().bench.panels.reference.chosen_entry().map(|entry| (entry.key.clone(), entry.start));
+    assert_eq!(chosen, Some(("Internet Protocol version 4".to_string(), ipv4_at)));
+    std::fs::remove_file(path).ok();
+}

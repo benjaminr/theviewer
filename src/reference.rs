@@ -133,6 +133,14 @@ impl Library {
         self.by_key.get(&key).map(|&index| &self.entries[index])
     }
 
+    /// The entry for a finding: by its id, else by its title. Findings that
+    /// share one id across formats (every compressed stream is
+    /// `compressed-streams`) name the format only in the title, such as
+    /// "gzip stream" or "ext4 superblock".
+    pub fn lookup_finding(&self, id: &str, title: &str) -> Option<&FormatReference> {
+        self.lookup(id).or_else(|| if title.trim().is_empty() { None } else { self.lookup(title) })
+    }
+
     pub fn by_id(&self, id: &str) -> Option<&FormatReference> {
         self.entries.iter().find(|entry| entry.id == id)
     }
@@ -159,6 +167,11 @@ pub fn library() -> &'static Library {
 /// The entry for `key` in the embedded library.
 pub fn lookup(key: &str) -> Option<&'static FormatReference> {
     library().lookup(key)
+}
+
+/// The entry for a finding, by id or else title, in the embedded library.
+pub fn lookup_finding(id: &str, title: &str) -> Option<&'static FormatReference> {
+    library().lookup_finding(id, title)
 }
 
 fn normalise_key(key: &str) -> String {
@@ -396,6 +409,14 @@ meaning = "One numbered option."
         assert_eq!(library.lookup("udp").unwrap().id, "udp");
         assert_eq!(library.lookup("User Datagram Protocol (malformed)").unwrap().id, "udp");
         assert!(library.lookup("tcp").is_none());
+    }
+
+    #[test]
+    fn a_finding_whose_id_is_shared_is_found_by_its_title() {
+        let library = sample();
+        assert_eq!(library.lookup_finding("compressed-streams", "UDP").unwrap().id, "udp");
+        assert_eq!(library.lookup_finding("udp", "").unwrap().id, "udp");
+        assert!(library.lookup_finding("compressed-streams", "").is_none());
     }
 
     #[test]

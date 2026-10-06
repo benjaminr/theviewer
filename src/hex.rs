@@ -7,6 +7,7 @@ use crate::app::ViewerApp;
 use crate::legend::{self, LayerKind};
 use crate::patterns;
 use crate::plugin::{Category, Field};
+use crate::reference::{self, FormatReference};
 use crate::raster::byte_class_colour;
 use crate::theme;
 
@@ -145,11 +146,15 @@ fn show_structure_tree(app: &mut ViewerApp, ui: &mut Ui) {
         return;
     }
     let cursor = app.cursor;
+    let notes = reference::lookup_finding(&structure.id, &structure.title);
     ui.horizontal(|ui| {
         let (rect, _) = ui.allocate_exact_size(vec2(8.0, 8.0), Sense::hover());
         ui.painter().rect_filled(rect, 2.0, structure.category.colour());
         if ui.selectable_label(app.show_structure_fields, RichText::new(&structure.title).strong()).clicked() {
             app.show_structure_fields = !app.show_structure_fields;
+        }
+        if notes.is_some() && ui.small_button("Reference").on_hover_text("How this format is organised, what its fields mean and where it is specified").clicked() {
+            crate::panel_reference::open_reference_for(app, &structure.id);
         }
         let path: Vec<String> = structure.field_path(cursor).iter().map(|f| f.name.clone()).collect();
         if !path.is_empty() {
@@ -173,7 +178,7 @@ fn show_structure_tree(app: &mut ViewerApp, ui: &mut Ui) {
     let mut chosen: Option<(usize, usize)> = None;
     egui::ScrollArea::vertical().id_salt("structure-tree").max_height(STRUCTURE_HEIGHT).show(ui, |ui| {
         for field in &structure.fields {
-            show_field(ui, field, cursor, 0, &mut chosen);
+            show_field(ui, field, notes, cursor, 0, &mut chosen);
         }
     });
     if let Some((start, len)) = chosen {
@@ -185,7 +190,9 @@ fn show_structure_tree(app: &mut ViewerApp, ui: &mut Ui) {
     }
 }
 
-fn show_field(ui: &mut Ui, field: &Field, cursor: usize, depth: usize, chosen: &mut Option<(usize, usize)>) {
+/// One field of the structure tree; hovering it explains the field when the
+/// format's reference notes do.
+fn show_field(ui: &mut Ui, field: &Field, notes: Option<&FormatReference>, cursor: usize, depth: usize, chosen: &mut Option<(usize, usize)>) {
     const MAX_DEPTH: usize = 8;
     const MAX_CHILDREN: usize = 300;
     let on_cursor = cursor >= field.offset && cursor < field.end();
@@ -194,10 +201,15 @@ fn show_field(ui: &mut Ui, field: &Field, cursor: usize, depth: usize, chosen: &
     } else {
         RichText::new(&field.name)
     };
+    let extent = format!("{:#x}, {} B", field.offset, field.len);
+    let hover = match notes.and_then(|notes| notes.explain_field(&field.name)) {
+        Some(explanation) => format!("{extent}\n\n{explanation}"),
+        None => extent,
+    };
     let row = |ui: &mut Ui, chosen: &mut Option<(usize, usize)>| {
         ui.horizontal(|ui| {
             ui.add_space(depth as f32 * 12.0);
-            if ui.add(egui::Label::new(name.clone()).sense(Sense::click())).on_hover_text(format!("{:#x}, {} B", field.offset, field.len)).clicked() {
+            if ui.add(egui::Label::new(name.clone()).sense(Sense::click())).on_hover_text(&hover).clicked() {
                 *chosen = Some((field.offset, field.len));
             }
             ui.monospace(RichText::new(format!("{:#x}", field.offset)).small().color(theme::TEXT_DIM));
@@ -216,7 +228,7 @@ fn show_field(ui: &mut Ui, field: &Field, cursor: usize, depth: usize, chosen: &
         .show_header(ui, |ui| row(ui, chosen))
         .body(|ui| {
             for child in field.children.iter().take(MAX_CHILDREN) {
-                show_field(ui, child, cursor, depth + 1, chosen);
+                show_field(ui, child, notes, cursor, depth + 1, chosen);
             }
             if field.children.len() > MAX_CHILDREN {
                 ui.label(RichText::new(format!("… {} more", field.children.len() - MAX_CHILDREN)).color(theme::TEXT_DIM));

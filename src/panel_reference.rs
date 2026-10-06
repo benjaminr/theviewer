@@ -103,7 +103,7 @@ fn is_format(finding: &Finding, library: &Library) -> bool {
             | Category::Compressed
             | Category::Protocol
     );
-    format_category || !finding.fields.is_empty() || library.lookup(&finding.id).is_some()
+    format_category || !finding.fields.is_empty() || library.lookup_finding(&finding.id, &finding.title).is_some()
 }
 
 /// The breadcrumb name: the notes' short name when they have one, else the
@@ -134,7 +134,7 @@ pub fn build_stack(library: &Library, findings: &[Finding], packet: Option<&Pack
     // Each entry with the length of what it encloses, for ordering.
     let mut scoped: Vec<(usize, StackEntry)> = Vec::new();
     for finding in findings.iter().filter(|finding| finding.start <= position && position < finding.end() && is_format(finding, library)) {
-        let notes = library.lookup(&finding.id);
+        let notes = library.lookup_finding(&finding.id, &finding.title);
         let name = if finding.title.is_empty() { finding.id.as_str() } else { finding.title.as_str() };
         let entry = StackEntry {
             label: label_for(name, notes),
