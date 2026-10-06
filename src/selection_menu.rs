@@ -5,7 +5,8 @@
 //!
 //! Operations act on every selected range (each record of a column, each
 //! range of a multi-range selection), or on the byte at the cursor when
-//! nothing is selected, and each is one undo step.
+//! nothing is selected, and each is one undo step, taken through the API's
+//! `transform.apply` with the selection it acted on.
 
 use std::sync::Arc;
 
@@ -75,22 +76,21 @@ impl ViewerApp {
     }
 
     /// Apply `operation` to every selected range as one undo step, then keep
-    /// the changed bytes selected.
+    /// the changed bytes selected. Carried out as `transform.apply`, with
+    /// the selection (or the byte at the cursor) it acts on, so the step
+    /// can be repeated; a failure is said on the status bar.
     pub fn apply_operation(&mut self, operation: Operation) {
         let ranges = self.operation_ranges();
         if ranges.is_empty() {
             self.status = "Nothing to change: the cursor is at the end of the document".to_string();
             return;
         }
-        let selected = self.current_selection();
-        match self.rewrite_ranges(&ranges, &operation) {
-            Ok(changed) => {
-                self.select_after_operation(selected, &operation, &changed);
-                let bytes: usize = ranges.iter().map(|&(_, len)| len).sum();
-                let places = if ranges.len() == 1 { format!("at {:#x}", ranges[0].0) } else { format!("in {} ranges", ranges.len()) };
-                self.status = format!("{} {bytes} bytes {places}. Undo with Cmd+Z.", operation.label());
-            }
-            Err(message) => self.status = format!("{} failed: {message}", operation_name(&operation)),
+        let target = self.current_selection().unwrap_or(Selection::Range(self.cursor, 1));
+        let params = serde_json::json!({ "selection": target, "operation": operation });
+        if self.perform("transform.apply", params).is_ok() {
+            let bytes: usize = ranges.iter().map(|&(_, len)| len).sum();
+            let places = if ranges.len() == 1 { format!("at {:#x}", ranges[0].0) } else { format!("in {} ranges", ranges.len()) };
+            self.status = format!("{} {bytes} bytes {places}. Undo with Cmd+Z.", operation.label());
         }
     }
 
@@ -98,14 +98,6 @@ impl ViewerApp {
     /// where each range's new bytes are.
     fn rewrite_ranges(&mut self, ranges: &[(usize, usize)], operation: &Operation) -> Result<Vec<(usize, usize)>, String> {
         rewrite_ranges(&mut self.document, ranges, operation)
-    }
-
-    /// Select what an operation produced: the same column, the changed
-    /// ranges, or just the cursor after a delete.
-    fn select_after_operation(&mut self, selected: Option<Selection>, operation: &Operation, changed: &[(usize, usize)]) {
-        let (cursor, selection) = selection_after_operation(selected, operation, changed, self.cursor, self.document.len());
-        self.set_selection(cursor, selection);
-        self.clamp_top_row();
     }
 
     /// Put the cursor at `cursor` and select `selection`, of any kind;
@@ -297,18 +289,6 @@ impl ViewerApp {
         let inputs = &self.inputs;
         let operation = Operation::Counter { start: inputs.counter_start, step: inputs.counter_step, little_endian: inputs.counter_little_endian };
         self.apply_operation(operation);
-    }
-}
-
-/// The name of an operation for an error message.
-fn operation_name(operation: &Operation) -> &'static str {
-    match operation {
-        Operation::Compress(_) => "Compressing",
-        Operation::Decompress => "Decompressing",
-        Operation::Fill(_) => "Fill",
-        Operation::Xor(_) | Operation::Add(_) | Operation::Subtract(_) => "Combining with the key",
-        Operation::SwapByteOrder(_) => "Swapping the byte order",
-        _ => "The operation",
     }
 }
 
@@ -589,4 +569,57 @@ pub fn fold_chip(ui: &Ui, id: Id, at: Pos2, hidden: usize, colour: Color32) -> b
     ui.painter().rect_filled(rect, 3.0, fill);
     ui.painter().galley(rect.min + vec2(4.0, 1.0), galley, Color32::BLACK);
     response.clicked()
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::app::{Launch, ViewerApp};
+    use crate::bus::Topic;
+    use crate::selection::Selection;
+
+    fn app_with(bytes: &[u8]) -> ViewerApp {
+        let mut app = ViewerApp::new(Launch::default());
+        app.open_bytes(bytes.to_vec(), "test.bin".to_string());
+        app.run_bus();
+        app
+    }
+
+    /// Who published the edits made since `cursor`.
+    fn editors_since(app: &mut ViewerApp, cursor: u64) -> Vec<String> {
+        app.run_bus();
+        app.bus.changed_since(cursor).messages.iter().filter(|message| message.topic() == Topic::DocumentEdited).map(|message| message.producer().to_string()).collect()
+    }
+
+    #[test]
+    fn inverting_the_selection_from_the_palette_is_the_person_s_step_through_the_api() {
+        let mut app = app_with(&[0x0F; 8]);
+        app.restore_selection(2, 3);
+        let cursor = app.bus.cursor();
+        let invert = crate::commands::commands().into_iter().find(|command| command.id == "edit.invert").unwrap();
+        (invert.run)(&mut app, &eframe::egui::Context::default());
+        assert_eq!(editors_since(&mut app, cursor), ["panel"]);
+        assert_eq!(app.document.read_range(0, 8), [0x0F, 0x0F, 0xF0, 0xF0, 0xF0, 0x0F, 0x0F, 0x0F]);
+        assert_eq!(app.current_selection(), Some(Selection::Range(2, 3)), "what it produced stays selected");
+        assert_eq!(app.document.undo_label(), Some("Invert"));
+        assert!(app.status.starts_with("Inverted 3 bytes at 0x2"), "{}", app.status);
+    }
+
+    #[test]
+    fn an_operation_with_nothing_selected_changes_the_byte_at_the_cursor() {
+        let mut app = app_with(&[0x00; 4]);
+        app.set_cursor(1, false);
+        app.invert_target();
+        assert_eq!(app.document.read_range(0, 4), [0x00, 0xFF, 0x00, 0x00]);
+        assert_eq!((app.cursor, app.current_selection()), (1, None), "nothing is selected afterwards, as before");
+    }
+
+    #[test]
+    fn an_operation_that_fails_changes_nothing_and_says_why() {
+        let mut app = app_with(b"not compressed at all");
+        app.restore_selection(0, 8);
+        app.apply_operation(crate::selection_ops::Operation::Decompress);
+        assert_eq!(app.document.read_range(0, 8), b"not comp");
+        assert!(app.status.contains("failed"), "{}", app.status);
+        assert!(!app.document.can_undo());
+    }
 }
