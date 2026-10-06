@@ -2,9 +2,9 @@
 //! and a one-line summary for the packet list.
 //!
 //! Ethernet, IPv4, IPv6, TCP and UDP headers are read with `etherparse`;
-//! ARP and ICMP are small enough to read directly, as are the other link
-//! layers a capture may use, from Linux cooked captures to 802.11 and
-//! radiotap ([`link`]);
+//! ARP is small enough to read directly, as are ICMP and ICMPv6 ([`icmp`])
+//! and the other link layers a capture may use,
+//! from Linux cooked captures to 802.11 and radiotap ([`link`]);
 //! application protocols are chosen by port ([`super::application`]).
 //! Frames of unknown format are decoded with a template, or with the field
 //! guesses of the protocol analysis. Every offset is relative to the
@@ -21,6 +21,7 @@ use crate::plugin::Field;
 use crate::protocol::MessageField;
 use crate::templates::Template;
 
+mod icmp;
 mod link;
 
 const ETHERNET_HEADER_LEN: usize = 14;
@@ -30,7 +31,6 @@ const MAX_VLAN_TAGS: usize = 3;
 const IPV6_HEADER_LEN: usize = 40;
 /// Most IPv6 extension headers followed.
 const MAX_IPV6_EXTENSIONS: usize = 8;
-const ICMP_HEADER_LEN: usize = 8;
 const ARP_FIXED_LEN: usize = 8;
 /// Bytes of a data field shown as hex.
 const DATA_PREVIEW_BYTES: usize = 24;
@@ -238,26 +238,6 @@ fn ip_protocol_name(protocol: u8) -> String {
     }
 }
 
-fn icmp_type_name(icmp_type: u8, version6: bool) -> &'static str {
-    match (version6, icmp_type) {
-        (false, 0) => "Echo (ping) reply",
-        (false, 3) => "Destination unreachable",
-        (false, 5) => "Redirect",
-        (false, 8) => "Echo (ping) request",
-        (false, 11) => "Time exceeded",
-        (true, 1) => "Destination unreachable",
-        (true, 2) => "Packet too big",
-        (true, 3) => "Time exceeded",
-        (true, 128) => "Echo (ping) request",
-        (true, 129) => "Echo (ping) reply",
-        (true, 133) => "Router solicitation",
-        (true, 134) => "Router advertisement",
-        (true, 135) => "Neighbour solicitation",
-        (true, 136) => "Neighbour advertisement",
-        _ => "Other",
-    }
-}
-
 fn tcp_flag_names(header: &TcpHeaderSlice<'_>) -> Vec<&'static str> {
     let flags = [
         (header.cwr(), "CWR"),
@@ -277,6 +257,58 @@ fn shift_fields(fields: &mut [Field], by: usize) {
         field.offset += by;
         shift_fields(&mut field.children, by);
     }
+}
+
+/// The fields of the IPv4 header at `at`, and a note when its checksum is
+/// wrong.
+fn ipv4_header_fields(bytes: &[u8], at: usize, header: &Ipv4HeaderSlice<'_>) -> (Vec<Field>, Option<String>) {
+    let header_len = header.slice().len();
+    let stored_checksum = header.header_checksum();
+    let computed_checksum = header.to_header().calc_header_checksum();
+    let (checksum, problem) = if stored_checksum == computed_checksum {
+        (format!("{stored_checksum:#06x} (correct)"), None)
+    } else {
+        (
+            format!("{stored_checksum:#06x} (incorrect, should be {computed_checksum:#06x})"),
+            Some(format!("The IPv4 header checksum is {stored_checksum:#06x}; it should be {computed_checksum:#06x}")),
+        )
+    };
+    let protocol = header.protocol().0;
+    let flags = format!(
+        "{}{}fragment offset {}",
+        if header.dont_fragment() { "don't fragment, " } else { "" },
+        if header.more_fragments() { "more fragments, " } else { "" },
+        header.fragments_offset().value()
+    );
+    let mut fields = vec![
+        Field::new("Version and header length", at, 1, format!("version 4, {header_len} bytes")),
+        Field::new("Differentiated services", at + 1, 1, format!("{:#04x}", bytes[at + 1])),
+        Field::new("Total length", at + 2, 2, header.total_len().to_string()),
+        Field::new("Identification", at + 4, 2, format!("{:#06x}", header.identification())),
+        Field::new("Flags and fragment offset", at + 6, 2, flags),
+        Field::new("Time to live", at + 8, 1, header.ttl().to_string()),
+        Field::new("Protocol", at + 9, 1, format!("{protocol} ({})", ip_protocol_name(protocol))),
+        Field::new("Header checksum", at + 10, 2, checksum),
+        Field::new("Source address", at + 12, 4, header.source_addr().to_string()),
+        Field::new("Destination address", at + 16, 4, header.destination_addr().to_string()),
+    ];
+    if header_len > 20 {
+        fields.push(Field::new("Options", at + 20, header_len - 20, hex_preview(header.options(), DATA_PREVIEW_BYTES)));
+    }
+    (fields, problem)
+}
+
+/// The fields of the fixed IPv6 header at `at`.
+fn ipv6_header_fields(at: usize, header: &Ipv6HeaderSlice<'_>) -> Vec<Field> {
+    let next = header.next_header().0;
+    vec![
+        Field::new("Version, traffic class and flow label", at, 4, format!("version 6, class {:#04x}, flow {:#07x}", header.traffic_class(), header.flow_label().value())),
+        Field::new("Payload length", at + 4, 2, header.payload_length().to_string()),
+        Field::new("Next header", at + 6, 1, format!("{next} ({})", ip_protocol_name(next))),
+        Field::new("Hop limit", at + 7, 1, header.hop_limit().to_string()),
+        Field::new("Source address", at + 8, 16, header.source_addr().to_string()),
+        Field::new("Destination address", at + 24, 16, header.destination_addr().to_string()),
+    ]
 }
 
 /// The dissection in progress.
@@ -501,38 +533,12 @@ impl Walk<'_> {
         if at + total > bytes.len() {
             self.out.notes.push(format!("The IPv4 total length is {total} bytes but only {} were captured", bytes.len() - at));
         }
-        let stored_checksum = header.header_checksum();
-        let computed_checksum = header.to_header().calc_header_checksum();
-        let checksum = if stored_checksum == computed_checksum {
-            format!("{stored_checksum:#06x} (correct)")
-        } else {
-            self.out.notes.push(format!("The IPv4 header checksum is {stored_checksum:#06x}; it should be {computed_checksum:#06x}"));
-            format!("{stored_checksum:#06x} (incorrect, should be {computed_checksum:#06x})")
-        };
+        let (fields, checksum_problem) = ipv4_header_fields(bytes, at, &header);
+        self.out.notes.extend(checksum_problem);
         let protocol = header.protocol().0;
         let fragment_offset = header.fragments_offset().value();
-        let flags = format!(
-            "{}{}fragment offset {fragment_offset}",
-            if header.dont_fragment() { "don't fragment, " } else { "" },
-            if header.more_fragments() { "more fragments, " } else { "" }
-        );
         let source = header.source_addr();
         let destination = header.destination_addr();
-        let mut fields = vec![
-            Field::new("Version and header length", at, 1, format!("version 4, {header_len} bytes")),
-            Field::new("Differentiated services", at + 1, 1, format!("{:#04x}", bytes[at + 1])),
-            Field::new("Total length", at + 2, 2, total.to_string()),
-            Field::new("Identification", at + 4, 2, format!("{:#06x}", header.identification())),
-            Field::new("Flags and fragment offset", at + 6, 2, flags),
-            Field::new("Time to live", at + 8, 1, header.ttl().to_string()),
-            Field::new("Protocol", at + 9, 1, format!("{protocol} ({})", ip_protocol_name(protocol))),
-            Field::new("Header checksum", at + 10, 2, checksum),
-            Field::new("Source address", at + 12, 4, source.to_string()),
-            Field::new("Destination address", at + 16, 4, destination.to_string()),
-        ];
-        if header_len > 20 {
-            fields.push(Field::new("Options", at + 20, header_len - 20, hex_preview(header.options(), DATA_PREVIEW_BYTES)));
-        }
         self.push_layer("Internet Protocol version 4", at, header_len, fields);
         self.out.protocols.extend(["ip", "ipv4"]);
         self.out.summary.source = source.to_string();
@@ -565,24 +571,7 @@ impl Walk<'_> {
         let source = header.source_addr();
         let destination = header.destination_addr();
         let mut next = header.next_header().0;
-        self.push_layer(
-            "Internet Protocol version 6",
-            at,
-            IPV6_HEADER_LEN,
-            vec![
-                Field::new(
-                    "Version, traffic class and flow label",
-                    at,
-                    4,
-                    format!("version 6, class {:#04x}, flow {:#07x}", header.traffic_class(), header.flow_label().value()),
-                ),
-                Field::new("Payload length", at + 4, 2, payload_len.to_string()),
-                Field::new("Next header", at + 6, 1, format!("{next} ({})", ip_protocol_name(next))),
-                Field::new("Hop limit", at + 7, 1, header.hop_limit().to_string()),
-                Field::new("Source address", at + 8, 16, source.to_string()),
-                Field::new("Destination address", at + 24, 16, destination.to_string()),
-            ],
-        );
+        self.push_layer("Internet Protocol version 6", at, IPV6_HEADER_LEN, ipv6_header_fields(at, &header));
         self.out.protocols.extend(["ip", "ipv6"]);
         self.out.summary.source = source.to_string();
         self.out.summary.destination = destination.to_string();
@@ -733,44 +722,6 @@ impl Walk<'_> {
         self.out.payload = Some((payload_at, udp_end - payload_at));
         self.set_top("UDP", format!("{source_port} → {destination_port} Len={}", udp_end - payload_at));
         self.application(Transport::Udp, source_port, destination_port, payload_at, udp_end);
-    }
-
-    fn icmp(&mut self, source: IpAddr, destination: IpAddr, at: usize, end: usize, version6: bool) {
-        let name = if version6 { "ICMPv6" } else { "ICMP" };
-        let Some(header) = self.bytes.get(at..at + ICMP_HEADER_LEN).filter(|_| at + ICMP_HEADER_LEN <= end) else {
-            self.malformed(at, name, format!("The {name} header is cut short"));
-            return;
-        };
-        let (icmp_type, code) = (header[0], header[1]);
-        let type_name = icmp_type_name(icmp_type, version6);
-        let mut fields = vec![
-            Field::new("Type", at, 1, format!("{icmp_type} ({type_name})")),
-            Field::new("Code", at + 1, 1, code.to_string()),
-            Field::new("Checksum", at + 2, 2, format!("{:#06x}", u16::from_be_bytes([header[2], header[3]]))),
-        ];
-        let is_echo = matches!((version6, icmp_type), (false, 0 | 8) | (true, 128 | 129));
-        let mut info = type_name.to_string();
-        if is_echo {
-            let identifier = u16::from_be_bytes([header[4], header[5]]);
-            let sequence = u16::from_be_bytes([header[6], header[7]]);
-            fields.push(Field::new("Identifier", at + 4, 2, format!("{identifier:#06x}")));
-            fields.push(Field::new("Sequence number", at + 6, 2, sequence.to_string()));
-            info = format!("{type_name} id={identifier:#06x}, seq={sequence}");
-        } else {
-            fields.push(Field::new("Rest of header", at + 4, 4, hex_preview(&header[4..], 4)));
-        }
-        let protocol_name = if version6 { "Internet Control Message Protocol v6" } else { "Internet Control Message Protocol" };
-        self.push_layer(protocol_name, at, ICMP_HEADER_LEN, fields);
-        self.out.protocols.push(if version6 { "icmpv6" } else { "icmp" });
-        self.out.flow = Some(Flow {
-            transport: Transport::Icmp,
-            source: Endpoint { address: source, port: None },
-            destination: Endpoint { address: destination, port: None },
-            tcp_sequence: None,
-        });
-        self.out.payload = Some((at + ICMP_HEADER_LEN, end - at - ICMP_HEADER_LEN));
-        self.set_top(name, info);
-        self.data_layer(at + ICMP_HEADER_LEN, end, "ICMP data");
     }
 
     // -- Application layer -------------------------------------------------

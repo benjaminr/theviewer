@@ -62,7 +62,7 @@ pub const LAYER_MAP: [LayerMapping; 26] = [
 ];
 
 /// `(our layer, our field, tshark filter name)` for fields both sides name.
-pub const FIELD_MAP: [(&str, &str, &str); 95] = [
+pub const FIELD_MAP: [(&str, &str, &str); 98] = [
     ("Linux cooked capture", "Packet type", "sll.pkttype"),
     ("Linux cooked capture", "ARPHRD type", "sll.hatype"),
     ("Linux cooked capture", "Link-layer address length", "sll.halen"),
@@ -144,6 +144,9 @@ pub const FIELD_MAP: [(&str, &str, &str); 95] = [
     ("Internet Control Message Protocol v6", "Type", "icmpv6.type"),
     ("Internet Control Message Protocol v6", "Code", "icmpv6.code"),
     ("Internet Control Message Protocol v6", "Checksum", "icmpv6.checksum"),
+    ("Internet Control Message Protocol v6", "Identifier", "icmpv6.echo.identifier"),
+    ("Internet Control Message Protocol v6", "Sequence number", "icmpv6.echo.sequence_number"),
+    ("Internet Control Message Protocol v6", "Target address", "icmpv6.nd.ns.target_address"),
     ("DNS", "Transaction ID", "dns.id"),
     ("DNS", "Flags", "dns.flags"),
     ("DNS", "Questions", "dns.count.queries"),
