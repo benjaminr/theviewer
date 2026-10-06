@@ -2544,29 +2544,50 @@ impl ViewerApp {
         Some((stream.start, self.document.read_range(stream.start, stream.len), "stream"))
     }
 
-    /// Write the selection (or the stream under the cursor) to `path`.
+    /// The span of the selection, else of the stream under the cursor.
+    fn extract_span(&self) -> Option<(usize, usize, &'static str)> {
+        if let Some((start, len)) = self.selection() {
+            return Some((start, len, "selection"));
+        }
+        let stream = self.compressed_stream_at_cursor()?;
+        Some((stream.start, stream.len, "stream"))
+    }
+
+    /// Write the selection (or the stream under the cursor) to `path`, as
+    /// `documents.export`.
     pub fn export_bytes_to(&mut self, path: &Path) {
-        let Some((start, bytes, what)) = self.extract_source() else {
+        let Some((start, len, what)) = self.extract_span() else {
             self.status = "Select some bytes, or put the cursor in a compressed stream, to extract".to_string();
             return;
         };
-        match std::fs::write(path, &bytes) {
-            Ok(()) => self.status = format!("Saved {} ({} from {start:#x}) to {}", compress::human_bytes(bytes.len()), what, path.display()),
-            Err(error) => self.status = format!("Could not write {}: {error}", path.display()),
+        let params = serde_json::json!({ "start": start, "len": len, "path": path.display().to_string() });
+        if self.perform("documents.export", params).is_ok() {
+            self.status = format!("Saved {} ({} from {start:#x}) to {}", compress::human_bytes(len), what, path.display());
         }
     }
 
-    /// Decompress the block at the cursor straight to `path`, without opening it.
+    /// Decompress the block at the cursor straight to `path`, without
+    /// opening it, as `documents.export`.
     pub fn export_decompressed_to(&mut self, path: &Path) {
-        match self.decompress_target() {
-            Ok((start, result)) => match std::fs::write(path, &result.data) {
-                Ok(()) => {
-                    self.status = format!("{} saved to {}", Self::describe_decompression(start, &result), path.display());
-                }
-                Err(error) => self.status = format!("Could not write {}: {error}", path.display()),
-            },
-            Err(message) => self.status = message,
-        }
+        let start = self.decompress_start();
+        let len = self.document.len().saturating_sub(start).min(DECOMPRESS_INPUT_MAX);
+        let params = serde_json::json!({ "start": start, "len": len, "path": path.display().to_string(), "decompress": true });
+        let Ok(result) = self.perform_typed::<crate::api::documents::ExportResult>("documents.export", params) else { return };
+        let Some(stream) = result.decompressed else { return };
+        let note = if stream.truncated {
+            " (cut at the 64 MiB limit)"
+        } else if !stream.complete {
+            " (stream was incomplete)"
+        } else {
+            ""
+        };
+        self.status = format!(
+            "{} at {start:#x}: {} compressed to {} decompressed{note} saved to {}",
+            stream.codec.label(),
+            compress::human_bytes(stream.consumed as usize),
+            compress::human_bytes(result.written as usize),
+            path.display()
+        );
     }
 
     /// Copy the selection or stream bytes to the clipboard as hex.

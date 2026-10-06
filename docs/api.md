@@ -32,6 +32,7 @@ Errors are `{code, message, data}`, with these codes:
 | [`documents.new`](#documentsnew) | view | Open a new, empty document and make it current; the window refuses while its document has unsaved edits, unless the person at the window discards them. |
 | [`documents.save`](#documentssave) | edit | Save a document over its file, or to a path, with every edit made so far. |
 | [`documents.derive`](#documentsderive) | view | Open bytes of a document (a span, several ranges one after another, or bytes given), or what a transform such as decompress or XOR makes of them, as a document of their own derived from it, and make it current; in the window, Back goes back to the parent. |
+| [`documents.export`](#documentsexport) | edit | Write a span of a document to a file, or what decompresses at its start; the document is left as it is. |
 | [`bytes.read`](#bytesread) | read | Read a span of bytes, as hex by default, or as base64 or text. |
 | [`bytes.hexdump`](#byteshexdump) | read | A classic hex dump of a span, 16 bytes per line with an ASCII column, at most 1 MiB. |
 | [`bytes.write`](#byteswrite) | edit | Overwrite bytes in place with new ones, as one undoable step; the document keeps its length. |
@@ -246,6 +247,24 @@ Open bytes of a document (a span, several ranges one after another, or bytes giv
 | `name` | string | yes | File name, or the name of a derived document. |
 | `path` | string | no | Path on disk, for documents opened from a file. |
 | `version` | integer | yes | Incremented on every edit. |
+
+### documents.export
+
+Write a span of a document to a file, or what decompresses at its start; the document is left as it is.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `decompress` | boolean | no | Write what the first codec that decodes at `start` makes of the bytes, instead of the bytes. |
+| `doc` | string | no | Document id, path or "current" (the default). |
+| `len` | integer | no | Bytes to write, or to read the compressed stream from (at most 64 MiB); to the end of the document when omitted. |
+| `path` | string | yes | The file to write. |
+| `start` | integer | yes | Offset of the first byte to write, or of the compressed stream. |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `decompressed` | ExportedStream | no | The codec and stream, when the bytes were decompressed. |
+| `path` | string | yes | The file written. |
+| `written` | integer | yes | Bytes written. |
 
 ### bytes.read
 

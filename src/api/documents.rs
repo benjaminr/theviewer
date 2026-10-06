@@ -1,4 +1,5 @@
-//! `documents.*`: which documents are open, and opening more.
+//! `documents.*`: which documents are open; opening, deriving, saving and
+//! exporting them.
 
 use std::path::Path;
 
@@ -9,6 +10,7 @@ use super::values::{self, ByteEncoding, NoParams};
 use super::workspace::{self, DocumentInfo, Workspace};
 use super::ApiError;
 use super::permissions::Caller;
+use crate::compress::{self, Codec};
 use crate::selection_ops::{self, Operation};
 
 /// This module's methods, in the order `api.describe` lists them within
@@ -20,6 +22,7 @@ pub(super) const METHODS: &[super::Method] = &[
     method!("documents.new", View, caller new, NewParams, super::workspace::DocumentInfo, "Open a new, empty document and make it current; the window refuses while its document has unsaved edits, unless the person at the window discards them."),
     method!("documents.save", Edit, save, SaveParams, super::workspace::DocumentInfo, "Save a document over its file, or to a path, with every edit made so far."),
     method!("documents.derive", View, derive, DeriveParams, super::workspace::DocumentInfo, "Open bytes of a document (a span, several ranges one after another, or bytes given), or what a transform such as decompress or XOR makes of them, as a document of their own derived from it, and make it current; in the window, Back goes back to the parent."),
+    method!("documents.export", Edit, export, ExportParams, ExportResult, "Write a span of a document to a file, or what decompresses at its start; the document is left as it is."),
 ];
 
 /// An example call of each of [`METHODS`], run in order on a fresh
@@ -32,6 +35,7 @@ pub(super) fn examples() -> Vec<(&'static str, serde_json::Value)> {
         ("documents.info", json!({"doc": "current"})),
         ("documents.open", json!({"path": super::test_support::example_file().display().to_string()})),
         ("documents.save", json!({"path": super::test_support::example_save_path().display().to_string()})),
+        ("documents.export", json!({"start": 0, "len": 40, "path": std::env::temp_dir().join(format!("theviewer-api-examples-export-{}.bin", std::process::id())).display().to_string(), "decompress": true})),
         ("documents.derive", json!({"start": 0, "len": 32, "name": "zlib stream", "transform": {"op": "decompress"}})),
         ("documents.new", json!({"name": "scratch"})),
     ]
@@ -47,6 +51,18 @@ pub(super) fn describe_call(_workspace: &mut dyn Workspace, method: &str, params
             None => "Save the document over its file".to_string(),
         },
         "documents.new" => "Open a new, empty document in place of this one".to_string(),
+        "documents.export" => {
+            let path = params.get("path")?.as_str()?;
+            let start = params.get("start")?.as_u64()?;
+            if params.get("decompress").and_then(serde_json::Value::as_bool) == Some(true) {
+                format!("Write what decompresses at {start:#x} to {path}")
+            } else {
+                match params.get("len").and_then(serde_json::Value::as_u64) {
+                    Some(len) => format!("Write {len} bytes from {start:#x} to {path}"),
+                    None => format!("Write the bytes from {start:#x} to the end to {path}"),
+                }
+            }
+        }
         "documents.derive" => {
             let params: DeriveParams = serde_json::from_value(params.clone()).ok()?;
             let what = match (&params.ranges, &params.data, params.start) {
@@ -184,6 +200,73 @@ fn derived_spans(workspace: &mut dyn Workspace, id: &str, params: &DeriveParams)
         }
         _ => Err(ApiError::invalid_params("give the bytes to open one way: start (and len), ranges, or data")),
     }
+}
+
+/// Parameters of `documents.export`.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ExportParams {
+    /// Document id, path or "current" (the default).
+    #[serde(default)]
+    pub doc: Option<String>,
+    /// Offset of the first byte to write, or of the compressed stream.
+    pub start: u64,
+    /// Bytes to write, or to read the compressed stream from (at most 64 MiB);
+    /// to the end of the document when omitted.
+    #[serde(default)]
+    pub len: Option<u64>,
+    /// The file to write.
+    pub path: String,
+    /// Write what the first codec that decodes at `start` makes of the bytes, instead of the bytes.
+    #[serde(default)]
+    pub decompress: bool,
+}
+
+/// How the bytes `documents.export` wrote were decompressed.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct ExportedStream {
+    pub codec: Codec,
+    /// Input bytes the stream occupied.
+    pub consumed: u64,
+    /// Whether the stream ended cleanly.
+    pub complete: bool,
+    /// Whether the output was cut at 64 MiB.
+    pub truncated: bool,
+}
+
+/// The result of `documents.export`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct ExportResult {
+    /// The file written.
+    pub path: String,
+    /// Bytes written.
+    pub written: u64,
+    /// The codec and stream, when the bytes were decompressed.
+    pub decompressed: Option<ExportedStream>,
+}
+
+/// Most bytes a decompressing export reads, and most it writes.
+const EXPORT_DECOMPRESS_MAX: usize = 64 * 1024 * 1024;
+
+pub fn export(workspace: &mut dyn Workspace, params: ExportParams) -> Result<ExportResult, ApiError> {
+    let (_, document) = workspace::document(workspace, params.doc.as_deref())?;
+    let document_len = document.len();
+    let (start, len) = values::span_within(document_len, params.start, params.len)?;
+    let (bytes, decompressed) = if params.decompress {
+        if start >= document_len {
+            return Err(ApiError::invalid_params("nothing to decompress at the end of the document"));
+        }
+        let input = document.read_range(start, len.min(EXPORT_DECOMPRESS_MAX));
+        let found = compress::probe(&input, EXPORT_DECOMPRESS_MAX).into_iter().next().ok_or_else(|| {
+            ApiError::invalid_params(format!("nothing decodes at {start:#x} (tried gzip, zlib, bzip2, xz, zstd, LZ4, raw deflate and lzma)"))
+        })?;
+        let stream = ExportedStream { codec: found.codec, consumed: found.consumed as u64, complete: found.complete, truncated: found.truncated };
+        (found.data, Some(stream))
+    } else {
+        (document.read_range(start, len), None)
+    };
+    std::fs::write(&params.path, &bytes).map_err(|error| ApiError::new(super::ErrorCode::Unavailable, format!("could not write {}: {error}", params.path)))?;
+    Ok(ExportResult { path: params.path, written: bytes.len() as u64, decompressed })
 }
 
 pub fn derive(workspace: &mut dyn Workspace, params: DeriveParams) -> Result<DocumentInfo, ApiError> {
@@ -368,6 +451,37 @@ mod tests {
         assert_eq!(call(&mut workspace, "documents.list", json!({})).unwrap()["documents"].as_array().unwrap().len(), 1, "nothing was opened");
     }
 
+    fn export_path(name: &str) -> String {
+        std::env::temp_dir().join(format!("theviewer-export-{name}-{}.bin", std::process::id())).display().to_string()
+    }
+
+    #[test]
+    fn exporting_writes_a_span_or_what_decompresses_at_its_start_and_leaves_the_document() {
+        let mut workspace = workspace_with("fw.bin", &crate::api::test_support::example_bytes());
+        let (raw, unpacked) = (export_path("raw"), export_path("unpacked"));
+        let written = call(&mut workspace, "documents.export", json!({"start": 2, "len": 4, "path": raw})).unwrap();
+        assert_eq!((written["written"].as_u64(), &written["decompressed"]), (Some(4), &serde_json::Value::Null));
+        assert_eq!(std::fs::read(&raw).unwrap(), crate::api::test_support::example_bytes()[2..6]);
+        let decompressed = call(&mut workspace, "documents.export", json!({"start": 0, "path": unpacked, "decompress": true})).unwrap();
+        assert_eq!((decompressed["written"].as_u64(), decompressed["decompressed"]["codec"].as_str()), (Some(300), Some("zlib")));
+        assert_eq!(std::fs::read(&unpacked).unwrap(), b"hello ".repeat(50));
+        assert_eq!(call(&mut workspace, "documents.info", json!({})).unwrap()["modified"], false);
+        std::fs::remove_file(raw).ok();
+        std::fs::remove_file(unpacked).ok();
+    }
+
+    #[test]
+    fn exporting_outside_the_document_what_does_not_decompress_or_to_nowhere_is_refused() {
+        let mut workspace = workspace_with("fw.bin", b"plain text");
+        let path = export_path("refused");
+        let refused = |workspace: &mut crate::api::HeadlessWorkspace, params| call(workspace, "documents.export", params).unwrap_err().code;
+        assert_eq!(refused(&mut workspace, json!({"start": 4, "len": 20, "path": path})), ErrorCode::OutOfRange);
+        assert_eq!(refused(&mut workspace, json!({"start": 0, "path": path, "decompress": true})), ErrorCode::InvalidParams);
+        assert_eq!(refused(&mut workspace, json!({"start": 10, "path": path, "decompress": true})), ErrorCode::InvalidParams, "nothing at the end");
+        assert_eq!(refused(&mut workspace, json!({"start": 0, "path": "/no/such/dir/out.bin"})), ErrorCode::Unavailable);
+        assert!(!std::path::Path::new(&path).exists(), "nothing was written");
+    }
+
     #[test]
     fn only_the_person_at_the_window_may_discard_unsaved_edits() {
         let mut workspace = workspace_with("fw.bin", b"0123");
@@ -461,6 +575,25 @@ mod tests {
             app.open_new_document();
             assert_eq!(take_performed(), [("documents.new".to_string(), json!({"discard_unsaved": true}))]);
             assert_eq!((app.document.len(), app.status.as_str()), (0, "New empty document"));
+        }
+
+        #[test]
+        fn extracting_the_selection_or_its_decompressed_contents_is_a_documents_export_step() {
+            let mut app = app_with(&crate::api::test_support::example_bytes());
+            let (raw, unpacked) = (super::export_path("window-raw"), super::export_path("window-unpacked"));
+            app.set_selection(8, Some(Selection::Range(4, 4)));
+            app.export_bytes_to(std::path::Path::new(&raw));
+            assert_eq!(take_performed(), [("documents.export".to_string(), json!({"start": 4, "len": 4, "path": raw}))]);
+            assert_eq!(app.status, format!("Saved 4 B (selection from 0x4) to {raw}"));
+            app.set_selection(0, None);
+            app.export_decompressed_to(std::path::Path::new(&unpacked));
+            let len = app.document.len();
+            assert_eq!(take_performed(), [("documents.export".to_string(), json!({"start": 0, "len": len, "path": unpacked, "decompress": true}))]);
+            assert!(app.status.starts_with("zlib at 0x0: "), "{}", app.status);
+            assert!(app.status.ends_with(&format!("decompressed saved to {unpacked}")), "{}", app.status);
+            assert_eq!(std::fs::read(&unpacked).unwrap(), b"hello ".repeat(50));
+            std::fs::remove_file(raw).ok();
+            std::fs::remove_file(unpacked).ok();
         }
 
         #[test]
