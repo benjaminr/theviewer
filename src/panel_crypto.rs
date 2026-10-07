@@ -257,7 +257,7 @@ fn kind_colour(kind: KeyKind) -> Color32 {
     }
 }
 
-/// A finding for `app.select_pattern`, so selection behaves as in Findings.
+/// A finding for `app.select_finding`, so selection behaves as in Findings.
 fn as_finding(key: &KeyFinding) -> Finding {
     let category = match key.format {
         KeyFormat::Pem | KeyFormat::OpenSsh => Category::Encoding,
@@ -310,7 +310,7 @@ fn show_keys(state: &mut CryptoState, app: &mut ViewerApp, ui: &mut Ui) {
         });
     }
     if let Some(finding) = chosen {
-        app.select_pattern(&finding);
+        app.select_finding(&finding);
     }
 }
 

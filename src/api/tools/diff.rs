@@ -29,7 +29,7 @@ pub(super) const METHODS: &[crate::api::Method] = &[method!(
 #[cfg(test)]
 pub(super) fn examples() -> Vec<(&'static str, serde_json::Value)> {
     use serde_json::json;
-    vec![("diff.run", json!({"path": crate::api::test_support::example_file().display().to_string()}))]
+    vec![("diff.run", json!({"path": super::tool_jobs::test_support::example_other_file()}))]
 }
 
 /// Most bytes of a document with unsaved edits copied for the comparison.

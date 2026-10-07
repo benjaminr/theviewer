@@ -11,13 +11,12 @@
 //! All analysis runs on background threads; results remember the document
 //! version they were computed for so stale ones are flagged.
 
-use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver};
 use std::time::Duration;
 
 use eframe::egui::{self, Color32, CornerRadius, RichText, Sense, Stroke, Ui, vec2};
 
-use crate::app::{DialogKind, FileAction, ViewerApp};
+use crate::app::ViewerApp;
 use crate::api::analysis::TextEncodingResult;
 use crate::charset::{self, TextEncoding};
 use crate::codec_profile::{self, Profile, SegmentProfile, Verdict};
@@ -366,7 +365,7 @@ fn show_streams(state: &mut CharacteriseState, app: &mut ViewerApp, ui: &mut Ui)
     };
     let run = scan.runs[run_index].clone();
     match action {
-        StreamAction::Select(_) => app.select_pattern(&run.to_finding(SOURCE, 0)),
+        StreamAction::Select(_) => app.select_finding(&run.to_finding(SOURCE, 0)),
         StreamAction::Play(_) => play_run(app, &run),
         StreamAction::Extract(_) => extract_run(app, &run),
     }
@@ -427,12 +426,11 @@ fn extension_for(kind: StreamKind, title: &str) -> &'static str {
     }
 }
 
+/// The person saves a stream's bytes to a file they choose: `documents.export`.
 fn extract_run(app: &mut ViewerApp, run: &StreamRun) {
-    let bytes = app.document.read_range(run.start, run.len.min(MAX_EXTRACT));
     let file_name = format!("stream_{:x}.{}", run.start, extension_for(run.kind, &run.title));
-    let dialog = rfd::AsyncFileDialog::new().set_title("Extract media stream").set_file_name(&file_name);
-    let name = format!("{} at {:#x}", run.kind.label(), run.start);
-    app.ask_for_file(DialogKind::Save, dialog, FileAction::SaveBytes { name, bytes: Arc::new(bytes) });
+    let params = serde_json::json!({ "start": run.start, "len": run.len.min(MAX_EXTRACT) });
+    app.save_dialog_then_call("Extract media stream", &file_name, "documents.export", params, "path");
 }
 
 // ---------------------------------------------------------------------------

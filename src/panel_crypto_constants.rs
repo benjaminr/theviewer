@@ -239,7 +239,7 @@ pub fn show_crypto_constants(state: &mut CryptoConstantsState, app: &mut ViewerA
         }
     });
     if let Some(found) = chosen {
-        app.select_pattern(&found.to_finding());
+        app.select_finding(&found.to_finding());
     }
 }
 

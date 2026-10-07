@@ -111,6 +111,17 @@ pub(crate) mod test_support {
     use crate::api::test_support::call;
     use crate::api::Workspace;
 
+    /// A file of the example bytes for the tools' examples that compare with
+    /// a file, apart from the one the documents examples open and save, so
+    /// writing it never disturbs them. Written once per test run.
+    pub fn example_other_file() -> String {
+        let path = std::env::temp_dir().join(format!("theviewer-api-examples-other-{}.bin", std::process::id()));
+        if !path.exists() {
+            std::fs::write(&path, crate::api::test_support::example_bytes()).unwrap();
+        }
+        path.display().to_string()
+    }
+
     /// How long a test waits for a job.
     const PATIENCE: Duration = Duration::from_secs(30);
 

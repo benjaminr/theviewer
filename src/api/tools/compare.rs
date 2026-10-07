@@ -30,7 +30,7 @@ pub(super) const METHODS: &[crate::api::Method] = &[
 #[cfg(test)]
 pub(super) fn examples() -> Vec<(&'static str, serde_json::Value)> {
     use serde_json::json;
-    let other = crate::api::test_support::example_file().display().to_string();
+    let other = super::tool_jobs::test_support::example_other_file();
     vec![
         ("compare.variation", json!({"start": 0, "files": [{"path": other, "start": 0}]})),
         ("compare.correlate", json!({"start": 0, "files": [{"path": other, "start": 0}, {"path": other, "start": 1}], "values": [1.0, 2.0, 3.0], "from": 0})),
