@@ -162,6 +162,7 @@ fn overview() -> DockState<Pane> {
         DockTab::Statistics,
         DockTab::Characterise,
         DockTab::Assistant,
+        DockTab::History,
     ]);
     surface.split_below(left, 0.66, bottom);
     let [_inspector, lower] = surface.split_below(right, 0.34, vec![Pane::Findings]);

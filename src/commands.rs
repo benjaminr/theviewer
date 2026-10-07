@@ -121,6 +121,7 @@ pub fn commands() -> Vec<Command> {
         Command { id: "tools.packets", title: "Packet viewer: dissect, filter and export packets", keys: "", run: |app, _| app.dock.toggle(crate::dock::DockTab::Packets) },
         Command { id: "tools.reference", title: "Reference for the format at the cursor", keys: "", run: |app, _| app.dock.toggle(crate::dock::DockTab::Reference) },
         Command { id: "tools.workspace", title: "Workspace: what the tools have learnt, and what just happened", keys: "", run: |app, _| app.dock.toggle(crate::dock::DockTab::Workspace) },
+        Command { id: "tools.history", title: "History: every step, undo or go back to one, play back, save as recipe", keys: "", run: |app, _| app.dock.toggle(crate::dock::DockTab::History) },
         Command { id: "tools.packets_framing", title: "Packets from the protocol framing", keys: "", run: |app, _| crate::panel_packets::open_protocol_messages(app) },
         Command { id: "tools.packets_selection", title: "Add the selection as a packet", keys: "", run: |app, _| crate::panel_packets::add_selection_as_packet(app) },
         Command { id: "tools.packets_rows", title: "Split the selection into packets by row width", keys: "", run: |app, _| crate::panel_packets::split_selection_by_row_width(app) },

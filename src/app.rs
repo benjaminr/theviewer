@@ -3357,6 +3357,7 @@ impl ViewerApp {
             ui.menu_button("Tools", |ui| {
                 if ui.button("Explain this file").clicked() { self.dock.open = true; self.dock.tab = DockTab::Report; self.explain_file(); ui.close(); }
                 if ui.button("Reference for the format at the cursor").clicked() { self.dock.toggle(DockTab::Reference); ui.close(); }
+                if ui.button("History: undo, go back, play back, save as recipe").clicked() { self.dock.toggle(DockTab::History); ui.close(); }
                 if ui.button("Structure map: segments, find similar, feature tracks").clicked() { self.dock.toggle(DockTab::StructureMap); ui.close(); }
                 if ui.button("Dot plot (self-similarity)").clicked() { self.dock.toggle(DockTab::DotPlot); ui.close(); }
                 if ui.button("Trigram cube").clicked() { self.dock.toggle(DockTab::Trigrams); ui.close(); }

@@ -41,10 +41,11 @@ pub enum DockTab {
     Packets,
     Reference,
     Workspace,
+    History,
 }
 
 impl DockTab {
-    pub const ALL: [DockTab; 28] = [
+    pub const ALL: [DockTab; 29] = [
         DockTab::Report,
         DockTab::Assistant,
         DockTab::Template,
@@ -73,11 +74,12 @@ impl DockTab {
         DockTab::Packets,
         DockTab::Reference,
         DockTab::Workspace,
+        DockTab::History,
     ];
 
     /// Tabs grouped by purpose, for the tab bar.
     pub const GROUPS: [&'static [DockTab]; 5] = [
-        &[DockTab::Report, DockTab::Reference, DockTab::StructureMap, DockTab::SizeMap, DockTab::Assistant, DockTab::DotPlot, DockTab::Trigrams, DockTab::Images, DockTab::Workspace],
+        &[DockTab::Report, DockTab::Reference, DockTab::StructureMap, DockTab::SizeMap, DockTab::Assistant, DockTab::DotPlot, DockTab::Trigrams, DockTab::Images, DockTab::Workspace, DockTab::History],
         &[DockTab::Template, DockTab::Columns, DockTab::Protocol, DockTab::Packets, DockTab::Bits],
         &[DockTab::Statistics, DockTab::Characterise, DockTab::Strings, DockTab::Xor, DockTab::Crypto, DockTab::Checksums, DockTab::Learn],
         &[DockTab::Disassembly, DockTab::Firmware, DockTab::Unpacked, DockTab::Forensics, DockTab::Diff, DockTab::Compare],
@@ -114,6 +116,7 @@ impl DockTab {
             DockTab::Packets => "Packets",
             DockTab::Reference => "Reference",
             DockTab::Workspace => "Workspace",
+            DockTab::History => "History",
         }
     }
 
@@ -147,6 +150,7 @@ impl DockTab {
             DockTab::Packets => "Packets from captures, message framing or the selection: dissect, filter, follow streams, edit and export as pcap",
             DockTab::Reference => "How the format at the cursor is organised, what each field means and which RFC or specification defines it",
             DockTab::Workspace => "What the tools have learnt and published, by whom and why, and what just happened",
+            DockTab::History => "Every step of the analysis, by whom: undo one, go back to one, play them back or save them as a recipe",
         }
     }
 }
