@@ -2315,15 +2315,11 @@ impl ViewerApp {
 
     /// Replace the whole view with the decompressed bytes, keeping the current
     /// document on a stack so Back returns to it.
+    /// As `codecs.open_decoded`.
     pub fn decompress_to_new_document(&mut self) {
-        match self.decompress_target() {
-            Ok((start, result)) => {
-                let child_name = format!("{} › {}@{start:#x}", self.display_name(), result.codec.label());
-                let status = Self::describe_decompression(start, &result);
-                self.open_derived(result.data, child_name);
-                self.status = status;
-            }
-            Err(message) => self.status = message,
+        let start = self.decompress_start();
+        if let Ok(result) = self.perform_typed::<crate::api::codecs::OpenDecodedResult>("codecs.open_decoded", serde_json::json!({ "start": start })) {
+            self.status = crate::api::codecs::describe_decoded(start, &result);
         }
     }
 
@@ -2474,40 +2470,32 @@ impl ViewerApp {
                     self.decompress_to_new_document();
                     return;
                 }
+                // The stream's exact extent, found here, is decompressed in
+                // place as `transform.apply`, which selects what it made.
                 let description = Self::describe_decompression(start, &result);
-                let len = result.data.len();
-                self.inplace_codec = Some(result.codec);
-                self.document.replace(start, result.consumed, &result.data);
-                self.restore_selection(start, len);
-                self.reveal_cursor_centred();
-                self.reveal_cursor_in_hex(true);
-                self.status = format!("Replaced in place: {description}");
+                let params = serde_json::json!({ "selection": { "range": [start, result.consumed] }, "operation": Operation::Decompress });
+                if self.perform("transform.apply", params).is_ok() {
+                    self.inplace_codec = Some(result.codec);
+                    self.reveal_cursor_centred();
+                    self.reveal_cursor_in_hex(true);
+                    self.status = format!("Replaced in place: {description}");
+                }
             }
             Err(message) => self.status = message,
         }
     }
 
-    /// Compress the selection with the chosen codec, replacing it in place.
+    /// Compress the selection with the chosen codec, replacing it in place,
+    /// as `transform.apply`.
     pub fn compress_selection(&mut self, codec: Codec) {
         let Some((start, len)) = self.selection() else {
             self.status = "Select the bytes to compress first".to_string();
             return;
         };
-        let data = self.document.read_range(start, len);
-        match compress::compress(codec, &data) {
-            Ok(packed) => {
-                let packed_len = packed.len();
-                self.document.replace(start, len, &packed);
-                self.restore_selection(start, packed_len);
-                self.status = format!(
-                    "Compressed {} to {} with {}",
-                    compress::human_bytes(len),
-                    compress::human_bytes(packed_len),
-                    codec.label()
-                );
-            }
-            Err(message) => self.status = message,
-        }
+        let params = serde_json::json!({ "selection": { "range": [start, len] }, "operation": Operation::Compress(codec) });
+        let Ok(result) = self.perform_typed::<crate::api::edits::EditResult>("transform.apply", params) else { return };
+        let packed_len = result.ranges.first().map_or(0, |&(_, packed)| packed as usize);
+        self.status = format!("Compressed {} to {} with {}", compress::human_bytes(len), compress::human_bytes(packed_len), codec.label());
     }
 
     /// One key flips between the compressed bytes and their contents: inside

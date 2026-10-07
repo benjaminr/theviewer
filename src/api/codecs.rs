@@ -17,6 +17,7 @@ pub(super) const METHODS: &[super::Method] = &[
     method!("codecs.detect", Read, detect, DetectParams, CodecList, "The codecs whose header starts at an offset."),
     method!("codecs.decode", Read, decode, DecodeParams, DecodeResult, "Decode (decompress) a span with a codec and return the output."),
     method!("codecs.probe", Read, probe, ProbeParams, ProbeResult, "Try every built-in decompressor at the start of a span, headerless ones included, and list those that decode."),
+    method!("codecs.open_decoded", View, open_decoded, OpenDecodedParams, OpenDecodedResult, "Decompress the stream starting at an offset, with the first codec that decodes there or the one named, and open what it holds as a document derived from this one; in the window, Back (or opening the parent by id) returns."),
 ];
 
 /// An example call of each of [`METHODS`], run in order on a fresh
@@ -29,14 +30,18 @@ pub(super) fn examples() -> Vec<(&'static str, serde_json::Value)> {
         ("codecs.detect", json!({"at": 0})),
         ("codecs.decode", json!({"start": 0, "codec": "zlib", "encoding": "text"})),
         ("codecs.probe", json!({"start": 0})),
+        ("codecs.open_decoded", json!({"start": 0, "codec": "zlib"})),
     ]
 }
 
 /// What a call to one of this module's methods would do, in plain words,
 /// for the window that asks the person to confirm it; `None` leaves it to
 /// the general "Call method with params".
-pub(super) fn describe_call(_workspace: &mut dyn Workspace, _method: &str, _params: &serde_json::Value) -> Option<String> {
-    None
+pub(super) fn describe_call(_workspace: &mut dyn Workspace, method: &str, params: &serde_json::Value) -> Option<String> {
+    match method {
+        "codecs.open_decoded" => Some(format!("Open what decompresses at {:#x} as a document of its own", params.get("start")?.as_u64()?)),
+        _ => None,
+    }
 }
 
 /// Bytes read at an offset to check codec headers against.
@@ -208,6 +213,75 @@ pub fn probe(workspace: &mut dyn Workspace, params: ProbeParams) -> Result<Probe
     Ok(ProbeResult { streams })
 }
 
+/// Most bytes of a stream `codecs.open_decoded` reads, and most it opens.
+const OPEN_DECODED_MAX: usize = 64 * 1024 * 1024;
+
+/// Parameters of `codecs.open_decoded`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct OpenDecodedParams {
+    /// Document id, path or "current" (the default): the parent.
+    #[serde(default)]
+    pub doc: Option<String>,
+    /// Offset where the compressed stream starts.
+    pub start: u64,
+    /// The codec to decode with; the first that decodes there when omitted.
+    #[serde(default)]
+    pub codec: Option<Codec>,
+}
+
+/// The result of `codecs.open_decoded`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct OpenDecodedResult {
+    /// The document opened, now current.
+    pub document: super::workspace::DocumentInfo,
+    /// The codec that decoded the stream.
+    pub codec: Codec,
+    /// Input bytes the stream occupied.
+    pub consumed: u64,
+    /// Whether the stream ended cleanly.
+    pub complete: bool,
+    /// Whether the output was cut at 64 MiB.
+    pub truncated: bool,
+}
+
+pub fn open_decoded(workspace: &mut dyn Workspace, params: OpenDecodedParams) -> Result<OpenDecodedResult, ApiError> {
+    let parent = workspace::resolve(workspace, params.doc.as_deref())?;
+    let name = workspace::info(workspace, &parent)?.name;
+    let (_, document) = workspace::document(workspace, Some(&parent))?;
+    let (start, available) = values::span_within(document.len(), params.start, None)?;
+    if available == 0 {
+        return Err(ApiError::invalid_params("nothing to decompress at the end of the document"));
+    }
+    let input = document.read_range(start, available.min(OPEN_DECODED_MAX));
+    let found = compress::probe(&input, OPEN_DECODED_MAX).into_iter().find(|found| params.codec.is_none_or(|codec| found.codec == codec));
+    let found = found.ok_or_else(|| match params.codec {
+        Some(codec) => ApiError::invalid_params(format!("nothing decodes as {} at {start:#x}", codec.label())),
+        None => ApiError::invalid_params(format!("nothing decodes at {start:#x} (tried gzip, zlib, bzip2, xz, zstd, LZ4, raw deflate and lzma)")),
+    })?;
+    let (codec, consumed, complete, truncated) = (found.codec, found.consumed as u64, found.complete, found.truncated);
+    let id = workspace.open_derived(&parent, found.data, &format!("{name} › {}@{start:#x}", codec.label()))?;
+    Ok(OpenDecodedResult { document: workspace::info(workspace, &id)?, codec, consumed, complete, truncated })
+}
+
+/// What `codecs.open_decoded` did, for the status bar: "zlib at 0x10: 2 KiB
+/// compressed to 9 KiB decompressed".
+pub fn describe_decoded(start: usize, result: &OpenDecodedResult) -> String {
+    let note = if result.truncated {
+        " (cut at the 64 MiB limit)"
+    } else if !result.complete {
+        " (stream was incomplete)"
+    } else {
+        ""
+    };
+    format!(
+        "{} at {start:#x}: {} compressed to {} decompressed{note}",
+        result.codec.label(),
+        compress::human_bytes(result.consumed as usize),
+        compress::human_bytes(result.document.len as usize)
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use std::io::Write;
@@ -246,5 +320,88 @@ mod tests {
         assert_eq!(call(&mut workspace, "codecs.decode", json!({"start": 0, "codec": "rot13"})).unwrap_err().code, ErrorCode::NotFound);
         assert_eq!(call(&mut workspace, "codecs.decode", json!({"start": 0, "codec": "gzip"})).unwrap_err().code, ErrorCode::InvalidParams);
         assert_eq!(call(&mut workspace, "codecs.probe", json!({"start": 0, "max_output": 1usize << 30})).unwrap_err().code, ErrorCode::TooLarge);
+    }
+
+    #[test]
+    fn a_stream_s_contents_open_as_a_derived_document_named_after_the_codec() {
+        let mut bytes = b"head".to_vec();
+        bytes.extend(zlib(b"hello, hello, hello"));
+        let mut workspace = workspace_with("a.bin", &bytes);
+        let opened = call(&mut workspace, "codecs.open_decoded", json!({"start": 4})).unwrap();
+        assert_eq!((opened["codec"].as_str(), opened["complete"].as_bool()), (Some("zlib"), Some(true)));
+        assert_eq!((opened["document"]["id"].as_str(), opened["document"]["name"].as_str(), opened["document"]["len"].as_u64()), (Some("doc-2"), Some("a.bin › zlib@0x4"), Some(19)));
+        let named = call(&mut workspace, "codecs.open_decoded", json!({"doc": "doc-1", "start": 4, "codec": "zlib"})).unwrap();
+        assert_eq!(named["document"]["id"], "doc-3");
+    }
+
+    #[test]
+    fn opening_what_does_not_decode_there_is_refused() {
+        let mut bytes = b"head".to_vec();
+        bytes.extend(zlib(b"hello"));
+        let len = bytes.len();
+        let mut workspace = workspace_with("a.bin", &bytes);
+        assert_eq!(call(&mut workspace, "codecs.open_decoded", json!({"start": 0})).unwrap_err().code, ErrorCode::InvalidParams);
+        assert_eq!(call(&mut workspace, "codecs.open_decoded", json!({"start": 4, "codec": "bzip2"})).unwrap_err().code, ErrorCode::InvalidParams);
+        assert_eq!(call(&mut workspace, "codecs.open_decoded", json!({"start": len})).unwrap_err().code, ErrorCode::InvalidParams, "nothing at the end");
+        assert_eq!(call(&mut workspace, "codecs.open_decoded", json!({"start": len + 1})).unwrap_err().code, ErrorCode::OutOfRange);
+        assert_eq!(call(&mut workspace, "documents.list", json!({})).unwrap()["documents"].as_array().unwrap().len(), 1, "nothing was opened");
+    }
+
+    mod window {
+        use serde_json::json;
+
+        use super::zlib;
+        use crate::actions::take_performed;
+        use crate::app::{Launch, ViewerApp};
+        use crate::compress::Codec;
+
+        fn app_with(bytes: &[u8]) -> ViewerApp {
+            let mut app = ViewerApp::new(Launch::default());
+            app.open_bytes(bytes.to_vec(), "test.bin".to_string());
+            app.run_bus();
+            take_performed();
+            app
+        }
+
+        #[test]
+        fn flipping_to_the_decompressed_view_and_back_are_api_steps() {
+            let mut bytes = b"head".to_vec();
+            bytes.extend(zlib(b"hello, hello, hello"));
+            let mut app = app_with(&bytes);
+            let outer = app.document_id();
+            app.set_cursor(4, false);
+            take_performed();
+            app.toggle_compressed_view();
+            assert_eq!(take_performed(), [("codecs.open_decoded".to_string(), json!({"start": 4}))]);
+            assert_eq!(app.document.read_range(0, 19), b"hello, hello, hello");
+            assert!(app.status.starts_with("zlib at 0x4: "), "{}", app.status);
+            app.toggle_compressed_view();
+            assert_eq!(take_performed(), [("documents.open".to_string(), json!({"doc": outer, "discard_unsaved": true}))]);
+            assert_eq!(app.document_id(), outer);
+        }
+
+        #[test]
+        fn decompressing_in_place_and_compressing_again_are_transform_steps() {
+            let packed = zlib(b"hello, hello, hello");
+            let mut bytes = b"head".to_vec();
+            bytes.extend(&packed);
+            bytes.extend(b"tail");
+            let mut app = app_with(&bytes);
+            app.set_cursor(4, false);
+            take_performed();
+            app.decompress_in_place();
+            assert_eq!(take_performed(), [("transform.apply".to_string(), json!({"selection": {"range": [4, packed.len()]}, "operation": {"op": "decompress"}}))]);
+            assert_eq!(app.document.read_range(0, 27), b"headhello, hello, hellotail");
+            assert_eq!(app.selection(), Some((4, 19)), "what was decompressed is selected");
+            assert!(app.status.starts_with("Replaced in place: zlib at 0x4"), "{}", app.status);
+            app.recompress_selection();
+            assert_eq!(take_performed(), [("transform.apply".to_string(), json!({"selection": {"range": [4, 19]}, "operation": {"op": "compress", "codec": "zlib"}}))]);
+            assert_eq!(app.document.read_range(4, 1), [0x78], "re-packed as zlib, the codec it came in");
+            assert!(app.status.starts_with("Compressed 19 B to "), "{}", app.status);
+            app.set_selection(0, None);
+            app.compress_selection(Codec::Gzip);
+            assert_eq!(app.status, "Select the bytes to compress first");
+            assert!(take_performed().is_empty());
+        }
     }
 }

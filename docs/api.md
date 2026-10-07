@@ -66,6 +66,7 @@ Errors are `{code, message, data}`, with these codes:
 | [`codecs.detect`](#codecsdetect) | read | The codecs whose header starts at an offset. |
 | [`codecs.decode`](#codecsdecode) | read | Decode (decompress) a span with a codec and return the output. |
 | [`codecs.probe`](#codecsprobe) | read | Try every built-in decompressor at the start of a span, headerless ones included, and list those that decode. |
+| [`codecs.open_decoded`](#codecsopen_decoded) | view | Decompress the stream starting at an offset, with the first codec that decodes there or the one named, and open what it holds as a document derived from this one; in the window, Back (or opening the parent by id) returns. |
 | [`packets.dissect_bytes`](#packetsdissect_bytes) | read | Dissect one packet, from a span or from hex bytes, into protocol layers and fields, a summary and its flow. |
 | [`packets.detect_frames`](#packetsdetect_frames) | read | Find the protocol a set of frames of unknown format is, by trying every frame decoder on them. |
 | [`packets.sets.create`](#packetssetscreate) | read | Take a set of packets from a document: a capture in it, a range cut into fixed records, by a length field, at a pattern or with the protocol framing, or the selection's ranges, with how to decode frames of unknown format; returns the set's id and what was worked out (the capture found, the framing), so the call can be made again exactly. |
@@ -830,6 +831,24 @@ Try every built-in decompressor at the start of a span, headerless ones included
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `streams` | array of ProbedStream | yes | Decoders that read the data, headed ones first. |
+
+### codecs.open_decoded
+
+Decompress the stream starting at an offset, with the first codec that decodes there or the one named, and open what it holds as a document derived from this one; in the window, Back (or opening the parent by id) returns.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `codec` | `"zlib"` \| `"gzip"` \| `"deflate"` \| `"bzip2"` \| `"xz"` \| `"lzma"` \| `"zstd"` \| `"lz4"` | no | The codec to decode with; the first that decodes there when omitted. |
+| `doc` | string | no | Document id, path or "current" (the default): the parent. |
+| `start` | integer | yes | Offset where the compressed stream starts. |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `codec` | `"zlib"` \| `"gzip"` \| `"deflate"` \| `"bzip2"` \| `"xz"` \| `"lzma"` \| `"zstd"` \| `"lz4"` | yes | The codec that decoded the stream. |
+| `complete` | boolean | yes | Whether the stream ended cleanly. |
+| `consumed` | integer | yes | Input bytes the stream occupied. |
+| `document` | DocumentInfo | yes | The document opened, now current. |
+| `truncated` | boolean | yes | Whether the output was cut at 64 MiB. |
 
 ### packets.dissect_bytes
 
