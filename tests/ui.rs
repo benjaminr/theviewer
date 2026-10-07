@@ -719,7 +719,13 @@ fn flipping_extracting_and_repacking_a_stream() {
 
     // In place, edit, re-pack with the same codec, and the file still decodes.
     harness.get_by_label("In place").click();
-    steps(&mut harness, 3);
+    // The click lands a frame later and the decompression may take a few
+    // more on a busy machine, so wait for it rather than count frames.
+    let started = std::time::Instant::now();
+    while harness.state().inplace_codec.is_none() && started.elapsed().as_secs() < 60 {
+        harness.step();
+    }
+    steps(&mut harness, 1);
     assert_eq!(harness.state().inplace_codec, Some(Codec::Bzip2));
     assert_eq!(harness.state().selection(), Some((stream_at, text.len())));
     harness.state_mut().document.overwrite(stream_at, b"EDITED");
