@@ -233,12 +233,12 @@ fn from_journal(workspace: &mut dyn Workspace, name: Option<&str>, steps: &[u64]
         return Err(ApiError::invalid_params("journal_steps names no steps; history.list gives them"));
     }
     let journal = workspace.journal();
-    let mut entries = Vec::with_capacity(steps.len());
-    for step in steps {
-        let entry = journal.entry(*step).ok_or_else(|| ApiError::not_found(format!("the journal holds no step {step}; history.list gives the steps held")))?;
-        entries.push(entry);
+    if let Some(step) = steps.iter().find(|step| journal.entry(**step).is_none()) {
+        return Err(ApiError::not_found(format!("the journal holds no step {step}; history.list gives the steps held")));
     }
-    Ok(Recipe::from_journal(name, journal.session(), entries))
+    // With the anchors and parameters recorded for the steps, and the
+    // earlier steps they cite, so the recipe ports to other files.
+    Ok(Recipe::from_journal_with_anchors(name, journal, Some(steps)))
 }
 
 pub fn preview(workspace: &mut dyn Workspace, params: RunParams) -> Result<RunReport, ApiError> {
@@ -350,6 +350,18 @@ mod tests {
         assert_eq!(recipe.recorded_on.map(|file| file.name), Some("a.bin".to_string()));
         assert_eq!(call(&mut workspace, "recipes.save", json!({"name": "x", "journal_steps": [40]})).unwrap_err().code, ErrorCode::NotFound);
         assert_eq!(call(&mut workspace, "recipes.save", json!({"name": "x"})).unwrap_err().code, ErrorCode::InvalidParams);
+    }
+
+    #[test]
+    fn a_recipe_saved_from_the_journal_keeps_where_its_values_came_from() {
+        let dir = use_own_dir("anchored");
+        let mut workspace = workspace_with("a.bin", b"..SYNC..");
+        let found = crate::journal::Anchor::Find { find: crate::journal::anchors::Needle::Text("SYNC".into()), nth: 0, part: None };
+        let derived = crate::journal::DerivedFrom::from([("offset".to_string(), found)]);
+        crate::api::call_derived(&mut workspace, &crate::api::Caller::Panel, "cursor.set", json!({"offset": 2}), derived).unwrap();
+        call(&mut workspace, "recipes.save", json!({"name": "To the sync word", "journal_steps": [1]})).unwrap();
+        let (recipe, _) = recipes::find(&dir, "To the sync word").unwrap();
+        assert_eq!(recipe.steps[0].params["offset"], json!({"$anchor": {"find": {"text": "SYNC"}, "nth": 0}}), "the anchor, not the offset it found here");
     }
 
     #[test]
