@@ -43,6 +43,13 @@ Errors are `{code, message, data}`, with these codes:
 | [`bytes.move`](#bytesmove) | edit | Cut ranges out and put their bytes, one after another, at an offset counted before the cut, as one undoable step, and select them. |
 | [`bits.read`](#bitsread) | read | Read a span of bits, most or least significant bit of each byte first, as a string of 0s and 1s and, up to 64 bits, as a number. |
 | [`bits.write`](#bitswrite) | edit | Overwrite bits from any bit offset, most or least significant bit of each byte first, as one undoable step; the bits around them are kept. |
+| [`bits.scan_periods`](#bitsscan_periods) | job | Start a search of a span for bit periods (frames that are not a whole number of bytes) and the sync word of the strongest, comparing the bits with themselves at every lag, as a job: the periods and sync words are job.finished's result, and in the window they fill the Bits panel. |
+| [`bits.planes`](#bitsplanes) | job | Start splitting a span (at most 1 MiB) into its eight bit planes as a job, scoring how much shape each holds with rows of row_width bytes: the scores are job.finished's result, and in the window the planes fill the Bits panel. |
+| [`bits.open_plane`](#bitsopen_plane) | view | Open one bit plane of a span (at most 1 MiB) as a derived document: bit k of every byte, as a byte of 0 or 255. |
+| [`bits.detect_linecode`](#bitsdetect_linecode) | job | Start trying Manchester (both conventions), differential Manchester, 8b/10b and packed BCD at every bit alignment of a span (at most 64 KiB) as a job: the decodes, fewest invalid symbols first, and any BCD timestamps are job.finished's result, and in the window they fill the Bits panel. |
+| [`bits.decode_linecode`](#bitsdecode_linecode) | view | Decode a span (at most 64 KiB) from a line code at a bit offset and open the decoded bytes as a derived document. |
+| [`bits.rank_field`](#bitsrank_field) | read | Rank what a field of records holds (integers, floats, fixed point, timestamps, enums…) by how plausible its values are across the records. |
+| [`bits.find_length_fields`](#bitsfind_length_fields) | job | Start a search of a span (at most 256 KiB, one message or a run of records) for numbers that are distances, as a job: length prefixes, tag-length-value chains and offset tables, best first, are job.finished's result, and in the window they fill the Bits panel. |
 | [`transform.apply`](#transformapply) | edit | Apply an operation (XOR, invert, shift bits, swap byte order, number, compress, decompress and more) to every range of a selection, as one undoable step, and select what it produced. |
 | [`transform.preview`](#transformpreview) | read | What transform.apply would write into each range of a selection, without changing anything. |
 | [`history.undo`](#historyundo) | edit | Undo the document's last step, whoever made it, and put the cursor where it was. |
@@ -474,6 +481,123 @@ Overwrite bits from any bit offset, most or least significant bit of each byte f
 | `len` | integer | yes | The document's length after the edit. |
 | `ranges` | array of pair | yes | Where the new bytes are, as [start, len]: one range per range changed. |
 | `version` | integer | yes | The document's version after the edit; pass it as expect_version to the next. |
+
+### bits.scan_periods
+
+Start a search of a span for bit periods (frames that are not a whole number of bytes) and the sync word of the strongest, comparing the bits with themselves at every lag, as a job: the periods and sync words are job.finished's result, and in the window they fill the Bits panel.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `doc` | string | no | Document id, path or "current" (the default). |
+| `len` | integer | no | Bytes searched, at most 256 KiB and a quarter of max_period; as many as that from start when omitted. |
+| `max_period` | integer | no | Longest period looked for, 8 to 8192 bits (1024 by default). |
+| `order` | `"msb"` \| `"lsb"` | no | Which bit of each byte comes first: "msb" (the default) or "lsb". |
+| `start` | integer | no | First offset searched (0 by default). |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `job` | string | yes | Follow it with jobs.status, or on job.progress and job.finished. |
+
+### bits.planes
+
+Start splitting a span (at most 1 MiB) into its eight bit planes as a job, scoring how much shape each holds with rows of row_width bytes: the scores are job.finished's result, and in the window the planes fill the Bits panel.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `doc` | string | no | Document id, path or "current" (the default). |
+| `len` | integer | no | Bytes split, at most 1 MiB; to the end of the document (or 1 MiB) when omitted. |
+| `row_width` | integer | yes | Bytes per row, 1 to 1024, for scoring each plane by its left and upper neighbours. |
+| `start` | integer | no | First offset split (0 by default). |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `job` | string | yes | Follow it with jobs.status, or on job.progress and job.finished. |
+
+### bits.open_plane
+
+Open one bit plane of a span (at most 1 MiB) as a derived document: bit k of every byte, as a byte of 0 or 255.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `bit` | integer | yes | Which bit, 0 (least significant) to 7. |
+| `doc` | string | no | Document id, path or "current" (the default): the parent. |
+| `len` | integer | no | Bytes, at most 1 MiB; to the end of the document (or 1 MiB) when omitted. |
+| `start` | integer | no | First offset (0 by default). |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `current` | boolean | yes | Whether this is the current document. |
+| `id` | string | yes | Stable id, such as "doc-1". |
+| `len` | integer | yes | Length in bytes. |
+| `modified` | boolean | yes | Whether there are edits not saved. |
+| `name` | string | yes | File name, or the name of a derived document. |
+| `path` | string | no | Path on disk, for documents opened from a file. |
+| `version` | integer | yes | Incremented on every edit. |
+
+### bits.detect_linecode
+
+Start trying Manchester (both conventions), differential Manchester, 8b/10b and packed BCD at every bit alignment of a span (at most 64 KiB) as a job: the decodes, fewest invalid symbols first, and any BCD timestamps are job.finished's result, and in the window they fill the Bits panel.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `doc` | string | no | Document id, path or "current" (the default). |
+| `len` | integer | no | Bytes decoded, at most 64 KiB; to the end of the document (or 64 KiB) when omitted. |
+| `order` | `"msb"` \| `"lsb"` | no | Which bit of each byte comes first: "msb" (the default) or "lsb". |
+| `start` | integer | no | First offset decoded (0 by default). |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `job` | string | yes | Follow it with jobs.status, or on job.progress and job.finished. |
+
+### bits.decode_linecode
+
+Decode a span (at most 64 KiB) from a line code at a bit offset and open the decoded bytes as a derived document.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `bit_offset` | integer | no | Bit to start at, 0 to 63 (0 by default). |
+| `code` | `"differential_manchester"` \| `"nrzi"` \| `"8b10b"` \| `"gray_byte"` \| `"gray_word"` \| `"packed_bcd"` \| `"manchester_ieee"` \| `"manchester_thomas"` | yes | A line code, as the Bits tool decodes it. |
+| `doc` | string | no | Document id, path or "current" (the default): the parent. |
+| `len` | integer | no | Bytes decoded, at most 64 KiB; to the end of the document (or 64 KiB) when omitted. |
+| `order` | `"msb"` \| `"lsb"` | no | Which bit of each byte comes first: "msb" (the default) or "lsb". |
+| `start` | integer | no | First offset decoded (0 by default). |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `document` | DocumentInfo | yes | The derived document the decode was opened as. |
+| `errors` | integer | yes |  |
+| `symbols` | integer | yes | Symbols read, and the invalid ones among them. |
+
+### bits.rank_field
+
+Rank what a field of records holds (integers, floats, fixed point, timestamps, enums…) by how plausible its values are across the records.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `doc` | string | no | Document id, path or "current" (the default). |
+| `offset` | integer | yes | Offset of the field within each record. |
+| `origin` | integer | yes | Document offset of the first record. |
+| `stride` | integer | yes | Bytes per record. |
+| `width` | integer | yes | Bytes in the field: 1, 2, 4 or 8. |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `readings` | array of FieldReading | yes | The readings, most plausible first. |
+| `records` | integer | yes | Records read (at most 4096). |
+
+### bits.find_length_fields
+
+Start a search of a span (at most 256 KiB, one message or a run of records) for numbers that are distances, as a job: length prefixes, tag-length-value chains and offset tables, best first, are job.finished's result, and in the window they fill the Bits panel.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `doc` | string | no | Document id, path or "current" (the default). |
+| `len` | integer | no | Bytes in the region, at most 256 KiB; to the end of the document (or 256 KiB) when omitted. |
+| `start` | integer | no | First offset of the region (0 by default). |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `job` | string | yes | Follow it with jobs.status, or on job.progress and job.finished. |
 
 ### transform.apply
 

@@ -6,7 +6,6 @@
 //! channels polled each frame.
 
 use std::sync::mpsc::{self, Receiver};
-use std::thread;
 use std::time::Duration;
 
 use eframe::egui::{self, Color32, ColorImage, RichText, Sense, TextureHandle, TextureOptions, Ui, vec2};
@@ -20,26 +19,26 @@ use crate::theme;
 use crate::tlv::{self, Hypothesis};
 
 /// Bytes scanned for bit periods.
-const PERIOD_SCAN_BYTES: usize = bits::MAX_SCAN_BITS / 8;
+pub(crate) const PERIOD_SCAN_BYTES: usize = bits::MAX_SCAN_BITS / 8;
 /// Longest bit period looked for unless the user asks for more.
-const DEFAULT_MAX_PERIOD: usize = 1024;
+pub(crate) const DEFAULT_MAX_PERIOD: usize = 1024;
 /// Upper limit for the period control.
-const LARGEST_MAX_PERIOD: usize = 8192;
+const LARGEST_MAX_PERIOD: usize = crate::api::tools::bits::MOST_MAX_PERIOD;
 /// Fundamental periods for which a sync word is looked for.
 const SYNC_CANDIDATES: usize = 5;
 /// Bytes split into bit planes.
-const PLANE_BYTES: usize = 1024 * 1024;
+pub(crate) const PLANE_BYTES: usize = 1024 * 1024;
 /// Largest preview texture side, in pixels.
 const PREVIEW_MAX_ROWS: usize = 256;
-const PREVIEW_MAX_WIDTH: usize = 1024;
+pub(crate) const PREVIEW_MAX_WIDTH: usize = 1024;
 /// On-screen size of a plane preview.
 const PREVIEW_SIZE: f32 = 96.0;
 /// Bytes decoded when looking for a line code.
-const LINECODE_BYTES: usize = 64 * 1024;
+pub(crate) const LINECODE_BYTES: usize = 64 * 1024;
 /// Line-code results listed.
 const LINECODE_LISTED: usize = 8;
 /// Most records read for the number-type guess.
-const NUMBER_RECORDS: usize = 4096;
+pub(crate) const NUMBER_RECORDS: usize = 4096;
 /// Field widths offered for the number-type guess.
 const NUMBER_WIDTHS: [usize; 4] = [1, 2, 4, 8];
 /// Default field width for the number-type guess.
@@ -169,13 +168,6 @@ fn selection_or_file(app: &ViewerApp, limit: usize) -> (usize, usize, &'static s
     }
 }
 
-fn select_range(app: &mut ViewerApp, start: usize, len: usize) {
-    app.anchor = Some(start);
-    app.cursor = start + len.max(1);
-    app.reveal_cursor_centred();
-    app.reveal_cursor_in_hex(true);
-}
-
 fn dim(text: impl Into<String>) -> RichText {
     RichText::new(text).small().color(theme::TEXT_DIM)
 }
@@ -205,24 +197,58 @@ pub fn show_bits(state: &mut BitsState, app: &mut ViewerApp, ui: &mut Ui) {
 // Bit periods
 // ---------------------------------------------------------------------------
 
+/// Bytes a bit period scan reads to look for periods up to `max_period` bits.
+pub(crate) fn period_scan_bytes(max_period: usize) -> usize {
+    PERIOD_SCAN_BYTES + max_period / 4
+}
+
+/// The person asks for the bit periods of the selection, else from the
+/// cursor: `bits.scan_periods`, carried out once the panel is drawn.
 fn start_periods(state: &mut BitsState, app: &mut ViewerApp) {
     let max_period = effective_max_period(state);
-    let (start, len, _) = selection_or_cursor(app, PERIOD_SCAN_BYTES + max_period / 4);
-    let bytes = app.document.read_range(start, len);
-    let order = state.order;
+    let (start, len, _) = selection_or_cursor(app, period_scan_bytes(max_period));
+    app.perform_later("bits.scan_periods", serde_json::json!({ "start": start, "len": len, "order": state.order, "max_period": max_period }));
+}
+
+/// Scan `bytes` (from document offset `start`) for bit periods and the sync
+/// words of the strongest.
+pub(crate) fn find_periods(bytes: &[u8], start: usize, order: BitOrder, max_period: usize) -> PeriodsResult {
+    let scan = bits::scan_bit_periods(bytes, order, max_period);
+    let syncs = scan
+        .candidates
+        .iter()
+        .filter(|candidate| candidate.multiple_of.is_none())
+        .take(SYNC_CANDIDATES)
+        .filter_map(|candidate| bits::find_sync(bytes, order, candidate.period))
+        .collect();
+    PeriodsResult { start, scan, syncs }
+}
+
+/// Where a job's result for the panel is sent, and where the panel waits for it.
+fn awaited<T>(pending: &mut Option<Receiver<T>>) -> mpsc::Sender<T> {
     let (sender, receiver) = mpsc::channel();
-    thread::spawn(move || {
-        let scan = bits::scan_bit_periods(&bytes, order, max_period);
-        let syncs = scan
-            .candidates
-            .iter()
-            .filter(|candidate| candidate.multiple_of.is_none())
-            .take(SYNC_CANDIDATES)
-            .filter_map(|candidate| bits::find_sync(&bytes, order, candidate.period))
-            .collect();
-        let _ = sender.send(PeriodsResult { start, scan, syncs });
-    });
-    state.periods_pending = Some(receiver);
+    *pending = Some(receiver);
+    sender
+}
+
+/// Wait for a scan `bits.scan_periods` started; returns where it is sent.
+pub(crate) fn await_periods(app: &mut ViewerApp) -> mpsc::Sender<PeriodsResult> {
+    awaited(&mut app.bench.panels.bits.periods_pending)
+}
+
+/// Wait for planes `bits.planes` split; returns where they are sent.
+pub(crate) fn await_planes(app: &mut ViewerApp) -> mpsc::Sender<PlanesResult> {
+    awaited(&mut app.bench.panels.bits.planes_pending)
+}
+
+/// Wait for decodes `bits.detect_linecode` tried; returns where they are sent.
+pub(crate) fn await_linecodes(app: &mut ViewerApp) -> mpsc::Sender<LineCodeResult> {
+    awaited(&mut app.bench.panels.bits.linecode_pending)
+}
+
+/// Wait for hypotheses `bits.find_length_fields` made; returns where they are sent.
+pub(crate) fn await_lengths(app: &mut ViewerApp) -> mpsc::Sender<LengthFieldsResult> {
+    awaited(&mut app.bench.panels.bits.lengths_pending)
 }
 
 fn effective_max_period(state: &BitsState) -> usize {
@@ -289,41 +315,48 @@ fn show_periods(state: &mut BitsState, app: &mut ViewerApp, ui: &mut Ui) {
     }
     let order = result.scan.order;
     if let Some(period) = chosen_width {
-        use_bit_width(app, order, period);
+        use_bit_width(app, order, period, None);
     }
     if let Some((bit, period)) = align_to {
-        use_bit_width(app, order, period);
-        app.shape.byte_offset = bit / 8;
-        app.shape.bit_offset = (bit % 8) as u32;
-        app.clamp_top_row();
+        use_bit_width(app, order, period, Some(bit));
     }
 }
 
-/// Show the data one bit per pixel, `period` bits per row.
-fn use_bit_width(app: &mut ViewerApp, order: BitOrder, period: usize) {
-    app.shape.format = match order {
+/// The person shows the data one bit per pixel, `period` bits per row, and
+/// with `first_bit` the view starting there: `view.set_shape`.
+fn use_bit_width(app: &mut ViewerApp, order: BitOrder, period: usize, first_bit: Option<usize>) {
+    let format = match order {
         BitOrder::MsbFirst => PixelFormat::Bit1Msb,
         BitOrder::LsbFirst => PixelFormat::Bit1Lsb,
     };
-    app.set_width(period);
-    app.status = format!("Width set to {period} bits, one bit per pixel");
+    let mut params = serde_json::json!({ "format": format, "width": period.min(crate::app::MAX_WIDTH) });
+    if let Some(bit) = first_bit {
+        params["offset"] = serde_json::json!(bit / 8);
+        params["bit_offset"] = serde_json::json!(bit % 8);
+    }
+    if app.perform("view.set_shape", params).is_ok() {
+        app.status = format!("Width set to {period} bits, one bit per pixel");
+    }
 }
 
 // ---------------------------------------------------------------------------
 // Bit planes
 // ---------------------------------------------------------------------------
 
-fn start_planes(state: &mut BitsState, app: &mut ViewerApp) {
+/// The person asks for the bit planes of the selection, else from the
+/// cursor, scored with the view's row width: `bits.planes`.
+fn start_planes(app: &mut ViewerApp) {
     let (start, len, _) = selection_or_cursor(app, PLANE_BYTES);
-    let bytes = app.document.read_range(start, len);
     let row_width = app.shape.row_stride().clamp(1, PREVIEW_MAX_WIDTH);
-    let (sender, receiver) = mpsc::channel();
-    thread::spawn(move || {
-        let scores = bits::plane_scores(&bytes, row_width);
-        let planes = (0..8).map(|bit| bits::bit_plane(&bytes, bit)).collect();
-        let _ = sender.send(PlanesResult { start, len: bytes.len(), row_width, scores, planes });
-    });
-    state.planes_pending = Some(receiver);
+    app.perform_later("bits.planes", serde_json::json!({ "start": start, "len": len, "row_width": row_width }));
+}
+
+/// Split `bytes` (from document offset `start`) into bit planes, scored
+/// with rows of `row_width` bytes.
+pub(crate) fn split_planes(bytes: &[u8], start: usize, row_width: usize) -> PlanesResult {
+    let scores = bits::plane_scores(bytes, row_width);
+    let planes = (0..8).map(|bit| bits::bit_plane(bytes, bit)).collect();
+    PlanesResult { start, len: bytes.len(), row_width, scores, planes }
 }
 
 /// One preview texture per plane, `row_width` pixels wide, top rows only.
@@ -345,7 +378,7 @@ fn show_planes(state: &mut BitsState, app: &mut ViewerApp, ui: &mut Ui) {
     let (_, len, what) = selection_or_cursor(app, PLANE_BYTES);
     ui.horizontal(|ui| {
         if ui.button(format!("Split into bit planes ({what}, {})", crate::compress::human_bytes(len))).clicked() {
-            start_planes(state, app);
+            start_planes(app);
         }
         if state.planes_pending.is_some() {
             ui.spinner();
@@ -378,11 +411,16 @@ fn show_planes(state: &mut BitsState, app: &mut ViewerApp, ui: &mut Ui) {
         }
     });
     if let Some(bit) = open {
-        let plane = result.planes[bit].clone();
-        let name = format!("{} › bit plane {bit}@{:#x}", app.display_name(), result.start);
-        let width = result.row_width;
-        app.open_derived(plane, name);
-        app.set_width(width);
+        open_plane(app, result.start, result.len, bit, result.row_width);
+    }
+}
+
+/// The person opens bit plane `bit` of the bytes split as a document
+/// (`bits.open_plane`), shown with the rows it was scored with
+/// (`view.set_shape`).
+fn open_plane(app: &mut ViewerApp, start: usize, len: usize, bit: usize, row_width: usize) {
+    if app.perform("bits.open_plane", serde_json::json!({ "start": start, "len": len, "bit": bit })).is_ok() {
+        let _ = app.perform("view.set_shape", serde_json::json!({ "width": row_width }));
     }
 }
 
@@ -390,18 +428,25 @@ fn show_planes(state: &mut BitsState, app: &mut ViewerApp, ui: &mut Ui) {
 // Line codes
 // ---------------------------------------------------------------------------
 
+/// The person asks which line code the selection, else the bytes from the
+/// cursor, is in: `bits.detect_linecode`.
 fn start_linecodes(state: &mut BitsState, app: &mut ViewerApp) {
     let (start, len, _) = selection_or_cursor(app, LINECODE_BYTES);
-    let bytes = app.document.read_range(start, len);
-    let order = state.order;
-    let (sender, receiver) = mpsc::channel();
-    thread::spawn(move || {
-        let mut decodes = linecode::auto_detect(&bytes, order);
-        decodes.truncate(LINECODE_LISTED);
-        let timestamps = linecode::find_bcd_timestamps(&bytes);
-        let _ = sender.send(LineCodeResult { start, len: bytes.len(), order, decodes, timestamps });
-    });
-    state.linecode_pending = Some(receiver);
+    app.perform_later("bits.detect_linecode", serde_json::json!({ "start": start, "len": len, "order": state.order }));
+}
+
+/// Try every line code on `bytes` (from document offset `start`).
+pub(crate) fn detect_linecodes(bytes: &[u8], start: usize, order: BitOrder) -> LineCodeResult {
+    let mut decodes = linecode::auto_detect(bytes, order);
+    decodes.truncate(LINECODE_LISTED);
+    let timestamps = linecode::find_bcd_timestamps(bytes);
+    LineCodeResult { start, len: bytes.len(), order, decodes, timestamps }
+}
+
+/// The person opens a line-code decode as a document: `bits.decode_linecode`.
+fn open_decoded(app: &mut ViewerApp, (start, len): (usize, usize), order: BitOrder, code: LineCode, bit_offset: usize) {
+    let code = crate::api::tools::bits::LineCodeName::of(code);
+    let _ = app.perform("bits.decode_linecode", serde_json::json!({ "start": start, "len": len, "order": order, "code": code, "bit_offset": bit_offset }));
 }
 
 fn show_linecodes(state: &mut BitsState, app: &mut ViewerApp, ui: &mut Ui) {
@@ -414,7 +459,7 @@ fn show_linecodes(state: &mut BitsState, app: &mut ViewerApp, ui: &mut Ui) {
             ui.spinner();
         }
     });
-    let mut open: Option<(Vec<u8>, String)> = None;
+    let mut open: Option<((usize, usize), BitOrder, LineCode, usize)> = None;
     ui.horizontal_wrapped(|ui| {
         ui.label("Decode as");
         let selected = state.manual_code.unwrap_or(LineCode::Nrzi);
@@ -428,10 +473,7 @@ fn show_linecodes(state: &mut BitsState, app: &mut ViewerApp, ui: &mut Ui) {
         ui.label("from bit");
         ui.add(egui::DragValue::new(&mut state.manual_offset).range(0..=63));
         if ui.button("Open decoded").clicked() {
-            let bytes = app.document.read_range(start, len);
-            let decoded = linecode::decode(&bytes, state.order, state.manual_offset, selected);
-            let name = format!("{} › {}+{}@{start:#x}", app.display_name(), selected.label(), state.manual_offset);
-            open = Some((decoded.bytes, name));
+            open = Some(((start, len), state.order, selected, state.manual_offset));
         }
     });
     if let Some(result) = &state.linecodes {
@@ -448,8 +490,7 @@ fn show_linecodes(state: &mut BitsState, app: &mut ViewerApp, ui: &mut Ui) {
                 }
                 ui.label(dim(extra));
                 if ui.small_button("Open decoded").clicked() {
-                    let name = format!("{} › {}+{}@{:#x}", app.display_name(), decode.code.label(), decode.bit_offset, result.start);
-                    open = Some((decode.bytes.clone(), name));
+                    open = Some(((result.start, result.len), result.order, decode.code, decode.bit_offset));
                 }
                 ui.end_row();
             }
@@ -461,8 +502,8 @@ fn show_linecodes(state: &mut BitsState, app: &mut ViewerApp, ui: &mut Ui) {
     } else {
         ui.label(dim("Tries Manchester (both conventions), differential Manchester, 8b/10b and packed BCD at every bit alignment and ranks them by invalid symbols. NRZI and Gray code cannot be checked, so decode them by hand."));
     }
-    if let Some((bytes, name)) = open {
-        app.open_derived(bytes, name);
+    if let Some((span, order, code, bit_offset)) = open {
+        open_decoded(app, span, order, code, bit_offset);
     }
 }
 
@@ -517,22 +558,23 @@ fn show_numbers(state: &mut BitsState, app: &mut ViewerApp, ui: &mut Ui) {
 // Length fields
 // ---------------------------------------------------------------------------
 
-fn start_lengths(state: &mut BitsState, app: &mut ViewerApp) {
+/// The person asks for the length fields of the selection, else the start
+/// of the file: `bits.find_length_fields`.
+fn start_lengths(app: &mut ViewerApp) {
     let (start, len, _) = selection_or_file(app, tlv::MAX_REGION);
-    let bytes = app.document.read_range(start, len);
-    let (sender, receiver) = mpsc::channel();
-    thread::spawn(move || {
-        let hypotheses = tlv::analyse(&bytes, start);
-        let _ = sender.send(LengthFieldsResult { start, len: bytes.len(), hypotheses });
-    });
-    state.lengths_pending = Some(receiver);
+    app.perform_later("bits.find_length_fields", serde_json::json!({ "start": start, "len": len }));
+}
+
+/// Find the length fields that explain `bytes` (from document offset `start`).
+pub(crate) fn find_lengths(bytes: &[u8], start: usize) -> LengthFieldsResult {
+    LengthFieldsResult { start, len: bytes.len(), hypotheses: tlv::analyse(bytes, start) }
 }
 
 fn show_lengths(state: &mut BitsState, app: &mut ViewerApp, ui: &mut Ui) {
     let (_, len, what) = selection_or_file(app, tlv::MAX_REGION);
     ui.horizontal(|ui| {
         if ui.button(format!("Find length fields ({what}, {})", crate::compress::human_bytes(len))).clicked() {
-            start_lengths(state, app);
+            start_lengths(app);
         }
         if state.lengths_pending.is_some() {
             ui.spinner();
@@ -562,6 +604,78 @@ fn show_lengths(state: &mut BitsState, app: &mut ViewerApp, ui: &mut Ui) {
         }
     });
     if let Some((start, span)) = chosen {
-        select_range(app, start, span);
+        app.select_found(start, span);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+    use crate::actions::take_performed;
+    use crate::app::Launch;
+
+    fn app_with(bytes: &[u8]) -> ViewerApp {
+        let mut app = ViewerApp::new(Launch::default());
+        app.open_bytes(bytes.to_vec(), "test.bin".to_string());
+        app.run_bus();
+        take_performed();
+        app
+    }
+
+    #[test]
+    fn each_search_is_a_job_with_its_span_and_options_carried_out_once_the_panel_is_drawn() {
+        let mut app = app_with(&[0x55u8; 4096]);
+        app.restore_selection(16, 1024);
+        let mut state = BitsState { order: BitOrder::LsbFirst, max_period: 64, ..Default::default() };
+        start_periods(&mut state, &mut app);
+        start_planes(&mut app);
+        start_linecodes(&mut state, &mut app);
+        start_lengths(&mut app);
+        assert!(take_performed().is_empty(), "nothing while the panel is drawn");
+        app.perform_waiting_actions();
+        let row_width = app.shape.row_stride().clamp(1, PREVIEW_MAX_WIDTH);
+        assert_eq!(
+            take_performed(),
+            [
+                ("bits.scan_periods".to_string(), json!({"start": 16, "len": 1024, "order": "lsb", "max_period": 64})),
+                ("bits.planes".to_string(), json!({"start": 16, "len": 1024, "row_width": row_width})),
+                ("bits.detect_linecode".to_string(), json!({"start": 16, "len": 1024, "order": "lsb"})),
+                ("bits.find_length_fields".to_string(), json!({"start": 16, "len": 1024})),
+            ]
+        );
+        let bits = &app.bench.panels.bits;
+        assert!(bits.periods_pending.is_some() && bits.planes_pending.is_some() && bits.linecode_pending.is_some() && bits.lengths_pending.is_some());
+        let periods = bits.periods_pending.as_ref().unwrap().recv_timeout(std::time::Duration::from_secs(60)).expect("the scan finishes");
+        assert_eq!((periods.start, periods.scan.order), (16, BitOrder::LsbFirst));
+    }
+
+    #[test]
+    fn using_a_bit_period_as_the_width_or_aligning_to_a_sync_word_is_a_view_shape_step() {
+        let mut app = app_with(&[0u8; 4096]);
+        use_bit_width(&mut app, BitOrder::MsbFirst, 37, None);
+        use_bit_width(&mut app, BitOrder::LsbFirst, 40, Some(8 * 3 + 5));
+        assert_eq!(
+            take_performed(),
+            [
+                ("view.set_shape".to_string(), json!({"format": "bit1", "width": 37})),
+                ("view.set_shape".to_string(), json!({"format": "bit1lsb", "width": 40, "offset": 3, "bit_offset": 5})),
+            ]
+        );
+        assert_eq!((app.shape.format, app.shape.width, app.shape.byte_offset, app.shape.bit_offset), (PixelFormat::Bit1Lsb, 40, 3, 5));
+        assert_eq!(app.status, "Width set to 40 bits, one bit per pixel");
+    }
+
+    #[test]
+    fn opening_a_plane_or_a_decode_makes_a_derived_document_through_the_api() {
+        let mut app = app_with(&[0x81u8; 256]);
+        open_plane(&mut app, 0, 64, 7, 8);
+        assert_eq!(take_performed(), [("bits.open_plane".to_string(), json!({"start": 0, "len": 64, "bit": 7})), ("view.set_shape".to_string(), json!({"width": 8}))]);
+        assert_eq!((app.display_name().as_str(), app.document.len(), app.shape.width), ("test.bin › bit plane 7@0x0", 64, 8));
+        let mut app = app_with(&[0x81u8; 256]);
+        open_decoded(&mut app, (0, 256), BitOrder::MsbFirst, LineCode::Nrzi, 2);
+        assert_eq!(take_performed(), [("bits.decode_linecode".to_string(), json!({"start": 0, "len": 256, "order": "msb", "code": "nrzi", "bit_offset": 2}))]);
+        assert_eq!(app.display_name(), format!("test.bin › {}+2@0x0", LineCode::Nrzi.label()));
     }
 }
