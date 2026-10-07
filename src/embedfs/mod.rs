@@ -377,6 +377,14 @@ fn entry_kind_label(entry: EntryKind, filesystem: FsKind) -> String {
 
 #[cfg(test)]
 pub(crate) mod test_support {
+    /// A CramFS image holding `files` (name and content) at its root, for
+    /// tests outside this module.
+    pub fn cramfs_image(files: &[(&str, &[u8])]) -> Vec<u8> {
+        use super::cramfs::tests::{Item, build_image};
+        let items: Vec<Item> = files.iter().map(|&(name, content)| Item::File(name, content)).collect();
+        build_image(&items)
+    }
+
     /// Deterministic pseudo-random bytes (xorshift).
     pub fn noise(len: usize, seed: u32) -> Vec<u8> {
         let mut state = seed.max(1);

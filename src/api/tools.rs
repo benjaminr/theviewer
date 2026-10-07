@@ -26,16 +26,18 @@ pub mod compare;
 pub mod dotplot;
 pub mod images;
 pub mod trigrams;
+pub mod firmware;
+pub mod forensics;
 
 /// This module's methods, in the order `api.describe` lists them within
 /// their namespace. A new method is added here, and only here.
-pub(super) const METHODS: &[super::Method] = &join::join::<{ statistics::METHODS.len() + strings::METHODS.len() + xor::METHODS.len() + checksums::METHODS.len() + diff::METHODS.len() + disasm::METHODS.len() + crypto::METHODS.len() + bits::METHODS.len() + compare::METHODS.len() + dotplot::METHODS.len() + images::METHODS.len() + trigrams::METHODS.len() }>(&[statistics::METHODS, strings::METHODS, xor::METHODS, checksums::METHODS, diff::METHODS, disasm::METHODS, crypto::METHODS, bits::METHODS, compare::METHODS, dotplot::METHODS, images::METHODS, trigrams::METHODS]);
+pub(super) const METHODS: &[super::Method] = &join::join::<{ statistics::METHODS.len() + strings::METHODS.len() + xor::METHODS.len() + checksums::METHODS.len() + diff::METHODS.len() + disasm::METHODS.len() + crypto::METHODS.len() + bits::METHODS.len() + compare::METHODS.len() + dotplot::METHODS.len() + images::METHODS.len() + trigrams::METHODS.len() + firmware::METHODS.len() + forensics::METHODS.len() }>(&[statistics::METHODS, strings::METHODS, xor::METHODS, checksums::METHODS, diff::METHODS, disasm::METHODS, crypto::METHODS, bits::METHODS, compare::METHODS, dotplot::METHODS, images::METHODS, trigrams::METHODS, firmware::METHODS, forensics::METHODS]);
 
 /// An example call of each of [`METHODS`], run in order on a fresh
 /// document by the API's tests, whose results must fit the result schema.
 #[cfg(test)]
 pub(super) fn examples() -> Vec<(&'static str, serde_json::Value)> {
-    [statistics::examples(), strings::examples(), xor::examples(), checksums::examples(), diff::examples(), disasm::examples(), crypto::examples(), bits::examples(), compare::examples(), dotplot::examples(), images::examples(), trigrams::examples()].concat()
+    [statistics::examples(), strings::examples(), xor::examples(), checksums::examples(), diff::examples(), disasm::examples(), crypto::examples(), bits::examples(), compare::examples(), dotplot::examples(), images::examples(), trigrams::examples(), firmware::examples(), forensics::examples()].concat()
 }
 
 /// What a call to one of this module's methods would do, in plain words,

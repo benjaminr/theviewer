@@ -2,7 +2,6 @@
 //! and a per-block file-type map for carving headerless fragments.
 
 use std::sync::mpsc::{self, Receiver};
-use std::thread;
 use std::time::Duration;
 
 use eframe::egui::{self, Color32, CornerRadius, RichText, Sense, Stroke, Ui, vec2};
@@ -16,7 +15,7 @@ use crate::theme;
 use crate::unpack::Limits;
 
 /// Largest prefix of the document scanned by either section.
-const SCAN_LIMIT: usize = 256 * 1024 * 1024;
+pub(crate) const SCAN_LIMIT: usize = 256 * 1024 * 1024;
 /// How often to look for a finished background job.
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
 const STRIP_HEIGHT: f32 = 28.0;
@@ -24,9 +23,9 @@ const LIST_HEIGHT: f32 = 220.0;
 
 /// Identifies the document a result was computed from, to flag stale results.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct DocumentKey {
-    len: usize,
-    version: u64,
+pub(crate) struct DocumentKey {
+    pub len: usize,
+    pub version: u64,
 }
 
 impl DocumentKey {
@@ -35,16 +34,16 @@ impl DocumentKey {
     }
 }
 
-struct FilesystemScan {
-    key: DocumentKey,
-    filesystems: Vec<Filesystem>,
+pub(crate) struct FilesystemScan {
+    pub key: DocumentKey,
+    pub filesystems: Vec<Filesystem>,
 }
 
-struct BlockScan {
-    key: DocumentKey,
-    scanned_len: usize,
-    runs: Vec<Run>,
-    block_count: usize,
+pub(crate) struct BlockScan {
+    pub key: DocumentKey,
+    pub scanned_len: usize,
+    pub runs: Vec<Run>,
+    pub block_count: usize,
 }
 
 #[derive(Default)]
@@ -105,20 +104,30 @@ fn stale_marker(ui: &mut Ui, key: DocumentKey, app: &ViewerApp) {
 // Filesystems
 // ---------------------------------------------------------------------------
 
-fn start_filesystem_scan(state: &mut ForensicsState, app: &mut ViewerApp) {
-    let key = DocumentKey::of(app);
-    let bytes = app.document.read_range(0, key.len.min(SCAN_LIMIT));
-    let (sender, receiver) = mpsc::channel();
-    thread::spawn(move || {
-        let limits = Limits::default();
-        let mut bytes_left = limits.max_total_bytes;
-        let filesystems = embedfs::find_filesystems(&bytes, &limits, &mut bytes_left);
-        let _ = sender.send(FilesystemScan { key, filesystems });
-    });
-    state.filesystems_pending = Some(receiver);
+/// The filesystem images in `bytes`, with their files extracted.
+pub(crate) fn filesystems_in(bytes: &[u8]) -> Vec<Filesystem> {
+    let limits = Limits::default();
+    let mut bytes_left = limits.max_total_bytes;
+    embedfs::find_filesystems(bytes, &limits, &mut bytes_left)
 }
 
-/// What the user asked for in the filesystem section this frame.
+/// Where a job's result for the panel is sent, and where the panel waits for it.
+fn awaited<T>(pending: &mut Option<Receiver<T>>) -> mpsc::Sender<T> {
+    let (sender, receiver) = mpsc::channel();
+    *pending = Some(receiver);
+    sender
+}
+
+/// Wait for a search `forensics.find_filesystems` started; returns where it is sent.
+pub(crate) fn await_filesystems(app: &mut ViewerApp) -> mpsc::Sender<FilesystemScan> {
+    awaited(&mut app.bench.panels.forensics.filesystems_pending)
+}
+
+/// Wait for the classes `forensics.classify_blocks` works out; returns where they are sent.
+pub(crate) fn await_blocks(app: &mut ViewerApp) -> mpsc::Sender<BlockScan> {
+    awaited(&mut app.bench.panels.forensics.blocks_pending)
+}
+
 enum FilesystemAction {
     Jump(usize),
     Open { filesystem: usize, entry: usize },
@@ -128,7 +137,7 @@ fn show_filesystems(state: &mut ForensicsState, app: &mut ViewerApp, ui: &mut Ui
     ui.horizontal_wrapped(|ui| {
         let size = human_bytes(app.document.len().min(SCAN_LIMIT));
         if ui.add_enabled(state.filesystems_pending.is_none(), egui::Button::new(format!("Scan for filesystems ({size})"))).clicked() {
-            start_filesystem_scan(state, app);
+            app.perform_later("forensics.find_filesystems", serde_json::json!({}));
         }
         if state.filesystems_pending.is_some() {
             ui.spinner();
@@ -165,12 +174,11 @@ fn show_filesystems(state: &mut ForensicsState, app: &mut ViewerApp, ui: &mut Ui
     file_list(ui, filesystem, selected, &mut action);
 
     match action {
-        Some(FilesystemAction::Jump(offset)) => app.jump_to_offset(offset),
+        Some(FilesystemAction::Jump(offset)) => app.jump_found(offset),
         Some(FilesystemAction::Open { filesystem, entry }) => {
             let filesystem = &scan.filesystems[filesystem];
-            let entry = &filesystem.entries[entry];
-            let name = format!("{} › {}@{:#x}/{}", app.display_name(), filesystem.kind.label(), filesystem.offset, entry.path);
-            app.open_derived(entry.data.as_ref().clone(), name);
+            let params = serde_json::json!({ "filesystem": filesystem.offset, "path": filesystem.entries[entry].path });
+            let _ = app.perform("forensics.open_entry", params);
         }
         None => {}
     }
@@ -266,16 +274,11 @@ fn class_colour(class: BlockClass) -> Color32 {
     }
 }
 
-fn start_block_scan(state: &mut ForensicsState, app: &mut ViewerApp) {
-    let key = DocumentKey::of(app);
-    let bytes = app.document.read_range(0, key.len.min(SCAN_LIMIT));
-    let (sender, receiver) = mpsc::channel();
-    thread::spawn(move || {
-        let blocks = fragments::classify_blocks(&bytes, fragments::DEFAULT_BLOCK_SIZE);
-        let runs = fragments::merge_runs(&blocks);
-        let _ = sender.send(BlockScan { key, scanned_len: bytes.len(), runs, block_count: blocks.len() });
-    });
-    state.blocks_pending = Some(receiver);
+/// Classify `bytes` (the document of `key`, from its start) in blocks of `block_size`.
+pub(crate) fn classify(bytes: &[u8], key: DocumentKey, block_size: usize) -> BlockScan {
+    let blocks = fragments::classify_blocks(bytes, block_size);
+    let runs = fragments::merge_runs(&blocks);
+    BlockScan { key, scanned_len: bytes.len(), runs, block_count: blocks.len() }
 }
 
 fn show_block_classes(state: &mut ForensicsState, app: &mut ViewerApp, ui: &mut Ui) {
@@ -283,7 +286,7 @@ fn show_block_classes(state: &mut ForensicsState, app: &mut ViewerApp, ui: &mut 
         let size = human_bytes(app.document.len().min(SCAN_LIMIT));
         let label = format!("Classify {} KiB blocks ({size})", fragments::DEFAULT_BLOCK_SIZE / 1024);
         if ui.add_enabled(state.blocks_pending.is_none(), egui::Button::new(label)).clicked() {
-            start_block_scan(state, app);
+            app.perform_later("forensics.classify_blocks", serde_json::json!({ "block_size": fragments::DEFAULT_BLOCK_SIZE }));
         }
         if state.blocks_pending.is_some() {
             ui.spinner();
@@ -306,7 +309,7 @@ fn show_block_classes(state: &mut ForensicsState, app: &mut ViewerApp, ui: &mut 
         jump = Some(offset);
     }
     if let Some(offset) = jump {
-        app.jump_to_offset(offset);
+        app.jump_found(offset);
     }
 }
 
@@ -372,4 +375,48 @@ fn run_list(ui: &mut Ui, runs: &[Run]) -> Option<usize> {
         }
     });
     jump
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use egui_kittest::kittest::Queryable;
+    use serde_json::json;
+
+    use super::*;
+    use crate::app::Launch;
+
+    #[test]
+    fn the_scans_are_jobs_of_the_person_s_carried_out_once_the_panel_is_drawn() {
+        let mut app = ViewerApp::new(Launch::default());
+        let mut bytes = b"The quick brown fox jumps over the lazy dog. ".repeat(100);
+        bytes.extend(vec![0u8; 8192]);
+        app.open_bytes(bytes, "mixed.bin".to_string());
+        crate::actions::take_performed();
+        // Drawn as the window draws it: its state lent out of the app, and
+        // the actions it asked for carried out before each frame.
+        let mut harness = egui_kittest::Harness::new_ui_state(
+            |ui, app: &mut ViewerApp| {
+                app.perform_waiting_actions();
+                crate::panels::show(app, ui, |panels| &mut panels.forensics, show_forensics);
+            },
+            app,
+        );
+        harness.step();
+        harness.get_by_label_contains("Scan for filesystems").click();
+        harness.step();
+        harness.get_by_label_contains("Classify 4 KiB blocks").click();
+        harness.step();
+        harness.step();
+        assert_eq!(
+            crate::actions::take_performed(),
+            [("forensics.find_filesystems".to_string(), json!({})), ("forensics.classify_blocks".to_string(), json!({"block_size": fragments::DEFAULT_BLOCK_SIZE}))]
+        );
+        let state = &harness.state().bench.panels.forensics;
+        let blocks = state.blocks_pending.as_ref().expect("the panel waits for the classes").recv_timeout(Duration::from_secs(60)).expect("classified");
+        assert_eq!(blocks.runs[0].class, BlockClass::Text);
+        let filesystems = state.filesystems_pending.as_ref().expect("and for the filesystems").recv_timeout(Duration::from_secs(60)).expect("searched");
+        assert!(filesystems.filesystems.is_empty());
+    }
 }

@@ -133,6 +133,20 @@ fn tool_names(answer: &Value) -> Vec<String> {
     answer["result"]["tools"].as_array().unwrap().iter().map(|tool| tool["name"].as_str().unwrap().to_string()).collect()
 }
 
+/// Every tool's name, following tools/list from page to page.
+fn all_tool_names(client: &mut Client) -> Vec<String> {
+    let mut names = Vec::new();
+    let mut params = json!({});
+    loop {
+        let page = client.request("tools/list", params);
+        names.extend(tool_names(&page));
+        match page["result"]["nextCursor"].as_str() {
+            Some(next) => params = json!({ "cursor": next }),
+            None => return names,
+        }
+    }
+}
+
 #[test]
 fn a_client_lists_calls_edits_reads_subscribes_and_disconnects() {
     let file = temp_path("sample.bin");
@@ -148,8 +162,7 @@ fn a_client_lists_calls_edits_reads_subscribes_and_disconnects() {
     assert_eq!(initialize["result"]["serverInfo"]["name"], "theviewer");
     client.send(&json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }));
 
-    let tools = client.request("tools/list", json!({}));
-    let names = tool_names(&tools);
+    let names = all_tool_names(&mut client);
     assert!(names.contains(&"bytes_read".to_string()) && names.contains(&"bytes_write".to_string()));
     assert!(names.contains(&"probe_echo".to_string()), "a plugin's method is a tool: {names:?}");
 
@@ -177,7 +190,7 @@ fn a_client_lists_calls_edits_reads_subscribes_and_disconnects() {
 
     std::fs::write(plugins.join("late.lua"), LATE_PLUGIN).unwrap();
     client.wait_for_notification("notifications/tools/list_changed", PATIENCE).expect("a new plugin's methods are announced");
-    assert!(tool_names(&client.request("tools/list", json!({}))).contains(&"late_hello".to_string()));
+    assert!(all_tool_names(&mut client).contains(&"late_hello".to_string()));
 
     let modern = client.request(
         "tools/call",

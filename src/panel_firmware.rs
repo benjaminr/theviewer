@@ -6,7 +6,6 @@
 //! describe.
 
 use std::sync::mpsc::{self, Receiver};
-use std::thread;
 use std::time::Duration;
 
 use eframe::egui::{self, RichText, Sense, Ui};
@@ -14,19 +13,19 @@ use eframe::egui::{self, RichText, Sense, Ui};
 use crate::analysis_tabs::ArchChoice;
 use crate::app::ViewerApp;
 use crate::base_address::{self, BaseSearchOptions, BaseSearchReport, ByteOrder, PointerWidth};
-use crate::cortex_m::{self, VectorTable};
-use crate::cpu_detect::{self, CpuReport};
+use crate::cortex_m::VectorTable;
+use crate::cpu_detect::CpuReport;
 use crate::disasm::Arch;
 use crate::theme;
 
 /// Largest range read for any of the analyses.
-const SCAN_LIMIT: usize = 64 * 1024 * 1024;
+const SCAN_LIMIT: usize = crate::api::tools::firmware::FIRMWARE_LIMIT;
 /// How often to look for a finished job while one is running.
 const PENDING_REPAINT: Duration = Duration::from_millis(100);
 /// Largest step offered for the load address search.
-const MAX_STEP: u64 = 0x100_0000;
+const MAX_STEP: u64 = crate::api::tools::firmware::MOST_STEP;
 /// Range of string lengths offered for the load address search.
-const MIN_STRING_LEN_RANGE: std::ops::RangeInclusive<usize> = 4..=64;
+const MIN_STRING_LEN_RANGE: std::ops::RangeInclusive<usize> = crate::api::tools::firmware::MIN_STRING_LENS;
 /// Width of the confidence bars.
 const CONFIDENCE_BAR_WIDTH: f32 = 90.0;
 /// Height of the scrolling vector table listing.
@@ -47,14 +46,12 @@ impl<T> Default for Job<T> {
 }
 
 impl<T: Send + 'static> Job<T> {
-    fn start(&mut self, version: u64, work: impl FnOnce() -> T + Send + 'static) {
+    /// Wait for a result about document version `version`; returns where it is sent.
+    fn awaited(&mut self, version: u64) -> mpsc::Sender<T> {
         let (sender, receiver) = mpsc::channel();
-        thread::spawn(move || {
-            // The receiver is gone if the panel was reset; nothing to do then.
-            let _ = sender.send(work());
-        });
         self.pending = Some(receiver);
         self.pending_version = version;
+        sender
     }
 
     /// Collect a finished result, if any.
@@ -122,13 +119,32 @@ pub fn show_firmware(state: &mut FirmwareState, app: &mut ViewerApp, ui: &mut Ui
 
     for action in actions {
         match action {
-            Action::Jump(offset) => app.jump_to_offset(offset),
+            Action::Jump(offset) => app.jump_found(offset),
             Action::Disassemble(arch) => {
-                app.bench.analysis.arch = ArchChoice::Fixed(arch);
-                app.status = format!("Disassembly set to {}", arch.label());
+                if crate::analysis_tabs::set_disassembly_arch(app, ArchChoice::Fixed(arch)) {
+                    app.status = format!("Disassembly set to {}", arch.label());
+                }
             }
         }
     }
+}
+
+/// Wait for a ranking `firmware.identify` started; returns where it is sent.
+pub(crate) fn await_processor(app: &mut ViewerApp) -> mpsc::Sender<CpuReport> {
+    let version = app.document.version();
+    app.bench.panels.firmware.processor.awaited(version)
+}
+
+/// Wait for a search `firmware.find_load_address` started; returns where it is sent.
+pub(crate) fn await_load_address(app: &mut ViewerApp) -> mpsc::Sender<BaseSearchReport> {
+    let version = app.document.version();
+    app.bench.panels.firmware.load_address.awaited(version)
+}
+
+/// Wait for a search `firmware.vector_tables` started; returns where it is sent.
+pub(crate) fn await_vector_tables(app: &mut ViewerApp) -> mpsc::Sender<Vec<VectorTable>> {
+    let version = app.document.version();
+    app.bench.panels.firmware.vector_tables.awaited(version)
 }
 
 /// The selection, else the whole file, capped at [`SCAN_LIMIT`].
@@ -161,11 +177,11 @@ fn offset_link(ui: &mut Ui, offset: usize) -> bool {
 // Processor
 // ---------------------------------------------------------------------------
 
-/// Identify the processor of the selection, else the whole file.
-fn start_processor(state: &mut FirmwareState, app: &mut ViewerApp) {
+/// The person identifies the processor of the selection, else the whole
+/// file: `firmware.identify`, carried out once the panel is drawn.
+fn start_processor(app: &mut ViewerApp) {
     let (start, len, _) = selection_or_file(app);
-    let bytes = app.document.read_range(start, len);
-    state.processor.start(app.document.version(), move || cpu_detect::identify_architecture(&bytes, start));
+    app.perform_later("firmware.identify", serde_json::json!({ "start": start, "len": len }));
 }
 
 fn show_processor(state: &mut FirmwareState, app: &mut ViewerApp, ui: &mut Ui, actions: &mut Vec<Action>) {
@@ -173,7 +189,7 @@ fn show_processor(state: &mut FirmwareState, app: &mut ViewerApp, ui: &mut Ui, a
     ui.horizontal_wrapped(|ui| {
         let button = ui.add_enabled(!state.processor.is_pending(), egui::Button::new(format!("Identify processor in {what} ({})", crate::compress::human_bytes(len))));
         if button.clicked() {
-            start_processor(state, app);
+            start_processor(app);
         }
         if state.processor.is_pending() {
             ui.spinner();
@@ -213,12 +229,17 @@ fn show_processor(state: &mut FirmwareState, app: &mut ViewerApp, ui: &mut Ui, a
 // Load address
 // ---------------------------------------------------------------------------
 
-/// Search for the load address of the whole file (the base is the address of offset 0).
-fn start_load_address(state: &mut FirmwareState, app: &mut ViewerApp) {
-    let len = app.document.len().min(SCAN_LIMIT);
-    let bytes = app.document.read_range(0, len);
-    let options = state.base_options.clone();
-    state.load_address.start(app.document.version(), move || base_address::find_base_address(&bytes, &options));
+/// The person searches for the load address of the whole file (the base is
+/// the address of offset 0) with the options set: `firmware.find_load_address`.
+fn start_load_address(state: &FirmwareState, app: &mut ViewerApp) {
+    let options = &state.base_options;
+    let params = serde_json::json!({
+        "width": options.width.bytes() * 8,
+        "byte_order": options.byte_order.map(crate::api::tools::firmware::PointerOrder::of),
+        "step": options.step,
+        "min_string_len": options.min_string_len,
+    });
+    app.perform_later("firmware.find_load_address", params);
 }
 
 fn show_load_address(state: &mut FirmwareState, app: &mut ViewerApp, ui: &mut Ui, actions: &mut Vec<Action>) {
@@ -292,11 +313,10 @@ fn show_load_address(state: &mut FirmwareState, app: &mut ViewerApp, ui: &mut Ui
 // Vector table
 // ---------------------------------------------------------------------------
 
-/// Look for vector tables in the whole file.
-fn start_vector_tables(state: &mut FirmwareState, app: &mut ViewerApp) {
+/// The person looks for vector tables in the whole file: `firmware.vector_tables`.
+fn start_vector_tables(app: &mut ViewerApp) {
     let len = app.document.len().min(SCAN_LIMIT);
-    let bytes = app.document.read_range(0, len);
-    state.vector_tables.start(app.document.version(), move || cortex_m::find_vector_tables(&bytes, 0, bytes.len()));
+    app.perform_later("firmware.vector_tables", serde_json::json!({ "start": 0, "len": len }));
 }
 
 fn show_vector_tables(state: &mut FirmwareState, app: &mut ViewerApp, ui: &mut Ui, actions: &mut Vec<Action>) {
@@ -304,7 +324,7 @@ fn show_vector_tables(state: &mut FirmwareState, app: &mut ViewerApp, ui: &mut U
     ui.horizontal(|ui| {
         let button = ui.add_enabled(!state.vector_tables.is_pending(), egui::Button::new(format!("Find Cortex-M vector tables ({})", crate::compress::human_bytes(len))));
         if button.clicked() {
-            start_vector_tables(state, app);
+            start_vector_tables(app);
         }
         if state.vector_tables.is_pending() {
             ui.spinner();
@@ -360,6 +380,27 @@ fn show_vector_tables(state: &mut FirmwareState, app: &mut ViewerApp, ui: &mut U
     }
 }
 
+/// A tiny Cortex-M image: a vector table at 0x0800_0000, Thumb code after
+/// it, and strings referenced by a pointer table.
+#[cfg(test)]
+pub(crate) fn cortex_m_image() -> Vec<u8> {
+    let mut words: Vec<u32> = vec![0x2000_2000, 0x0800_0101, 0x0800_0103, 0x0800_0105, 0x0800_0107, 0x0800_0109, 0x0800_010B];
+    words.extend([0, 0, 0, 0, 0x0800_010D, 0, 0, 0x0800_010F, 0x0800_0111]);
+    let mut image: Vec<u8> = words.iter().flat_map(|word| word.to_le_bytes()).collect();
+    let thumb: [u16; 6] = [0xB5F0, 0x4604, 0x2000, 0x6821, 0x1840, 0xBDF0];
+    while image.len() < 0x2000 {
+        image.extend(thumb.iter().flat_map(|halfword| halfword.to_le_bytes()));
+        image.extend(0x4770u16.to_le_bytes());
+    }
+    let mut pointers = Vec::new();
+    for index in 0..16 {
+        pointers.push(0x0800_0000 + image.len() as u32);
+        image.extend(format!("diagnostic message {index}\0").as_bytes());
+    }
+    image.extend(pointers.iter().flat_map(|pointer| pointer.to_le_bytes()));
+    image
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::Instant;
@@ -369,26 +410,6 @@ mod tests {
 
     /// Longest a background job may take in these tests.
     const JOB_TIMEOUT: Duration = Duration::from_secs(10);
-
-    /// A tiny Cortex-M image: a vector table at 0x0800_0000, Thumb code after
-    /// it, and strings referenced by a pointer table.
-    fn cortex_m_image() -> Vec<u8> {
-        let mut words: Vec<u32> = vec![0x2000_2000, 0x0800_0101, 0x0800_0103, 0x0800_0105, 0x0800_0107, 0x0800_0109, 0x0800_010B];
-        words.extend([0, 0, 0, 0, 0x0800_010D, 0, 0, 0x0800_010F, 0x0800_0111]);
-        let mut image: Vec<u8> = words.iter().flat_map(|word| word.to_le_bytes()).collect();
-        let thumb: [u16; 6] = [0xB5F0, 0x4604, 0x2000, 0x6821, 0x1840, 0xBDF0];
-        while image.len() < 0x2000 {
-            image.extend(thumb.iter().flat_map(|halfword| halfword.to_le_bytes()));
-            image.extend(0x4770u16.to_le_bytes());
-        }
-        let mut pointers = Vec::new();
-        for index in 0..16 {
-            pointers.push(0x0800_0000 + image.len() as u32);
-            image.extend(format!("diagnostic message {index}\0").as_bytes());
-        }
-        image.extend(pointers.iter().flat_map(|pointer| pointer.to_le_bytes()));
-        image
-    }
 
     /// Lay the panel out until no job is pending, or fail after [`JOB_TIMEOUT`].
     fn run_until_idle(state: &mut FirmwareState, app: &mut ViewerApp, context: &egui::Context) {
@@ -401,19 +422,30 @@ mod tests {
                 return;
             }
             assert!(started.elapsed() < JOB_TIMEOUT, "firmware jobs did not finish");
-            thread::sleep(Duration::from_millis(10));
+            std::thread::sleep(Duration::from_millis(10));
         }
     }
 
     #[test]
-    fn panel_runs_all_three_analyses_in_the_background_and_shows_results() {
+    fn panel_runs_all_three_analyses_as_jobs_of_the_person_s_and_shows_results() {
         let mut app = ViewerApp::new(Launch::default());
         app.open_bytes(cortex_m_image(), "firmware.bin".to_string());
-        let mut state = FirmwareState::default();
+        crate::actions::take_performed();
         let context = egui::Context::default();
-        start_processor(&mut state, &mut app);
-        start_load_address(&mut state, &mut app);
-        start_vector_tables(&mut state, &mut app);
+        start_processor(&mut app);
+        start_load_address(&FirmwareState::default(), &mut app);
+        start_vector_tables(&mut app);
+        app.perform_waiting_actions();
+        let len = cortex_m_image().len();
+        assert_eq!(
+            crate::actions::take_performed(),
+            [
+                ("firmware.identify".to_string(), serde_json::json!({"start": 0, "len": len})),
+                ("firmware.find_load_address".to_string(), serde_json::json!({"width": 32, "byte_order": null, "step": base_address::DEFAULT_STEP, "min_string_len": base_address::DEFAULT_MIN_STRING_LEN})),
+                ("firmware.vector_tables".to_string(), serde_json::json!({"start": 0, "len": len})),
+            ]
+        );
+        let mut state = std::mem::take(&mut app.bench.panels.firmware);
         assert!(state.any_pending());
         run_until_idle(&mut state, &mut app, &context);
 

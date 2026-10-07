@@ -132,6 +132,12 @@ Errors are `{code, message, data}`, with these codes:
 | [`dotplot.compute`](#dotplotcompute) | job | Start comparing every block of a span (at most 64 MiB) with every other, by shared 6-byte substrings or by byte histograms, as a job: the grid of similarities (repeated content shows as lines parallel to the diagonal) is job.finished's result, and in the window it fills the Dot plot. |
 | [`images.find`](#imagesfind) | job | Start a search of a span (at most 64 MiB) for uncompressed images, trying 1-bit, 8-bit grey, RGB565, RGB and RGBA at widths from 16 to 2048 pixels, as a job: the regions whose rows resemble each other, best first, are job.finished's result (view.set_shape shows one), and in the window they fill Images. |
 | [`trigrams.count`](#trigramscount) | job | Start counting every run of three bytes in a span (sampled beyond 16 MiB) as a job, labelled by segments, by the report's regions or not at all, with a part of it to pick out: the points of the trigram cube, most common first, and the region types they belong to are job.finished's result, and in the window they fill Trigrams. |
+| [`firmware.identify`](#firmwareidentify) | job | Start identifying the processor of a span of headerless code (at most 64 MiB) as a job, disassembling samples as every supported architecture and ranking them by typical instructions, idioms and branch targets: the ranking is job.finished's result, and in the window it fills Firmware (analysis.processor is the quick read). |
+| [`firmware.find_load_address`](#firmwarefind_load_address) | job | Start a search for the address a firmware image is loaded at (the address of offset 0, over the document's first 64 MiB) as a job: the bases that make most stored pointers land on the start of a string, as rbasefind does, are job.finished's result, and in the window they fill Firmware. |
+| [`firmware.vector_tables`](#firmwarevector_tables) | job | Start a search of a span (the whole document by default, at most 64 MiB) for ARM Cortex-M vector tables as a job: each table's stack pointer, handlers and the flash base they imply are job.finished's result, and in the window they fill Firmware. |
+| [`forensics.find_filesystems`](#forensicsfind_filesystems) | job | Start a search of the document (its first 256 MiB) for SquashFS, CramFS, JFFS2 and UBI images as a job: each image found, with its files, is job.finished's result, and in the window they fill Forensics. |
+| [`forensics.open_entry`](#forensicsopen_entry) | view | Open one file (or volume) of the filesystem image at an offset of the document as a derived document, by its path in the image. |
+| [`forensics.classify_blocks`](#forensicsclassify_blocks) | job | Start labelling every block of the document (its first 256 MiB) as padding, text, markup, machine code, compressed, random, raw image, PCM audio or table data as a job: the runs of one class, with the reason for each, are job.finished's result, and in the window they fill Forensics. |
 | [`view.get_shape`](#viewget_shape) | read | The shape a document's bytes are drawn in: the pixel format, pixels per row, the offset of the first pixel, a bit shift and the bytes skipped after each row. |
 | [`view.set_shape`](#viewset_shape) | view | Change the shape a document's bytes are drawn in (the pixel format, pixels per row, the first pixel's offset and bit, the padding after each row); what is not given stays as it is. |
 | [`view.fold`](#viewfold) | view | Skip ranges of a document in its views (the raster and the hex dump) without deleting them; a marker shows where each was. |
@@ -2029,6 +2035,95 @@ Start counting every run of three bytes in a span (sampled beyond 16 MiB) as a j
 | `labels` | `"nothing"` \| `"segments"` \| `"report_regions"` | no | What the points are labelled by (segments by default). |
 | `len` | integer | no | Bytes counted; to the end of the document when omitted. Beyond 16 MiB the span is sampled. |
 | `start` | integer | no | First offset counted (0 by default). |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `job` | string | yes | Follow it with jobs.status, or on job.progress and job.finished. |
+
+### firmware.identify
+
+Start identifying the processor of a span of headerless code (at most 64 MiB) as a job, disassembling samples as every supported architecture and ranking them by typical instructions, idioms and branch targets: the ranking is job.finished's result, and in the window it fills Firmware (analysis.processor is the quick read).
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `doc` | string | no | Document id, path or "current" (the default). |
+| `len` | integer | no | Bytes read, at most 64 MiB; to the end of the document (or 64 MiB) when omitted. |
+| `start` | integer | no | First offset read (0 by default). |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `job` | string | yes | Follow it with jobs.status, or on job.progress and job.finished. |
+
+### firmware.find_load_address
+
+Start a search for the address a firmware image is loaded at (the address of offset 0, over the document's first 64 MiB) as a job: the bases that make most stored pointers land on the start of a string, as rbasefind does, are job.finished's result, and in the window they fill Firmware.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `byte_order` | `"little"` \| `"big"` | no | Byte order of the pointers; both are tried when omitted. |
+| `doc` | string | no | Document id, path or "current" (the default). |
+| `min_string_len` | integer | no | Shortest string counted as a pointer target, 4 to 64 (10 by default). |
+| `step` | integer | no | Candidate bases are multiples of this, at least 0x10 (0x1000 by default). |
+| `width` | integer | no | Bits in a stored pointer: 32 (the default) or 64. |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `job` | string | yes | Follow it with jobs.status, or on job.progress and job.finished. |
+
+### firmware.vector_tables
+
+Start a search of a span (the whole document by default, at most 64 MiB) for ARM Cortex-M vector tables as a job: each table's stack pointer, handlers and the flash base they imply are job.finished's result, and in the window they fill Firmware.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `doc` | string | no | Document id, path or "current" (the default). |
+| `len` | integer | no | Bytes read, at most 64 MiB; to the end of the document (or 64 MiB) when omitted. |
+| `start` | integer | no | First offset read (0 by default). |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `job` | string | yes | Follow it with jobs.status, or on job.progress and job.finished. |
+
+### forensics.find_filesystems
+
+Start a search of the document (its first 256 MiB) for SquashFS, CramFS, JFFS2 and UBI images as a job: each image found, with its files, is job.finished's result, and in the window they fill Forensics.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `doc` | string | no | Document id, path or "current" (the default). |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `job` | string | yes | Follow it with jobs.status, or on job.progress and job.finished. |
+
+### forensics.open_entry
+
+Open one file (or volume) of the filesystem image at an offset of the document as a derived document, by its path in the image.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `doc` | string | no | Document id, path or "current" (the default): the parent. |
+| `filesystem` | integer | yes | Document offset of the filesystem image, as forensics.find_filesystems gave it. |
+| `path` | string | yes | The file's path in the image, such as "etc/passwd". |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `current` | boolean | yes | Whether this is the current document. |
+| `id` | string | yes | Stable id, such as "doc-1". |
+| `len` | integer | yes | Length in bytes. |
+| `modified` | boolean | yes | Whether there are edits not saved. |
+| `name` | string | yes | File name, or the name of a derived document. |
+| `path` | string | no | Path on disk, for documents opened from a file. |
+| `version` | integer | yes | Incremented on every edit. |
+
+### forensics.classify_blocks
+
+Start labelling every block of the document (its first 256 MiB) as padding, text, markup, machine code, compressed, random, raw image, PCM audio or table data as a job: the runs of one class, with the reason for each, are job.finished's result, and in the window they fill Forensics.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `block_size` | integer | no | Bytes per block, at least 256 (4096 by default). |
+| `doc` | string | no | Document id, path or "current" (the default). |
 
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
