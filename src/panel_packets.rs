@@ -2795,13 +2795,16 @@ mod tests {
 
     #[test]
     fn the_list_is_sorted_by_a_column_with_repeats_hidden_and_selected_packets_follow_its_order() {
-        let mut state = PacketsState::default();
-        state.set = packets::sources::split_fixed(0, 16, 4, LinkKind::Unknown).ok();
-        state.rows = ["c", "a", "b", "a"]
+        let rows = ["c", "a", "b", "a"]
             .iter()
             .map(|info| PacketRow { link: LinkKind::Unknown, summary: Summary { info: info.to_string(), ..Summary::default() }, protocols: Vec::new(), flow: None, payload: None, tshark_protocols: Vec::new() })
             .collect();
-        state.order = PacketOrder { column: SortColumn::Info, ..PacketOrder::default() };
+        let mut state = PacketsState {
+            set: packets::sources::split_fixed(0, 16, 4, LinkKind::Unknown).ok(),
+            rows,
+            order: PacketOrder { column: SortColumn::Info, ..PacketOrder::default() },
+            ..PacketsState::default()
+        };
         refresh_filter(&mut state);
         assert_eq!(state.visible, vec![1, 3, 2, 0]);
         state.order.unique = true;
