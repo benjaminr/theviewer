@@ -38,10 +38,11 @@ chip to show or hide that kind, and use the filter box and *min confidence*
 slider to narrow the list.
 
 Click a finding to select its bytes; `Cmd`+click adds it to the selection.
-Its row offers *Select*, *Decompress* for a stream, *View / play* for an
-image or other media, *Open in packet viewer* for a capture, and
-*Bookmark*. Right-clicking a byte offers *Select this finding* and the
-[Selection menu](viewing-and-editing.md#changing-bytes).
+Right-click it for *Select*, the
+[Selection menu](viewing-and-editing.md#changing-bytes), *Decompress* for a
+stream, *View / play* for an image or other media, *Open in packet viewer*
+for a capture, and *Bookmark*. Right-clicking a byte of a finding in the
+view offers *Select this finding* too.
 
 Settings chooses which kinds are shown by default; hidden kinds are left
 out of both the highlights and the list.
@@ -51,7 +52,8 @@ out of both the highlights and the list.
 **Report** (*Tools › Explain this file*) describes the whole file in plain
 sentences, part by part, each linked to its bytes: "At 0x2770, a zlib
 stream of 5.7 KiB (94.9 KiB decompressed)". It also draws a coloured map of
-the file above the view (turn it off with *File map above the view*), and
+the file above the view (turn it off with *File map above the view* in the tab, or *View › File
+map*), and
 the views colour themselves by its regions when zoomed out. *Re-analyse*
 runs it again after edits.
 
@@ -67,8 +69,8 @@ The same report is printed on the command line by `theviewer FILE
   It groups similar regions into types and colours them on a strip and on
   the file map. *Show on file map* pins the segments as findings; pinned
   segments follow edits.
-- **Find more like this** scores every part of the file against the
-  selection and highlights the matches; *Highlight all* pins them as
+- **Find more like this** (*Find similar*) scores every part of the file
+  against the selection and highlights the matches; *Highlight all* pins them as
   findings.
 - **Feature tracks** draws, at each point along the file, the entropy,
   compressibility, printable and zero bytes, the mix of byte kinds and the
@@ -78,8 +80,9 @@ The same report is printed on the command line by `theviewer FILE
 
 For a table of fixed-size records, **Columns** profiles each byte position
 across the records, from the cursor's record to the end of the table. Each
-position is marked as constant, counter, timestamp, a few values, text or
-random, and the positions are joined into the fields they add up to. One
+position is marked as constant, counter, rising, a few values, text, random
+or mixed, and the positions are joined into the fields they add up to:
+counters, timestamps, offsets, lengths, flags and so on. One
 click applies them as a template. It takes its record length from the width
 the period scan found.
 

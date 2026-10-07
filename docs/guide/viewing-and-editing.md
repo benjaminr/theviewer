@@ -29,7 +29,7 @@ map* turns it on and off).
 
 **Pixel formats.** Choose one in the toolbar's *Format* group:
 
-- Twelve formats, from 1-bit to 32-bit colour: 1-bit (MSB or LSB first),
+- Eleven formats, from 1-bit to 32-bit colour: 1-bit (MSB or LSB first),
   4-bit, 8-bit grey, 16-bit grey in either byte order, RGB565, RGB, BGR,
   RGBA and BGRA.
 - *Byte class*, which colours zeros, text, control bytes and high bytes
@@ -38,8 +38,9 @@ map* turns it on and off).
   byte order. They scale to the visible values (the 1st to 99th
   percentile) and centre on zero for signed types.
 
-Single-channel formats take one of six palettes: grey, viridis, inferno,
-ocean, amber and diverging.
+Single-channel formats and the unsigned heatmaps take one of six palettes:
+grey, viridis, inferno, ocean, amber and diverging. Signed heatmaps always
+use the diverging palette, so zero is neutral.
 
 ## Width, origin and zoom
 
@@ -47,9 +48,9 @@ ocean, amber and diverging.
 `]` (`Shift` steps by 16). *Presets* offers common widths and image
 layouts such as *QVGA 320 RGB565* or *1-bit 128 (LCD)*; *pad* adds padding
 at the end of each row.
-*Fit* sets the width to fill the view. *Detect width* looks for repeating
-patterns and suggests record sizes; pick one and the data snaps into
-columns. See [Finding structure](finding-structure.md#detect-the-record-width).
+*Fit* (in the *Zoom* group) sets the width to fill the view. *Detect
+width* (in the *Analysis* group) looks for repeating patterns and suggests
+record sizes; pick one and the data snaps into columns. See [Finding structure](finding-structure.md#detect-the-record-width).
 
 **Origin.** The byte shown at the top left can start anywhere, down to the
 bit. *To cursor* (or *View › Origin = cursor*) makes the cursor the top-left
@@ -144,7 +145,8 @@ selection, `Alt+←` and `Alt+→` nudge its bytes a byte left or right, and
 
 **Typing.** Type `0`–`9` and `A`–`F` over the byte at the cursor. `Ins`
 switches between overwrite and insert. `I` inserts bytes before, after or at
-the cursor. `Delete` or `Backspace` deletes the selection or byte. `Cmd+C`
+the cursor. `Delete` deletes the selection or the byte at the cursor;
+`Backspace` deletes the selection or the byte before the cursor. `Cmd+C`
 copies as hex, `Cmd+X` cuts and `Cmd+V` pastes.
 
 **The Selection menu.** One *Selection* menu appears in the right-click
@@ -155,9 +157,9 @@ viewer and in the small toolbar that floats beside a selection. It offers:
 - XOR, add or subtract a key;
 - reverse, mirror bits, shift or rotate bits across byte boundaries;
 - swap byte order, number records as a counter;
-- move, duplicate;
+- move, duplicate, skip (see below);
 - copy as hex, a C array or Base64; extract to a file; open as a document;
-- compress and decompress.
+- compress (zlib, gzip, raw deflate, bzip2 or LZ4) and decompress.
 
 Each works on a range, on every record of a column and on every range of a
 multi-range selection, as one undo step. The toolbar's *Byte at cursor*,
@@ -176,19 +178,21 @@ gzip, zlib, raw deflate, bzip2, xz, lzma, zstd and LZ4 streams are found
 and checked by test decompression.
 
 - `Cmd+D` flips between a compressed block and its contents, opened as a
-  new document. `Cmd+[` goes back to the parent document.
+  new document. `Cmd+[` (*Edit › Back to parent document*) goes back.
 - *Edit › Decompress here in place* replaces the stream with what it holds.
 - *Edit › Compress selection as* compresses a selection back (zlib, gzip,
-  bzip2 or LZ4), and *Re-pack selection with the last codec* in the palette
+  raw deflate, bzip2 or LZ4), and *Re-pack selection with the last codec* in the palette
   repeats the last one.
 - *Probe for compression at cursor* says which codecs decode at the
   cursor, and how much.
 
 Images (PNG, JPEG, GIF including animation, BMP, WebP, TIFF, ICO), audio
-(WAV, MP3, FLAC, Ogg Vorbis, AAC, M4A, AIFF, CAF) and video (MP4, MOV,
-WebM, Matroska, AVI, MPEG-TS, FLV, Ogg Theora) open where they sit: put the
-cursor on one and press `Cmd+Enter`. `Space` plays and pauses. Video
-playback uses `ffmpeg` if it is installed.
+(WAV, MP3, FLAC, Ogg Vorbis, Ogg Opus, AAC, M4A, AIFF, CAF) and video
+(MP4, QuickTime, WebM, Matroska, AVI, MPEG-TS, FLV, Ogg Theora) open where
+they sit: put the cursor on one and press `Cmd+Enter`, or use the *Media*
+group that appears in the toolbar. `Space` plays and pauses. Images and
+audio are decoded by theviewer itself; video, and HEIF and AVIF stills,
+need `ffmpeg` and `ffprobe` on the `PATH`.
 
 ![An embedded PNG opened in the media viewer, with its header highlighted in the hex dump](../images/media.png)
 
@@ -206,8 +210,10 @@ sound, in the format chosen under *Tools › Audio format*.
   Each step is named after what made it (*Undo XOR by ask*), and the
   [History tab](history-and-recipes.md) shows every step by everyone.
 - `Cmd+S` saves safely through a temporary file. `Shift+Cmd+S` saves as.
-- Bookmarks and the view settings are saved beside the file, in
-  `name.theviewer.toml`, so you can pick up where you left off.
+- Bookmarks and the view's shape (format, palette, width, origin, row
+  padding and zoom) are saved beside the file, in a sidecar named after it
+  (`firmware.bin.theviewer.toml` for `firmware.bin`), so you can pick up
+  where you left off.
 - Every view keeps up with edits. Segments, an applied template, record
   columns, checksums and a small trigram cloud work themselves out again a
   moment after the last edit. Tools whose results take longer show *Out of

@@ -19,7 +19,7 @@ about 260 file formats, protocols, capture formats and streams.
 
 The tab lists every known format enclosing the cursor, outermost first, as
 a path you can click. Inside a DNS packet of a capture it reads *pcap
-capture › Ethernet II › IPv4 › UDP › DNS*. For the chosen format it shows:
+capture › Ethernet › IPv4 › UDP › DNS*. For the chosen format it shows:
 
 - how the data is organised, and which formats it carries;
 - the specifications that define it, linked to the RFC or document section;

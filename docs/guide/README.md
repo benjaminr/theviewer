@@ -1,7 +1,8 @@
 # theviewer user guide
 
 The [README](../../README.md) gives a quick tour. These pages cover each
-part of theviewer in full.
+part of theviewer in full. Shortcuts are written with `Cmd`, as on macOS;
+use `Ctrl` on Linux and Windows.
 
 | Page | What it covers |
 | --- | --- |

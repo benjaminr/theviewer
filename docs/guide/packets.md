@@ -21,8 +21,8 @@ view, and follows the same selection.
 ## Where packets come from
 
 Open it from *Tools › Packet viewer*, *Open in packet viewer* in the
-Protocol tab, the message alignment or the findings list, or *Packets* in
-the right-click menu. The *Network capture* layout puts it in front, and
+Protocol tab or the findings list, *Open type N in packet viewer* in the
+Protocol tab's *Align messages*, or *Packets* in the right-click menu. The *Network capture* layout puts it in front, and
 `--tool packets` opens it with the first capture loaded.
 
 A set of packets can come from:
@@ -34,8 +34,10 @@ A set of packets can come from:
 - **The protocol framing.** *From protocol framing* takes the messages the
   [Protocol tool](tools.md#protocol) split out, with its field
   guesses.
-- **The selection.** *Selection as one packet*, or *Split by row width*
-  in the right-click menu to make each record a packet.
+- **The selection.** *From the selection* offers *Selection as one
+  packet*, *Split by row width* (each record a packet), *Split by length*
+  and *Split by delimiter*. The right-click menu's *Packets* has *Add
+  selection as packet* and *Split selection by row width*.
 - **A split.** Any range cut into frames; see below.
 
 Captures may use Ethernet, raw IP, Linux cooked capture, BSD and OpenBSD
@@ -44,12 +46,14 @@ loopback, PPP, Cisco HDLC, 802.11 with or without radiotap, and LLC/SNAP on
 
 ## Splitting frames out of a file
 
-*Split into frames* cuts the selection, or the whole document, into frames:
+*Split into frames* cuts the selection, or the whole document, into frames,
+optionally skipping some bytes first:
 
 - **Fixed width:** every frame the same length.
 - **Length field:** where it sits, its width (u8, u16, u32 or LEB128) and
   byte order, whether it counts the whole frame, the bytes after it or the
-  payload after a header, plus a constant. *Auto-detect* fills these in from
+  payload after a header, a constant to add, and the longest frame to
+  believe. *Auto-detect* fills these in from
   the protocol tool.
 - **Pattern:** bytes such as `AA 55 ?? 01`, `0D 0A` or `"GET "` (`??` is
   any byte) that start each frame, end it, or sit between frames.
@@ -140,8 +144,9 @@ per row, so fields line up in columns.
   any pixel size, hex inside the pixels when zoomed in if you want it).
   *Hex* writes the same rows as hex, with ASCII beside them.
 - Rows can be aligned on the packet start, a pattern, or the packet's end.
-- A strip above the columns marks each byte offset as constant, counter, few
-  values, text or random.
+- A strip above the columns marks each byte offset by kind, as the
+  [Columns tool](finding-structure.md#columns) does: constant, counter,
+  rising, few values, text, random or mixed.
 - Once the frames are decoded as a protocol, hovering a column or a byte
   names the field it holds (*Transaction ID (DNS)*), and a selection of
   columns lists the fields it spans.
@@ -199,6 +204,7 @@ edited.
 
 ## Export
 
-*Export pcap…* saves the shown packets as a pcap file Wireshark opens.
+*Export pcap…* saves the shown packets as a pcap file Wireshark opens, or
+only the selected ones when several are selected.
 *Save bytes…* saves the selected packets' bytes, and *Open as document*
 opens them as a document of their own.

@@ -1,8 +1,9 @@
 # The tools
 
-theviewer has 29 tool tabs. Open one from the *Tools* menu, the command
-palette (`Cmd+K`), *Analyse* in the right-click menu, or `--tool NAME` on
-the command line. Each one is a panel you can dock anywhere; the
+theviewer has 29 tool tabs. Open one from the *Tools* menu, *View ›
+Panels*, the command palette (`Cmd+K`), *Analyse* in the right-click menu,
+or `--tool NAME` on the command line. `NAME` is the tab's name in any case,
+with a dash for a space: `--tool strings`, `--tool dot-plot`, `--tool ask`. Each one is a panel you can dock anywhere; the
 [recommended layouts](layouts-and-workspace.md) open the ones each kind of
 work needs.
 
@@ -21,7 +22,8 @@ The tabs come in five groups:
 ### Report
 
 A plain-language overview of the whole file, with every sentence linked to
-its bytes, and a coloured map of the file above the view. See [Finding
+its bytes, and a coloured map of the file above the view. *Tools › Explain
+this file* runs it. See [Finding
 structure](finding-structure.md#report).
 
 ### Reference
@@ -50,13 +52,15 @@ Ask Claude about the file. See [Ask Claude and permissions](ask-and-permissions.
 
 The file compared with itself on a grid. Repeated sections show as
 diagonal lines and uniform regions as blocks, so structure shows without
-choosing a width. Click a point to jump to either copy.
+choosing a width. Plot the selection or the whole file; click a point to
+jump to the block on the horizontal axis, and right-click to jump to the
+one on the vertical axis.
 
 ### Trigrams
 
 A rotatable 3D cloud of byte triples. Text, machine code, tables and
 compressed data each make a recognisable shape, a sharper fingerprint than
-byte pairs.
+byte pairs. Drag to rotate, scroll to zoom and double-click to reset.
 
 - Points are coloured by the region type they come from (from segmentation
   or the report).
@@ -151,8 +155,8 @@ selection for *Analyse › Statistics of selection*.
 
 ### Strings
 
-ASCII, UTF-8 and UTF-16 strings, tagged when they look like URLs, paths, IP
-addresses, UUIDs, versions or keys.
+ASCII, UTF-8 and UTF-16 strings, tagged when they look like URLs, paths,
+IPv4 addresses, UUIDs, version numbers or `key=value` settings.
 
 ### XOR
 
@@ -237,7 +241,7 @@ Many files at once: captures, firmware versions, saved states.
 
 ### Live
 
-Opens a URL, a serial port (`serial:/dev/cu.usbserial@115200`), a block
+*Tools › Open URL, device or serial port…* opens a URL, a serial port (`serial:/dev/cu.usbserial@115200`), a block
 device (`/dev/rdisk2`, needs sudo) or process memory (`pid:1234`, Linux
 only). It can watch a file as it grows (also *Tools › Watch file for
 changes*) and record its history, for Compare's timeline.

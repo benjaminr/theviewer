@@ -20,8 +20,10 @@ Every panel can be moved:
   put it beside that one, or onto its tab bar to stack it there.
 - **Float:** drag it out of the window.
 - **Collapse or close:** the arrow collapses a panel and the cross closes
-  it. *View › Panels* brings a closed panel back.
-- **Fold the tools away:** `Cmd+J` folds all the tools away and back.
+  it. *View › Panels* brings a closed panel back. Only the **Bits** view
+  cannot be closed.
+- **Fold the tools away:** `Cmd+J` (*View › Collapse or expand tools*)
+  folds all the tools away and back.
 
 Panels with many tabs wrap them onto extra rows.
 
@@ -55,17 +57,18 @@ layout for each file* turns the offers off.
 ## Your own layouts
 
 Arrange the panels, type a name under **Yours** in the Layout menu and
-press **Save**. Each saved layout has:
+press **Save** (**Replace** if a layout of that name exists). Each saved layout has:
 
 - **Update:** replace it with the current arrangement;
 - **Rename;**
 - **Delete:** press it twice.
 
 Saved layouts are JSON files in `~/.config/theviewer/layouts/`. Open one
-from the command line with `--layout "Its name"`.
+from the command line with `--layout "Its name"`; a name that matches no
+layout opens the Overview instead and says so in the status bar.
 
 **Last session** brings back the arrangement as it was when theviewer last
-closed.
+closed; so does *Layout: Restore last session* in the command palette.
 
 ## What opens at start
 
@@ -100,7 +103,8 @@ it without being on screen:
 
 So *Columns* takes its record length from the published width; *Packets*
 follows the selection and takes the Protocol tool's messages and field
-guesses; *Alignment* takes the same messages; *Reference* reads the layers
+guesses; *Align messages*, at the foot of the Protocol tab, takes the same
+messages; *Reference* reads the layers
 of the packet chosen in Packets; and the views colour by the report's
 regions and outline any template applied. All of this works even while
 the tools are hidden.
@@ -111,7 +115,8 @@ can be cancelled from a plugin or a client as well as from their tool.
 
 ## The Workspace tab
 
-The **Workspace** tab lists what is known, by topic and by whom. Facts
+The **Workspace** tab (open it from *View › Panels* or the command palette)
+lists what is known, by topic and by whom. Facts
 that describe the file before its last edit are dimmed; what an edit did
 not touch moves with it instead. Click a span to select those bytes, and
 *why* to see what led to a fact. Below is a log of recent events, filtered
