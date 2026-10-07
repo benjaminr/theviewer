@@ -22,6 +22,10 @@
 //!   Not the app's own work either, which does not go through the API.
 //!   Not the methods that read the journal itself or edit its provenance
 //!   (`history.list`, `history.make_anchor`…), which say so.
+//! * **Notes** (`history.note`): what the person or a client was thinking,
+//!   as a step of its own linked to the steps it is about (see [`notes`]).
+//!   A note changes nothing, so it is never undone, repeated or gone back
+//!   past, and it can be edited or deleted in place.
 //! * Consecutive calls of a setter that merges its repeats (`selection.set`,
 //!   `cursor.set`, `view.set_shape`) by the same caller on the same document
 //!   are merged into the last, so dragging a selection is one step, not
@@ -41,6 +45,7 @@
 //! what.
 
 pub mod anchors;
+pub mod notes;
 pub mod provenance;
 pub mod recipe;
 pub mod replay;
@@ -64,6 +69,7 @@ use crate::bus::{Draft, Payload};
 use crate::document::{Backing, Document};
 
 pub use anchors::Anchor;
+pub use notes::{Note, NoteOn};
 pub use recipe::Recipe;
 use timeline::Timeline;
 
@@ -203,6 +209,14 @@ pub struct JournalEntry {
     /// method reverses a change.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub before: Option<Value>,
+    /// For a note (`history.note`): its text, the steps it links and when
+    /// it was last edited.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<Note>,
+    /// The notes linked to this step, oldest first, as `history.list` and
+    /// `history.entry` give it: the reasoning beside the action.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<NoteOn>,
 }
 
 fn is_false(value: &bool) -> bool {
@@ -217,6 +231,11 @@ impl JournalEntry {
     /// Whether the step changed its document's bytes.
     pub fn changed_document(&self) -> bool {
         matches!((self.version_before, self.version_after), (Some(before), Some(after)) if before != after)
+    }
+
+    /// Whether the entry is a note rather than a step of the analysis.
+    pub fn is_note(&self) -> bool {
+        self.note.is_some()
     }
 }
 
@@ -499,6 +518,18 @@ impl Journal {
         self.next_step.checked_sub(1).filter(|step| *step > 0)
     }
 
+    /// The number the call being recorded now will take, once it finishes.
+    fn next_step(&self) -> u64 {
+        self.next_step
+    }
+
+    /// Whether the call running now is the outermost, which the journal
+    /// records as a step of its own: not one inside a transaction, a
+    /// recipe's run or a plugin's method.
+    fn records_the_call_running_now(&self) -> bool {
+        self.depth == 1
+    }
+
     /// A number that changes whenever an entry is recorded, merged,
     /// promoted or dropped.
     pub fn revision(&self) -> u64 {
@@ -636,7 +667,8 @@ fn merges_into(last: &JournalEntry, next: &JournalEntry) -> bool {
 fn entry_size(entry: &JournalEntry) -> usize {
     const OVERHEAD: usize = 256;
     let held = [Some(&entry.params), entry.result.as_ref(), entry.before.as_ref()];
-    OVERHEAD + held.into_iter().flatten().map(approximate_size).sum::<usize>() + entry.description.len()
+    let note = entry.note.as_ref().map_or(0, |note| note.text.len());
+    OVERHEAD + held.into_iter().flatten().map(approximate_size).sum::<usize>() + entry.description.len() + note
 }
 
 /// Rough bytes `value` takes as JSON, without writing it.
@@ -747,6 +779,8 @@ pub(crate) fn begin(workspace: &mut dyn Workspace, caller: &Caller, method: &Met
         derived_from,
         merged: 0,
         before: None,
+        note: None,
+        notes: Vec::new(),
     });
     // A read is about its document once it has succeeded, and is described
     // only if promoted: most never are, and only steps can be undone, so
@@ -789,7 +823,10 @@ pub(crate) fn finish(workspace: &mut dyn Workspace, record: CallRecord, result: 
     }
     entry.version_after = entry.doc.as_deref().and_then(|id| workspace.version(id));
     match result {
-        Ok(value) => (entry.result, entry.result_summarised) = kept_result(workspace, value),
+        Ok(value) => {
+            (entry.result, entry.result_summarised) = kept_result(workspace, value);
+            entry.note = notes::written_by(&entry.method, &entry.params, value);
+        }
         Err(error) => entry.outcome = Outcome::Error(error.clone()),
     }
     let step = workspace.journal_mut().record(*entry);

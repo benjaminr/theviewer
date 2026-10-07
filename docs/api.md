@@ -130,6 +130,8 @@ The journal keeps at most 10000 entries; very large parameters and results are k
 
 **Going back** to step N (`history.go_back`) undoes every later step in effect, latest first. When one has no inverse, the document is brought back to how the session first saw it and steps 1 to N are run again. Either way the later steps stay in the journal, shown as undone, and are left out of recipes and playback.
 
+**Notes.** `history.note` writes what the caller is doing and why into the journal, where it is, as an entry of its own by its caller, linked to the steps its text cites as `#12` (and those given). A note changes nothing: it is never undone, repeated, or undone by going back past it, and `history.undo_step` refuses it. `history.list` and `history.entry` give a note's `note` (its text and linked steps) and, on each step, the `notes` linked to it. `history.edit_note` and `history.delete_note` change a note in place and are not journalled; an edited note says when and by whom. `history.export_notes` writes the notes out as Markdown.
+
 **Replay.** Going back, playback and recipes repeat the steps of the analysis. Some steps are never repeated: moves along the journal itself, opening a document (what it opened is open already), writing a file, reloading plugins and starting or stopping a live source.
 
 Each method's entry below says how the journal, undo and replay treat its calls. Methods plugins register are steps (or reads) as their effect says, are repeated by recipes, and keep nothing to undo them by beyond their byte edits.
@@ -164,7 +166,7 @@ A recipe step that starts a job waits for it (up to 10 minutes), and later steps
 
 ## Methods
 
-168 methods in 45 namespaces. The MCP column says which are listed as tools of their own by `theviewer mcp` (every one is with `--all-tools`; the rest are reached with `api_call`).
+172 methods in 45 namespaces. The MCP column says which are listed as tools of their own by `theviewer mcp` (every one is with `--all-tools`; the rest are reached with `api_call`).
 
 | Method | Effect | MCP | Summary |
 | --- | --- | --- | --- |
@@ -206,6 +208,10 @@ A recipe step that starts a job waits for it (up to 10 minutes), and later steps
 | [`history.undo_step`](#historyundo_step) | edit |  | Undo one step of the journal through its inverse (see history.inverse), whoever made it, as a step of its own; the step is then shown as undone and left out of recipes and playback. |
 | [`history.go_back`](#historygo_back) | edit |  | Go back to a step of the journal (0 for before the first): undo every later step in effect, latest first, or, where one has no inverse, bring the document back to how the session first saw it and run the steps up to it again. The later steps stay in the journal, shown as undone. |
 | [`history.save_recipe`](#historysave_recipe) | edit |  | Write the steps in effect (all, or up to a step) to a recipe file, *.theviewer-recipe.json, with the anchors and parameters recorded for its steps, to run on other files. |
+| [`history.note`](#historynote) | analysis |  | Write a note in the history where you are now: what you are doing and why, by you, linked to the steps its text cites as #12 and those given; it changes nothing, is never undone or repeated, and is shown beside the steps it links. Returns its step number. |
+| [`history.edit_note`](#historyedit_note) | read |  | Change a note's text and the steps it is linked to, in place; the note then says when and by whom it was edited. Only notes can be edited. |
+| [`history.delete_note`](#historydelete_note) | read |  | Take a note out of the history; the steps it was linked to no longer list it. Only notes can be deleted. |
+| [`history.export_notes`](#historyexport_notes) | read |  | The session's notes as Markdown, in the order written, each with the steps it cites (number, caller and description), returned or written to a path given (which needs leave to edit). |
 | [`history.suggest_anchors`](#historysuggest_anchors) | read |  | Anchors that could stand for a step's literals in a recipe: search matches, structure fields and findings at the same offset in its document as it is now, the selection an earlier step set, and earlier steps' values equal to it, those that port to other files first. |
 | [`history.make_anchor`](#historymake_anchor) | read |  | Turn the literal at a path of a step's params into an anchor in its derived_from, so a recipe made from it finds the value when it runs; a read it cites becomes a step of the journal. |
 | [`history.make_parameter`](#historymake_parameter) | read |  | Turn the literal at a path of a step's params into a named recipe parameter, the person's to supply when the recipe runs, the literal its default. |
@@ -1017,7 +1023,7 @@ The session's journal: each edit, view change and job made through the API, by a
 
 **Effect:** `read` · **MCP tool:** `history_list`, through `api_call`, or with `--all-tools`
 
-**History:** Not journalled: it reads the journal or edits where its values came from.
+**History:** Not journalled: it reads the journal, or edits where its values came from or its notes.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -1040,7 +1046,7 @@ One step of the journal, or one recent read, in full.
 
 **Effect:** `read` · **MCP tool:** `history_entry`, through `api_call`, or with `--all-tools`
 
-**History:** Not journalled: it reads the journal or edits where its values came from.
+**History:** Not journalled: it reads the journal, or edits where its values came from or its notes.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -1057,6 +1063,8 @@ One step of the journal, or one recent read, in full.
 | `effect` | `"read"` \| `"edit"` \| `"view"` \| `"job"` \| `"analysis"` | yes | What calling a method does. |
 | `merged` | integer | no | How many earlier calls of the same setter this one replaced. |
 | `method` | string | yes | The method called, such as `packets.sets.create`. |
+| `note` | Note | no | For a note (`history.note`): its text, the steps it links and when it was last edited. |
+| `notes` | array of NoteOn | no | The notes linked to this step, oldest first, as `history.list` and `history.entry` give it: the reasoning beside the action. |
 | `outcome` | Outcome | yes | How a recorded call ended. |
 | `params` | any | yes | The parameters as given (or, when `params_summarised`, a summary). |
 | `params_summarised` | boolean | no | Whether `params` were too large to keep and are a summary: such a step cannot be repeated exactly. |
@@ -1072,7 +1080,7 @@ What the journal's session ran with: when it started, the API version, the plugi
 
 **Effect:** `read` · **MCP tool:** `history_session`, through `api_call`, or with `--all-tools`
 
-**History:** Not journalled: it reads the journal or edits where its values came from.
+**History:** Not journalled: it reads the journal, or edits where its values came from or its notes.
 
 Parameters: None.
 
@@ -1089,7 +1097,7 @@ How a step of the journal would be undone now: the calls that undo it (the docum
 
 **Effect:** `read` · **MCP tool:** `history_inverse`, through `api_call`, or with `--all-tools`
 
-**History:** Not journalled: it reads the journal or edits where its values came from.
+**History:** Not journalled: it reads the journal, or edits where its values came from or its notes.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -1163,13 +1171,85 @@ Write the steps in effect (all, or up to a step) to a recipe file, *.theviewer-r
 | `path` | string | yes |  |
 | `steps` | array of integer | yes | The numbers of the steps it holds, in order. |
 
+### history.note
+
+Write a note in the history where you are now: what you are doing and why, by you, linked to the steps its text cites as #12 and those given; it changes nothing, is never undone or repeated, and is shown beside the steps it links. Returns its step number.
+
+**Effect:** `analysis` · **MCP tool:** `history_note`, through `api_call`, or with `--all-tools`
+
+**History:** Journalled as a note where it is written: it changes nothing, so it is never undone, repeated, or undone by going back past it.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `steps` | array of integer | no | More steps the note is about, beside those its text cites. |
+| `text` | string | yes | What you are doing and why, at most 4 KiB; `#12` in it cites step 12 and links the note to it. |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `step` | integer | yes | The note's own step number. |
+| `steps` | array of integer | yes | The steps it is linked to, in step order. |
+
+### history.edit_note
+
+Change a note's text and the steps it is linked to, in place; the note then says when and by whom it was edited. Only notes can be edited.
+
+**Effect:** `read` · **MCP tool:** `history_edit_note`, through `api_call`, or with `--all-tools`
+
+**History:** Not journalled: it reads the journal, or edits where its values came from or its notes.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `step` | integer | yes | The note's step number. |
+| `steps` | array of integer | no | The steps it is about beside those its text cites; those given when it was written (or last edited) when omitted, so `[]` links it only to the steps its text cites. |
+| `text` | string | yes | What it says now; `#12` cites step 12. |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `note` | Note | yes | The note as it is now. |
+| `step` | integer | yes |  |
+
+### history.delete_note
+
+Take a note out of the history; the steps it was linked to no longer list it. Only notes can be deleted.
+
+**Effect:** `read` · **MCP tool:** `history_delete_note`, through `api_call`, or with `--all-tools`
+
+**History:** Not journalled: it reads the journal, or edits where its values came from or its notes.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `step` | integer | yes | The note's step number. |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `note` | Note | yes | The note as it was. |
+| `step` | integer | yes |  |
+
+### history.export_notes
+
+The session's notes as Markdown, in the order written, each with the steps it cites (number, caller and description), returned or written to a path given (which needs leave to edit).
+
+**Effect:** `read` · **MCP tool:** `history_export_notes`, through `api_call`, or with `--all-tools`
+
+**History:** Not journalled: it reads the journal, or edits where its values came from or its notes. Writes a file when `path` is given, which then needs leave to edit.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `path` | string | no | Where to write the Markdown, such as notes.md; it is returned when omitted. |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `markdown` | string | no | The Markdown, when no path was given. |
+| `notes` | integer | yes | How many notes it holds. |
+| `path` | string | no | The file written, when a path was given. |
+
 ### history.suggest_anchors
 
 Anchors that could stand for a step's literals in a recipe: search matches, structure fields and findings at the same offset in its document as it is now, the selection an earlier step set, and earlier steps' values equal to it, those that port to other files first.
 
 **Effect:** `read` · **MCP tool:** `history_suggest_anchors`, through `api_call`, or with `--all-tools`
 
-**History:** Not journalled: it reads the journal or edits where its values came from.
+**History:** Not journalled: it reads the journal, or edits where its values came from or its notes.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -1186,7 +1266,7 @@ Turn the literal at a path of a step's params into an anchor in its derived_from
 
 **Effect:** `read` · **MCP tool:** `history_make_anchor`, through `api_call`, or with `--all-tools`
 
-**History:** Not journalled: it reads the journal or edits where its values came from.
+**History:** Not journalled: it reads the journal, or edits where its values came from or its notes.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -1208,7 +1288,7 @@ Turn the literal at a path of a step's params into a named recipe parameter, the
 
 **Effect:** `read` · **MCP tool:** `history_make_parameter`, through `api_call`, or with `--all-tools`
 
-**History:** Not journalled: it reads the journal or edits where its values came from.
+**History:** Not journalled: it reads the journal, or edits where its values came from or its notes.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -1233,7 +1313,7 @@ Clear the anchor at a path of a step's params, so a recipe made from it repeats 
 
 **Effect:** `read` · **MCP tool:** `history_clear_anchor`, through `api_call`, or with `--all-tools`
 
-**History:** Not journalled: it reads the journal or edits where its values came from.
+**History:** Not journalled: it reads the journal, or edits where its values came from or its notes.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -1254,7 +1334,7 @@ A recipe of the journal's successful steps (or those chosen, with the steps they
 
 **Effect:** `read` · **MCP tool:** `history_recipe`, through `api_call`, or with `--all-tools`
 
-**History:** Not journalled: it reads the journal or edits where its values came from.
+**History:** Not journalled: it reads the journal, or edits where its values came from or its notes.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -3771,7 +3851,7 @@ Save a recipe in ~/.config/theviewer/recipes/, given whole or made from steps of
 
 **Effect:** `read` · **MCP tool:** `recipes_save`, through `api_call`, or with `--all-tools`
 
-**History:** Kept among the recent reads, which a later step can cite.
+**History:** Kept among the recent reads, which a later step can cite. Writes a file, so it needs leave to edit.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |

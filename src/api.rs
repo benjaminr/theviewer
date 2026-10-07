@@ -295,8 +295,17 @@ impl Method {
         self
     }
 
+    /// Its steps are notes on the analysis: journalled where they are
+    /// written, but they change nothing, so they are never repeated, undone
+    /// or gone back past (see [`Replay::Note`]).
+    pub const fn writes_a_note(mut self) -> Self {
+        self.replay = Replay::Note;
+        self.undo = Undo::Nothing(undo::A_NOTE_CHANGES_NOTHING);
+        self
+    }
+
     /// Its calls are not journalled: it reads the journal, or edits its
-    /// provenance.
+    /// provenance or its notes.
     pub const fn not_journalled(mut self) -> Self {
         self.journal = Journalled::Skip;
         self

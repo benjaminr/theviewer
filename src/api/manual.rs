@@ -168,6 +168,8 @@ The journal keeps at most {entries} entries; very large parameters and results a
 
 **Going back** to step N (`history.go_back`) undoes every later step in effect, latest first. When one has no inverse, the document is brought back to how the session first saw it and steps 1 to N are run again. Either way the later steps stay in the journal, shown as undone, and are left out of recipes and playback.
 
+**Notes.** `history.note` writes what the caller is doing and why into the journal, where it is, as an entry of its own by its caller, linked to the steps its text cites as `#12` (and those given). A note changes nothing: it is never undone, repeated, or undone by going back past it, and `history.undo_step` refuses it. `history.list` and `history.entry` give a note's `note` (its text and linked steps) and, on each step, the `notes` linked to it. `history.edit_note` and `history.delete_note` change a note in place and are not journalled; an edited note says when and by whom. `history.export_notes` writes the notes out as Markdown.
+
 **Replay.** Going back, playback and recipes repeat the steps of the analysis. Some steps are never repeated: moves along the journal itself, opening a document (what it opened is open already), writing a file, reloading plugins and starting or stopping a live source.
 
 Each method's entry below says how the journal, undo and replay treat its calls. Methods plugins register are steps (or reads) as their effect says, are repeated by recipes, and keep nothing to undo them by beyond their byte edits.
@@ -306,11 +308,24 @@ Plugins may publish any topic but those the app itself publishes (`document.open
 /// How the journal, undo and replay treat calls of `method`, in a sentence
 /// or two.
 fn history_of(method: &Method) -> String {
-    match method.journal {
-        Journalled::Skip => return "Not journalled: it reads the journal or edits where its values came from.".to_string(),
-        Journalled::Read => return "Kept among the recent reads, which a later step can cite.".to_string(),
-        Journalled::Step => {}
+    let mut sentence = match (method.journal, method.replay) {
+        (Journalled::Skip, _) => "Not journalled: it reads the journal, or edits where its values came from or its notes.".to_string(),
+        (Journalled::Read, _) => "Kept among the recent reads, which a later step can cite.".to_string(),
+        (Journalled::Step, Replay::Note) => "Journalled as a note where it is written: it changes nothing, so it is never undone, repeated, or undone by going back past it.".to_string(),
+        (Journalled::Step, _) => step_history(method),
+    };
+    match method.writes_file {
+        WritesFile::No => {}
+        WritesFile::Always => sentence.push_str(" Writes a file, so it needs leave to edit."),
+        WritesFile::WhenGiven(param) => {
+            let _ = write!(sentence, " Writes a file when `{param}` is given, which then needs leave to edit.");
+        }
     }
+    sentence
+}
+
+/// How the journal, undo and replay treat a step of `method`.
+fn step_history(method: &Method) -> String {
     let mut parts = vec![if method.merge {
         "Journalled as a step; repeated calls by the same caller on the same document merge into one".to_string()
     } else {
@@ -325,15 +340,7 @@ fn history_of(method: &Method) -> String {
             parts.push(replay_phrase(replay).to_string());
         }
     }
-    let mut sentence = format!("{}.", parts.join("; "));
-    match method.writes_file {
-        WritesFile::No => {}
-        WritesFile::Always => sentence.push_str(" Writes a file, so it needs leave to edit."),
-        WritesFile::WhenGiven(param) => {
-            let _ = write!(sentence, " Writes a file when `{param}` is given, which then needs leave to edit.");
-        }
-    }
-    sentence
+    format!("{}.", parts.join("; "))
 }
 
 /// How a step of `method` is undone, when that is worth saying.
@@ -368,7 +375,7 @@ fn replay_phrase(replay: Replay) -> &'static str {
         Replay::Step => "repeated by going back, playback and recipes",
         Replay::OpensDocument { .. } => "not repeated: what it opened is open already",
         Replay::WritesFile => "not repeated: the file stays as written",
-        Replay::Never | Replay::Move(_) => "never repeated",
+        Replay::Never | Replay::Move(_) | Replay::Note => "never repeated",
     }
 }
 
@@ -501,5 +508,7 @@ mod tests {
         assert!(line("documents.save").contains("needs leave to edit"));
         assert!(line("history.make_anchor").starts_with("Not journalled"));
         assert!(line("bytes.read").starts_with("Kept among the recent reads"));
+        assert!(line("history.note").contains("never undone, repeated"));
+        assert!(line("history.export_notes").ends_with("Writes a file when `path` is given, which then needs leave to edit."));
     }
 }

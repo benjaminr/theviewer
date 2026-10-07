@@ -39,6 +39,10 @@
 //! be made again (a packet set removed) stays undone, and the failed step
 //! lists it, so the timeline marks it undone by that step.
 //!
+//! A note (`history.note`) stands apart from all of this: it changed
+//! nothing, so it is never undone (by an undo of its own, or by going back
+//! past it) and never repeated. The timeline marks it as a note.
+//!
 //! What each step's inverse is, its method declares
 //! ([`super::undo::Undo`]), as it declares how going back, playback and
 //! recipes treat it ([`Replay`]); [`inverse_of`] puts them together.
@@ -82,6 +86,9 @@ pub enum Replay {
     /// Not repeated, for its own reasons: it reloads plugins, or starts or
     /// stops a live source.
     Never,
+    /// A note on the analysis, which changes nothing: shown in the history
+    /// among the steps, never repeated, undone or gone back past.
+    Note,
 }
 
 /// The moves along the timeline.
@@ -124,6 +131,9 @@ pub enum StepStatus {
     /// A move along the timeline itself: an undo, a redo, an undo of a
     /// step, or going back.
     Move,
+    /// A note on the analysis: it changed nothing, and is never undone or
+    /// repeated.
+    Note,
 }
 
 /// One step of a document's undo history, as the journal saw it: the
@@ -214,6 +224,10 @@ impl Timeline {
             return;
         }
         let doc = entry.doc.clone().unwrap_or_default();
+        if replay_of(&entry.method) == Replay::Note {
+            self.statuses.insert(step, StepStatus::Note);
+            return;
+        }
         let Replay::Move(kind) = replay_of(&entry.method) else {
             self.statuses.insert(step, StepStatus::Active);
             if entry.effect == Effect::Edit && entry.changed_document() {
@@ -444,6 +458,7 @@ impl Inverse {
 /// | `packets.decode_as` | `packets.decode_as` back to the set's decoding before |
 /// | `findings.publish`, `findings.retract` | the findings published before under the key, or `findings.retract`, as their caller |
 /// | a job, `jobs.cancel`, a file written, a read, a template applied unpinned, a plugin's method, a failed step | nothing to undo |
+/// | a note (`history.note`) | none: it changed nothing, and stays until deleted |
 /// | anything else (`packets.sets.remove`, `protocol.choose_framing`, `sources.*`, `plugins.reload`…) | none |
 pub fn inverse_of(workspace: &mut dyn Workspace, step: u64) -> Inverse {
     let journal = workspace.journal();
@@ -453,6 +468,7 @@ pub fn inverse_of(workspace: &mut dyn Workspace, step: u64) -> Inverse {
     let timeline = journal.timeline();
     match timeline.status(step) {
         Some(StepStatus::Move) => return Inverse::unavailable("it moves along the history itself: redo, or go back to a step"),
+        Some(StepStatus::Note) => return Inverse::unavailable("it is a note: it changed nothing, and stays in the history until it is deleted"),
         Some(StepStatus::Undone { by }) => return Inverse::unavailable(format!("it is already undone, by step {by}")),
         _ => {}
     }
@@ -574,7 +590,7 @@ fn before_of(journal: &Journal, entry: &JournalEntry) -> Option<Value> {
         .entries()
         .chain(journal.reads())
         .filter(|earlier| earlier.step < entry.step && earlier.outcome.is_ok())
-        .filter(|earlier| !matches!(timeline.status(earlier.step), Some(StepStatus::Failed | StepStatus::Move)))
+        .filter(|earlier| !matches!(timeline.status(earlier.step), Some(StepStatus::Failed | StepStatus::Move | StepStatus::Note)))
         .filter(|earlier| undo::target_of(earlier).as_ref() == Some(&target))
         .max_by_key(|earlier| earlier.step);
     match earlier {

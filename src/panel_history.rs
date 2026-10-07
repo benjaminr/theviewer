@@ -462,7 +462,7 @@ fn show_row(state: &mut HistoryState, app: &mut ViewerApp, ui: &mut Ui, row: &Ro
             }
             StepStatus::Failed => text.color(theme::DANGER),
             StepStatus::Move => text.italics().color(theme::TEXT_DIM),
-            StepStatus::Active => text,
+            StepStatus::Active | StepStatus::Note => text,
         };
         let selected = state.selected == Some(row.step);
         let label = ui.selectable_label(selected, text).on_hover_text(&row.method);

@@ -348,6 +348,8 @@ mod tests {
             derived_from: Default::default(),
             merged: 0,
             before: None,
+            note: None,
+            notes: Vec::new(),
         }
     }
 

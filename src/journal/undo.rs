@@ -30,6 +30,8 @@ const A_READ_CHANGES_NOTHING: &str = "a read changes nothing";
 const NO_BYTES_CHANGED: &str = "it changed no bytes";
 /// Why a file written leaves nothing to undo.
 pub const WROTE_A_FILE: &str = "it wrote a file, which stays as written";
+/// Why a note leaves nothing to undo.
+pub const A_NOTE_CHANGES_NOTHING: &str = "a note changes nothing; it stays in the history until it is deleted";
 /// Why a plugin's analysis leaves nothing to undo: it says nothing of how.
 const A_PLUGIN_KEEPS_NO_INVERSE: &str = "a plugin's method keeps nothing to undo it by; undoing it only takes it out of the analysis";
 

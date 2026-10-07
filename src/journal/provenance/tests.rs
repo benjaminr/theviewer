@@ -26,6 +26,8 @@ fn entry(step: u64, method: &str, params: Value, derived_from: DerivedFrom) -> J
         derived_from,
         merged: 0,
         before: None,
+        note: None,
+        notes: Vec::new(),
     }
 }
 
