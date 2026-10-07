@@ -221,7 +221,7 @@ which Ask, plugins, MCP clients, recipes and the command line can call too:
 | --- | --- | --- |
 | `templates.list` | read | The templates: each one's `name`, its `origin` (`builtin` or `user`) and, for a file that does not parse, its `error`. |
 | `templates.apply` | analysis | Applies a template by `name` or as `source` text at offset `at` (0 by default) and returns the field tree (`structure`), the records table a page at a time (`columns`, `records`, `total_records`, `next`) and the `warnings`. With `pin: true` it also shows the template as the Template tool does: its records are outlined in the views and it is published as `template.applied` (and `structure.identified`), in place of the template pinned before. |
-| `templates.infer` | read | Proposes a template struct from the example records at `start`, `len` bytes long (with `record_len`, or guessed), as `source`; with `pin: true` it also applies it at `start` and pins it. |
+| `templates.infer` | analysis | Proposes a template struct from the example records at `start`, `len` bytes long (with `record_len`, or guessed), as `source`; with `pin: true` it also applies it at `start` and pins it. |
 | `templates.clear` | view | Withdraws the template pinned over a document. |
 
 ```sh

@@ -181,6 +181,19 @@ fn undoing_a_pinned_template_clears_it_and_undoing_a_clear_pins_it_again() {
 }
 
 #[test]
+fn an_inferred_template_pinned_is_a_journalled_step_that_undoes() {
+    let records: Vec<u8> = (0u8..8).flat_map(|n| [0xAB, 0xCD, n, 0]).collect();
+    let mut workspace = workspace_with("a.bin", &records);
+    call(&mut workspace, "templates.infer", json!({"start": 0, "len": 32, "record_len": 4, "pin": true})).unwrap();
+    let step = workspace.journal().entries().last().unwrap().clone();
+    assert_eq!((step.method.as_str(), step.effect), ("templates.infer", api::Effect::Analysis));
+    let templates = |workspace: &mut HeadlessWorkspace| call(workspace, "events.facts", json!({"producer": "tool:templates"})).unwrap()["facts"].as_array().unwrap().len();
+    assert!(templates(&mut workspace) > 0, "pinned");
+    undo(&mut workspace, step.step).unwrap();
+    assert_eq!(templates(&mut workspace), 0, "undoing the step clears it");
+}
+
+#[test]
 fn a_byte_edit_undoes_only_while_it_is_the_document_s_last_edit() {
     let mut workspace = workspace_with("a.bin", b"0123");
     call(&mut workspace, "bytes.write", json!({"start": 0, "data": "41"})).unwrap();

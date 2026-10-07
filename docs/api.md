@@ -226,7 +226,7 @@ A recipe step that starts a job waits for it (up to 10 minutes), and later steps
 | [`structure.parsers`](#structureparsers) | read |  | The structure parsers available, built in and from plugins. |
 | [`templates.list`](#templateslist) | read |  | The binary templates available: the built-in ones and the user's own. |
 | [`templates.apply`](#templatesapply) | analysis | core | Apply a binary template, by name or as source text, at an offset and return its field tree and records; with pin, also show it as the template tool does. |
-| [`templates.infer`](#templatesinfer) | read |  | Propose a template struct from several example records, from what varies between them; with pin, also apply it at the first record and show it as the template tool does. |
+| [`templates.infer`](#templatesinfer) | analysis |  | Propose a template struct from several example records, from what varies between them; with pin, also apply it at the first record and show it as the template tool does. |
 | [`templates.clear`](#templatesclear) | view |  | Withdraw the template pinned over a document: its records are no longer outlined, and it leaves template.applied. |
 | [`codecs.list`](#codecslist) | read |  | The codecs available for decoding, built in and from plugins. |
 | [`codecs.detect`](#codecsdetect) | read |  | The codecs whose header starts at an offset. |
@@ -1574,9 +1574,9 @@ Apply a binary template, by name or as source text, at an offset and return its 
 
 Propose a template struct from several example records, from what varies between them; with pin, also apply it at the first record and show it as the template tool does.
 
-**Effect:** `read` · **MCP tool:** `templates_infer`, through `api_call`, or with `--all-tools`
+**Effect:** `analysis` · **MCP tool:** `templates_infer`, through `api_call`, or with `--all-tools`
 
-**History:** Kept among the recent reads, which a later step can cite.
+**History:** Journalled as a step; undone by changing back the template pinned over the document (when the call pins or clears one); repeated by going back, playback and recipes.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
