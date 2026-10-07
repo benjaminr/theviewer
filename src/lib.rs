@@ -114,6 +114,7 @@ pub mod stats;
 pub mod strings;
 pub mod structure;
 pub mod templates;
+pub mod text;
 pub mod theme;
 pub mod timeline;
 pub mod tlv;

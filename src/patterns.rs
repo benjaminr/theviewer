@@ -1156,15 +1156,33 @@ fn is_pe_header(bytes: &[u8]) -> bool {
 
 /// Format Unix seconds as `YYYY-MM-DD HH:MM:SS UTC`.
 pub fn format_unix_seconds(seconds: u64) -> String {
-    let days = (seconds / 86_400) as i64;
-    let remainder = seconds % 86_400;
-    let (year, month, day) = civil_from_days(days);
-    format!(
-        "{year:04}-{month:02}-{day:02} {:02}:{:02}:{:02} UTC",
-        remainder / 3600,
-        (remainder % 3600) / 60,
-        remainder % 60
-    )
+    let CivilTime { year, month, day, hour, minute, second } = CivilTime::of_unix_seconds(seconds);
+    format!("{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}:{second:02} UTC")
+}
+
+/// Format Unix seconds as an RFC 3339 UTC timestamp to the second,
+/// `YYYY-MM-DDTHH:MM:SSZ`.
+pub fn format_unix_seconds_rfc3339(seconds: u64) -> String {
+    let CivilTime { year, month, day, hour, minute, second } = CivilTime::of_unix_seconds(seconds);
+    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}Z")
+}
+
+/// A moment in UTC as calendar date and time of day.
+struct CivilTime {
+    year: i64,
+    month: u32,
+    day: u32,
+    hour: u64,
+    minute: u64,
+    second: u64,
+}
+
+impl CivilTime {
+    fn of_unix_seconds(seconds: u64) -> CivilTime {
+        let (year, month, day) = civil_from_days((seconds / 86_400) as i64);
+        let in_day = seconds % 86_400;
+        CivilTime { year, month, day, hour: in_day / 3600, minute: (in_day % 3600) / 60, second: in_day % 60 }
+    }
 }
 
 /// Howard Hinnant's days-to-civil algorithm.
@@ -1469,6 +1487,8 @@ mod tests {
         assert_eq!(format_unix_seconds(0), "1970-01-01 00:00:00 UTC");
         assert_eq!(format_unix_seconds(1_700_000_000), "2023-11-14 22:13:20 UTC");
         assert_eq!(format_unix_seconds(951_782_400), "2000-02-29 00:00:00 UTC");
+        assert_eq!(format_unix_seconds_rfc3339(0), "1970-01-01T00:00:00Z");
+        assert_eq!(format_unix_seconds_rfc3339(1_700_000_000), "2023-11-14T22:13:20Z");
     }
 
     #[test]

@@ -26,6 +26,7 @@ use crate::packets::{self, Flow, Layer, PacketSet};
 use crate::panel_packets::{self, PacketLayers};
 use crate::plugin::{Category, Field, Finding};
 use crate::reference::{self, FormatReference, Library};
+use crate::text::truncate_chars;
 use crate::theme;
 
 /// How often to look for fetched RFC text.
@@ -1074,13 +1075,6 @@ fn count_fields(fields: &[Field]) -> usize {
     fields.iter().map(|field| 1 + count_fields(&field.children)).sum()
 }
 
-fn shortened(text: &str, max_chars: usize) -> String {
-    match text.char_indices().nth(max_chars) {
-        Some((at, _)) => format!("{}…", &text[..at]),
-        None => text.to_string(),
-    }
-}
-
 /// The instance's fields with offset, length, value and meaning. Pointing
 /// at a row outlines its bytes; clicking selects them.
 fn show_field_table(app: &mut ViewerApp, ui: &mut Ui, entry: &StackEntry, notes: Option<&FormatReference>, position: usize, actions: &mut Vec<Action>) {
@@ -1118,7 +1112,7 @@ fn show_field_table(app: &mut ViewerApp, ui: &mut Ui, entry: &StackEntry, notes:
                     .on_hover_text(format!("{:#x} in the document", field.offset)),
             );
             cells.push(ui.add(egui::Label::new(RichText::new(field.len.to_string()).monospace().color(theme::TEXT_DIM)).selectable(false).sense(Sense::click())));
-            let value = ui.add(egui::Label::new(shortened(&field.value, TABLE_VALUE_CHARS)).selectable(false).sense(Sense::click()));
+            let value = ui.add(egui::Label::new(truncate_chars(&field.value, TABLE_VALUE_CHARS)).selectable(false).sense(Sense::click()));
             cells.push(if field.value.chars().count() > TABLE_VALUE_CHARS { value.on_hover_text(&field.value) } else { value });
             let meaning = meaning_of(notes, field).unwrap_or_default();
             cells.push(
@@ -1246,7 +1240,7 @@ fn show_diagram(app: &mut ViewerApp, ui: &mut Ui, entry: &StackEntry, notes: Opt
         response.on_hover_ui_at_pointer(|ui| {
             for &index in &group.fields {
                 let field = fields[index];
-                ui.label(RichText::new(format!("{} = {}", field.name, shortened(&field.value, TABLE_VALUE_CHARS))).strong());
+                ui.label(RichText::new(format!("{} = {}", field.name, truncate_chars(&field.value, TABLE_VALUE_CHARS))).strong());
                 ui.label(RichText::new(format!("+{} · {} bytes", group.offset, group.len)).small().color(theme::TEXT_DIM));
                 if let Some(explanation) = notes.and_then(|notes| notes.explain_field(&field.name)) {
                     ui.label(explanation);

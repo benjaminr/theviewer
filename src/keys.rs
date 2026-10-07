@@ -22,6 +22,7 @@ use x509_parser::public_key::PublicKey;
 use x509_parser::x509::SubjectPublicKeyInfo;
 
 use crate::parsers::guarded;
+use crate::text::truncate_chars;
 
 /// Most bytes scanned; longer input is truncated.
 pub const MAX_SCAN_BYTES: usize = 64 * 1024 * 1024;
@@ -227,7 +228,7 @@ fn scan_der(window: &[u8], starts_before: usize, base: usize, findings: &mut Vec
 
 fn describe_certificate(object: &[u8]) -> Option<(KeyKind, String)> {
     let (_, certificate) = X509Certificate::from_der(object).ok()?;
-    let subject = truncate(&certificate.subject().to_string(), 80);
+    let subject = truncate_chars(&certificate.subject().to_string(), 80);
     let key = describe_spki(certificate.public_key());
     Some((KeyKind::Certificate, format!("X.509 certificate for {subject}, {key} key")))
 }
@@ -618,14 +619,6 @@ fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
         return None;
     }
     haystack.windows(needle.len()).position(|window| window == needle)
-}
-
-fn truncate(text: &str, max_chars: usize) -> String {
-    if text.chars().count() <= max_chars {
-        return text.to_string();
-    }
-    let cut: String = text.chars().take(max_chars).collect();
-    format!("{cut}…")
 }
 
 // ---------------------------------------------------------------------------
