@@ -143,7 +143,9 @@ impl ViewerApp {
             .iter()
             .filter_map(|&(start, range_len)| if left { start.checked_sub(1).map(|before| (before, range_len + 1)) } else { (start + range_len < len).then_some((start, range_len + 1)) })
             .collect();
-        let overlapping = widened.windows(2).any(|pair| pair[0].0 + pair[0].1 > pair[1].0);
+        // Widened ranges that touch would merge into one when selected, and
+        // one rotation over the merged block is not each range nudged.
+        let overlapping = widened.windows(2).any(|pair| pair[0].0 + pair[0].1 >= pair[1].0);
         if widened.len() != ranges.len() || overlapping {
             self.status = "Cannot nudge: a range would run off the document or into the next one".to_string();
             return;
@@ -255,6 +257,19 @@ mod tests {
         assert_eq!(app.document.read_range(0, 8), b"acbdfegh");
         assert_eq!(app.current_selection(), Some(Selection::Ranges(vec![(2, 1), (5, 1)])));
         assert!(app.status.starts_with("Rotate"), "{}", app.status);
+    }
+
+    #[test]
+    fn ranges_a_byte_apart_are_not_nudged_into_one_rotation() {
+        // Widened by the byte before each, (1,1) and (3,1) would touch and
+        // be rotated as one block, scrambling the bytes between them.
+        let mut app = app_with(b"abcdef");
+        app.select_ranges(vec![(1, 1), (3, 1)], None);
+        take_performed();
+        app.nudge_selection(-1);
+        assert_eq!(app.document.read_range(0, 6), b"abcdef", "nothing changes");
+        assert!(take_performed().iter().all(|(method, _)| method != "transform.apply"));
+        assert!(app.status.starts_with("Cannot nudge"), "{}", app.status);
     }
 
     fn performed(method: &str, params: serde_json::Value) -> (String, serde_json::Value) {
