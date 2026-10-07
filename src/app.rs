@@ -541,7 +541,9 @@ pub struct Launch {
     pub tool: Option<String>,
     /// Restore and save the panel layout (the app sets this; tests do not).
     pub restore_layout: bool,
-    /// Start with a layout preset: default, right, left or focus.
+    /// Start with a layout for this session: a recommended one (overview,
+    /// network, structure, firmware, signals, forensics, compare or focus;
+    /// default is overview) or one the person saved, by name.
     pub layout: Option<String>,
 }
 
