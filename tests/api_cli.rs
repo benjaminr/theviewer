@@ -43,6 +43,17 @@ fn help_prints_the_usage_on_standard_output_and_succeeds() {
 }
 
 #[test]
+fn the_usage_names_every_tool_tool_opens() {
+    let usage = String::from_utf8(theviewer(&["--help"]).stdout).unwrap();
+    let line = usage.lines().find(|line| line.trim_start().starts_with("--tool")).expect("--tool is described");
+    let listed: Vec<&str> = line.split_once(':').unwrap().1.split_whitespace().collect();
+    for tab in theviewer::dock::DockTab::ALL {
+        let name = tab.label().to_ascii_lowercase().replace(' ', "-");
+        assert!(listed.contains(&name.as_str()), "--tool {name} is missing from the usage: {line}");
+    }
+}
+
+#[test]
 fn output_cut_short_by_its_reader_ends_quietly() {
     let mut child = Command::new(env!("CARGO_BIN_EXE_theviewer"))
         .args(["api", "--describe"])

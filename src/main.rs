@@ -62,7 +62,7 @@ usage: theviewer [FILE] [--format NAME] [--palette NAME] [--width PIXELS] [--off
   --open     open the image, audio or video at the cursor
   --layout   start with a layout for this session (the last session's is kept): overview network
              structure firmware signals forensics compare focus, or the name of one you saved
-  --tool     open the tools dock on a tab: report reference structure-map size-map ask dot-plot trigrams images template columns protocol packets bits statistics characterise strings xor crypto checksums learn disassembly firmware unpacked forensics diff compare live
+  --tool     open the tools dock on a tab: report reference structure-map size-map ask dot-plot trigrams images template columns protocol packets bits statistics characterise strings xor crypto checksums learn disassembly firmware unpacked forensics diff compare live workspace history
 ";
 
 /// Write `text` to standard output. When the reader has gone away, as
