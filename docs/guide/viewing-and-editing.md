@@ -177,8 +177,11 @@ skipped range*.
 gzip, zlib, raw deflate, bzip2, xz, lzma, zstd and LZ4 streams are found
 and checked by test decompression.
 
-- `Cmd+D` flips between a compressed block and its contents, opened as a
-  new document. `Cmd+[` (*Edit › Back to parent document*) goes back.
+- *Decompress* (`Cmd+D`) opens the stream at the cursor as a new document.
+  It works in a document opened this way too, so a stream inside a stream
+  is followed down a level at a time. *Back out*, or `Cmd+[` (*Edit › Back to
+  parent document*), climbs out; `Cmd+D` where no stream is at the cursor
+  does the same.
 - *Edit › Decompress here in place* replaces the stream with what it holds.
 - *Edit › Compress selection as* compresses a selection back (zlib, gzip,
   raw deflate, bzip2 or LZ4), and *Re-pack selection with the last codec* in the palette

@@ -2524,8 +2524,11 @@ impl ViewerApp {
 
     /// One key flips between the compressed bytes and their contents: inside
     /// a derived document it goes back, otherwise it decompresses here.
+    /// Cmd+D: open the stream at the cursor, so nested streams can be
+    /// followed down; where no stream is at the cursor in a derived
+    /// document, go back to its parent.
     pub fn toggle_compressed_view(&mut self) {
-        if self.parents.is_empty() {
+        if self.parents.is_empty() || self.compressed_stream_at_cursor().is_some() {
             self.decompress_to_new_document();
         } else {
             self.go_back_to_parent();
@@ -3281,7 +3284,7 @@ impl ViewerApp {
                 let mode = match self.edit_mode { EditMode::Overwrite => "Switch to insert mode   Ins", EditMode::Insert => "Switch to overwrite mode   Ins" };
                 if ui.button(mode).clicked() { self.toggle_edit_mode(); ui.close(); }
                 ui.separator();
-                if ui.button("Flip compressed / decompressed view   Cmd+D").clicked() { self.toggle_compressed_view(); ui.close(); }
+                if ui.button("Decompress at cursor, or back up a level   Cmd+D").clicked() { self.toggle_compressed_view(); ui.close(); }
                 if ui.button("Select the stream at the cursor").clicked() { self.select_stream_at_cursor(); ui.close(); }
                 if ui.button("Decompress here in place").clicked() { self.decompress_in_place(); ui.close(); }
                 if ui.button("Probe for compression at cursor").clicked() { self.probe_at_cursor(); ui.close(); }
@@ -3756,27 +3759,26 @@ impl ViewerApp {
         }
 
         let stream = self.compressed_stream_at_cursor();
-        let caption = if let Some(parent) = self.parents.last() {
-            format!("Viewing decompressed contents of {}", parent.name)
-        } else if let Some(pattern) = &stream {
-            format!("Compression: {}", pattern.description().split(" compressed").next().unwrap_or("stream"))
-        } else {
-            "Compression".to_string()
+        let caption = match &stream {
+            Some(pattern) => format!("Compression: {}", pattern.description().split(" compressed").next().unwrap_or("stream")),
+            None => "Compression".to_string(),
         };
         packer.captioned(ui, "compression", &caption, |ui| {
             let has_data = !self.document.is_empty();
-            let derived = !self.parents.is_empty();
-            let flip_label = if derived { "Back to compressed" } else { "Decompress" };
-            let flip_hint = if derived {
-                "Return to the compressed bytes (Cmd+D)"
-            } else {
-                "Open the decompressed block as a new document (Cmd+D)"
-            };
-            ui.add_enabled_ui(has_data || derived, |ui| {
-                if ui.selectable_label(derived, flip_label).on_hover_text(flip_hint).clicked() {
-                    self.toggle_compressed_view();
+            // Decompressing works in any document, a derived one included,
+            // so streams nested in streams can be followed down; Back climbs
+            // out again.
+            ui.add_enabled_ui(has_data, |ui| {
+                if ui.button("Decompress").on_hover_text("Open the decompressed block as a new document (Cmd+D)").clicked() {
+                    self.decompress_to_new_document();
                 }
             });
+            if let Some(parent) = self.parents.last() {
+                let hint = format!("Return to {} (Cmd+D where no stream is at the cursor)", parent.name);
+                if ui.button("Back out").on_hover_text(hint).clicked() {
+                    self.go_back_to_parent();
+                }
+            }
             ui.add_enabled_ui(has_data, |ui| {
                 if ui.button("In place").on_hover_text("Replace the compressed block with its contents (undoable)").clicked() {
                     self.decompress_in_place();
@@ -3966,7 +3968,7 @@ impl ViewerApp {
                     ("Cmd+Enter  Space", "Open the image, audio or video at the cursor; play and pause"),
                     ("Cmd+J  Cmd+L", "Tools dock; ask about the file"),
                     ("H", "Toggle pattern highlights"),
-                    ("Cmd+D", "Flip between a compressed block and its contents"),
+                    ("Cmd+D", "Open the compressed block at the cursor; back up a level where there is none"),
                     ("Cmd+E", "Extract the selection or stream to a file"),
                     ("Cmd+[", "Back to the parent document"),
                     ("?", "Toggle this window"),
@@ -4180,6 +4182,21 @@ mod tests {
         let app = ViewerApp::new(Launch { tool: Some("sparkles".to_string()), ..Default::default() });
         assert!(!app.dock.open, "nothing is opened for it");
         assert_eq!(app.status, "No tool called 'sparkles'; theviewer --help lists them");
+    }
+
+    #[test]
+    fn a_stream_inside_a_derived_document_is_followed_down_and_cmd_d_goes_back_where_none_is() {
+        let mut app = app_with(b"outer");
+        let bytes = crate::api::test_support::example_bytes();
+        let stream_len = bytes.iter().position(|&byte| byte == b'T').unwrap();
+        app.open_derived(bytes, "reassembled".to_string());
+        // As the background scan finds it.
+        app.patterns = vec![Finding::new("compressed-streams", "builtin", Category::Compressed, 0, stream_len).title("zlib stream")];
+        app.toggle_compressed_view();
+        assert_eq!(app.parents.len(), 2, "the stream at the cursor is opened, one level deeper: {}", app.status);
+        assert_eq!(app.document.read_range(0, 6), b"hello ");
+        app.toggle_compressed_view();
+        assert_eq!(app.parents.len(), 1, "no stream at the cursor, so back up a level");
     }
 
     #[test]

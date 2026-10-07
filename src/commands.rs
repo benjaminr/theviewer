@@ -64,7 +64,7 @@ pub fn commands() -> Vec<Command> {
         Command { id: "analysis.patterns", title: "Toggle highlights", keys: "H", run: |app, _| app.highlight_patterns = !app.highlight_patterns },
         Command { id: "analysis.findings", title: "Toggle findings panel", keys: "", run: |app, _| app.pattern_list_open = !app.pattern_list_open },
         Command { id: "analysis.rescan", title: "Rescan the visible region", keys: "", run: |app, _| app.force_rescan() },
-        Command { id: "compress.flip", title: "Flip compressed / decompressed view", keys: "Cmd+D", run: |app, _| app.toggle_compressed_view() },
+        Command { id: "compress.flip", title: "Decompress at cursor, or back up a level", keys: "Cmd+D", run: |app, _| app.toggle_compressed_view() },
         Command { id: "compress.in_place", title: "Decompress in place", keys: "", run: |app, _| app.decompress_in_place() },
         Command { id: "compress.probe", title: "Probe for compression at cursor", keys: "", run: |app, _| app.probe_at_cursor() },
         Command { id: "compress.select_stream", title: "Select the stream at the cursor", keys: "", run: |app, _| app.select_stream_at_cursor() },

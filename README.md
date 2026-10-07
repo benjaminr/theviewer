@@ -223,7 +223,7 @@ the full list.
 | `-` `+` | Zoom out, zoom in |
 | `H` | Pattern highlights on or off |
 | `Cmd+Enter`, `Space` | Open the media at the cursor; play and pause |
-| `Cmd+D` | Switch between a compressed block and its contents |
+| `Cmd+D` | Open the compressed block at the cursor; back up a level where there is none |
 | `Cmd+E` | Save the selection or stream to a file |
 | `Cmd+[` | Back to the parent document |
 | `Cmd+J` | Fold the tools away or back |

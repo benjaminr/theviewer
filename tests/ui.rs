@@ -687,11 +687,11 @@ fn flipping_extracting_and_repacking_a_stream() {
     harness.state_mut().set_cursor(stream_at + 10, false);
     steps(&mut harness, 2);
 
-    // Cmd+D flips in, Cmd+D flips back out.
+    // Cmd+D opens the stream, and Cmd+D again, with no stream at the cursor inside it, backs out.
     harness.key_press_modifiers(Modifiers::COMMAND, Key::D);
     steps(&mut harness, 3);
     assert_eq!(harness.state().document.len(), text.len(), "{}", harness.state().status);
-    assert!(harness.get_by_label("Back to compressed").rect().width() > 0.0);
+    assert!(harness.get_by_label("Back out").rect().width() > 0.0);
     harness.key_press_modifiers(Modifiers::COMMAND, Key::D);
     steps(&mut harness, 3);
     assert_eq!(harness.state().document.len(), file.len());
