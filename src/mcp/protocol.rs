@@ -178,6 +178,8 @@ after the method with underscores for dots: bits.scan_periods is bits_scan_perio
 Documents are named by id (doc-1), by path, or \"current\". Start with analysis_overview for a map of a file, then findings_query, \
 structure_parse and templates_apply for detail; bytes_read and bytes_hexdump show bytes. {other_methods} Edits ({edits}) are \
 each one undoable step: history_undo reverses them, and documents_save writes them to disk, which nothing else does. \
+As you work, record your reasoning with history_note: what you are doing and why, in the session's history where you are, citing the \
+steps it is about as #12; the person sees it beside those steps in the History tab. \
 Resources under theviewer://doc/{{id}} give a document's info, bytes, findings and facts; theviewer://reference/{{id}} gives notes on \
 formats and protocols."
     )
@@ -210,6 +212,14 @@ mod tests {
             assert!(!all.contains(absent), "{absent} is not a tool under --all-tools: {all}");
         }
         assert!(all.contains("bytes_insert"), "{all}");
+    }
+
+    #[test]
+    fn the_instructions_ask_the_model_to_note_its_reasoning_in_the_history() {
+        for tools in [ToolSet::Core, ToolSet::All] {
+            assert!(instructions(tools).contains("record your reasoning with history_note"));
+        }
+        assert!(crate::mcp::tools::CORE.contains(&"history.note"), "listed by default, so a client can note as it works");
     }
 
     #[test]

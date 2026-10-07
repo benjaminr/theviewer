@@ -74,7 +74,7 @@ nothing but protocol messages on standard output.
 
 A client keeps every tool it is offered in its model's context, so the
 tool list's size matters. With the plugins in this repository, the default
-list is 28 tools and about 50 KB of JSON; `--all-tools` lists about 170
+list is 29 tools and about 50 KB of JSON; `--all-tools` lists about 170
 tools in about 245 KB; `--output-schemas` roughly doubles either.
 
 ## Tools
@@ -103,6 +103,7 @@ for first:
 | Packets | `packets_dissect_bytes`, `packets_sets_create`, `packets_dissect` |
 | Reference notes | `reference_lookup` |
 | Edits | `bytes_write`, `bytes_replace`, `transform_apply`, `history_undo` |
+| Notes | `history_note` |
 
 plus every method a plugin registers (see [Plugins](#plugins)), and three
 that reach the rest of the API:
@@ -131,6 +132,26 @@ knows of it. Every method and its schemas are in [docs/api.md](api.md).
 With `--all-tools`, every method is listed as a tool and the three
 tools above are not offered; the instructions the server gives the client at
 the start say so too, naming the methods' own tools in their place.
+
+### Noting your reasoning
+
+`history_note` writes a note into the session's history, where the client
+is in its work: what it is doing and why. `#12` in the text cites step 12
+and links the note to it, and `steps` links more. The note is recorded as
+the client's (`mcp:claude-code`), and it changes nothing: it is never
+undone or repeated. It returns the note's own step number.
+
+```json
+{"name": "history_note", "arguments": {"text": "#4 found the sync word at 0x40; splitting the frames there next"}}
+```
+
+The server's instructions ask the model to note its reasoning as it goes,
+so the person can follow it beside the steps in the History tab.
+`history.list` gives each note's text and linked steps, and on each step
+the notes linked to it. Through `api_call`, `history.edit_note` and
+`history.delete_note` change a note, and `history.export_notes` gives the
+notes as Markdown (or writes them to a `path`). See
+[History and recipes](guide/history-and-recipes.md#notes).
 
 ### Annotations
 
@@ -233,7 +254,8 @@ client. (In the window, other clients are asked first; see
   `packets.export_pcap`, `recipes.save`) do so only where the client says.
 - Every call is recorded in the session's journal, so `history.list`
   shows what the client did, and `recipes.save` can keep it as a
-  [recipe](recipes.md) to run on other files.
+  [recipe](recipes.md) to run on other files. The notes a client writes
+  with `history_note` are recorded there too, as the client's.
 
 ## Protocol revisions
 

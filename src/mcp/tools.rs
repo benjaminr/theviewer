@@ -83,6 +83,9 @@ pub const CORE: &[&str] = &[
     "bytes.replace",
     "transform.apply",
     "history.undo",
+    // A note of what the model is doing and why, in the history beside the
+    // steps it cites, so the person can follow its reasoning.
+    "history.note",
 ];
 
 /// The tool that finds methods.

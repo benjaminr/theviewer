@@ -208,7 +208,7 @@ A recipe step that starts a job waits for it (up to 10 minutes), and later steps
 | [`history.undo_step`](#historyundo_step) | edit |  | Undo one step of the journal through its inverse (see history.inverse), whoever made it, as a step of its own; the step is then shown as undone and left out of recipes and playback. |
 | [`history.go_back`](#historygo_back) | edit |  | Go back to a step of the journal (0 for before the first): undo every later step in effect, latest first, or, where one has no inverse, bring the document back to how the session first saw it and run the steps up to it again. The later steps stay in the journal, shown as undone. |
 | [`history.save_recipe`](#historysave_recipe) | edit |  | Write the steps in effect (all, or up to a step) to a recipe file, *.theviewer-recipe.json, with the anchors and parameters recorded for its steps, to run on other files. |
-| [`history.note`](#historynote) | analysis |  | Write a note in the history where you are now: what you are doing and why, by you, linked to the steps its text cites as #12 and those given; it changes nothing, is never undone or repeated, and is shown beside the steps it links. Returns its step number. |
+| [`history.note`](#historynote) | analysis | core | Write a note in the history where you are now: what you are doing and why, by you, linked to the steps its text cites as #12 and those given; it changes nothing, is never undone or repeated, and is shown beside the steps it links. Returns its step number. |
 | [`history.edit_note`](#historyedit_note) | read |  | Change a note's text and the steps it is linked to, in place; the note then says when and by whom it was edited. Only notes can be edited. |
 | [`history.delete_note`](#historydelete_note) | read |  | Take a note out of the history; the steps it was linked to no longer list it. Only notes can be deleted. |
 | [`history.export_notes`](#historyexport_notes) | read |  | The session's notes as Markdown, in the order written, each with the steps it cites (number, caller and description), returned or written to a path given (which needs leave to edit). |
@@ -1175,7 +1175,7 @@ Write the steps in effect (all, or up to a step) to a recipe file, *.theviewer-r
 
 Write a note in the history where you are now: what you are doing and why, by you, linked to the steps its text cites as #12 and those given; it changes nothing, is never undone or repeated, and is shown beside the steps it links. Returns its step number.
 
-**Effect:** `analysis` · **MCP tool:** `history_note`, through `api_call`, or with `--all-tools`
+**Effect:** `analysis` · **MCP tool:** `history_note`, listed by default
 
 **History:** Journalled as a note where it is written: it changes nothing, so it is never undone, repeated, or undone by going back past it.
 
