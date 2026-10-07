@@ -387,6 +387,7 @@ flight-04.bin: Telemetry frames — 2 steps ran
   warning: this is not the file the recipe was recorded on (flight-03.bin, 64 bytes); its anchors find their values here, but literal offsets may not fit
   saved to decoded/flight-04.bin
 noise.bin: Telemetry frames — Stopped at step 1 (packets.sets.create): the parameter start: the 1st match of hex 7ea5 did not resolve: doc-1 has no 1st match of hex 7ea5: it does not occur
+  warning: this is not the file the recipe was recorded on (flight-03.bin, 64 bytes); its anchors find their values here, but literal offsets may not fit
 ```
 
 With `--json`, each entry of `files` is `{file, report, saved?, error?}`:
@@ -427,13 +428,15 @@ under Settings › Permissions like any edit, and each step is called as
 - **The person**, by pressing Run after the preview in the window, or by
   going back or playing steps in the History tab: the run is consented to,
   and its steps are not asked about one by one.
-- **A client the person allowed when asked** (the confirmation window
-  lists the recipe's steps: "Run the recipe 'Telemetry frames' on the
-  current document: 2 steps (packets.sets.create, packets.decode_as)"): the
-  same, since the person has seen what it will do.
+- **A client the person allowed when asked**, with *Allow once* or
+  *Always allow this client* (the confirmation window lists the recipe's
+  steps: "Run the recipe 'Telemetry frames' on the current document: 2
+  steps (packets.sets.create, packets.decode_as)"): the same, since the
+  person has seen what it will do.
 - **A client its setting allows without asking:** each step is checked
   against that client's setting too, so a recipe can do no more than its
   caller may; a step the setting does not allow stops the run.
+- **A client set to *Never allow*:** the run is refused, as any edit is.
 
 `recipes.save` and `history.save_recipe` write files, so they need leave to
 edit. On the command line (`theviewer api`, `theviewer replay`) and through

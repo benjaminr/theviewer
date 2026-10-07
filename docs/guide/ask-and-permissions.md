@@ -31,9 +31,10 @@ methods your plugins add.
   analysis tools and describe the whole file.
 
 When you ask it to change something ("XOR the selection with 5A", "fix the
-length field"), it can edit too, with the same operations you have. Each
-change waits for you to allow it (see below), is one undo step, and is
-labelled in the Edit menu as Ask's, such as *Undo XOR by ask*.
+length field"), it can edit too, with the same operations you have.
+Unless you have set Ask to *Always allow*, each change waits for you to
+allow it (see below). Each is one undo step, labelled in the Edit menu as
+Ask's, such as *Undo XOR by ask*.
 
 ## Setting up a key
 
@@ -54,18 +55,20 @@ read.
 ## Who may change the file
 
 You edit freely. Plugins, Ask and other clients of the data API can always
-read, but what they may change is up to you.
+read, but whether they may edit the document, change the view (the
+selection, the shape, which document is current) or write a file is up to
+you.
 
 **Settings › Permissions** lists each one: Ask, every plugin that declared
 it edits, and any client that has asked before. Each has three choices:
 
 | Choice | Means |
 | --- | --- |
-| *Always allow* | It edits and changes the view without asking. |
+| *Always allow* | It edits, changes the view and writes files without asking. |
 | *Always ask* | A window asks you about each change. This is the default, and a client not seen before is asked about. |
-| *Never allow* | It may not edit or change the view; reading is still allowed. |
+| *Never allow* | It may not edit, change the view or write files; reading is still allowed. |
 
-Every change a client makes is one undo step, labelled with what it did
+Every edit a client makes is one undo step, labelled with what it did
 and who did it ("Overwrite 4 bytes by plugin:acme_telemetry.lua"), so
 *Undo* always takes it back, and the [History tab](history-and-recipes.md)
 lists it. A client can also say which version of the file it expects, so a
@@ -74,7 +77,7 @@ applied.
 
 ## The confirmation window
 
-When a client set to ask wants to change the document or the selection, a
+When a client set to ask wants to edit, change the view or write a file, a
 window titled *Allow this change?* says who it is and what the change is,
 in plain words: "Ask wants to change the document: XOR 128 selected bytes
 with 5A", or "Overwrite 4 bytes at 0x40 with DE AD BE EF".
@@ -86,7 +89,9 @@ with 5A", or "Overwrite 4 bytes at 0x40 with DE AD BE EF".
 
 Nothing waits on the window: you can keep working. A request nobody
 answers is refused after two minutes. Several requests are answered in
-the order they came. For a recipe run, the window lists the recipe's steps.
+the order they came. For a recipe run (`recipes.run`), the window lists
+the recipe's steps, and allowing the run allows all of them; see
+[Running a recipe in the window](history-and-recipes.md#running-a-recipe-in-the-window).
 
 ## The command line and MCP
 

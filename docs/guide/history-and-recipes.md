@@ -16,13 +16,12 @@ back to an earlier point, watch them played again, or save them as a
 
 ## The History tab
 
-Open it from *Tools › History*, the palette, or the *Overview* layout,
-where it sits beside the Report.
+Open it from the *History* item in the Tools menu, the palette, or the
+*Overview* layout, where it sits beside the Report.
 
 Each edit, view change, packet set and job is a numbered step, with who
-took it and what
-it did, in words: "Overwrite 2 bytes at 0x2 with 41 42". Marks beside a
-step say more:
+took it and what it did, in words: "Overwrite 2 bytes at 0x2 with 41 42".
+Marks beside a step say more:
 
 - **bytes:** it changed the document's bytes;
 - **failed** or **refused:** it did not happen (point at the mark for why);
@@ -149,8 +148,15 @@ recipe:NAME".
 
 Ask, plugins and MCP clients run recipes through `recipes.run`. That is an
 edit, so [Settings › Permissions](ask-and-permissions.md#who-may-change-the-file)
-applies: the confirmation window lists the recipe's steps, and each step is
-still checked against that client's setting.
+applies to the client that starts the run:
+
+- **Always ask:** the confirmation window lists the recipe's steps. If you
+  allow the run (*Allow once* or *Always allow this client*), the whole run
+  is allowed and you are not asked about its steps.
+- **Always allow:** the run starts without asking, and each step is
+  checked against that client's setting as it runs, so a recipe can do no
+  more than the client could.
+- **Never allow:** the run is refused.
 
 ## Running a recipe over many files
 
@@ -162,7 +168,15 @@ theviewer replay "Telemetry frames" capture-*.bin --param key=5a --out decoded/ 
 
 Each file opens in a workspace of its own, and you get a report per file:
 what each step did, or where and why it stopped. With `--json` the report
-is JSON. With `--save` each changed file is saved over itself, and with
-`--out DIR` into DIR. A file the recipe stopped on is not saved, and the
-exit code is then non-zero. See [Command line](command-line.md#theviewer-replay)
-and [docs/recipes.md](../recipes.md).
+is JSON. Without `--save` or `--out`, no file is changed.
+
+- `--save` saves each file the recipe changed over itself; a file it left
+  unchanged is not written.
+- `--out DIR` saves every file the recipe ran to its end into DIR, under
+  its own name, changed or not, and makes DIR if needed.
+
+A file the recipe stopped on is not saved. The exit code is non-zero when
+the recipe stopped on any file, or a file could not be opened or saved.
+`--param KEY=VALUE` gives a parameter, and can be repeated. See
+[Command line](command-line.md#theviewer-replay) and
+[docs/recipes.md](../recipes.md).
