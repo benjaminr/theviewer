@@ -166,11 +166,7 @@ fn run_api(args: &[String]) -> i32 {
 fn call_headless(method: &str, params: &str, file: Option<&Path>, save: bool) -> Result<serde_json::Value, ApiError> {
     let params: serde_json::Value = serde_json::from_str(params).map_err(|error| ApiError::invalid_params(format!("the parameters are not JSON: {error}")))?;
     let (host, _) = app::load_plugin_host();
-    let mut workspace = HeadlessWorkspace::new(Arc::new(app::build_registry_with(Some(&host))));
-    if let Ok(host) = host.lock() {
-        workspace.set_registered_methods(host.methods());
-        workspace.journal_mut().note_plugins(theviewer::journal::plugins_of(&host));
-    }
+    let mut workspace = headless_workspace(&host, Arc::new(app::build_registry_with(Some(&host))));
     if let Some(file) = file {
         workspace.open_path(file)?;
     }
@@ -179,6 +175,17 @@ fn call_headless(method: &str, params: &str, file: Option<&Path>, save: bool) ->
         api::call(&mut workspace, &api::Caller::Cli, "documents.save", serde_json::json!({}))?;
     }
     Ok(result)
+}
+
+/// A workspace without a window over `registry`, offering the plugin
+/// methods of `host` and recording its plugins in the journal.
+fn headless_workspace(host: &app::SharedLuaHost, registry: Arc<theviewer::plugin::Registry>) -> HeadlessWorkspace {
+    let mut workspace = HeadlessWorkspace::new(registry);
+    if let Ok(host) = host.lock() {
+        workspace.set_registered_methods(host.methods());
+        workspace.journal_mut().note_plugins(theviewer::journal::plugins_of(&host));
+    }
+    workspace
 }
 
 /// Run `theviewer mcp …` (the arguments after `mcp`) until the client
@@ -286,11 +293,7 @@ fn run_replay(args: &[String]) -> i32 {
         .files
         .iter()
         .map(|file| {
-            let mut workspace = HeadlessWorkspace::new(Arc::clone(&registry));
-            if let Ok(host) = host.lock() {
-                workspace.set_registered_methods(host.methods());
-                workspace.journal_mut().note_plugins(theviewer::journal::plugins_of(&host));
-            }
+            let mut workspace = headless_workspace(&host, Arc::clone(&registry));
             theviewer::recipes::replay_file(&mut workspace, &recipe, file, &args.parameters, &args.output)
         })
         .collect();
