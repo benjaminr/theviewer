@@ -107,10 +107,33 @@ fn show_filter(state: &mut PacketsState, ui: &mut Ui) {
         }
         ui.label(RichText::new(format!("{} of {total} shown", state.visible.len())).small().color(theme::TEXT_DIM));
     });
+    show_order(state, ui);
     panel::refresh_filter(state);
     if let Some(error) = &state.filter_error {
         ui.label(RichText::new(format!("Filter not applied: {error}")).small().color(theme::DANGER));
     }
+    if let Some(error) = &state.order_error {
+        ui.label(RichText::new(format!("Not sorted: {error}")).small().color(theme::DANGER));
+    }
+}
+
+/// Choose the order of the list, by a column or a field, and whether to
+/// hide repeats.
+fn show_order(state: &mut PacketsState, ui: &mut Ui) {
+    ui.horizontal_wrapped(|ui| {
+        ui.label(RichText::new("Sort by").small());
+        egui::ComboBox::from_id_salt("packets-sort").selected_text(state.order.column.label()).show_ui(ui, |ui| {
+            for column in panel::SortColumn::ALL {
+                ui.selectable_value(&mut state.order.column, column, column.label());
+            }
+        });
+        if state.order.column == panel::SortColumn::Field {
+            ui.add(egui::TextEdit::singleline(&mut state.order.field).hint_text("dns.qry.name, template.seq…").desired_width(160.0))
+                .on_hover_text("Any field a filter can name; numbers sort as numbers, and packets without the field come last");
+        }
+        ui.checkbox(&mut state.order.descending, "Desc.");
+        ui.checkbox(&mut state.order.unique, "Unique").on_hover_text("Show only the first packet of each value, so a chunk sent twice is shown once");
+    });
 }
 
 fn header_text() -> String {
@@ -229,9 +252,16 @@ fn focus_packet(state: &mut PacketsState, app: &mut ViewerApp, index: usize) {
     }
 }
 
-/// The selected packets, or the focused one when none are selected.
-fn targets(state: &PacketsState) -> Vec<usize> {
-    if state.selected.is_empty() { state.focus.into_iter().collect() } else { state.selected.iter().copied().collect() }
+/// The selected packets in the order the list shows them (any not shown
+/// after, in capture order), or the focused one when none are selected.
+pub(crate) fn targets(state: &PacketsState) -> Vec<usize> {
+    if state.selected.is_empty() {
+        return state.focus.into_iter().collect();
+    }
+    let mut chosen: Vec<usize> = state.visible.iter().copied().filter(|index| state.selected.contains(index)).collect();
+    let shown: std::collections::HashSet<usize> = chosen.iter().copied().collect();
+    chosen.extend(state.selected.iter().copied().filter(|index| !shown.contains(index)));
+    chosen
 }
 
 // ---------------------------------------------------------------------------
@@ -822,7 +852,9 @@ fn follow(state: &mut PacketsState, key: &ConversationKey) {
         let end = (start + len).min(packet.len());
         Some((index, flow, packet.get(start..end).unwrap_or_default()))
     });
-    state.stream = Some(packets::follow_stream(key, items));
+    let stream = packets::follow_stream(key, items);
+    state.stream_http = if key.transport == packets::Transport::Tcp { packets::application::http::http_messages(&stream) } else { Vec::new() };
+    state.stream = Some(stream);
     state.view = PacketsView::Stream;
 }
 
@@ -933,6 +965,19 @@ pub fn show_stream(state: &mut PacketsState, app: &mut ViewerApp, ui: &mut Ui) {
             open = true;
         }
     });
+    let mut open_body = None;
+    if state.stream_http.iter().any(|message| !message.body.is_empty()) {
+        ui.horizontal_wrapped(|ui| {
+            ui.label(RichText::new("HTTP").small().strong());
+            for (index, message) in state.stream_http.iter().enumerate().filter(|(_, message)| !message.body.is_empty()) {
+                let how = [message.chunked.then_some("de-chunked"), message.decoded.then_some("decompressed")].into_iter().flatten().collect::<Vec<_>>().join(", ");
+                let hover = format!("{} bytes{}{}", message.body.len(), if how.is_empty() { String::new() } else { format!(", {how}") }, message.notes.iter().map(|note| format!("; {note}")).collect::<String>());
+                if ui.small_button(format!("Open body as document: {}", fit(&message.start_line, 40))).on_hover_text(hover).clicked() {
+                    open_body = Some(index);
+                }
+            }
+        });
+    }
     ui.label(RichText::new("→ from A to B (accent) · ← from B to A (amber)").small().color(theme::TEXT_DIM));
     egui::ScrollArea::both().id_salt("packet-stream").max_height(list_height(state)).auto_shrink([false, true]).show(ui, |ui| {
         ui.style_mut().wrap_mode = Some(TextWrapMode::Wrap);
@@ -955,6 +1000,11 @@ pub fn show_stream(state: &mut PacketsState, app: &mut ViewerApp, ui: &mut Ui) {
     if open {
         // The stream's bytes are reassembled, not a range of the document.
         let params = serde_json::json!({ "data": base64::engine::general_purpose::STANDARD.encode(&stream.bytes), "encoding": "base64", "name": format!("stream {}", stream.key) });
+        open_as_document(state, app, params);
+    }
+    if let Some(message) = open_body.and_then(|index| state.stream_http.get(index)) {
+        // The body as the sender meant it: de-chunked and decompressed.
+        let params = serde_json::json!({ "data": base64::engine::general_purpose::STANDARD.encode(&message.body), "encoding": "base64", "name": format!("{} body", message.start_line) });
         open_as_document(state, app, params);
     }
 }

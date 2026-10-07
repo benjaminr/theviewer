@@ -39,18 +39,19 @@ pub(super) const METHODS: &[super::Method] = &[
     method!("packets.sets.create", Analysis, caller create, CreateParams, SetInfo, "Take a set of packets from a document: a capture in it, a range cut into fixed records, by a length field, at a pattern or with the protocol framing, or the selection's ranges, with how to decode frames of unknown format; returns the set's id and what was worked out (the capture found, the framing), so the call can be made again exactly.").creates(crate::api::Resource { result_field: "set", param: "set", remover: "packets.sets.remove" }),
     method!("packets.sets.remove", Analysis, remove_set, SetParams, RemovedSet, "Forget a packet set: its id stops working and it leaves packets.sets.list. Its document is not changed."),
     method!("packets.sets.list", Read, list_sets, super::values::NoParams, SetList, "The packet sets made, with their ids, documents, sources, packet counts and decoding."),
-    method!("packets.list", Read, list, ListParams, PacketList, "A set's packets the display filter keeps, a page at a time: each one's index, offset, length, summary columns, protocols and addresses."),
+    method!("packets.list", Read, list, ListParams, PacketList, "A set's packets the display filter keeps, a page at a time, in capture order or sorted by a field, and de-duplicated by a field if asked: each one's index, offset, length, summary columns, protocols and addresses."),
     method!("packets.dissect", Read, dissect, PacketParams, PacketDissection, "Dissect one packet of a set into protocol layers and fields, as the set decodes frames of unknown format."),
     method!("packets.decode_as", Analysis, caller decode_as, DecodeAsParams, SetInfo, "Choose the protocol a set's frames of unknown format are decoded as, or detection, and a template for frames no protocol reads.").reverses(crate::api::Reverse::Decoding),
     method!("packets.export_pcap", Analysis, export_pcap, ExportParams, ExportResult, "A set's packets (those a filter keeps) as a pcap file, returned or written to a path given (which needs leave to edit).").writes_file(crate::api::WritesFile::WhenGiven("path")),
     method!("packets.conversations", Read, conversations, ConversationsParams, ConversationList, "The conversations in a set (the packets a filter keeps): each pair of endpoints with its transport, packets and bytes each way, its first packet's index in the set, and a filter for it; in order of first packet, or sorted by packets, bytes or address."),
     method!("packets.follow_stream", Read, follow_stream, PacketParams, StreamResult, "The payloads of a packet's conversation in order, each with its direction, and the stream as text."),
+    method!("packets.http_bodies", Analysis, http_bodies, HttpBodiesParams, HttpBodies, "The HTTP/1 requests and responses in a packet's TCP stream, each with its head and its body as meant: put together across segments, de-chunked, and decompressed by its Content-Encoding (gzip or deflate); the bodies are returned, or opened as documents of their own with open."),
     method!("packets.find_captures", Read, find_captures, FindCapturesParams, CaptureList, "The captures inside a span of a document (pcap, pcapng, snoop, Network Monitor or ERF, or one of these compressed with gzip), each with its offset, format, link type and packets, for packets.sets.create."),
     method!("packets.sets.add_packets", View, caller add_packets, AddPacketsParams, SetInfo, "Add ranges of the document to a set as packets of their own, so packets can be gathered one at a time; the set then keeps its packets where they are."),
     method!("packets.sets.refresh", View, caller refresh, RefreshParams, SetInfo, "Find a set's packets again, the way they were found, in another document (the current one by default), which the set then belongs to."),
     method!("packets.detect_length_field", Read, detect_length_field, SpanParams, LengthFieldFound, "Look for a length field that cuts a span into frames, with the protocol analysis's framing detection; returns it as packets.sets.create's length_field, or the best framing found instead."),
     method!("packets.endpoints", Read, endpoints, ConversationsParams, EndpointList, "The addresses in a set (the packets a filter keeps), busiest first or sorted by packets or address, with the packets and bytes each sent and received."),
-    method!("packets.extract", Analysis, editing::extract, ExtractParams, ExtractResult, "Some of a set's packets' bytes one after another, returned or written to a path given (which needs leave to edit).").writes_file(crate::api::WritesFile::WhenGiven("path")),
+    method!("packets.extract", Analysis, editing::extract, ExtractParams, ExtractResult, "Some of a set's packets' bytes one after another, in the order given: whole, the same span of each, or each packet's own field by name (one label of a DNS name, say); returned or written to a path given (which needs leave to edit).").writes_file(crate::api::WritesFile::WhenGiven("path")),
     method!("packets.delete", Edit, caller editing::delete, IndicesParams, PacketEditResult, "Remove packets from the document (their whole capture records, so a capture stays readable), as one undoable step."),
     method!("packets.fix_checksums", Edit, caller editing::fix_checksums, IndicesParams, PacketEditResult, "Recompute the IPv4 header, TCP and UDP checksums of some of a set's packets, as one undoable step."),
     method!("packets.apply", Edit, caller editing::apply, ApplyParams, PacketEditResult, "Invert, fill or XOR some of a set's packets, or the same field of each, as one undoable step."),
@@ -84,6 +85,7 @@ pub(super) fn examples() -> Vec<(&'static str, serde_json::Value)> {
         ("packets.export_pcap", json!({"set": "set-1"})),
         ("packets.conversations", json!({"set": "set-1"})),
         ("packets.follow_stream", json!({"set": "set-1", "index": 0})),
+        ("packets.http_bodies", json!({"set": "set-1", "index": 0})),
         ("packets.find_captures", json!({"start": 0})),
         ("packets.sets.add_packets", json!({"set": "set-1", "ranges": [[64, 4]]})),
         ("packets.sets.refresh", json!({"set": "set-1"})),
@@ -408,7 +410,9 @@ pub struct SetList {
 pub struct ListParams {
     pub set: String,
     /// A display filter, as the Packets panel takes: protocol names,
-    /// addresses, ports, `len > 60`, Wireshark field names and more.
+    /// addresses, ports, `len > 60`, Wireshark field names such as
+    /// `dns.qry.type==16` or `tcp.port==80`, template fields as
+    /// `template.type==60`, joined with and, or, not and brackets.
     #[serde(default)]
     pub filter: Option<String>,
     /// Most packets to return (100 by default).
@@ -417,6 +421,20 @@ pub struct ListParams {
     /// The `next` cursor of the previous page.
     #[serde(default)]
     pub next: Option<String>,
+    /// Put the packets in the order of this field, lowest first (numbers
+    /// in numeric order): a field a filter can name (`dns.qry.name`,
+    /// `template.seq`, or a template field's bare name), or `len`,
+    /// `offset`, `time`, `source`, `destination`, `protocol` or `info`.
+    /// Packets without the field come last. In capture order when omitted.
+    #[serde(default)]
+    pub sort: Option<String>,
+    /// With `sort`, highest first.
+    #[serde(default)]
+    pub descending: bool,
+    /// Keep only the first packet (in the order listed) of each value of
+    /// this field, named as for `sort`: a chunk sent twice is listed once.
+    #[serde(default)]
+    pub dedupe: Option<String>,
 }
 
 /// One packet in a list.
@@ -619,6 +637,59 @@ pub struct StreamResult {
     pub retransmissions: u64,
     /// Whether the stream was longer than is kept.
     pub truncated: bool,
+}
+
+/// Parameters of `packets.http_bodies`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct HttpBodiesParams {
+    pub set: String,
+    /// Any packet of the TCP conversation.
+    pub index: u64,
+    /// Open each body that is not empty as a document of its own, derived
+    /// from the set's, rather than returning it.
+    #[serde(default)]
+    pub open: bool,
+    /// How returned bodies are written: base64 (the default), hex or text.
+    #[serde(default = "base64_by_default")]
+    pub encoding: ByteEncoding,
+}
+
+/// One HTTP request or response, with its body.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct HttpBody {
+    /// The packet's index in the set where the message starts.
+    pub packet: u64,
+    /// Sent from the conversation's first endpoint to its second.
+    pub a_to_b: bool,
+    /// The request or status line, such as "POST /upload HTTP/1.1".
+    pub start_line: String,
+    pub headers: Vec<(String, String)>,
+    /// Whether it was sent chunked (and so was de-chunked).
+    pub chunked: bool,
+    /// Its Content-Encoding, if any.
+    pub content_encoding: Option<String>,
+    /// Whether the content encoding was undone.
+    pub decoded: bool,
+    /// Bytes the body took on the wire.
+    pub body_on_wire: u64,
+    /// Bytes in the body as returned (de-chunked and decoded).
+    pub body_len: u64,
+    /// The body, written as `encoding` says, unless it was opened.
+    pub data: Option<String>,
+    /// The document it was opened as, with open.
+    pub doc: Option<String>,
+    /// What could not be done, such as a body cut short.
+    pub notes: Vec<String>,
+}
+
+/// The result of `packets.http_bodies`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct HttpBodies {
+    /// The messages in the order they start.
+    pub messages: Vec<HttpBody>,
+    /// Why there are none, when there are none.
+    pub note: Option<String>,
 }
 
 /// Parameters of `packets.find_captures`.
@@ -1183,11 +1254,79 @@ fn filtered(stored: &StoredSet, decoded: &Decoded, filter: Option<&str>) -> Resu
         .collect())
 }
 
+/// The value of `name` in packet `index` to order or de-duplicate by: a
+/// column of the list, or a field.
+fn order_key(stored: &StoredSet, decoded: &Decoded, index: usize, name: &OrderBy) -> packets::filter::SortKey {
+    use packets::filter::{SortKey, sort_key};
+    let packet = &stored.packets.packets[index];
+    let summary = &decoded.dissections[index].summary;
+    let text = |text: &str| sort_key(&[text.to_string()]);
+    match name {
+        OrderBy::Length => SortKey::Number(packet.len as u64),
+        OrderBy::Offset => SortKey::Number(packet.offset as u64),
+        OrderBy::Time => packet.timestamp.map_or(SortKey::Missing, |time| SortKey::Number((time.max(0.0) * 1e9) as u64)),
+        OrderBy::Source => text(&summary.source),
+        OrderBy::Destination => text(&summary.destination),
+        OrderBy::Protocol => text(&summary.protocol),
+        OrderBy::Info => text(&summary.info),
+        OrderBy::Field(field) => sort_key(&packets::filter::wireshark_values(&decoded.dissections[index], field)),
+    }
+}
+
+/// What packets are put in order of, or de-duplicated by.
+enum OrderBy {
+    Length,
+    Offset,
+    Time,
+    Source,
+    Destination,
+    Protocol,
+    Info,
+    Field(String),
+}
+
+/// `name` as a column or a field the set's packets can have.
+fn order_by(decoded: &Decoded, name: &str, what: &str) -> Result<OrderBy, ApiError> {
+    Ok(match name.trim().to_lowercase().as_str() {
+        "len" | "length" | "frame.len" => OrderBy::Length,
+        "offset" => OrderBy::Offset,
+        "time" | "frame.time" => OrderBy::Time,
+        "source" => OrderBy::Source,
+        "destination" => OrderBy::Destination,
+        "protocol" => OrderBy::Protocol,
+        "info" => OrderBy::Info,
+        field => {
+            let known = packets::filter::KnownFields::of(&decoded.dissections);
+            OrderBy::Field(known.field_name(field).map_err(|reason| ApiError::invalid_params(format!("cannot {what} by '{name}': {reason}")))?)
+        }
+    })
+}
+
+/// `kept` put in the order `params` ask for, and de-duplicated.
+fn ordered(stored: &StoredSet, decoded: &Decoded, mut kept: Vec<usize>, params: &ListParams) -> Result<Vec<usize>, ApiError> {
+    if let Some(name) = &params.sort {
+        let by = order_by(decoded, name, "sort")?;
+        let mut keyed: Vec<(packets::filter::SortKey, usize)> = kept.iter().map(|&index| (order_key(stored, decoded, index, &by), index)).collect();
+        keyed.sort_by(|a, b| if params.descending { b.0.cmp(&a.0) } else { a.0.cmp(&b.0) });
+        kept = keyed.into_iter().map(|(_, index)| index).collect();
+    }
+    if let Some(name) = &params.dedupe {
+        let by = order_by(decoded, name, "de-duplicate")?;
+        let mut seen = std::collections::HashSet::new();
+        kept.retain(|&index| match order_key(stored, decoded, index, &by) {
+            packets::filter::SortKey::Missing => true,
+            key => seen.insert(key),
+        });
+    }
+    Ok(kept)
+}
+
 pub fn list(workspace: &mut dyn Workspace, params: ListParams) -> Result<PacketList, ApiError> {
     with_set(workspace, &params.set.clone(), |stored, document| {
         decode(stored, document);
         let decoded = stored.decoded.as_ref().expect("decoded");
         let kept = filtered(stored, decoded, params.filter.as_deref())?;
+        let kept = ordered(stored, decoded, kept, &params)?;
         let total = kept.len() as u64;
         let limit = Some(params.limit.unwrap_or(DEFAULT_LIST_LIMIT));
         let (page, next) = values::page(kept, params.next.as_deref(), limit)?;
@@ -1387,6 +1526,57 @@ pub fn conversations(workspace: &mut dyn Workspace, params: ConversationsParams)
         }
         Ok(ConversationList { conversations: found.iter().map(conversation_entry).collect() })
     })
+}
+
+/// The stream of packet `index`'s conversation, if it has addresses and ports.
+fn stream_of(decoded: &Decoded, index: usize) -> Option<packets::Stream> {
+    let key = decoded.dissections[index].flow?.key();
+    let payload_of = |index: usize, dissection: &Dissection| {
+        let bytes = decoded.bytes[index].as_slice();
+        let (start, len) = dissection.payload?;
+        bytes.get(start..(start + len).min(bytes.len()))
+    };
+    let members = decoded.dissections.iter().enumerate().filter_map(|(index, dissection)| Some((index, dissection.flow.as_ref()?, payload_of(index, dissection)?)));
+    Some(packets::follow_stream(&key, members))
+}
+
+pub fn http_bodies(workspace: &mut dyn Workspace, params: HttpBodiesParams) -> Result<HttpBodies, ApiError> {
+    let (doc, messages) = with_set(workspace, &params.set, |stored, document| {
+        let index = packet_index(stored, params.index)?;
+        decode(stored, document);
+        let decoded = stored.decoded.as_ref().expect("decoded");
+        let messages = stream_of(decoded, index).filter(|stream| stream.key.transport == packets::Transport::Tcp).map(|stream| packets::application::http::http_messages(&stream));
+        Ok((stored.info.doc.clone(), messages))
+    })?;
+    let Some(messages) = messages else {
+        return Ok(HttpBodies { messages: Vec::new(), note: Some(format!("packet {} is not part of a TCP conversation", params.index)) });
+    };
+    let note = messages.is_empty().then(|| "no HTTP/1 request or response starts in the stream".to_string());
+    if !params.open {
+        values::check_call_size(messages.iter().map(|message| message.body.len()).sum())?;
+    }
+    let mut bodies = Vec::new();
+    for message in messages {
+        let opened = match params.open && !message.body.is_empty() {
+            true => Some(workspace.open_derived(&doc, message.body.clone(), &format!("{} body", message.start_line))?),
+            false => None,
+        };
+        bodies.push(HttpBody {
+            packet: message.packet as u64,
+            a_to_b: message.a_to_b,
+            data: (!params.open).then(|| values::encode_bytes(&message.body, params.encoding)),
+            body_len: message.body.len() as u64,
+            body_on_wire: message.body_on_wire as u64,
+            start_line: message.start_line,
+            headers: message.headers,
+            chunked: message.chunked,
+            content_encoding: message.content_encoding,
+            decoded: message.decoded,
+            doc: opened,
+            notes: message.notes,
+        });
+    }
+    Ok(HttpBodies { messages: bodies, note })
 }
 
 pub fn follow_stream(workspace: &mut dyn Workspace, params: PacketParams) -> Result<StreamResult, ApiError> {
@@ -1886,5 +2076,63 @@ mod tests {
         assert_eq!(from_the_start["count"], 40, "a given sync word skips the lead-in too: {from_the_start}");
         let refused = call(&mut workspace, "packets.sets.create", json!({"from": "length_field", "length_field": {"offset": 2, "sync": "A5Z"}})).unwrap_err();
         assert_eq!(refused.code, ErrorCode::InvalidParams);
+    }
+
+    #[test]
+    fn packets_are_listed_in_the_order_of_a_field_with_repeats_left_out() {
+        let frames: Vec<u8> = [3u8, 1, 2, 1, 0].iter().enumerate().flat_map(|(index, &seq)| [0xA5, 0x5A, seq, index as u8]).collect();
+        let mut workspace = workspace_with("bus.bin", &frames);
+        call(&mut workspace, "packets.sets.create", json!({"from": "split_fixed", "record_len": 4, "detect": false, "template": "struct F { sync: u16be  seq: u8  n: u8 }"})).unwrap();
+        let indices = |workspace: &mut crate::api::HeadlessWorkspace, params: serde_json::Value| -> Vec<u64> {
+            call(workspace, "packets.list", params).unwrap()["packets"].as_array().unwrap().iter().map(|packet| packet["index"].as_u64().unwrap()).collect()
+        };
+        assert_eq!(indices(&mut workspace, json!({"set": "set-1", "sort": "seq"})), vec![4, 1, 3, 2, 0]);
+        assert_eq!(indices(&mut workspace, json!({"set": "set-1", "sort": "template.seq", "dedupe": "seq"})), vec![4, 1, 2, 0], "the second seq 1 is left out");
+        assert_eq!(indices(&mut workspace, json!({"set": "set-1", "sort": "seq", "descending": true, "limit": 2})), vec![0, 2]);
+        assert_eq!(indices(&mut workspace, json!({"set": "set-1", "sort": "offset", "descending": true, "filter": "seq<3"})), vec![4, 3, 2, 1]);
+        let refused = call(&mut workspace, "packets.list", json!({"set": "set-1", "sort": "sqe"})).unwrap_err();
+        assert!(refused.message.contains("seq"), "{}", refused.message);
+    }
+
+    #[test]
+    fn an_http_upload_s_body_comes_back_de_chunked_and_gunzipped_or_opened_as_a_document() {
+        use std::io::Write;
+        let file = b"the second half of the archive".repeat(10);
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder.write_all(&file).unwrap();
+        let compressed = encoder.finish().unwrap();
+        let mut request = b"POST /up HTTP/1.1\r\nTransfer-Encoding: chunked\r\nContent-Encoding: gzip\r\n\r\n".to_vec();
+        request.extend(format!("{:x}\r\n", compressed.len()).as_bytes());
+        request.extend(&compressed);
+        request.extend(b"\r\n0\r\n\r\n");
+        let mut capture = Vec::new();
+        capture.extend(0xA1B2_C3D4u32.to_le_bytes());
+        capture.extend(2u16.to_le_bytes());
+        capture.extend(4u16.to_le_bytes());
+        capture.extend([0; 8]);
+        capture.extend(65_535u32.to_le_bytes());
+        capture.extend(1u32.to_le_bytes());
+        let mut sequence = 1000;
+        for part in request.chunks(60) {
+            let builder = etherparse::PacketBuilder::ethernet2([2, 0, 0, 0, 0, 1], [2, 0, 0, 0, 0, 2]).ipv4([10, 0, 0, 2], [10, 0, 0, 1], 64).tcp(40000, 80, sequence, 64000);
+            let mut frame = Vec::new();
+            builder.write(&mut frame, part).unwrap();
+            sequence += part.len() as u32;
+            capture.extend(0u32.to_le_bytes());
+            capture.extend(0u32.to_le_bytes());
+            capture.extend((frame.len() as u32).to_le_bytes());
+            capture.extend((frame.len() as u32).to_le_bytes());
+            capture.extend(frame);
+        }
+        let mut workspace = workspace_with("upload.pcap", &capture);
+        call(&mut workspace, "packets.sets.create", json!({"from": "capture"})).unwrap();
+        let bodies = call(&mut workspace, "packets.http_bodies", json!({"set": "set-1", "index": 1, "encoding": "hex"})).unwrap();
+        let upload = &bodies["messages"][0];
+        assert_eq!((upload["start_line"].as_str(), upload["chunked"].as_bool(), upload["decoded"].as_bool()), (Some("POST /up HTTP/1.1"), Some(true), Some(true)), "{bodies}");
+        assert_eq!(crate::ops::parse_hex(upload["data"].as_str().unwrap()).unwrap(), file);
+        let opened = call(&mut workspace, "packets.http_bodies", json!({"set": "set-1", "index": 0, "open": true})).unwrap();
+        let doc = opened["messages"][0]["doc"].as_str().expect("opened").to_string();
+        let read = call(&mut workspace, "bytes.read", json!({"doc": doc, "start": 0, "len": 10, "encoding": "text"})).unwrap();
+        assert_eq!(read["data"], "the second");
     }
 }

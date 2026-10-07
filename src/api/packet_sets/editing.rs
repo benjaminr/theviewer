@@ -257,6 +257,15 @@ pub struct ExtractParams {
     /// before it starts give nothing.
     #[serde(default)]
     pub field: Option<FieldSpan>,
+    /// Only this field of each packet, by the name a filter uses
+    /// (`dns.qry.name`, `template.payload`), at each packet's own offset
+    /// and length; packets without it give nothing.
+    #[serde(default)]
+    pub field_name: Option<String>,
+    /// With `field_name`, only this label (from 0) of a DNS name, without
+    /// its length byte: label 1 of `0001.MFRGG.t.example.com` is `MFRGG`.
+    #[serde(default)]
+    pub label: Option<usize>,
     /// Write the bytes here instead of returning them; needs leave to edit,
     /// as writing a file does.
     #[serde(default)]
@@ -584,16 +593,60 @@ pub fn read_columns(workspace: &mut dyn Workspace, params: ColumnsReadParams) ->
     })
 }
 
+/// Where packet `index`'s own `name` field is, as `(offset, len)` from its
+/// first byte, or one `label` of it when it is a DNS name.
+fn named_span(decoded: &super::Decoded, index: usize, name: &str, label: Option<usize>) -> Option<(usize, usize)> {
+    let span = packets::filter::field_matches(&decoded.dissections[index], name).into_iter().find_map(|found| found.span)?;
+    match label {
+        None => Some(span),
+        Some(wanted) => dns_label(decoded.bytes[index].get(span.0..span.0 + span.1)?, wanted).map(|(start, len)| (span.0 + start, len)),
+    }
+}
+
+/// Label `wanted` of a DNS name on the wire (length-prefixed labels), as
+/// `(offset, len)` within `name`, without its length byte.
+fn dns_label(name: &[u8], wanted: usize) -> Option<(usize, usize)> {
+    let mut at = 0;
+    for index in 0..=wanted {
+        let len = *name.get(at)? as usize;
+        // The root label, or a compression pointer: no more labels here.
+        if len == 0 || len >= 0xC0 {
+            return None;
+        }
+        if index == wanted {
+            return (at + 1 + len <= name.len()).then_some((at + 1, len));
+        }
+        at += 1 + len;
+    }
+    None
+}
+
 pub fn extract(workspace: &mut dyn Workspace, params: ExtractParams) -> Result<ExtractResult, ApiError> {
+    if params.field.is_some() && params.field_name.is_some() {
+        return Err(ApiError::invalid_params("give the field as field (an offset and length) or as field_name, not both"));
+    }
+    if params.label.is_some() && params.field_name.is_none() {
+        return Err(ApiError::invalid_params("label picks a label of the DNS name field_name names; give field_name too"));
+    }
     let (count, bytes) = with_set(workspace, &params.set, |stored, document| {
         let chosen = packet_indices(stored, &params.indices)?;
+        let field_name = match &params.field_name {
+            Some(name) => {
+                super::decode(stored, document);
+                let decoded = stored.decoded.as_ref().expect("decoded");
+                let known = packets::filter::KnownFields::of(&decoded.dissections);
+                Some(known.field_name(name).map_err(|reason| ApiError::invalid_params(format!("field_name '{name}': {reason}")))?)
+            }
+            None => None,
+        };
         let mut bytes = Vec::new();
         for &index in &chosen {
             let packet = &stored.packets.packets[index];
             let packet_len = packet.len.min(PACKET_READ_LIMIT);
-            let span = match params.field {
-                Some(field) => field.within(packet_len),
-                None => Some((0, packet_len)),
+            let span = match (params.field, &field_name) {
+                (Some(field), _) => field.within(packet_len),
+                (None, Some(name)) => named_span(stored.decoded.as_ref().expect("decoded"), index, name, params.label).filter(|&(offset, len)| offset + len <= packet_len),
+                (None, None) => Some((0, packet_len)),
             };
             if let Some((offset, len)) = span {
                 bytes.extend(document.read_range(packet.offset + offset, len));
@@ -756,5 +809,22 @@ mod tests {
         assert_eq!(tails["data"], "06070e0f", "a field running past a packet's end stops there");
         let beyond = call(&mut workspace, "packets.extract", json!({"set": "set-1", "indices": [0], "field": {"offset": 8, "len": 4}, "encoding": "hex"})).unwrap();
         assert_eq!((beyond["count"].as_u64(), beyond["len"].as_u64()), (Some(1), Some(0)));
+    }
+
+    #[test]
+    fn each_packet_s_own_field_is_extracted_by_name_or_one_label_of_a_dns_name() {
+        let mut workspace = workspace_with("traffic.bin", &super::super::tests::dns_capture(2));
+        call(&mut workspace, "packets.sets.create", json!({"from": "capture"})).unwrap();
+        let text = |workspace: &mut crate::api::HeadlessWorkspace, params: serde_json::Value| {
+            let extracted = call(workspace, "packets.extract", params).unwrap();
+            String::from_utf8(crate::ops::parse_hex(extracted["data"].as_str().unwrap()).unwrap()).unwrap()
+        };
+        assert_eq!(text(&mut workspace, json!({"set": "set-1", "indices": [1, 0], "field_name": "dns.qry.name", "label": 0, "encoding": "hex"})), "exampleexample");
+        assert_eq!(text(&mut workspace, json!({"set": "set-1", "indices": [0], "field_name": "dns.qry.name", "label": 1, "encoding": "hex"})), "com");
+        assert_eq!(text(&mut workspace, json!({"set": "set-1", "indices": [0], "field_name": "dns.qry.name", "encoding": "hex"})), "\u{7}example\u{3}com\u{0}", "the whole name as on the wire");
+        assert_eq!(text(&mut workspace, json!({"set": "set-1", "indices": [0], "field_name": "dns.qry.name", "label": 2, "encoding": "hex"})), "", "there is no third label");
+        let refused = |workspace: &mut crate::api::HeadlessWorkspace, params| call(workspace, "packets.extract", params).unwrap_err().code;
+        assert_eq!(refused(&mut workspace, json!({"set": "set-1", "indices": [0], "field_name": "dns.qry.nmae"})), ErrorCode::InvalidParams);
+        assert_eq!(refused(&mut workspace, json!({"set": "set-1", "indices": [0], "label": 1})), ErrorCode::InvalidParams);
     }
 }

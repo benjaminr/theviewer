@@ -18,6 +18,7 @@ use super::flows::{Flow, Transport};
 use super::frames::FrameProtocol;
 
 mod dhcp;
+pub mod http;
 mod iso_transport;
 mod rtp;
 mod set_hints;

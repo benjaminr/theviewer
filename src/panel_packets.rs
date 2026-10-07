@@ -311,8 +311,12 @@ pub struct PacketsState {
     pub(crate) frame_detection: FrameDetection,
 
     pub(crate) filter_text: String,
-    filter_key: Option<(String, u64)>,
+    filter_key: Option<(String, u64, PacketOrder)>,
     pub(crate) filter_error: Option<String>,
+    /// The order the list is shown in.
+    pub(crate) order: PacketOrder,
+    /// Why the order asked for could not be used.
+    pub(crate) order_error: Option<String>,
     pub(crate) visible: Vec<usize>,
 
     pub(crate) selected: BTreeSet<usize>,
@@ -328,6 +332,8 @@ pub struct PacketsState {
     pub(crate) statistics: Option<Statistics>,
     pub(crate) stream: Option<packets::Stream>,
     pub(crate) stream_as_hex: bool,
+    /// The HTTP messages in the followed stream, read once when it is followed.
+    pub(crate) stream_http: Vec<packets::application::http::HttpMessage>,
 
     captures: Vec<CaptureEntry>,
     captures_searched: bool,
@@ -381,6 +387,7 @@ impl PacketsState {
         self.selected_field = None;
         self.field_edit = None;
         self.stream = None;
+        self.stream_http.clear();
         self.foreign_document = false;
         self.raw.guesses.clear();
         self.suggested_template = None;
@@ -1420,13 +1427,104 @@ fn known_fields(state: &PacketsState) -> packets::filter::KnownFields {
     known
 }
 
-/// Bring the filter up to date with the rows.
+/// What the packet list is sorted by.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SortColumn {
+    /// Capture order.
+    #[default]
+    Number,
+    Time,
+    Source,
+    Destination,
+    Protocol,
+    Length,
+    Info,
+    /// A field, by the name a filter uses.
+    Field,
+}
+
+impl SortColumn {
+    pub const ALL: [SortColumn; 8] = [SortColumn::Number, SortColumn::Time, SortColumn::Source, SortColumn::Destination, SortColumn::Protocol, SortColumn::Length, SortColumn::Info, SortColumn::Field];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            SortColumn::Number => "No.",
+            SortColumn::Time => "Time",
+            SortColumn::Source => "Source",
+            SortColumn::Destination => "Destination",
+            SortColumn::Protocol => "Protocol",
+            SortColumn::Length => "Length",
+            SortColumn::Info => "Info",
+            SortColumn::Field => "Field…",
+        }
+    }
+}
+
+/// The order the packet list is shown in, and whether repeats are hidden.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PacketOrder {
+    pub column: SortColumn,
+    /// For [`SortColumn::Field`]: the field, such as `dns.qry.name`.
+    pub field: String,
+    pub descending: bool,
+    /// Show only the first packet of each value.
+    pub unique: bool,
+}
+
+/// Put the shown packets in `state.order`, hiding repeats when asked.
+fn order_visible(state: &mut PacketsState) -> Result<(), String> {
+    use packets::filter::{SortKey, sort_key};
+    let order = state.order.clone();
+    if order.column == SortColumn::Number && !order.descending && !order.unique {
+        return Ok(());
+    }
+    let field = match order.column {
+        SortColumn::Field if order.field.trim().is_empty() => return Ok(()),
+        SortColumn::Field => Some(known_fields(state).field_name(&order.field).map_err(|reason| format!("cannot sort by '{}': {reason}", order.field.trim()))?),
+        _ => None,
+    };
+    let Some(set) = &state.set else { return Ok(()) };
+    let key_of = |index: usize| -> SortKey {
+        let row = &state.rows[index];
+        let text = |text: &str| sort_key(&[text.to_string()]);
+        match order.column {
+            SortColumn::Number => SortKey::Number(index as u64),
+            SortColumn::Time => set.packets.get(index).and_then(|packet| packet.timestamp).map_or(SortKey::Missing, |time| SortKey::Number((time.max(0.0) * 1e9) as u64)),
+            SortColumn::Source => text(&row.summary.source),
+            SortColumn::Destination => text(&row.summary.destination),
+            SortColumn::Protocol => text(&row.summary.protocol),
+            SortColumn::Length => SortKey::Number(set.packets.get(index).map_or(0, |packet| packet.len) as u64),
+            SortColumn::Info => text(&row.summary.info),
+            SortColumn::Field => {
+                let ours = packets::dissect_with(state.bytes.packet(index), row.link, &state.raw);
+                let dissection = crate::panel_packets_tshark::merged(state, index, ours);
+                sort_key(&packets::filter::wireshark_values(&dissection, field.as_deref().unwrap_or_default()))
+            }
+        }
+    };
+    let mut keyed: Vec<(SortKey, usize)> = state.visible.iter().map(|&index| (key_of(index), index)).collect();
+    keyed.sort_by(|a, b| if order.descending { b.0.cmp(&a.0) } else { a.0.cmp(&b.0) });
+    if order.unique {
+        let mut seen = std::collections::HashSet::new();
+        keyed.retain(|(key, _)| *key == SortKey::Missing || seen.insert(key.clone()));
+    }
+    state.visible = keyed.into_iter().map(|(_, index)| index).collect();
+    Ok(())
+}
+
+/// Bring the filter and the order up to date with the rows.
 pub(crate) fn refresh_filter(state: &mut PacketsState) {
-    let key = (state.filter_text.clone(), state.rows_generation);
+    let key = (state.filter_text.clone(), state.rows_generation, state.order.clone());
     if state.filter_key.as_ref() == Some(&key) {
         return;
     }
     state.filter_key = Some(key);
+    apply_filter(state);
+    state.order_error = order_visible(state).err();
+}
+
+/// Show the packets the filter keeps, in capture order.
+fn apply_filter(state: &mut PacketsState) {
     let Some(set) = &state.set else {
         state.visible.clear();
         return;
@@ -2693,5 +2791,29 @@ mod tests {
         let asked: Vec<serde_json::Value> = app.actions_after_drawing.iter().map(|(_, params, _)| params.clone()).collect();
         assert_eq!(asked, [serde_json::json!({ "set": "set-1", "mode": "fill_gaps", "indices": [1, 3] }), serde_json::json!({ "set": "set-1", "mode": "fill_gaps", "indices": [2] })]);
         assert!(app.actions_after_drawing.iter().all(|(method, _, _)| method == "packets.tshark_decode"));
+    }
+
+    #[test]
+    fn the_list_is_sorted_by_a_column_with_repeats_hidden_and_selected_packets_follow_its_order() {
+        let mut state = PacketsState::default();
+        state.set = packets::sources::split_fixed(0, 16, 4, LinkKind::Unknown).ok();
+        state.rows = ["c", "a", "b", "a"]
+            .iter()
+            .map(|info| PacketRow { link: LinkKind::Unknown, summary: Summary { info: info.to_string(), ..Summary::default() }, protocols: Vec::new(), flow: None, payload: None, tshark_protocols: Vec::new() })
+            .collect();
+        state.order = PacketOrder { column: SortColumn::Info, ..PacketOrder::default() };
+        refresh_filter(&mut state);
+        assert_eq!(state.visible, vec![1, 3, 2, 0]);
+        state.order.unique = true;
+        refresh_filter(&mut state);
+        assert_eq!(state.visible, vec![1, 2, 0], "the second a is hidden");
+        state.order.descending = true;
+        refresh_filter(&mut state);
+        assert_eq!(state.visible, vec![0, 2, 1]);
+        state.selected = BTreeSet::from([1, 0]);
+        assert_eq!(crate::panel_packets_view::targets(&state), vec![0, 1], "opened or saved in the order shown");
+        state.order = PacketOrder { column: SortColumn::Field, field: "nonesuch.field".to_string(), ..PacketOrder::default() };
+        refresh_filter(&mut state);
+        assert!(state.order_error.as_ref().is_some_and(|error| error.contains("nonesuch")), "{:?}", state.order_error);
     }
 }

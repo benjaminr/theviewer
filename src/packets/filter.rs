@@ -265,7 +265,7 @@ impl Filter {
         let Some(expression) = self.expression else { return Ok(self) };
         let expression = expression.map_fields(&mut |name, test| {
             let shown = shown_term(&name, test.as_ref());
-            let name = known.resolve(&name).map_err(|reason| error(&shown, reason))?;
+            let name = known.field_name(&name).map_err(|reason| error(&shown, reason))?;
             Ok(Term::Field { name, test })
         })?;
         Ok(Filter { expression: Some(expression) })
@@ -573,7 +573,7 @@ pub fn sort_key(values: &[String]) -> SortKey {
 }
 
 /// See [`sort_key`].
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum SortKey {
     Number(u64),
     Text(String),
@@ -624,8 +624,11 @@ impl KnownFields {
         self.tshark_protocols.extend(dissection.tshark_protocols.iter().map(|protocol| protocol.to_lowercase()));
     }
 
-    /// The name a field term means, or why it means none.
-    fn resolve(&self, name: &str) -> Result<String, String> {
+    /// The name a field means (a bare name is the template's field), or
+    /// why it means none.
+    pub fn field_name(&self, name: &str) -> Result<String, String> {
+        let name = name.trim().to_lowercase();
+        let name = name.as_str();
         if let Some(path) = name.strip_prefix(TEMPLATE_PREFIX) {
             if self.template.contains(path) {
                 return Ok(name.to_string());
