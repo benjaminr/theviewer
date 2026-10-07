@@ -32,10 +32,9 @@
 //! as `matches[0].offset` or `length_field.offset`. A step anchor's path
 //! starts at the entry, so it begins with `result.` or `params.`.
 //!
-//! This module declares the types and the JSON plumbing. Resolving an
-//! anchor against a document is area B's (see
-//! `docs/design/history-recipes.md`); capturing one while recording is
-//! area C's.
+//! This module declares the types, the JSON plumbing and how each anchor
+//! resolves when a step runs ([`Anchor::resolve`]); capturing one while
+//! recording is [`super::provenance`]'s.
 
 use std::collections::BTreeMap;
 
@@ -43,7 +42,12 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::api::{ApiError, ErrorCode, Workspace};
+use crate::api::findings::{self, QueryParams};
+use crate::api::selection::DocParams;
+use crate::api::values::MAX_PAGE;
+use crate::api::{ApiError, MAX_CALL_BYTES, Workspace, workspace};
+use crate::plugin::{Category, Field, Finding, Registry};
+use crate::search::SearchMode;
 
 /// The key that marks an anchor among a step's literal parameters.
 pub const ANCHOR_KEY: &str = "$anchor";
@@ -292,11 +296,361 @@ pub struct ResolveContext<'a> {
 }
 
 impl Anchor {
-    /// The value this anchor stands for now. Area B implements this; until
-    /// then every anchor is `unavailable`.
-    pub fn resolve(&self, _context: &mut ResolveContext<'_>) -> Result<Value, ApiError> {
-        Err(ApiError::new(ErrorCode::Unavailable, "anchors cannot be resolved yet: the recipe runner is not built"))
+    /// The value this anchor stands for now, in the run `context` describes.
+    ///
+    /// * **Step**: the value at `path` in what an earlier step of *this run*
+    ///   was given and returned, `{"params", "result", "job"?}` (`job` is
+    ///   the finished job's result, for a step that started a job the run
+    ///   waited for: `job.candidates[0].period`).
+    /// * **Find**: the `nth` match (from 0) of the bytes or text in the
+    ///   step's document, searching from its start; `part` gives its
+    ///   offset (the default), its length, or `{"range": [offset, len]}`.
+    /// * **Structure**: `structure` is the structure's finding id (for the
+    ///   built-in parsers, the parser's id: png, jpeg, mbr). The structure is
+    ///   the parser's at offset 0 of the document, or else the first found
+    ///   among the findings (in the first 16 MiB). `field` is the names from
+    ///   the structure's root joined with dots, a second or later sibling of
+    ///   the same name written `name[n]` (from 0): `chunks.IDAT[1].data`. As
+    ///   a shorthand the first name may also be one at any depth (the first
+    ///   so named, depth first), so `IHDR.width` works too. `part` gives the
+    ///   field's offset (the default), length, or value (a number when it
+    ///   reads as one, else the text the parser shows).
+    /// * **Finding**: the `nth` (from 0, in offset order) of the findings the
+    ///   Findings list would show in the first 16 MiB that are of the
+    ///   category and whose id starts with `id` (or whose id's part after
+    ///   its kind does: `zlib` finds `stream:zlib`); `part` gives its start
+    ///   (the default), length, or `{"range": [start, len]}`.
+    /// * **Selection**: what is selected in the step's document when the
+    ///   step runs, as `selection.set` takes it (the default, and `value`),
+    ///   or its first range's start or length.
+    /// * **Param**: the value given for the recipe's parameter.
+    ///
+    /// The error says which anchor failed and why, and carries the anchor
+    /// as `data.anchor`.
+    pub fn resolve(&self, context: &mut ResolveContext<'_>) -> Result<Value, ApiError> {
+        let resolved = match self {
+            Anchor::Step { step, path } => resolve_step(*step, path, context),
+            Anchor::Find { find, nth, part } => resolve_find(find, *nth, *part, context),
+            Anchor::Structure { structure, field, part } => resolve_structure(structure, field, *part, context),
+            Anchor::Finding { finding, part } => resolve_finding(finding, *part, context),
+            Anchor::Selection { part, .. } => resolve_selection(*part, context),
+            Anchor::Param { param } => resolve_param(param, context),
+        };
+        resolved.map_err(|error| {
+            let data = serde_json::json!({ "anchor": self, "reason": error.to_json() });
+            ApiError::new(error.code, format!("{} did not resolve: {}", self.describe(), error.message)).with_data(data)
+        })
     }
+
+    /// Whether the anchor stands for what an earlier step of the run gave
+    /// or returned, which a preview cannot know.
+    pub fn needs_earlier_steps(&self) -> bool {
+        matches!(self, Anchor::Step { .. })
+    }
+
+    /// The anchor in a few words, for reports and errors: "the 2nd match of
+    /// hex 7EA5", "the value at result.matches[0] of step 3".
+    pub fn describe(&self) -> String {
+        match self {
+            Anchor::Step { step, path } => format!("the value at {path} of step {step}"),
+            Anchor::Find { find, nth, part } => format!("the {}{} match of {}", part_phrase(*part), ordinal(*nth), find.describe()),
+            Anchor::Structure { structure, field, part } => format!("the {}field {field} of the {structure} structure", part_phrase(*part)),
+            Anchor::Finding { finding, part } => format!("the {}{}", part_phrase(*part), finding.describe()),
+            Anchor::Selection { part, .. } => format!("the {}current selection", part_phrase(*part)),
+            Anchor::Param { param } => format!("the parameter '{param}'"),
+        }
+    }
+}
+
+impl Needle {
+    /// "hex 7EA5" or "the text 'PK'".
+    pub fn describe(&self) -> String {
+        match self {
+            Needle::Hex(hex) => format!("hex {hex}"),
+            Needle::Text(text) => format!("the text '{text}'"),
+        }
+    }
+
+    /// The bytes to look for.
+    pub fn bytes(&self) -> Result<Vec<u8>, ApiError> {
+        let (mode, query) = match self {
+            Needle::Hex(hex) => (SearchMode::Hex, hex),
+            Needle::Text(text) => (SearchMode::Text, text),
+        };
+        crate::search::needle_for(mode, query, true).map_err(|message| ApiError::invalid_params(format!("{} is not something to search for: {message}", self.describe())))
+    }
+}
+
+impl FindingMatch {
+    /// "1st compressed finding whose id starts with zlib".
+    pub fn describe(&self) -> String {
+        let category = self.category.as_deref().map_or(String::new(), |category| format!("{category} "));
+        let id = self.id.as_deref().map_or(String::new(), |id| format!(" whose id starts with {id}"));
+        format!("{} {category}finding{id}", ordinal(self.nth))
+    }
+
+    /// Whether `finding` is one of those this names.
+    fn matches(&self, finding: &Finding) -> Result<bool, ApiError> {
+        if let Some(category) = &self.category {
+            let wanted: Category = serde_json::from_value(Value::String(category.clone()))
+                .map_err(|_| ApiError::invalid_params(format!("'{category}' is not a finding category, such as compressed, image or timestamp")))?;
+            if finding.category != wanted {
+                return Ok(false);
+            }
+        }
+        Ok(match &self.id {
+            Some(prefix) => finding.id.starts_with(prefix.as_str()) || finding.id.split_once(':').is_some_and(|(_, rest)| rest.starts_with(prefix.as_str())),
+            None => true,
+        })
+    }
+}
+
+/// "1st", "2nd", "3rd", "4th" for 0, 1, 2, 3.
+fn ordinal(index: usize) -> String {
+    let number = index + 1;
+    let suffix = match (number % 10, number % 100) {
+        (_, 11..=13) => "th",
+        (1, _) => "st",
+        (2, _) => "nd",
+        (3, _) => "rd",
+        _ => "th",
+    };
+    format!("{number}{suffix}")
+}
+
+fn part_phrase(part: Option<Part>) -> &'static str {
+    match part {
+        None => "",
+        Some(Part::Offset) => "offset of the ",
+        Some(Part::Len) => "length of the ",
+        Some(Part::Value) => "value of the ",
+    }
+}
+
+/// The part of a span an anchor asks for: its offset (the default), its
+/// length, or the span itself as `{"range": [start, len]}`, as
+/// `selection.set` and the edits take it.
+fn span_part(start: usize, len: usize, part: Option<Part>) -> Value {
+    match part.unwrap_or(Part::Offset) {
+        Part::Offset => Value::from(start),
+        Part::Len => Value::from(len),
+        Part::Value => serde_json::json!({ "range": [start, len] }),
+    }
+}
+
+fn resolve_step(step: u64, path: &str, context: &ResolveContext<'_>) -> Result<Value, ApiError> {
+    let Some(entry) = context.steps.get(&step) else {
+        let ran: Vec<String> = context.steps.keys().map(u64::to_string).collect();
+        let ran = if ran.is_empty() { "none has yet".to_string() } else { format!("those that have are {}", ran.join(", ")) };
+        return Err(ApiError::not_found(format!("step {step} has not run earlier in this run ({ran})")));
+    };
+    let root = path.split(['.', '[']).next().unwrap_or_default();
+    if !matches!(root, "params" | "result" | "job") {
+        return Err(ApiError::invalid_params(format!("a step anchor's path starts with params., result. or job., not '{path}'")));
+    }
+    match value_at(entry, path)? {
+        Some(value) => Ok(value.clone()),
+        None => Err(ApiError::not_found(format!("step {step} has nothing at {path}"))),
+    }
+}
+
+/// The document the step runs on: the context's, or the current one.
+fn document_of<'w>(context: &'w mut ResolveContext<'_>) -> Result<(String, &'w mut crate::document::Document), ApiError> {
+    let doc = context.doc.clone();
+    workspace::document(&mut *context.workspace, doc.as_deref())
+}
+
+fn resolve_find(needle: &Needle, nth: usize, part: Option<Part>, context: &mut ResolveContext<'_>) -> Result<Value, ApiError> {
+    let bytes = needle.bytes()?;
+    let (doc, document) = document_of(context)?;
+    let mut from = 0;
+    let mut found = 0;
+    loop {
+        let Some(at) = crate::search::find_next(document, &bytes, from) else {
+            let times = match found {
+                0 => "it does not occur".to_string(),
+                1 => "it occurs once".to_string(),
+                found => format!("it occurs {found} times"),
+            };
+            return Err(ApiError::not_found(format!("{doc} has no {} match of {}: {times}", ordinal(nth), needle.describe())));
+        };
+        if found == nth {
+            return Ok(span_part(at, bytes.len(), part));
+        }
+        found += 1;
+        from = at + 1;
+    }
+}
+
+/// The findings in the first 16 MiB of the step's document, in offset
+/// order, as the Findings list shows them (at least `min_confidence`
+/// confident, 0.5 by default).
+fn findings_of(context: &mut ResolveContext<'_>, min_confidence: Option<f32>) -> Result<Vec<Finding>, ApiError> {
+    let doc = workspace::resolve(&*context.workspace, context.doc.as_deref())?;
+    let len = workspace::info(&*context.workspace, &doc)?.len.min(MAX_CALL_BYTES as u64);
+    let mut found = Vec::new();
+    let mut next = None;
+    loop {
+        let params = QueryParams { doc: Some(doc.clone()), start: 0, len: Some(len), categories: None, min_confidence, producers: None, limit: Some(MAX_PAGE), next };
+        let page = findings::query(&mut *context.workspace, params)?;
+        found.extend(page.findings);
+        match page.next {
+            Some(cursor) => next = Some(cursor),
+            None => return Ok(found),
+        }
+    }
+}
+
+fn resolve_finding(wanted: &FindingMatch, part: Option<Part>, context: &mut ResolveContext<'_>) -> Result<Value, ApiError> {
+    let mut matching = Vec::new();
+    for finding in findings_of(context, None)? {
+        if wanted.matches(&finding)? {
+            matching.push(finding);
+        }
+    }
+    match matching.get(wanted.nth) {
+        Some(finding) => Ok(span_part(finding.start, finding.len, part)),
+        None => Err(ApiError::not_found(format!("the document has {} such finding{} in its first 16 MiB", matching.len(), if matching.len() == 1 { "" } else { "s" }))),
+    }
+}
+
+fn resolve_structure(parser: &str, field: &str, part: Option<Part>, context: &mut ResolveContext<'_>) -> Result<Value, ApiError> {
+    let registry = context.workspace.registry();
+    let is_parser = registry.parsers().iter().any(|known| known.id() == parser);
+    let made_at_start = if is_parser { parse_at(context, &registry, parser, 0)? } else { None };
+    let structure = match made_at_start {
+        Some(structure) => structure,
+        None => find_structure(context, &registry, parser, is_parser)?.ok_or_else(|| {
+            let message = if is_parser {
+                format!("the {parser} parser recognises nothing at offset 0 or at any finding in the first 16 MiB")
+            } else {
+                format!("there is no parser '{parser}' (structure.parsers lists them), and no finding in the first 16 MiB has that id")
+            };
+            ApiError::not_found(message)
+        })?,
+    };
+    let found = field_at(&structure.fields, field)?.ok_or_else(|| {
+        let names: Vec<&str> = structure.fields.iter().map(|field| field.name.as_str()).collect();
+        ApiError::not_found(format!("the {parser} structure at {:#x} has no field {field} (its top-level fields are {})", structure.start, names.join(", ")))
+    })?;
+    Ok(match part.unwrap_or(Part::Offset) {
+        Part::Offset => Value::from(found.offset),
+        Part::Len => Value::from(found.len),
+        Part::Value => field_value(&found.value),
+    })
+}
+
+/// The structure `parser` makes of the step's document from `at`, if any.
+fn parse_at(context: &mut ResolveContext<'_>, registry: &Registry, parser: &str, at: usize) -> Result<Option<Finding>, ApiError> {
+    let (_, document) = document_of(context)?;
+    if at >= document.len() {
+        return Ok(None);
+    }
+    let bytes = document.read_range(at, (document.len() - at).min(MAX_CALL_BYTES));
+    Ok(registry.parse_with(parser, &bytes, at))
+}
+
+/// The first structure of `parser` among the findings: one a detector
+/// made with its fields, or else one the parser makes at a finding's start.
+fn find_structure(context: &mut ResolveContext<'_>, registry: &Registry, parser: &str, is_parser: bool) -> Result<Option<Finding>, ApiError> {
+    let found = findings_of(context, Some(0.0))?;
+    if let Some(made) = found.iter().find(|finding| finding.id == parser && !finding.fields.is_empty()) {
+        return Ok(Some(made.clone()));
+    }
+    if !is_parser {
+        return Ok(None);
+    }
+    let mut starts: Vec<usize> = found.iter().map(|finding| finding.start).filter(|start| *start > 0).collect();
+    starts.dedup();
+    for start in starts {
+        if let Some(structure) = parse_at(context, registry, parser, start)? {
+            return Ok(Some(structure));
+        }
+    }
+    Ok(None)
+}
+
+/// The field `path` names in `fields`: its first name at any depth (depth
+/// first), each later name a child of the one before; `name[n]` is the
+/// n-th (from 0) so named.
+fn field_at<'a>(fields: &'a [Field], path: &str) -> Result<Option<&'a Field>, ApiError> {
+    let names = field_path(path)?;
+    let Some(((first, first_index), rest)) = names.split_first() else { return Ok(None) };
+    // From the root first, as recorded; else the first so named at any depth.
+    let at_root = fields.iter().filter(|field| field.name == *first).nth(*first_index);
+    let mut so_named = Vec::new();
+    if at_root.is_none() {
+        collect_named(fields, first, &mut so_named);
+    }
+    let Some(mut current) = at_root.or_else(|| so_named.get(*first_index).copied()) else { return Ok(None) };
+    for (name, index) in rest {
+        let Some(child) = current.children.iter().filter(|child| child.name == *name).nth(*index) else { return Ok(None) };
+        current = child;
+    }
+    Ok(Some(current))
+}
+
+fn collect_named<'a>(fields: &'a [Field], name: &str, found: &mut Vec<&'a Field>) {
+    for field in fields {
+        if field.name == name {
+            found.push(field);
+        }
+        collect_named(&field.children, name, found);
+    }
+}
+
+/// A field path's names, each with which of those so named it means:
+/// `IDAT[1].length` is IDAT 1, length 0. Names may hold spaces
+/// (`bit depth`).
+fn field_path(path: &str) -> Result<Vec<(String, usize)>, ApiError> {
+    let invalid = || ApiError::invalid_params(format!("'{path}' is not a field name; write the names with dots, such as IHDR.width or IDAT[1].length"));
+    path.split('.')
+        .map(|part| {
+            let (name, index) = match part.strip_suffix(']').and_then(|part| part.rsplit_once('[')) {
+                Some((name, index)) => (name, index.parse().map_err(|_| invalid())?),
+                None => (part, 0),
+            };
+            if name.is_empty() { Err(invalid()) } else { Ok((name.to_string(), index)) }
+        })
+        .collect()
+}
+
+/// A field's value as JSON: a number when the parser's text reads as a
+/// decimal or 0x hex integer, else the text.
+fn field_value(text: &str) -> Value {
+    let trimmed = text.trim();
+    if let Ok(number) = trimmed.parse::<u64>() {
+        return Value::from(number);
+    }
+    if let Ok(number) = trimmed.parse::<i64>() {
+        return Value::from(number);
+    }
+    if let Some(number) = trimmed.strip_prefix("0x").and_then(|hex| u64::from_str_radix(hex, 16).ok()) {
+        return Value::from(number);
+    }
+    Value::String(text.to_string())
+}
+
+fn resolve_selection(part: Option<Part>, context: &mut ResolveContext<'_>) -> Result<Value, ApiError> {
+    let doc = context.doc.clone();
+    let selected = crate::api::selection::get_selection(&mut *context.workspace, DocParams { doc })?;
+    let Some(selection) = selected.selection else {
+        return Err(ApiError::not_found(format!("nothing is selected in {}", selected.doc)));
+    };
+    let (start, len) = selected.ranges.first().copied().unwrap_or_default();
+    Ok(match part {
+        None | Some(Part::Value) => serde_json::to_value(selection).unwrap_or(Value::Null),
+        Some(Part::Offset) => Value::from(start),
+        Some(Part::Len) => Value::from(len),
+    })
+}
+
+fn resolve_param(name: &str, context: &ResolveContext<'_>) -> Result<Value, ApiError> {
+    context.parameters.get(name).cloned().ok_or_else(|| {
+        let given: Vec<&str> = context.parameters.keys().map(String::as_str).collect();
+        let given = if given.is_empty() { "none was given".to_string() } else { format!("those given are {}", given.join(", ")) };
+        ApiError::invalid_params(format!("no value was given for it ({given})"))
+    })
 }
 
 #[cfg(test)]
@@ -304,6 +658,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+    use crate::api::ErrorCode;
 
     fn round_trip(anchor: Anchor, written: Value) {
         assert_eq!(serde_json::to_value(&anchor).unwrap(), written, "{anchor:?} is written as the design shows");

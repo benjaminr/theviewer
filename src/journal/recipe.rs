@@ -19,9 +19,24 @@
 //! `{"$anchor": …}` (see [`super::anchors`]). Each step keeps the number it
 //! was recorded as, which later steps' step anchors name.
 //!
-//! This module declares the file format and makes a literal recipe from
-//! journal entries. Capturing anchors is area C's; running, saving and
-//! loading recipes area B's (see `docs/design/history-recipes.md`).
+//! **Documents.** A recipe runs on one document, the run's (the one given,
+//! or the current one). A step's `doc` that names the document it was
+//! recorded on means the run's document: a step with no `doc`, with
+//! `"current"`, or with the id the first step that names a document names
+//! (such as `"doc-1"`, as recorded). Another id is kept as written; a
+//! document an earlier step opened is best named by a step anchor, such as
+//! `{"$anchor": {"step": 2, "path": "result.doc"}}`, which is found when the
+//! recipe runs.
+//!
+//! **Parameters** are declared with a type (`string`, `integer`, `number`
+//! or `boolean`), a description and an optional default. A value given as
+//! text (as `theviewer replay --param key=value` gives it) is read as the
+//! declared type; an integer may be written in decimal or as 0x hex.
+//!
+//! This module declares the file format, makes a literal recipe from
+//! journal entries, and checks a recipe's parameters and whether it was
+//! made for this API and these plugins. Running it is [`super::replay`]'s;
+//! saving and loading it [`crate::recipes`]'s.
 
 use std::collections::BTreeMap;
 
@@ -29,7 +44,9 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use super::anchors::{Anchor, anchors_in};
 use super::{FileIdentity, JournalEntry, JournalSession, RecordedPlugin};
+use crate::api::ApiError;
 
 /// The recipe format this build writes and reads.
 pub const RECIPE_FORMAT: u32 = 1;
@@ -125,6 +142,175 @@ impl Recipe {
             recorded_on,
             plugins: session.plugins.clone(),
             steps,
+        }
+    }
+
+    /// Whether this build reads the recipe's format: a recipe written by a
+    /// newer theviewer may mean things this one does not know.
+    pub fn check_format(&self) -> Result<(), ApiError> {
+        if self.recipe > RECIPE_FORMAT || self.recipe == 0 {
+            return Err(ApiError::invalid_params(format!(
+                "the recipe '{}' is in format {}, and this theviewer reads format {RECIPE_FORMAT}; update theviewer to run it",
+                self.name, self.recipe
+            )));
+        }
+        if self.name.trim().is_empty() {
+            return Err(ApiError::invalid_params("a recipe needs a name"));
+        }
+        Ok(())
+    }
+
+    /// What to know before running the recipe with this API version and
+    /// these plugins loaded: another major version of the API, a plugin
+    /// it was recorded with that is missing or has changed since, and
+    /// mistakes in the recipe itself (a step anchor naming a step that does
+    /// not come before it, a parameter used but not declared, two steps
+    /// with one number).
+    pub fn warnings(&self, api_version: &str, loaded: &[RecordedPlugin]) -> Vec<String> {
+        let mut warnings = Vec::new();
+        if major_version(api_version) != self.api_version {
+            warnings.push(format!("the recipe was recorded with API {}, and this is API {api_version}; some steps may not run the same", self.api_version));
+        }
+        for plugin in &self.plugins {
+            match loaded.iter().find(|loaded| loaded.name == plugin.name) {
+                None => warnings.push(format!("the plugin {} the recipe was recorded with is not loaded; steps that use it will fail", plugin.name)),
+                Some(loaded) if loaded.sha256 != plugin.sha256 => warnings.push(format!("the plugin {} has changed since the recipe was recorded; its steps may give other results", plugin.name)),
+                Some(_) => {}
+            }
+        }
+        warnings.extend(self.mistakes());
+        warnings
+    }
+
+    /// Mistakes in the recipe's own steps that will stop it when it runs.
+    fn mistakes(&self) -> Vec<String> {
+        let mut mistakes = Vec::new();
+        let mut earlier: Vec<u64> = Vec::new();
+        for step in &self.steps {
+            if earlier.contains(&step.step) {
+                mistakes.push(format!("two steps are numbered {}; step anchors naming it find the later", step.step));
+            }
+            for (path, anchor) in anchors_in(&step.params) {
+                match anchor {
+                    Anchor::Step { step: named, .. } if !earlier.contains(&named) => {
+                        mistakes.push(format!("step {} ({}) takes {path} from step {named}, which does not come before it", step.step, step.method));
+                    }
+                    Anchor::Param { param } if !self.parameters.contains_key(&param) => {
+                        mistakes.push(format!("step {} ({}) uses the parameter '{param}', which the recipe does not declare", step.step, step.method));
+                    }
+                    _ => {}
+                }
+            }
+            earlier.push(step.step);
+        }
+        mistakes
+    }
+
+    /// The parameters' values to run with: those `given` (text read as the
+    /// declared type), and the defaults of the rest. A declared parameter
+    /// with no default must be given; a value for a parameter the recipe
+    /// neither declares nor uses is refused, as it is most likely a typing
+    /// mistake.
+    pub fn parameter_values(&self, given: &BTreeMap<String, Value>) -> Result<BTreeMap<String, Value>, ApiError> {
+        let used: Vec<String> = self
+            .steps
+            .iter()
+            .flat_map(|step| anchors_in(&step.params))
+            .filter_map(|(_, anchor)| match anchor {
+                Anchor::Param { param } => Some(param),
+                _ => None,
+            })
+            .collect();
+        let mut values = BTreeMap::new();
+        for (name, value) in given {
+            match self.parameters.get(name) {
+                Some(declared) => {
+                    let value = declared.kind.read(value).map_err(|problem| ApiError::invalid_params(format!("the parameter '{name}' {problem}")))?;
+                    values.insert(name.clone(), value);
+                }
+                None if used.contains(name) => {
+                    values.insert(name.clone(), value.clone());
+                }
+                None => {
+                    let declared: Vec<&str> = self.parameters.keys().map(String::as_str).collect();
+                    let declared = if declared.is_empty() { "none".to_string() } else { declared.join(", ") };
+                    return Err(ApiError::invalid_params(format!("the recipe '{}' has no parameter '{name}' (it has {declared})", self.name)));
+                }
+            }
+        }
+        for (name, declared) in &self.parameters {
+            if values.contains_key(name) {
+                continue;
+            }
+            match &declared.default {
+                Some(default) => {
+                    values.insert(name.clone(), default.clone());
+                }
+                None => {
+                    let about = if declared.description.is_empty() { String::new() } else { format!(" ({})", declared.description) };
+                    return Err(ApiError::invalid_params(format!("the recipe '{}' needs a value for its parameter '{name}'{about}", self.name)));
+                }
+            }
+        }
+        Ok(values)
+    }
+}
+
+impl ParameterType {
+    /// The type's name as a recipe writes it.
+    pub fn name(self) -> &'static str {
+        match self {
+            ParameterType::String => "string",
+            ParameterType::Integer => "integer",
+            ParameterType::Number => "number",
+            ParameterType::Boolean => "boolean",
+        }
+    }
+
+    /// `value` as this type: as it is when it already is one, read from
+    /// text when it is text; otherwise why not, as "is not an integer".
+    pub fn read(self, value: &Value) -> Result<Value, String> {
+        let fits = match self {
+            ParameterType::String => value.is_string(),
+            ParameterType::Integer => value.is_i64() || value.is_u64(),
+            ParameterType::Number => value.is_number(),
+            ParameterType::Boolean => value.is_boolean(),
+        };
+        if fits {
+            return Ok(value.clone());
+        }
+        match value.as_str() {
+            Some(text) => self.parse(text),
+            None => Err(format!("is {value}, which is not {}", self.with_article())),
+        }
+    }
+
+    /// `text` read as this type: an integer in decimal or 0x hex, a
+    /// number, `true` or `false`, or the text itself.
+    pub fn parse(self, text: &str) -> Result<Value, String> {
+        let trimmed = text.trim();
+        let parsed = match self {
+            ParameterType::String => Some(Value::String(text.to_string())),
+            ParameterType::Integer => match trimmed.strip_prefix("0x").or_else(|| trimmed.strip_prefix("0X")) {
+                Some(hex) => u64::from_str_radix(hex, 16).ok().map(Value::from),
+                None => trimmed.parse::<i64>().ok().map(Value::from).or_else(|| trimmed.parse::<u64>().ok().map(Value::from)),
+            },
+            ParameterType::Number => trimmed.parse::<f64>().ok().and_then(serde_json::Number::from_f64).map(Value::Number),
+            ParameterType::Boolean => match trimmed {
+                "true" | "yes" | "1" => Some(Value::Bool(true)),
+                "false" | "no" | "0" => Some(Value::Bool(false)),
+                _ => None,
+            },
+        };
+        parsed.ok_or_else(|| format!("is '{text}', which does not read as {}", self.with_article()))
+    }
+
+    fn with_article(self) -> &'static str {
+        match self {
+            ParameterType::String => "a string",
+            ParameterType::Integer => "an integer",
+            ParameterType::Number => "a number",
+            ParameterType::Boolean => "true or false",
         }
     }
 }
