@@ -359,7 +359,7 @@ and its two implementations; see the briefs).
 | Open file (dialog, Cmd+O, drop a file, palette `file.open`) | File menu, `handle_dropped_files`, `complete_file_action` | `documents.open {path}` | J |
 | New empty document | Cmd+N, File menu, palette `file.new` | `documents.new` | J |
 | Save / Save as | Cmd+S / Shift+Cmd+S, File menu, palette | `documents.save {path?}` | J |
-| Extract selection or stream to file; extract decompressed; toolbar Extract › Save | Cmd+E, File menu, toolbar, Selection menu "Extract to file…", palette `file.extract*` | NEW `documents.export {start, len, path, decompress?}` | J |
+| Extract selection or stream to file; extract decompressed; toolbar Extract › Save | Cmd+E, File menu, toolbar, Selection menu "Extract to file…", palette `file.extract*` | NEW `documents.export {start, len \| ranges, path, decompress?}` (the Selection menu's "Extract to file…" passes every selected range) | J |
 | Copy extract / decompressed as hex | toolbar Extract | none (reads) | V |
 | Open selection as document; open bytes as a derived document (for B and C) | Selection menu "Open as document" (`open_selection_as_document`) | NEW `documents.derive {start, len, name?, transform?}` | J |
 | Back to parent | Cmd+[, Edit menu, status bar Back, palette `compress.back` | `documents.open {doc: parent id}` | J |

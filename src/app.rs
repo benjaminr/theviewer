@@ -503,8 +503,6 @@ pub enum FileAction {
     Extract { decompressed: bool },
     /// Compare the document with the chosen file.
     Compare,
-    /// Write these bytes, described as `name` in the status bar.
-    SaveBytes { name: String, bytes: Arc<Vec<u8>> },
     /// Call `method` with `params`, the chosen path set as `params[path_field]`
     /// (see [`ViewerApp::save_dialog_then_call`]).
     Call { method: String, params: serde_json::Value, path_field: String },
@@ -928,14 +926,13 @@ impl ViewerApp {
                 self.bench.analysis.diff_other = Some(path.display().to_string());
                 crate::analysis_tabs::start_diff(self, path.to_path_buf());
             }
-            FileAction::SaveBytes { name, bytes } => {
-                self.status = match std::fs::write(path, bytes.as_slice()) {
-                    Ok(()) => format!("Saved {name} to {}", path.display()),
-                    Err(error) => format!("Could not save {name} to {}: {error}", path.display()),
-                };
-            }
             FileAction::Call { method, params, path_field } => {
-                let _ = self.call_with_chosen_path(&method, params, &path_field, path);
+                // A call that wrote a file (documents.export, say) says how much.
+                if let Ok(result) = self.call_with_chosen_path(&method, params, &path_field, path)
+                    && let Some(written) = result.get("written").and_then(serde_json::Value::as_u64)
+                {
+                    self.status = format!("Saved {} to {}", compress::human_bytes(written as usize), path.display());
+                }
             }
         }
     }

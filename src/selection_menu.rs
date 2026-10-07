@@ -8,15 +8,13 @@
 //! nothing is selected, and each is one undo step, taken through the API's
 //! `transform.apply` with the selection it acted on.
 
-use std::sync::Arc;
-
 use eframe::egui::{self, Color32, Frame, Id, Order, Pos2, Rect, RichText, Ui, vec2};
 
 use crate::api::ApiError;
 use crate::api::edits::{EditResult, HistoryResult};
 use crate::api::search::{FindAllResult, FindResult};
 use crate::api::values::MAX_PAGE;
-use crate::app::{DialogKind, FileAction, ViewerApp};
+use crate::app::ViewerApp;
 use crate::compress::{self, Codec};
 use crate::document::Document;
 use crate::ops;
@@ -374,11 +372,20 @@ impl ViewerApp {
     }
 
     /// Save the selected bytes to a file the person chooses.
+    /// Asked where, it is carried out as `documents.export` with the
+    /// selected ranges (or the byte at the cursor), written one after another.
     pub fn extract_selection(&mut self) {
-        let bytes = self.selected_bytes();
-        let name = self.selection_summary().map_or_else(|| "byte at cursor".to_string(), |summary| format!("selection ({summary})"));
-        let dialog = rfd::AsyncFileDialog::new().set_title("Save the selected bytes").set_file_name("selection.bin");
-        self.ask_for_file(DialogKind::Save, dialog, FileAction::SaveBytes { name, bytes: Arc::new(bytes) });
+        let params = Self::export_params(&self.operation_ranges());
+        self.save_dialog_then_call("Save the selected bytes", "selection.bin", "documents.export", params, "path");
+    }
+
+    /// `documents.export`'s parameters for `ranges`, without the path: one
+    /// span as `start` and `len`, several as `ranges`.
+    fn export_params(ranges: &[(usize, usize)]) -> serde_json::Value {
+        match ranges {
+            &[(start, len)] => serde_json::json!({ "start": start, "len": len }),
+            ranges => serde_json::json!({ "ranges": ranges }),
+        }
     }
 
     /// Open the selected bytes (or the byte at the cursor) as a document of
@@ -993,5 +1000,18 @@ mod tests {
         assert_eq!(app.document.read_range(0, 8), b"not comp");
         assert!(app.status.contains("failed"), "{}", app.status);
         assert!(!app.document.can_undo());
+    }
+
+    #[test]
+    fn saving_a_selection_of_several_ranges_is_the_person_s_export_through_the_api() {
+        let mut app = app_with(b"0123456789");
+        app.perform("selection.set", json!({"selection": {"ranges": [[1, 2], [6, 3]]}})).unwrap();
+        take_performed();
+        let path = std::env::temp_dir().join(format!("theviewer-extract-selection-{}.bin", std::process::id()));
+        let params = ViewerApp::export_params(&app.operation_ranges());
+        app.call_with_chosen_path("documents.export", params, "path", &path).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"12678", "the ranges one after another");
+        assert_eq!(take_performed(), [("documents.export".to_string(), json!({"ranges": [[1, 2], [6, 3]], "path": path.display().to_string()}))]);
+        std::fs::remove_file(path).ok();
     }
 }

@@ -662,12 +662,12 @@ fn file_dialog_answers_open_compare_and_save_without_blocking() {
     wait_for(&mut harness, |app| app.bench.analysis.diff.is_some());
     assert!(harness.state().bench.analysis.diff.is_some(), "the comparison finished");
 
-    // Saving bytes writes them.
-    let bytes = std::sync::Arc::new(b"node bytes".to_vec());
-    let action = FileAction::SaveBytes { name: "node".into(), bytes };
+    // Saving selected bytes writes them through documents.export, and says how much.
+    let action = FileAction::Call { method: "documents.export".to_string(), params: serde_json::json!({"ranges": [[0, 6], [13, 4]]}), path_field: "path".to_string() };
     harness.state_mut().file_request = Some((FileRequest::answered(Answer::Chosen(saved.clone())), action));
     steps(&mut harness, 2);
-    assert_eq!(std::fs::read(&saved).unwrap(), b"node bytes");
+    assert_eq!(std::fs::read(&saved).unwrap(), b"secondlong");
+    assert!(harness.state().status.starts_with("Saved 10"), "{}", harness.state().status);
     for path in [first, second, saved] {
         std::fs::remove_file(path).ok();
     }

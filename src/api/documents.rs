@@ -23,7 +23,7 @@ pub(super) const METHODS: &[super::Method] = &[
     method!("documents.new", View, caller new, NewParams, super::workspace::DocumentInfo, "Open a new, empty document and make it current; the window refuses while its document has unsaved edits, unless the person at the window discards them."),
     method!("documents.save", Edit, save, SaveParams, super::workspace::DocumentInfo, "Save a document over its file, or to a path, with every edit made so far."),
     method!("documents.derive", View, derive, DeriveParams, super::workspace::DocumentInfo, "Open bytes of a document (a span, several ranges one after another, or bytes given), or what a transform such as decompress or XOR makes of them, as a document of their own derived from it, and make it current; in the window, Back goes back to the parent."),
-    method!("documents.export", Edit, export, ExportParams, ExportResult, "Write a span of a document to a file, or what decompresses at its start; the document is left as it is."),
+    method!("documents.export", Edit, export, ExportParams, ExportResult, "Write a span of a document (or several ranges one after another) to a file, or what decompresses at a span's start; the document is left as it is."),
     method!("documents.open_source", View, caller open_source, OpenSourceParams, OpenSourceResult, "Open a file, URL, block device, serial port (serial:PORT@BAUD) or a process's memory region (pid:PID@ADDRESS) as a new document. The window reads a URL, device or region in the background and opens it when it arrives, and pid:PID lists a process's regions in the Live tab; headless, the bytes are read before the call returns."),
 ];
 
@@ -57,6 +57,9 @@ pub(super) fn describe_call(_workspace: &mut dyn Workspace, method: &str, params
         "documents.open_source" => format!("Open {}", params.get("uri")?.as_str()?),
         "documents.export" => {
             let path = params.get("path")?.as_str()?;
+            if let Some(ranges) = params.get("ranges").and_then(serde_json::Value::as_array) {
+                return Some(format!("Write {} ranges, one after another, to {path}", ranges.len()));
+            }
             let start = params.get("start")?.as_u64()?;
             if params.get("decompress").and_then(serde_json::Value::as_bool) == Some(true) {
                 format!("Write what decompresses at {start:#x} to {path}")
@@ -213,12 +216,18 @@ pub struct ExportParams {
     /// Document id, path or "current" (the default).
     #[serde(default)]
     pub doc: Option<String>,
-    /// Offset of the first byte to write, or of the compressed stream.
-    pub start: u64,
+    /// Offset of the first byte to write, or of the compressed stream; give
+    /// this or `ranges`.
+    #[serde(default)]
+    pub start: Option<u64>,
     /// Bytes to write, or to read the compressed stream from (at most 64 MiB);
     /// to the end of the document when omitted.
     #[serde(default)]
     pub len: Option<u64>,
+    /// Several spans as [start, len], written one after another (a selection
+    /// of several ranges); in place of `start` and `len`.
+    #[serde(default)]
+    pub ranges: Option<Vec<(u64, u64)>>,
     /// The file to write.
     pub path: String,
     /// Write what the first codec that decodes at `start` makes of the bytes, instead of the bytes.
@@ -255,7 +264,20 @@ const EXPORT_DECOMPRESS_MAX: usize = 64 * 1024 * 1024;
 pub fn export(workspace: &mut dyn Workspace, params: ExportParams) -> Result<ExportResult, ApiError> {
     let (_, document) = workspace::document(workspace, params.doc.as_deref())?;
     let document_len = document.len();
-    let (start, len) = values::span_within(document_len, params.start, params.len)?;
+    let start = match (params.start, &params.ranges) {
+        (Some(start), None) => start,
+        (None, Some(_)) if params.decompress => return Err(ApiError::invalid_params("decompress reads one stream: give its start (and len), not ranges")),
+        (None, Some(ranges)) if params.len.is_none() => {
+            let mut bytes = Vec::new();
+            for &(start, len) in ranges {
+                let (start, len) = values::span_within(document_len, start, Some(len))?;
+                bytes.extend(document.read_range(start, len));
+            }
+            return write_export(params.path, bytes, None);
+        }
+        _ => return Err(ApiError::invalid_params("give the bytes to write one way: start (and len), or ranges")),
+    };
+    let (start, len) = values::span_within(document_len, start, params.len)?;
     let (bytes, decompressed) = if params.decompress {
         if start >= document_len {
             return Err(ApiError::invalid_params("nothing to decompress at the end of the document"));
@@ -269,8 +291,13 @@ pub fn export(workspace: &mut dyn Workspace, params: ExportParams) -> Result<Exp
     } else {
         (document.read_range(start, len), None)
     };
-    std::fs::write(&params.path, &bytes).map_err(|error| ApiError::new(super::ErrorCode::Unavailable, format!("could not write {}: {error}", params.path)))?;
-    Ok(ExportResult { path: params.path, written: bytes.len() as u64, decompressed })
+    write_export(params.path, bytes, decompressed)
+}
+
+/// Write the bytes `documents.export` gathered to `path`.
+fn write_export(path: String, bytes: Vec<u8>, decompressed: Option<ExportedStream>) -> Result<ExportResult, ApiError> {
+    std::fs::write(&path, &bytes).map_err(|error| ApiError::new(super::ErrorCode::Unavailable, format!("could not write {path}: {error}")))?;
+    Ok(ExportResult { path, written: bytes.len() as u64, decompressed })
 }
 
 /// Parameters of `documents.open_source`.
@@ -532,6 +559,22 @@ mod tests {
         assert_eq!(call(&mut workspace, "documents.info", json!({})).unwrap()["modified"], false);
         std::fs::remove_file(raw).ok();
         std::fs::remove_file(unpacked).ok();
+    }
+
+    #[test]
+    fn exporting_a_selection_of_several_ranges_writes_them_one_after_another() {
+        let mut workspace = workspace_with("fw.bin", b"0123456789");
+        let path = export_path("ranges");
+        let written = call(&mut workspace, "documents.export", json!({"ranges": [[8, 2], [0, 3]], "path": path})).unwrap();
+        assert_eq!(written["written"], 5);
+        assert_eq!(std::fs::read(&path).unwrap(), b"89012", "in the order given");
+        let refused = |workspace: &mut crate::api::HeadlessWorkspace, params| call(workspace, "documents.export", params).unwrap_err().code;
+        assert_eq!(refused(&mut workspace, json!({"ranges": [[0, 1]], "start": 0, "path": path})), ErrorCode::InvalidParams, "one way only");
+        assert_eq!(refused(&mut workspace, json!({"ranges": [[0, 1]], "len": 1, "path": path})), ErrorCode::InvalidParams, "len belongs to start");
+        assert_eq!(refused(&mut workspace, json!({"ranges": [[0, 1]], "decompress": true, "path": path})), ErrorCode::InvalidParams);
+        assert_eq!(refused(&mut workspace, json!({"ranges": [[0, 1], [9, 4]], "path": path})), ErrorCode::OutOfRange);
+        assert_eq!(refused(&mut workspace, json!({"path": path})), ErrorCode::InvalidParams, "something to write");
+        std::fs::remove_file(path).ok();
     }
 
     #[test]

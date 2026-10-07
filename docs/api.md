@@ -32,7 +32,7 @@ Errors are `{code, message, data}`, with these codes:
 | [`documents.new`](#documentsnew) | view | Open a new, empty document and make it current; the window refuses while its document has unsaved edits, unless the person at the window discards them. |
 | [`documents.save`](#documentssave) | edit | Save a document over its file, or to a path, with every edit made so far. |
 | [`documents.derive`](#documentsderive) | view | Open bytes of a document (a span, several ranges one after another, or bytes given), or what a transform such as decompress or XOR makes of them, as a document of their own derived from it, and make it current; in the window, Back goes back to the parent. |
-| [`documents.export`](#documentsexport) | edit | Write a span of a document to a file, or what decompresses at its start; the document is left as it is. |
+| [`documents.export`](#documentsexport) | edit | Write a span of a document (or several ranges one after another) to a file, or what decompresses at a span's start; the document is left as it is. |
 | [`documents.open_source`](#documentsopen_source) | view | Open a file, URL, block device, serial port (serial:PORT@BAUD) or a process's memory region (pid:PID@ADDRESS) as a new document. The window reads a URL, device or region in the background and opens it when it arrives, and pid:PID lists a process's regions in the Live tab; headless, the bytes are read before the call returns. |
 | [`bytes.read`](#bytesread) | read | Read a span of bytes, as hex by default, or as base64 or text. |
 | [`bytes.hexdump`](#byteshexdump) | read | A classic hex dump of a span, 16 bytes per line with an ASCII column, at most 1 MiB. |
@@ -312,7 +312,7 @@ Open bytes of a document (a span, several ranges one after another, or bytes giv
 
 ### documents.export
 
-Write a span of a document to a file, or what decompresses at its start; the document is left as it is.
+Write a span of a document (or several ranges one after another) to a file, or what decompresses at a span's start; the document is left as it is.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -320,7 +320,8 @@ Write a span of a document to a file, or what decompresses at its start; the doc
 | `doc` | string | no | Document id, path or "current" (the default). |
 | `len` | integer | no | Bytes to write, or to read the compressed stream from (at most 64 MiB); to the end of the document when omitted. |
 | `path` | string | yes | The file to write. |
-| `start` | integer | yes | Offset of the first byte to write, or of the compressed stream. |
+| `ranges` | array of pair | no | Several spans as [start, len], written one after another (a selection of several ranges); in place of `start` and `len`. |
+| `start` | integer | no | Offset of the first byte to write, or of the compressed stream; give this or `ranges`. |
 
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
