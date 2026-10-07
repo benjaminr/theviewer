@@ -1,18 +1,23 @@
-//! `history.list`, `history.entry` and `history.session`: the session's
-//! journal of calls, as the History tab and clients read it.
+//! `history.*`: the session's journal of calls, as the History tab and
+//! clients read it (`history.list`, `history.entry`, `history.session`),
+//! moving along it (`history.inverse`, `history.undo_step`,
+//! `history.go_back`), and saving it as a recipe (`history.save_recipe`).
 //!
 //! Every edit, view change and job, by every caller, is a step of the
 //! journal (see [`crate::journal`]); reads are kept for a while in case a
-//! later step cites one. `history.undo`, `history.redo` and
+//! later step cites one. Undoing a step, going back and what happens to the
+//! steps after are [`crate::journal::timeline`]'s. `history.undo`, `history.redo` and
 //! `history.transaction`, which act on a document's undo steps, are in
 //! `edits.rs`.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
-use super::ApiError;
 use super::values::{self, NoParams};
 use super::workspace::Workspace;
+use super::{ApiError, Caller, ErrorCode};
+use crate::journal::timeline::{self, Inverse, StepStatus, Timeline};
 use crate::journal::{Dropped, JournalEntry, JournalSession};
 
 /// This module's methods, in the order `api.describe` lists them within
@@ -21,6 +26,10 @@ pub(super) const METHODS: &[super::Method] = &[
     method!("history.list", Read, list, ListParams, HistoryList, "The session's journal: each edit, view change and job made through the API, by any caller, in order, with its parameters, result, outcome and a description; optionally the recent reads too. Pass back next as since to follow it."),
     method!("history.entry", Read, entry, EntryParams, crate::journal::JournalEntry, "One step of the journal, or one recent read, in full."),
     method!("history.session", Read, session, super::values::NoParams, crate::journal::JournalSession, "What the journal's session ran with: when it started, the API version, the plugins loaded with their hashes, and each document as first seen, with its size and SHA-256."),
+    method!("history.inverse", Read, inverse, EntryParams, StepInverse, "How a step of the journal would be undone now: the calls that undo it (the document's undo for its last edit, or the inverse of a view change, fold, bookmark, selection or document opened), nothing to undo (a job, a read, a file written), or why it cannot be."),
+    method!("history.undo_step", Edit, caller undo_step, EntryParams, timeline::UndoneStep, "Undo one step of the journal through its inverse (see history.inverse), whoever made it, as a step of its own; the step is then shown as undone and left out of recipes and playback."),
+    method!("history.go_back", Edit, caller go_back, GoBackParams, timeline::WentBack, "Go back to a step of the journal (0 for before the first): undo every later step in effect, latest first, or, where one has no inverse, bring the document back to how the session first saw it and run the steps up to it again. The later steps stay in the journal, shown as undone."),
+    method!("history.save_recipe", Edit, save_recipe, SaveRecipeParams, SavedRecipe, "Write the steps in effect (all, or up to a step) to a recipe file, *.theviewer-recipe.json, each with its parameters as recorded, to run on other files."),
 ];
 
 /// An example call of each of [`METHODS`], run in order on a fresh
@@ -34,14 +43,56 @@ pub(super) fn examples() -> Vec<(&'static str, serde_json::Value)> {
         ("history.list", json!({"limit": 10, "include_reads": true})),
         ("history.entry", json!({"step": 1})),
         ("history.session", json!({})),
+        // A view change to undo, and to go back before.
+        ("view.fold", json!({"ranges": [[16, 8]]})),
+        ("history.inverse", json!({"step": 2})),
+        ("history.undo_step", json!({"step": 2})),
+        ("history.go_back", json!({"step": 0})),
+        ("bytes.write", json!({"start": 1, "data": "41"})),
+        ("history.save_recipe", json!({"path": example_recipe_path(), "name": "Example"})),
     ]
+}
+
+/// Where the example of `history.save_recipe` writes.
+#[cfg(test)]
+fn example_recipe_path() -> String {
+    let name = format!("theviewer-api-examples-{}{}", std::process::id(), crate::journal::recipe::RECIPE_EXTENSION);
+    std::env::temp_dir().join(name).display().to_string()
 }
 
 /// What a call to one of this module's methods would do, in plain words,
 /// for the window that asks the person to confirm it; `None` leaves it to
 /// the general "Call method with params".
-pub(super) fn describe_call(_workspace: &mut dyn Workspace, _method: &str, _params: &serde_json::Value) -> Option<String> {
-    None
+pub(super) fn describe_call(workspace: &mut dyn Workspace, method: &str, params: &Value) -> Option<String> {
+    let step = params.get("step").and_then(Value::as_u64);
+    let description = match method {
+        "history.undo_step" => {
+            let step = step?;
+            let described = workspace.journal().entry(step).map(|entry| entry.description.clone()).filter(|description| !description.is_empty());
+            match described {
+                Some(description) => format!("Undo step {step}: {description}"),
+                None => format!("Undo step {step}"),
+            }
+        }
+        "history.go_back" => match step? {
+            0 => "Go back to before the first step, undoing every step".to_string(),
+            step => {
+                let timeline = Timeline::of(workspace.journal());
+                let later = workspace.journal().since(step).filter(|entry| timeline.is_active(entry.step)).count();
+                format!("Go back to step {step}, undoing the {later} step(s) after it")
+            }
+        },
+        "history.save_recipe" => {
+            let name = params.get("name")?.as_str()?;
+            let path = params.get("path")?.as_str()?;
+            match params.get("through").and_then(Value::as_u64) {
+                Some(through) => format!("Save the history up to step {through} as the recipe \"{name}\" in {path}"),
+                None => format!("Save the history as the recipe \"{name}\" in {path}"),
+            }
+        }
+        _ => return None,
+    };
+    Some(description)
 }
 
 /// Parameters of `history.list`.
@@ -75,6 +126,63 @@ pub struct HistoryList {
     pub revision: u64,
     /// The oldest entries the journal no longer holds.
     pub dropped: Dropped,
+    /// The steps listed that are undone, and by which step (an undo, an
+    /// undo of the step itself, or going back to an earlier step).
+    #[serde(default)]
+    pub undone: Vec<UndoneBy>,
+}
+
+/// A step undone, and by which.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct UndoneBy {
+    pub step: u64,
+    pub by: u64,
+}
+
+/// The result of `history.inverse`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct StepInverse {
+    pub step: u64,
+    /// Where it stands: active, failed, undone (by a step) or a move along
+    /// the history.
+    pub status: StepStatus,
+    /// How it would be undone now.
+    pub inverse: Inverse,
+}
+
+/// Parameters of `history.go_back`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct GoBackParams {
+    /// The step to go back to: every later one is undone. 0 goes back to
+    /// before the first step.
+    pub step: u64,
+}
+
+/// Parameters of `history.save_recipe`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SaveRecipeParams {
+    /// Where to write it; by convention its name ends in
+    /// .theviewer-recipe.json.
+    pub path: String,
+    /// What to call it.
+    pub name: String,
+    /// What it is for.
+    #[serde(default)]
+    pub description: String,
+    /// The last step to take; every step in effect when omitted.
+    #[serde(default)]
+    pub through: Option<u64>,
+}
+
+/// The result of `history.save_recipe`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct SavedRecipe {
+    pub path: String,
+    pub name: String,
+    /// The numbers of the steps it holds, in order.
+    pub steps: Vec<u64>,
 }
 
 /// Parameters of `history.entry`.
@@ -97,7 +205,15 @@ pub fn list(workspace: &mut dyn Workspace, params: ListParams) -> Result<History
     let more = entries.len() > limit;
     let entries: Vec<JournalEntry> = entries.into_iter().take(limit).cloned().collect();
     let next = if more { entries.last().map(|entry| entry.step) } else { None };
-    Ok(HistoryList { entries, next, last_step: journal.last_step(), revision: journal.revision(), dropped: journal.dropped() })
+    let timeline = Timeline::of(journal);
+    let undone = entries
+        .iter()
+        .filter_map(|entry| match timeline.status(entry.step) {
+            Some(StepStatus::Undone { by }) => Some(UndoneBy { step: entry.step, by }),
+            _ => None,
+        })
+        .collect();
+    Ok(HistoryList { entries, next, last_step: journal.last_step(), revision: journal.revision(), dropped: journal.dropped(), undone })
 }
 
 pub fn entry(workspace: &mut dyn Workspace, params: EntryParams) -> Result<JournalEntry, ApiError> {
@@ -111,6 +227,35 @@ pub fn entry(workspace: &mut dyn Workspace, params: EntryParams) -> Result<Journ
 
 pub fn session(workspace: &mut dyn Workspace, _params: NoParams) -> Result<JournalSession, ApiError> {
     Ok(workspace.journal().session().clone())
+}
+
+pub fn inverse(workspace: &mut dyn Workspace, params: EntryParams) -> Result<StepInverse, ApiError> {
+    let Some(status) = Timeline::of(workspace.journal()).status(params.step) else {
+        return Err(ApiError::not_found(format!("there is no step {} in the journal; history.list shows the steps held", params.step)));
+    };
+    Ok(StepInverse { step: params.step, status, inverse: timeline::inverse_of(workspace, params.step) })
+}
+
+pub fn undo_step(workspace: &mut dyn Workspace, caller: &Caller, params: EntryParams) -> Result<timeline::UndoneStep, ApiError> {
+    timeline::undo_step(workspace, caller, params.step)
+}
+
+pub fn go_back(workspace: &mut dyn Workspace, caller: &Caller, params: GoBackParams) -> Result<timeline::WentBack, ApiError> {
+    timeline::go_back(workspace, caller, params.step)
+}
+
+pub fn save_recipe(workspace: &mut dyn Workspace, params: SaveRecipeParams) -> Result<SavedRecipe, ApiError> {
+    if params.name.trim().is_empty() {
+        return Err(ApiError::invalid_params("give the recipe a name"));
+    }
+    let mut recipe = timeline::recipe_of_history(workspace.journal(), &params.name, params.through);
+    if recipe.steps.is_empty() {
+        return Err(ApiError::invalid_params("there are no steps in effect to save as a recipe"));
+    }
+    recipe.description = params.description;
+    let text = serde_json::to_string_pretty(&recipe).map_err(|error| ApiError::invalid_params(format!("the recipe could not be written as JSON: {error}")))?;
+    std::fs::write(&params.path, text + "\n").map_err(|error| ApiError::new(ErrorCode::Unavailable, format!("could not write {}: {error}", params.path)))?;
+    Ok(SavedRecipe { path: params.path, name: recipe.name, steps: recipe.steps.iter().map(|step| step.step).collect() })
 }
 
 #[cfg(test)]
@@ -150,6 +295,37 @@ mod tests {
         let listed: Vec<(u64, &str)> = with["entries"].as_array().unwrap().iter().map(|entry| (entry["step"].as_u64().unwrap(), entry["method"].as_str().unwrap())).collect();
         assert_eq!(listed, [(1, "bytes.read"), (2, "bytes.write")], "history.* reads are not among them");
         assert_eq!(call(&mut workspace, "history.entry", json!({"step": 1})).unwrap()["effect"], "read");
+    }
+
+    #[test]
+    fn saving_the_history_as_a_recipe_writes_a_file_that_reads_back_as_one() {
+        let mut workspace = workspace_with("flight.bin", b"0123456789");
+        call(&mut workspace, "bytes.write", json!({"start": 0, "data": "41"})).unwrap();
+        call(&mut workspace, "view.set_shape", json!({"width": 8})).unwrap();
+        call(&mut workspace, "bytes.write", json!({"start": 9, "data": "0000"})).unwrap_err();
+        let path = std::env::temp_dir().join(format!("theviewer-history-test-{}.theviewer-recipe.json", std::process::id()));
+        let params = json!({"path": path.display().to_string(), "name": "Patch", "description": "Patch the header"});
+        assert_eq!(crate::api::describe_call(&mut workspace, "history.save_recipe", &params), format!("Save the history as the recipe \"Patch\" in {}", path.display()));
+        let saved = call(&mut workspace, "history.save_recipe", params).unwrap();
+        assert_eq!(saved["steps"], json!([1, 2]), "the failed step is left out");
+        let recipe: crate::journal::Recipe = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        std::fs::remove_file(&path).ok();
+        assert_eq!((recipe.name.as_str(), recipe.description.as_str(), recipe.steps.len()), ("Patch", "Patch the header", 2));
+        assert_eq!(recipe.recorded_on.map(|file| file.name).as_deref(), Some("flight.bin"));
+        let saving = crate::api::Workspace::journal(&workspace).entries().last().unwrap();
+        assert_eq!(saving.method, "history.save_recipe", "saving is a step of its own");
+    }
+
+    #[test]
+    fn undoing_and_going_back_say_what_they_will_do() {
+        let mut workspace = workspace_with("a.bin", b"0123456789");
+        call(&mut workspace, "bytes.write", json!({"start": 0, "data": "41"})).unwrap();
+        call(&mut workspace, "bytes.write", json!({"start": 1, "data": "41"})).unwrap();
+        assert_eq!(crate::api::describe_call(&mut workspace, "history.undo_step", &json!({"step": 2})), "Undo step 2: Overwrite 1 byte at 0x1 with 41");
+        assert_eq!(crate::api::describe_call(&mut workspace, "history.go_back", &json!({"step": 1})), "Go back to step 1, undoing the 1 step(s) after it");
+        let inverse = call(&mut workspace, "history.inverse", json!({"step": 2})).unwrap();
+        assert_eq!(inverse, json!({"step": 2, "status": {"state": "active"}, "inverse": {"kind": "calls", "calls": [{"method": "history.undo", "params": {"doc": "doc-1"}}]}}));
+        assert_eq!(call(&mut workspace, "history.inverse", json!({"step": 99})).unwrap_err().code, ErrorCode::NotFound);
     }
 
     #[test]

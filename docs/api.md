@@ -58,6 +58,10 @@ Errors are `{code, message, data}`, with these codes:
 | [`history.list`](#historylist) | read | The session's journal: each edit, view change and job made through the API, by any caller, in order, with its parameters, result, outcome and a description; optionally the recent reads too. Pass back next as since to follow it. |
 | [`history.entry`](#historyentry) | read | One step of the journal, or one recent read, in full. |
 | [`history.session`](#historysession) | read | What the journal's session ran with: when it started, the API version, the plugins loaded with their hashes, and each document as first seen, with its size and SHA-256. |
+| [`history.inverse`](#historyinverse) | read | How a step of the journal would be undone now: the calls that undo it (the document's undo for its last edit, or the inverse of a view change, fold, bookmark, selection or document opened), nothing to undo (a job, a read, a file written), or why it cannot be. |
+| [`history.undo_step`](#historyundo_step) | edit | Undo one step of the journal through its inverse (see history.inverse), whoever made it, as a step of its own; the step is then shown as undone and left out of recipes and playback. |
+| [`history.go_back`](#historygo_back) | edit | Go back to a step of the journal (0 for before the first): undo every later step in effect, latest first, or, where one has no inverse, bring the document back to how the session first saw it and run the steps up to it again. The later steps stay in the journal, shown as undone. |
+| [`history.save_recipe`](#historysave_recipe) | edit | Write the steps in effect (all, or up to a step) to a recipe file, *.theviewer-recipe.json, each with its parameters as recorded, to run on other files. |
 | [`history.suggest_anchors`](#historysuggest_anchors) | read | Anchors that could stand for a step's literals in a recipe: search matches, structure fields and findings at the same offset in its document as it is now, the selection an earlier step set, and earlier steps' values equal to it, those that port to other files first. |
 | [`history.make_anchor`](#historymake_anchor) | read | Turn the literal at a path of a step's params into an anchor in its derived_from, so a recipe made from it finds the value when it runs; a read it cites becomes a step of the journal. |
 | [`history.make_parameter`](#historymake_parameter) | read | Turn the literal at a path of a step's params into a named recipe parameter, the person's to supply when the recipe runs, the literal its default. |
@@ -756,6 +760,7 @@ The session's journal: each edit, view change and job made through the API, by a
 | `last_step` | integer | no | The last step recorded or read in the session. |
 | `next` | integer | no | The last step listed, to pass as `since` for the entries after it; none when this is all there is now. |
 | `revision` | integer | yes | Changes whenever anything recorded changes (a read promoted into the journal takes its own, earlier, step number). |
+| `undone` | array of UndoneBy | no | The steps listed that are undone, and by which step (an undo, an undo of the step itself, or going back to an earlier step). |
 
 ### history.entry
 
@@ -797,6 +802,69 @@ Parameters: None.
 | `documents` | array of RecordedDocument | yes | Each document a call was about, as it was the first time. |
 | `plugins` | array of RecordedPlugin | yes | The plugin scripts loaded, as last loaded. |
 | `started_at` | string | yes | When the session started, UTC. |
+
+### history.inverse
+
+How a step of the journal would be undone now: the calls that undo it (the document's undo for its last edit, or the inverse of a view change, fold, bookmark, selection or document opened), nothing to undo (a job, a read, a file written), or why it cannot be.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `step` | integer | yes | The step's number. |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `inverse` | Inverse | yes | How it would be undone now. |
+| `status` | StepStatus | yes | Where it stands: active, failed, undone (by a step) or a move along the history. |
+| `step` | integer | yes |  |
+
+### history.undo_step
+
+Undo one step of the journal through its inverse (see history.inverse), whoever made it, as a step of its own; the step is then shown as undone and left out of recipes and playback.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `step` | integer | yes | The step's number. |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `calls` | array of InverseCall | yes | The calls that undid it, in order; none when it left nothing to undo. |
+| `method` | string | yes | Its method. |
+| `note` | string | no | Why nothing was called, when nothing was. |
+| `step` | integer | yes | The step undone. |
+
+### history.go_back
+
+Go back to a step of the journal (0 for before the first): undo every later step in effect, latest first, or, where one has no inverse, bring the document back to how the session first saw it and run the steps up to it again. The later steps stay in the journal, shown as undone.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `step` | integer | yes | The step to go back to: every later one is undone. 0 goes back to before the first step. |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `doc` | string | no | The document brought back and replayed, when it was replayed. |
+| `kept` | array of KeptStep | no | The later steps that changed what they changed for good (no inverse), and stay as they are. |
+| `replayed` | RunReport | no | What running the steps again did, when they were. |
+| `step` | integer | yes | The step gone back to: everything after it is undone. 0 is before the first step. |
+| `undone` | array of integer | yes | The later steps undone, latest first. |
+| `way` | `"undone"` \| `"replayed"` | yes | How going back reached the step. |
+
+### history.save_recipe
+
+Write the steps in effect (all, or up to a step) to a recipe file, *.theviewer-recipe.json, each with its parameters as recorded, to run on other files.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `description` | string | no | What it is for. |
+| `name` | string | yes | What to call it. |
+| `path` | string | yes | Where to write it; by convention its name ends in .theviewer-recipe.json. |
+| `through` | integer | no | The last step to take; every step in effect when omitted. |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `name` | string | yes |  |
+| `path` | string | yes |  |
+| `steps` | array of integer | yes | The numbers of the steps it holds, in order. |
 
 ### history.suggest_anchors
 
