@@ -129,7 +129,8 @@ it is not listed, so a client may call `bits_scan_periods` directly once it
 knows of it. Every method and its schemas are in [docs/api.md](api.md).
 
 With `--all-tools`, every method is listed as a tool and the three
-tools above are not offered.
+tools above are not offered; the instructions the server gives the client at
+the start say so too, naming the methods' own tools in their place.
 
 ### Annotations
 

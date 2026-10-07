@@ -13,6 +13,7 @@
 use serde_json::{Map, Value, json};
 
 use super::jsonrpc::{INVALID_PARAMS, RpcError, UNSUPPORTED_PROTOCOL_VERSION};
+use super::tools::ToolSet;
 
 /// The current revision: per-request metadata, no handshake.
 pub const MODERN_VERSION: &str = "2026-07-28";
@@ -155,15 +156,32 @@ pub fn capabilities() -> Value {
     })
 }
 
-/// Guidance for the model on how to use the server.
-pub const INSTRUCTIONS: &str = "theviewer inspects and edits binary files: the ones this server was started with, and any opened with documents_open. \
+/// Guidance for the model on how to use the server, for the tools it
+/// lists: with the core set, the API's other methods are reached through
+/// `api_search`, `api_describe` and `api_call`; with every method listed,
+/// those three are not offered.
+pub fn instructions(tools: ToolSet) -> String {
+    let (other_methods, edits) = match tools {
+        ToolSet::Core => (
+            "The API has more methods than the core ones listed as tools by default (bits, strings, checksums, crypto, firmware, packets \
+and more): api_search finds them, api_describe gives one's parameters, and api_call calls it.",
+            "bytes_write, bytes_replace, transform_apply, and bytes.insert and bytes.delete through api_call",
+        ),
+        ToolSet::All => (
+            "Every API method is listed as a tool of its own (bits, strings, checksums, crypto, firmware, packets and more), named \
+after the method with underscores for dots: bits.scan_periods is bits_scan_periods.",
+            "bytes_write, bytes_replace, transform_apply, bytes_insert, bytes_delete",
+        ),
+    };
+    format!(
+        "theviewer inspects and edits binary files: the ones this server was started with, and any opened with documents_open. \
 Documents are named by id (doc-1), by path, or \"current\". Start with analysis_overview for a map of a file, then findings_query, \
-structure_parse and templates_apply for detail; bytes_read and bytes_hexdump show bytes. The API has more methods than the core \
-ones listed as tools by default (bits, strings, checksums, crypto, firmware, packets and more): api_search finds them, api_describe \
-gives one's parameters, and api_call calls it. Edits (bytes_write, bytes_replace, transform_apply, bytes.insert, bytes.delete) are \
+structure_parse and templates_apply for detail; bytes_read and bytes_hexdump show bytes. {other_methods} Edits ({edits}) are \
 each one undoable step: history_undo reverses them, and documents_save writes them to disk, which nothing else does. \
-Resources under theviewer://doc/{id} give a document's info, bytes, findings and facts; theviewer://reference/{id} gives notes on \
-formats and protocols.";
+Resources under theviewer://doc/{{id}} give a document's info, bytes, findings and facts; theviewer://reference/{{id}} gives notes on \
+formats and protocols."
+    )
+}
 
 #[cfg(test)]
 mod tests {
@@ -181,6 +199,17 @@ mod tests {
         assert_eq!(negotiate_legacy(Some("2099-01-01")), "2025-11-25");
         assert_eq!(negotiate_legacy(Some(MODERN_VERSION)), "2025-11-25", "the handshake belongs to the older revisions");
         assert_eq!(negotiate_legacy(None), "2025-11-25");
+    }
+
+    #[test]
+    fn the_instructions_name_only_tools_the_server_lists() {
+        let core = instructions(ToolSet::Core);
+        assert!(core.contains("api_search") && core.contains("api_call"), "{core}");
+        let all = instructions(ToolSet::All);
+        for absent in ["api_search", "api_describe", "api_call", "bytes.insert"] {
+            assert!(!all.contains(absent), "{absent} is not a tool under --all-tools: {all}");
+        }
+        assert!(all.contains("bytes_insert"), "{all}");
     }
 
     #[test]

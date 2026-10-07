@@ -234,7 +234,7 @@ impl Server {
             "protocolVersion": version,
             "capabilities": protocol::capabilities(),
             "serverInfo": protocol::server_info(),
-            "instructions": protocol::INSTRUCTIONS,
+            "instructions": protocol::instructions(self.tools),
         })
     }
 
@@ -263,7 +263,7 @@ impl Server {
     fn dispatch(&mut self, context: &RequestContext, method: &str, params: &Map<String, Value>) -> Result<Value, RpcError> {
         let modern = context.is_modern();
         match method {
-            "server/discover" => Ok(json!({ "supportedVersions": protocol::supported_versions(), "capabilities": protocol::capabilities(), "instructions": protocol::INSTRUCTIONS })),
+            "server/discover" => Ok(json!({ "supportedVersions": protocol::supported_versions(), "capabilities": protocol::capabilities(), "instructions": protocol::instructions(self.tools) })),
             "tools/list" => {
                 let (tools, next) = page(tools::list(&self.workspace, context.version, self.output_schemas, self.tools), params, self.page_size)?;
                 Ok(with_next(json!({ "tools": tools }), next))
