@@ -277,7 +277,12 @@ fn shifted(field: &Field, base: usize) -> Field {
 pub fn build_stack(library: &Library, findings: &[Finding], packet: Option<&PacketLayers>, position: usize) -> Vec<StackEntry> {
     // Each entry with the length of what it encloses, for ordering.
     let mut scoped: Vec<(usize, StackEntry)> = Vec::new();
-    for finding in findings.iter().filter(|finding| finding.start <= position && position < finding.end() && is_format(finding, library)) {
+    // Where a dissector has read the bytes at the cursor, a finding starting
+    // inside that packet is a guess about bytes already explained (a DNS
+    // name taken for CBOR), so only findings around the packet are stacked.
+    let dissected = packet.filter(|packet| dissects(packet, position));
+    let guessed_inside = |finding: &Finding| dissected.is_some_and(|packet| finding.start >= packet.offset && finding.start < packet.offset + packet.len);
+    for finding in findings.iter().filter(|finding| finding.start <= position && position < finding.end() && is_format(finding, library) && !guessed_inside(finding)) {
         let notes = library.lookup_finding(&finding.id, &finding.title);
         let name = if finding.title.is_empty() { finding.id.as_str() } else { finding.title.as_str() };
         let entry = StackEntry {
@@ -326,6 +331,14 @@ pub fn build_stack(library: &Library, findings: &[Finding], packet: Option<&Pack
         }
     }
     stack
+}
+
+/// Whether a field of one of the packet's layers covers `position`.
+fn dissects(packet: &PacketLayers, position: usize) -> bool {
+    fn covers(fields: &[Field], at: usize) -> bool {
+        fields.iter().any(|field| (field.offset <= at && at < field.offset + field.len) || covers(&field.children, at))
+    }
+    position.checked_sub(packet.offset).is_some_and(|at| packet.layers.iter().any(|layer| covers(&layer.fields, at)))
 }
 
 /// The entry to show when nothing was asked for: the innermost with notes,
@@ -1353,6 +1366,17 @@ organisation = "A file header, then records."
         assert_eq!((udp.start, udp.len, udp.reference_id.as_deref()), (174, 8, Some("udp")));
         assert_eq!(udp.fields[0].offset, 174, "layer fields are moved to document offsets");
         assert_eq!(default_choice(&stack), Some(3));
+    }
+
+    #[test]
+    fn a_guess_about_bytes_a_dissector_read_is_left_out_of_the_stack() {
+        let library = library();
+        let targa = Finding::new("signature:image/x-tga", "signatures", Category::Image, 140 + 50, 5).title("Targa image data");
+        let stack = build_stack(&library, &[capture_finding(), targa.clone()], Some(&packet()), 140 + 52);
+        assert_eq!(labels(&stack), vec!["pcap capture", "Ethernet II", "Internet Protocol version 4", "UDP", "DNS"]);
+        let undissected = PacketLayers { layers: Vec::new(), ..packet() };
+        let stack = build_stack(&library, &[capture_finding(), targa], Some(&undissected), 140 + 52);
+        assert_eq!(labels(&stack).last(), Some(&"Targa image data"), "kept where no dissector read the bytes");
     }
 
     #[test]
