@@ -32,6 +32,13 @@
 //! undone one at a time (`history.undo_step` says to use `history.undo`),
 //! and going back to a step between them replays again.
 //!
+//! Undoing a step, or the steps after N, is all or nothing: when one of
+//! the calls fails, what was undone so far is put back (byte edits through
+//! the document's redo, other steps by making what they left again through
+//! their inverse), so the documents still match the timeline. What cannot
+//! be made again (a packet set removed) stays undone, and the failed step
+//! lists it, so the timeline marks it undone by that step.
+//!
 //! What each step's inverse is, its method declares
 //! ([`super::undo::Undo`]), as it declares how going back, playback and
 //! recipes treat it ([`Replay`]); [`inverse_of`] puts them together.
@@ -45,7 +52,7 @@ use serde_json::{Value, json};
 use super::recipe::{Recipe, RecipeStep};
 use super::replay::{self, ReplayOptions, RunReport};
 use super::undo::{self, Undo};
-use super::{Journal, JournalEntry};
+use super::{Journal, JournalEntry, Outcome};
 use crate::api::{self, ApiError, Caller, Effect, ErrorCode, Workspace};
 
 /// Undo one step of the journal.
@@ -54,6 +61,8 @@ pub const UNDO_STEP: &str = "history.undo_step";
 pub const GO_BACK: &str = "history.go_back";
 /// The document's own undo of its last edit.
 const UNDO: &str = "history.undo";
+/// The document's own redo of its last edit undone.
+const REDO: &str = "history.redo";
 
 /// How going back, playback and recipes treat a step of a method.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -105,7 +114,9 @@ fn is_replayed(method: &str) -> bool {
 pub enum StepStatus {
     /// In effect: part of the analysis as it stands.
     Active,
-    /// It failed or was refused, and changed nothing.
+    /// It failed or was refused, and changed nothing. Only a move that
+    /// failed part-way and could not put back all it had undone leaves
+    /// steps undone, by it, which its error lists.
     Failed,
     /// Undone, by the step `by` (an undo, an undo of this step, or going
     /// back to an earlier step).
@@ -197,6 +208,9 @@ impl Timeline {
         let step = entry.step;
         if !entry.outcome.is_ok() {
             self.statuses.insert(step, StepStatus::Failed);
+            for undone in left_undone(entry) {
+                self.undo_one(undone, step);
+            }
             return;
         }
         let doc = entry.doc.clone().unwrap_or_default();
@@ -322,6 +336,18 @@ impl RunAgain {
         let label = went_back.get("label").and_then(Value::as_str).map(str::to_string);
         Some(RunAgain { doc, label })
     }
+}
+
+/// The steps a move along the timeline that failed part-way left undone,
+/// latest first, as its error lists them: those it could not put back
+/// (see [`undo_all_or_nothing`]).
+fn left_undone(entry: &JournalEntry) -> Vec<u64> {
+    let Outcome::Error(error) = &entry.outcome else { return Vec::new() };
+    if !matches!(replay_of(&entry.method), Replay::Move(_)) {
+        return Vec::new();
+    }
+    let undone = error.data.as_ref().and_then(|data| data.get("undone")).and_then(Value::as_array);
+    undone.into_iter().flatten().filter_map(Value::as_u64).collect()
 }
 
 /// The later steps going back could not undo, from its result.
@@ -562,14 +588,86 @@ fn before_of(journal: &Journal, entry: &JournalEntry) -> Option<Value> {
     }
 }
 
-/// Make `calls` inside the call that undoes, as `caller`, stopping at the
-/// first that fails.
-fn make_calls(workspace: &mut dyn Workspace, caller: &Caller, calls: &[InverseCall], undoing: u64) -> Result<(), ApiError> {
-    for call in calls {
-        let caller = call.caller.as_deref().map_or_else(|| caller.clone(), Caller::from_producer);
-        api::call_permitted(workspace, &caller, &call.method, call.params.clone()).map_err(|error| ApiError::new(error.code, format!("undoing step {undoing}, {} failed: {}", call.method, error.message)))?;
+/// A step to undo, and the calls that undo it.
+type Undoing = (JournalEntry, Vec<InverseCall>);
+
+/// Undo each of `steps` (latest first) through its calls as `caller`, all
+/// or nothing: when a call fails, what was undone so far is put back,
+/// latest undone first (see [`putting_back`]), so the documents are as
+/// they were and the failed call changed nothing. A step that cannot be
+/// put back (a packet set removed) stays undone, and so do the steps
+/// undone before it; the error lists them in its data's `undone`, latest
+/// first, and the timeline marks them undone by the failed call.
+fn undo_all_or_nothing(workspace: &mut dyn Workspace, caller: &Caller, steps: &[Undoing]) -> Result<(), ApiError> {
+    let mut undone: Vec<&Undoing> = Vec::new();
+    for undoing in steps {
+        let (entry, calls) = undoing;
+        for (made, call) in calls.iter().enumerate() {
+            if let Err(error) = make_call(workspace, caller, call) {
+                if made > 0 {
+                    undone.push(undoing);
+                }
+                let failed = ApiError::new(error.code, format!("undoing step {}, {} failed: {}", entry.step, call.method, error.message));
+                return Err(put_back(workspace, caller, &undone, failed));
+            }
+        }
+        undone.push(undoing);
     }
     Ok(())
+}
+
+/// Put back what undoing `undone` (in the order undone) undid, latest
+/// undone first, after `failed` stopped it; `failed` says how far that
+/// went.
+fn put_back(workspace: &mut dyn Workspace, caller: &Caller, undone: &[&Undoing], failed: ApiError) -> ApiError {
+    if undone.is_empty() {
+        return failed;
+    }
+    let mut left_undone: Vec<u64> = Vec::new();
+    let mut why_left: Option<String> = None;
+    for (entry, calls) in undone.iter().rev() {
+        if why_left.is_none() {
+            why_left = match putting_back(entry, calls) {
+                None => Some(format!("step {} ({}) cannot be made again", entry.step, entry.method)),
+                Some(calls) => calls.iter().find_map(|call| make_call(workspace, caller, call).err()).map(|error| format!("putting back step {} failed: {}", entry.step, error.message)),
+            };
+        }
+        // Each is put back on top of the one before, so none can be once
+        // one is not.
+        if why_left.is_some() {
+            left_undone.push(entry.step);
+        }
+    }
+    left_undone.reverse();
+    match why_left {
+        None => ApiError::new(failed.code, format!("{}; what it had undone was put back, so nothing changed", failed.message)),
+        Some(why) => {
+            let message = format!("{}; steps {} stay undone, as {why}", failed.message, list_steps(&left_undone));
+            ApiError::new(failed.code, message).with_data(json!({ "undone": left_undone }))
+        }
+    }
+}
+
+/// The calls that put back what undoing `entry` through `calls` undid: the
+/// document's redo for each of its undos; for a step that changed no
+/// bytes, what it left, made again through its inverse. `None` when that
+/// cannot be made again (a packet set removed).
+fn putting_back(entry: &JournalEntry, calls: &[InverseCall]) -> Option<Vec<InverseCall>> {
+    if calls.is_empty() {
+        return Some(Vec::new());
+    }
+    if calls.iter().all(|call| call.method == UNDO) {
+        return Some(calls.iter().rev().map(|call| InverseCall::new(REDO, call.params.clone())).collect());
+    }
+    let Undo::Reverses(reverse) = undo::undo_of(&entry.method, entry.effect) else { return None };
+    reverse.inverse(entry, reverse.after(entry)).into_calls().ok()
+}
+
+/// Make `call` inside the call that undoes, as `caller` unless it names
+/// its own.
+fn make_call(workspace: &mut dyn Workspace, caller: &Caller, call: &InverseCall) -> Result<Value, ApiError> {
+    let caller = call.caller.as_deref().map_or_else(|| caller.clone(), Caller::from_producer);
+    api::call_permitted(workspace, &caller, &call.method, call.params.clone())
 }
 
 // ---------------------------------------------------------------------------
@@ -594,12 +692,13 @@ pub struct UndoneStep {
 /// Undo the step numbered `step` as `caller` through its inverse (see
 /// [`inverse_of`]); it is then marked undone by the call doing this.
 pub fn undo_step(workspace: &mut dyn Workspace, caller: &Caller, step: u64) -> Result<UndoneStep, ApiError> {
-    let Some(method) = workspace.journal().entry(step).map(|entry| entry.method.clone()) else {
+    let Some(entry) = workspace.journal().entry(step).cloned() else {
         return Err(ApiError::not_found(format!("there is no step {step} to undo; history.list shows the steps held")));
     };
+    let method = entry.method.clone();
     match inverse_of(workspace, step) {
         Inverse::Calls { calls } => {
-            make_calls(workspace, caller, &calls, step)?;
+            undo_all_or_nothing(workspace, caller, &[(entry, calls.clone())])?;
             Ok(UndoneStep { step, method, calls, note: None })
         }
         Inverse::Nothing { why } => Ok(UndoneStep { step, method, calls: Vec::new(), note: Some(why) }),
@@ -697,10 +796,8 @@ pub fn go_back(workspace: &mut dyn Workspace, caller: &Caller, step: u64) -> Res
         .collect();
     match plan_undo(workspace, &later) {
         Ok(plan) => {
-            for (undoing, calls) in &plan {
-                make_calls(workspace, caller, calls, *undoing)?;
-            }
-            Ok(WentBack { step, way: Way::Undone, undone: plan.iter().map(|(undoing, _)| *undoing).collect(), kept: Vec::new(), doc: None, replayed: None, label: None })
+            undo_all_or_nothing(workspace, caller, &plan)?;
+            Ok(WentBack { step, way: Way::Undone, undone: plan.iter().map(|(undoing, _)| undoing.step).collect(), kept: Vec::new(), doc: None, replayed: None, label: None })
         }
         Err(_) => replay_up_to(workspace, caller, step, later),
     }
@@ -708,7 +805,7 @@ pub fn go_back(workspace: &mut dyn Workspace, caller: &Caller, step: u64) -> Res
 
 /// The calls that undo each of `later` (latest first), or the first step
 /// that has no inverse.
-fn plan_undo(workspace: &mut dyn Workspace, later: &[Planned]) -> Result<Vec<(u64, Vec<InverseCall>)>, KeptStep> {
+fn plan_undo(workspace: &mut dyn Workspace, later: &[Planned]) -> Result<Vec<Undoing>, KeptStep> {
     let mut checked_documents: Vec<String> = Vec::new();
     let mut plan = Vec::new();
     for Planned { entry, inverse, label } in later {
@@ -722,7 +819,7 @@ fn plan_undo(workspace: &mut dyn Workspace, later: &[Planned]) -> Result<Vec<(u6
             is_top_of_undo(workspace, doc, label.as_deref()).map_err(kept)?;
             checked_documents.push(doc.clone());
         }
-        plan.push((entry.step, inverse.clone().into_calls().map_err(kept)?));
+        plan.push((entry.clone(), inverse.clone().into_calls().map_err(kept)?));
     }
     Ok(plan)
 }
@@ -749,7 +846,8 @@ fn replay_up_to(workspace: &mut dyn Workspace, caller: &Caller, step: u64, later
             (true, Some(edited)) => inverse.into_calls().and_then(|calls| if calls.is_empty() { Ok(calls) } else { is_top_of_undo(workspace, edited, label.as_deref()).map(|()| calls) }),
             _ => inverse.into_calls(),
         };
-        match calls.and_then(|calls| make_calls(workspace, caller, &calls, entry.step).map_err(|error| error.message)) {
+        let step_undone = calls.and_then(|calls| undo_all_or_nothing(workspace, caller, &[(entry.clone(), calls)]).map_err(|error| error.message));
+        match step_undone {
             Ok(()) => undone.push(entry.step),
             Err(why) => kept.push(KeptStep { step: entry.step, method: entry.method, why }),
         }

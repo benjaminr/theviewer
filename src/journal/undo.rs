@@ -284,7 +284,7 @@ impl Reverse {
                 match (self, replaced) {
                     (_, Some(Some(bookmark))) => one("bookmarks.add", json!({"doc": doc, "start": start, "len": bookmark.get("len").cloned().unwrap_or(json!(0)), "name": bookmark.get("name").cloned().unwrap_or(json!(""))})),
                     // Not known: an added bookmark is taken to have replaced none.
-                    (Reverse::AddBookmark, _) => one("bookmarks.remove", json!({"doc": doc, "start": start})),
+                    (Reverse::AddBookmark, _) | (Reverse::RemoveBookmark, Some(None)) => one("bookmarks.remove", json!({"doc": doc, "start": start})),
                     _ => unknown(),
                 }
             }

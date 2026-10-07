@@ -333,6 +333,46 @@ fn the_edits_going_back_runs_again_undo_and_redo_together_as_the_document_does()
 }
 
 #[test]
+fn going_back_that_fails_part_way_puts_back_what_it_had_undone() {
+    let mut workspace = workspace_with("a.bin", &[0u8; 64]);
+    call(&mut workspace, "view.set_shape", json!({"width": 32})).unwrap();
+    call(&mut workspace, "bookmarks.add", json!({"start": 4, "name": "x"})).unwrap();
+    call(&mut workspace, "view.set_shape", json!({"width": 16})).unwrap();
+    call(&mut workspace, "bytes.write", json!({"start": 0, "data": "41"})).unwrap();
+    let last = last_step(&workspace);
+    let (bytes_then, shape_then) = (bytes_of(&mut workspace, "doc-1"), shape(&mut workspace));
+    // Removed outside the journal, so undoing the step that added it fails.
+    workspace.set_bookmarks("doc-1", Vec::new()).unwrap();
+    let failed = call(&mut workspace, GO_BACK, json!({"step": 0})).unwrap_err();
+    assert!(failed.message.contains("undoing step 2, bookmarks.remove failed"), "{}", failed.message);
+    assert!(failed.message.contains("put back, so nothing changed"), "{}", failed.message);
+    assert_eq!(bytes_of(&mut workspace, "doc-1"), bytes_then, "the write undone first is redone");
+    assert_eq!(shape(&mut workspace), shape_then);
+    let timeline = Timeline::of(workspace.journal());
+    assert_eq!(timeline.active_steps().collect::<Vec<_>>(), [1, 2, 3, last], "the timeline still has every step in effect");
+    assert_eq!(timeline.status(last_step(&workspace)), Some(StepStatus::Failed));
+    call(&mut workspace, "history.undo", json!({})).unwrap();
+    assert!(matches!(Timeline::of(workspace.journal()).status(last), Some(StepStatus::Undone { .. })), "the document's undo still meets the timeline's last edit");
+}
+
+#[test]
+fn going_back_that_fails_part_way_marks_undone_what_it_could_not_put_back() {
+    let mut workspace = workspace_with("a.bin", &[0u8; 128]);
+    call(&mut workspace, "bookmarks.add", json!({"start": 4, "name": "x"})).unwrap();
+    call(&mut workspace, "packets.sets.create", json!({"from": "split_fixed", "record_len": 8, "len": 64})).unwrap();
+    let created = last_step(&workspace);
+    workspace.set_bookmarks("doc-1", Vec::new()).unwrap();
+    let failed = call(&mut workspace, GO_BACK, json!({"step": 0})).unwrap_err();
+    assert!(failed.message.contains(&format!("steps {created} stay undone")), "{}", failed.message);
+    assert_eq!(failed.data.as_ref().map(|data| data["undone"].clone()), Some(json!([created])));
+    assert_eq!(workspace.packet_sets().list().count(), 0, "the set removed cannot be made again");
+    let timeline = Timeline::of(workspace.journal());
+    let went_back = created + 1;
+    assert_eq!(timeline.status(created), Some(StepStatus::Undone { by: went_back }), "marked undone, as it is");
+    assert!(timeline.is_active(1), "the bookmark's step was never undone");
+}
+
+#[test]
 fn going_back_by_replaying_stops_with_why_when_a_step_cannot_run_again() {
     let mut workspace = workspace_with("a.bin", &[0u8; 128]);
     call(&mut workspace, "bytes.write", json!({"start": 0, "data": "41"})).unwrap();
