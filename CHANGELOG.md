@@ -151,6 +151,11 @@ now short, with a [user guide](docs/guide/README.md) for the detail.
 - A signature with a specific magic now beats one anchored on a byte or
   two, so a PDF is no longer taken for MATLAB source.
 - Undo steps are named after what made them and who did it.
+- `--help` prints the usage to standard output and exits 0, and an unknown
+  `--tool` name is reported in the status bar rather than ignored.
+- A plugin's `print` writes to its log rather than standard output, and an
+  action's `host:replace` edits through the API, so the edit is in the
+  history and can go into a recipe.
 
 ### Fixed
 
@@ -168,6 +173,8 @@ now short, with a [user guide](docs/guide/README.md) for the detail.
 - Undoing a step, or going back, is all or nothing: a failure part-way puts
   back what was undone.
 - A `null` inside an array is passed back from Lua as `null`.
+- Piping the command line's output into a reader that stops early, such
+  as `head`, no longer panics.
 
 ## [0.2.0] - 2026-10-05
 
