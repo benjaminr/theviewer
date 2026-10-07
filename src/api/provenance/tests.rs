@@ -286,3 +286,17 @@ fn text_is_given_a_pattern_of_its_shape() {
     assert_eq!(shape_of("hello"), None, "plain words have no shape to find again");
     assert_eq!(shape_of("a-b"), None);
 }
+
+#[test]
+fn a_sheet_passed_by_anchor_brings_the_step_that_made_it_into_a_recipe_of_chosen_steps() {
+    let mut workspace = workspace_with("example.bin", &crate::api::test_support::example_bytes());
+    let client = Caller::Mcp("claude-code".into());
+    api::call(&mut workspace, &client, "documents.derive", json!({"doc": "doc-1", "start": 0})).unwrap();
+    let made = workspace.journal().last_step().unwrap();
+    api::call(&mut workspace, &client, "unpack.open", json!({"doc": "doc-1", "tree_doc": {"$sheet": made}, "path": [0]})).unwrap();
+    let opened = workspace.journal().last_step().unwrap();
+    let recipe = call(&mut workspace, "history.recipe", json!({"name": "Node", "steps": [opened]})).unwrap();
+    let methods: Vec<&str> = recipe["steps"].as_array().unwrap().iter().map(|step| step["method"].as_str().unwrap()).collect();
+    assert_eq!(methods, ["documents.derive", "unpack.open"], "the sheet's maker is kept");
+    assert_eq!(recipe["steps"][1]["params"]["tree_doc"], json!({"$anchor": {"sheet": {"step": 1}}}));
+}

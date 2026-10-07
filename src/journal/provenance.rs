@@ -743,7 +743,8 @@ pub fn with_cited_steps<'a>(journal: &'a Journal, steps: &[u64]) -> Vec<&'a Jour
 
 /// [`with_cited_steps`], and the steps in effect that made the sheets they
 /// name (and those sheets' parents), so a recipe makes them again. An anchor
-/// cites the steps its step and pick anchors read, the `vars.set` step that
+/// cites the steps its step and pick anchors read, the step that made the
+/// sheet a sheet anchor names, the `vars.set` step that
 /// bound a variable it reads, and, for a parameter whose default is an
 /// anchor, the steps that anchor cites.
 fn with_cited_steps_and_sheets<'a>(journal: &'a Journal, steps: &[u64], lineage: &SheetLineage) -> Vec<&'a JournalEntry> {
@@ -762,6 +763,9 @@ fn with_cited_steps_and_sheets<'a>(journal: &'a Journal, steps: &[u64], lineage:
                 _ => None,
             };
             for anchor in std::iter::once(anchor).chain(default.as_ref()) {
+                if let Anchor::Sheet { sheet: SheetRef::Step { step: maker, .. } } = anchor {
+                    pending.push(*maker);
+                }
                 pending.extend(anchor.cited_steps(&sheets));
                 pending.extend(anchor.variables().iter().filter_map(|name| binding_step(journal, name, step)));
             }
