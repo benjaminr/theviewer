@@ -2,10 +2,11 @@
 //! Protocol over standard input and output, so Claude Code, Claude Desktop
 //! and other MCP clients can inspect and edit the files it was given.
 //!
-//! Every API method, the plugins' included, is a tool; documents, their
-//! bytes, findings and facts, and the reference notes are resources, whose
-//! subscribers hear of changes from the workspace bus; and a few prompts
-//! walk a model through the tools. It is hand-written, synchronous
+//! The core API methods and the plugins' are tools, and three more find,
+//! describe and call the rest (with `--all-tools`, every method is a tool);
+//! documents, their bytes, findings and facts, and the reference notes are
+//! resources, whose subscribers hear of changes from the workspace bus; and
+//! a few prompts walk a model through the tools. It is hand-written, synchronous
 //! JSON-RPC: one thread handles messages in turn, another reads them.
 //!
 //! It works on a [`HeadlessWorkspace`] of the files given (and any opened
@@ -41,6 +42,8 @@ pub struct Options {
     pub plugin_dirs: Option<Vec<PathBuf>>,
     /// List tools with their output schemas (`--output-schemas`).
     pub output_schemas: bool,
+    /// List every method as a tool, not only the core set (`--all-tools`).
+    pub all_tools: bool,
 }
 
 /// A server with the plugins loaded and the files open. A file that cannot
@@ -58,7 +61,7 @@ pub fn start(options: &Options) -> Result<Server, String> {
     for file in &options.files {
         workspace.open_path(file).map_err(|error| error.message)?;
     }
-    Ok(Server::new(workspace, plugins).with_output_schemas(options.output_schemas))
+    Ok(Server::new(workspace, plugins).with_output_schemas(options.output_schemas).with_all_tools(options.all_tools))
 }
 
 /// Serve on standard input and output until the input closes.

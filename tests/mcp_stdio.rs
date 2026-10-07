@@ -103,6 +103,12 @@ impl Client {
         result["structuredContent"].clone()
     }
 
+    /// The result of calling a method that is not a tool of its own,
+    /// through `api_call`, which must have succeeded.
+    fn call_api(&mut self, method: &str, params: Value) -> Value {
+        self.call_tool("api_call", json!({ "method": method, "params": params }))
+    }
+
     /// Wait for a notification of `method`, among those seen or to come.
     fn wait_for_notification(&mut self, method: &str, within: Duration) -> Option<Value> {
         let deadline = Instant::now() + within;
@@ -165,6 +171,12 @@ fn a_client_lists_calls_edits_reads_subscribes_and_disconnects() {
     let names = all_tool_names(&mut client);
     assert!(names.contains(&"bytes_read".to_string()) && names.contains(&"bytes_write".to_string()));
     assert!(names.contains(&"probe_echo".to_string()), "a plugin's method is a tool: {names:?}");
+    assert!(["api_search", "api_describe", "api_call"].iter().all(|tool| names.contains(&tool.to_string())), "{names:?}");
+    assert!(!names.contains(&"bytes_insert".to_string()) && names.len() < 40, "only the core methods by default: {names:?}");
+    let found = client.call_tool("api_search", json!({ "query": "insert", "namespace": "bytes" }));
+    assert_eq!(found["methods"][0]["name"], "bytes.insert", "the rest are found");
+    let described = client.call_tool("api_describe", json!({ "method": "bytes.insert" }));
+    assert_eq!(described["params"]["type"], "object");
 
     let read = client.call_tool("bytes_read", json!({ "start": 0, "len": 4 }));
     assert_eq!(read["data"], "89504e47");
@@ -246,7 +258,7 @@ fn a_client_takes_packets_as_a_set_reads_them_as_a_resource_hears_when_they_chan
 
     let created = client.call_tool("packets_sets_create", json!({ "from": "capture" }));
     assert_eq!((created["set"].clone(), created["count"].clone()), (json!("set-1"), json!(3)));
-    let listed = client.call_tool("packets_list", json!({ "set": "set-1", "filter": "dns" }));
+    let listed = client.call_api("packets.list", json!({ "set": "set-1", "filter": "dns" }));
     assert_eq!(listed["total"], 3);
     let dissected = client.call_tool("packets_dissect", json!({ "set": "set-1", "index": 0 }));
     assert!(dissected["dissection"]["protocols"].as_array().unwrap().contains(&json!("dns")));
@@ -259,7 +271,7 @@ fn a_client_takes_packets_as_a_set_reads_them_as_a_resource_hears_when_they_chan
     assert_eq!(read["set"]["from"], "capture");
 
     assert_eq!(client.request("resources/subscribe", json!({ "uri": uri }))["result"], json!({}));
-    client.call_tool("packets_decode_as", json!({ "set": "set-1", "detect": false }));
+    client.call_api("packets.decode_as", json!({ "set": "set-1", "detect": false }));
     let updated = client.wait_for_notification("notifications/resources/updated", PATIENCE).expect("a new decoding is heard of");
     assert_eq!(updated["params"]["uri"], uri);
     client.call_tool("bytes_write", json!({ "start": 40, "data": "00" }));
@@ -277,10 +289,33 @@ fn a_client_takes_packets_as_a_set_reads_them_as_a_resource_hears_when_they_chan
     };
     assert_eq!(status["state"], "finished", "{status}");
     assert!(status["result"]["headline"].is_string(), "the job's result is the overview");
-    assert!(client.call_tool("jobs_list", json!({}))["jobs"].as_array().unwrap().iter().any(|listed| listed["job"] == job.as_str()));
+    assert!(client.call_api("jobs.list", json!({}))["jobs"].as_array().unwrap().iter().any(|listed| listed["job"] == job.as_str()));
 
     assert!(client.finish().success());
     std::fs::remove_file(file).ok();
+}
+
+#[test]
+fn with_all_tools_every_method_is_a_tool_of_its_own() {
+    let file = temp_path("all-tools.bin");
+    std::fs::write(&file, b"some bytes to insert into").unwrap();
+    let plugins = temp_path("all-tools-plugins");
+    let _ = std::fs::remove_dir_all(&plugins);
+    std::fs::create_dir_all(&plugins).unwrap();
+    std::fs::write(plugins.join("probe.lua"), PROBE_PLUGIN).unwrap();
+    let mut client = Client::start(&["mcp", "--all-tools", "--plugins", plugins.to_str().unwrap(), file.to_str().unwrap()]);
+    client.request("initialize", json!({ "protocolVersion": "2025-11-25", "capabilities": {}, "clientInfo": { "name": "all-tools", "version": "1" } }));
+    client.send(&json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }));
+
+    let names = all_tool_names(&mut client);
+    assert!(names.len() > 100, "more than a page of tools, followed from page to page: {}", names.len());
+    assert!(["bytes_insert", "bits_scan_periods", "packets_list", "probe_echo", "api_describe"].iter().all(|tool| names.contains(&tool.to_string())), "{names:?}");
+    assert!(!names.contains(&"api_search".to_string()) && !names.contains(&"api_call".to_string()), "every method is listed, so nothing needs reaching");
+    assert_eq!(client.call_tool("bytes_insert", json!({ "at": 0, "data": "00" }))["version"], 1);
+
+    assert!(client.finish().success());
+    std::fs::remove_file(file).ok();
+    std::fs::remove_dir_all(plugins).ok();
 }
 
 #[test]

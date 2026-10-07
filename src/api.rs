@@ -219,7 +219,7 @@ impl MethodRef {
         }
     }
 
-    fn describe(&self) -> MethodDescription {
+    pub fn describe(&self) -> MethodDescription {
         match self {
             MethodRef::Builtin(method) => MethodDescription {
                 name: method.name.to_string(),

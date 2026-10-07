@@ -1,4 +1,6 @@
 //! MCP prompts: a few starting points that walk a model through the tools.
+//! They name the core tools, which every client has, and reach other
+//! methods through `api_call`.
 
 use serde_json::{Map, Value, json};
 
@@ -74,7 +76,7 @@ fn triage_file(arguments: &Arguments) -> String {
         "Work out what the binary file {doc} is and how it is laid out.\n\n\
 1. Call analysis_overview with {{\"doc\": \"{doc}\"}} for a summary, its regions with offsets, likely record widths and confident findings.\n\
 2. Call findings_query on the document (and on any region that matters, with start and len) for signatures, compressed streams, text, timestamps and structures.\n\
-3. For each main region, call structure_parse at its offset; where nothing parses, try analysis_statistics and analysis_compressibility on the span, and codecs_probe where it looks compressed.\n\
+3. For each main region, call structure_parse at its offset; where nothing parses, call api_call with method \"analysis.statistics\" and then \"analysis.compressibility\" on the span (params start and len), and codecs_probe where it looks compressed.\n\
 4. Use bytes_hexdump to look at headers and boundaries, and reference_lookup for the notes on any format found.\n\n\
 Report what the file is, a table of its regions (offset, length, what it is, how sure), and anything left unexplained with your best guess."
     )
@@ -98,13 +100,13 @@ fn explain_packet(arguments: &Arguments) -> String {
     let doc = arguments.doc();
     let at = match arguments.get("offset") {
         Some(offset) => format!("at offset {offset}"),
-        None => "at the cursor (cursor_get gives its offset)".to_string(),
+        None => "at the cursor (api_call with method \"cursor.get\" gives its offset)".to_string(),
     };
     let len = arguments.get("len").map(|len| format!(", {len} bytes long")).unwrap_or_default();
     format!(
         "Explain the packet in {doc} {at}{len}.\n\n\
 1. Call packets_dissect_bytes with that start (and len, if known) to split it into protocol layers and fields. If it does not dissect, \
-call packets_detect_frames on the frames around it and structure_parse at the offset.\n\
+call api_call with method \"packets.detect_frames\" on the frames around it, and structure_parse at the offset.\n\
 2. Call reference_lookup for each layer's protocol to explain what its fields mean, with the specification sections.\n\
 3. Show the bytes with bytes_hexdump and point out where each field lies.\n\n\
 Report each layer in order: its fields with offsets, values and meanings, anything unusual (bad checksums, odd flags, lengths that do not add up), \
@@ -163,13 +165,21 @@ mod tests {
     }
 
     #[test]
-    fn every_tool_a_prompt_names_exists() {
+    fn every_tool_and_method_a_prompt_names_exists_with_the_core_tools() {
+        use crate::mcp::tools::{ToolSet, list};
         let workspace = crate::api::test_support::workspace_with("a.bin", b"abc");
-        let tools: Vec<String> = crate::api::all_methods(&workspace).iter().map(|method| crate::mcp::tools::tool_name(method.name())).collect();
+        let tools: Vec<String> = list(&workspace, crate::mcp::protocol::MODERN_VERSION, false, ToolSet::Core).iter().map(|tool| tool["name"].as_str().unwrap().to_string()).collect();
+        let methods: Vec<String> = crate::api::all_methods(&workspace).iter().map(|method| method.name().to_string()).collect();
         for prompt in PROMPTS {
             let text = (prompt.write)(&Arguments(&Map::new()));
-            for word in text.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')).filter(|word| word.contains('_') && word.chars().all(|c| c.is_ascii_lowercase() || c == '_')) {
-                assert!(tools.iter().any(|tool| tool == word), "{} names {word}, which is not a tool", prompt.name);
+            let words = text.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '.')).map(|word| word.trim_end_matches('.'));
+            for word in words.filter(|word| word.chars().all(|c| c.is_ascii_lowercase() || c == '_' || c == '.')) {
+                if word.contains('.') {
+                    // A method called through api_call.
+                    assert!(methods.iter().any(|method| method == word), "{} names {word}, which is not a method", prompt.name);
+                } else if word.contains('_') {
+                    assert!(tools.iter().any(|tool| tool == word), "{} names {word}, which is not a listed tool", prompt.name);
+                }
             }
         }
     }

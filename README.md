@@ -448,12 +448,17 @@ For Claude Desktop, add it to `claude_desktop_config.json`:
 
 What the client gets:
 
-- **Tools:** every method of the data API ([docs/api.md](docs/api.md)), with
-  dots made underscores: `analysis_overview`, `findings_query`,
-  `structure_parse`, `bytes_read`, `bytes_write`, `transform_apply`,
-  `history_undo` and the rest, plus every method your plugins register.
-  Each says whether it only reads or changes the file, and the built-in
-  ones describe their results.
+- **Tools:** the core methods of the data API ([docs/api.md](docs/api.md)),
+  with dots made underscores: `analysis_overview`, `findings_query`,
+  `structure_parse`, `templates_apply`, `bytes_read`, `bytes_hexdump`,
+  `search_find`, `packets_sets_create`, `bytes_write`, `transform_apply`,
+  `history_undo` and a few more, plus every method your plugins register.
+  The rest of the API's methods are a search away: `api_search` finds them
+  by words in their names and summaries, `api_describe` gives one's
+  parameters and `api_call` calls it. That keeps the tool list a client
+  holds in its model's context to about a quarter of the size;
+  `--all-tools` lists every method as a tool instead. Each tool says
+  whether it only reads or changes the file.
 - **Resources:** `theviewer://doc/{id}` (a document's info),
   `theviewer://doc/{id}/bytes/{start}-{end}` (up to 1 MiB of bytes; add
   `?encoding=hex` for a hex dump), `theviewer://doc/{id}/findings` (what the
@@ -465,13 +470,13 @@ What the client gets:
   when an edit, a plugin or a new decoding changes it.
 - **Packet sets:** `packets_sets_create` takes packets from a capture in
   the file, a range split into fixed records, by a length field or at a
-  pattern, the selection, or the protocol framing; `packets_list` (with the
-  Packets panel's filter language), `packets_dissect`, `packets_decode_as`,
-  `packets_conversations`, `packets_follow_stream` and `packets_export_pcap`
-  work on it.
+  pattern, the selection, or the protocol framing; `packets_dissect`, and
+  through `api_call` `packets.list` (with the Packets panel's filter
+  language), `packets.decode_as`, `packets.conversations`,
+  `packets.follow_stream` and `packets.export_pcap`, work on it.
 - **Jobs:** `analysis_overview_job` maps a large file in the background and
   returns a job id at once; `jobs_status` gives its progress and, once done,
-  the report, and `jobs_list` and `jobs_cancel` cover every background job.
+  the report, and `jobs.list` and `jobs.cancel` cover every background job.
 - **Prompts:** *Triage this file*, *Find the record structure* and
   *Explain the packet*, which walk the model through the tools.
 
@@ -632,7 +637,7 @@ theviewer mcp firmware.bin               # serve it to an MCP client on stdin an
 | `--report` | Print the file's report as text and exit, without opening a window |
 | `--json` | Print the report as JSON and exit: the summary, regions, likely record widths and confident findings, for scripts and CI |
 | `api METHOD ['{JSON}'] [FILE]` | Run one method of the data API on FILE and print its JSON result; an error is printed as JSON on stderr with a non-zero exit code. `api --describe` lists every method. The methods are described in [docs/api.md](docs/api.md) |
-| `mcp [--plugins DIR]… [--output-schemas] [FILE…]` | Serve the files over MCP on standard input and output until the client closes it; see [above](#use-theviewer-from-claude-code-and-other-mcp-clients). `--plugins` loads plugins from DIR instead of the usual directories. `--output-schemas` lists each tool's result schema as well, which roughly doubles the tool list a client keeps in its model's context |
+| `mcp [--plugins DIR]… [--all-tools] [--output-schemas] [FILE…]` | Serve the files over MCP on standard input and output until the client closes it; see [above](#use-theviewer-from-claude-code-and-other-mcp-clients). `--plugins` loads plugins from DIR instead of the usual directories. `--all-tools` lists every API method as a tool, not only the core ones with `api_search`, `api_describe` and `api_call` to reach the rest, which makes the tool list a client keeps in its model's context about four times the size. `--output-schemas` lists each tool's result schema as well, which roughly doubles it |
 
 ## Extending it
 

@@ -29,7 +29,7 @@ usage: theviewer [FILE] [--format NAME] [--palette NAME] [--width PIXELS] [--off
        theviewer FILE --report | --json
        theviewer api [--save] METHOD ['{JSON PARAMS}'] [FILE]
        theviewer api --describe
-       theviewer mcp [--plugins DIR]... [--output-schemas] [FILE...]
+       theviewer mcp [--plugins DIR]... [--all-tools] [--output-schemas] [FILE...]
 
   --report   print a plain-text report of FILE without opening a window
   --json     print the same report as JSON, for scripts and CI
@@ -38,8 +38,11 @@ usage: theviewer [FILE] [--format NAME] [--palette NAME] [--width PIXELS] [--off
              for several edits); --describe prints every method with its schemas (see docs/api.md)
   mcp        serve the files over the Model Context Protocol on standard input and output,
              for Claude Code and other MCP clients; --plugins loads plugins from DIR instead
-             of ./plugins and ~/.config/theviewer/plugins; --output-schemas lists each tool's
-             result schema too (about twice the size, which clients keep in context)
+             of ./plugins and ~/.config/theviewer/plugins; it lists the core methods and the
+             plugins' as tools, with api_search, api_describe and api_call to reach the rest;
+             --all-tools lists every method instead (about four times the size, which clients
+             keep in context); --output-schemas lists each tool's result schema too (about
+             twice the size)
 
   --format   one of: bit1 bit1lsb nibble4 gray8 class rgb565 gray16le gray16be rgb8 bgr8 rgba8 bgra8
              or a numeric heatmap: u16le u16be i16le i16be u32le u32be i32le i32be f32le f32be
@@ -183,6 +186,7 @@ fn run_mcp(args: &[String]) -> i32 {
                 return EXIT_USAGE;
             }
             "--output-schemas" => options.output_schemas = true,
+            "--all-tools" => options.all_tools = true,
             "--plugins" => match args.next() {
                 Some(dir) => options.plugin_dirs.get_or_insert_with(Vec::new).push(PathBuf::from(dir)),
                 None => {

@@ -465,6 +465,16 @@ about them kept), and `documents.open {doc}` goes back to a parent.
 `theviewer api --save METHOD …` saves the file after the call, so one
 command (a `history.transaction`, say) edits and saves.
 
+As built in phase 6: with 150 methods, listing each as a tool cost a client
+about 200 KB of its model's context, so `tools/list` gives by default the
+core methods (`CORE` in `src/mcp/tools.rs`: the files, bytes, search, the
+overview, findings, structure, templates, packets, reference and edits),
+the plugins' methods, and `api_search` (methods by words in their names
+and summaries), `api_describe` (one method's schemas) and `api_call` (any
+method, with the same permissions as its own tool), about 47 KB.
+`theviewer mcp --all-tools` lists every method as before. `tools/call`
+takes any method's tool name either way.
+
 ### Permissions
 
 | Caller | Read | Edit |

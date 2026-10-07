@@ -71,12 +71,20 @@ pub struct Server {
     plugins_checked: Instant,
     /// Whether tools carry their output schemas (see [`tools::describe`]).
     output_schemas: bool,
+    /// Which tools are listed.
+    tools: tools::ToolSet,
 }
 
 impl Server {
     /// Give tools their output schemas in listings.
     pub fn with_output_schemas(mut self, output_schemas: bool) -> Self {
         self.output_schemas = output_schemas;
+        self
+    }
+
+    /// List every method as a tool (`--all-tools`), not only the core set.
+    pub fn with_all_tools(mut self, all_tools: bool) -> Self {
+        self.tools = if all_tools { tools::ToolSet::All } else { tools::ToolSet::Core };
         self
     }
 
@@ -92,6 +100,7 @@ impl Server {
             page_size: PAGE_SIZE,
             plugins_checked: Instant::now(),
             output_schemas: false,
+            tools: tools::ToolSet::Core,
         };
         // What happened while starting (files opening) is nobody's news.
         plugins::drain(&mut server.workspace, &mut server.plugins, &mut server.bus_cursor);
@@ -256,10 +265,10 @@ impl Server {
         match method {
             "server/discover" => Ok(json!({ "supportedVersions": protocol::supported_versions(), "capabilities": protocol::capabilities(), "instructions": protocol::INSTRUCTIONS })),
             "tools/list" => {
-                let (tools, next) = page(tools::list(&self.workspace, context.version, self.output_schemas), params, self.page_size)?;
+                let (tools, next) = page(tools::list(&self.workspace, context.version, self.output_schemas, self.tools), params, self.page_size)?;
                 Ok(with_next(json!({ "tools": tools }), next))
             }
-            "tools/call" => tools::call(&mut self.workspace, context, params),
+            "tools/call" => tools::call(&mut self.workspace, context, params, self.tools),
             "resources/list" => {
                 let (resources, next) = page(resources::list(&self.workspace), params, self.page_size)?;
                 Ok(with_next(json!({ "resources": resources }), next))
@@ -619,7 +628,8 @@ mod tests {
         let first = &response(&messages, 1)["result"];
         assert_eq!(first["tools"].as_array().unwrap().len(), 10);
         assert_eq!(first["nextCursor"], "10");
-        assert_eq!(response(&messages, 2)["result"]["tools"][0]["name"], json!(tools::tool_name(api::METHODS[10].name)));
+        let listed = tools::list(&server.workspace, MODERN_VERSION, false, tools::ToolSet::Core);
+        assert_eq!(response(&messages, 2)["result"]["tools"][0]["name"], listed[10]["name"]);
         assert_eq!(response(&messages, 3)["error"]["code"], INVALID_PARAMS);
     }
 
