@@ -78,6 +78,19 @@ fn print_out(text: &str) {
     }
 }
 
+/// What a command line asks for: its usage (`--help`), or a run.
+enum Asked<T> {
+    Help,
+    Run(T),
+}
+
+/// Print the usage on standard output, as `--help` asks, and return the
+/// process exit code.
+fn print_usage() -> i32 {
+    print_out(USAGE);
+    0
+}
+
 /// How to print a report without opening a window.
 #[derive(Clone, Copy)]
 enum HeadlessOutput {
@@ -87,14 +100,14 @@ enum HeadlessOutput {
 
 /// The window's start-up settings, and the headless report to print instead
 /// of opening one, if asked for.
-fn parse_launch() -> Result<(Launch, Option<HeadlessOutput>), String> {
+fn parse_launch() -> Result<Asked<(Launch, Option<HeadlessOutput>)>, String> {
     let mut launch = Launch::default();
     let mut headless = None;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         let mut value_for = |flag: &str| args.next().ok_or_else(|| format!("{flag} needs a value"));
         match arg.as_str() {
-            "-h" | "--help" => return Err(USAGE.to_string()),
+            "-h" | "--help" => return Ok(Asked::Help),
             "--detect" => launch.detect = true,
             "--report" => headless = Some(HeadlessOutput::Text),
             "--json" => headless = Some(HeadlessOutput::Json),
@@ -135,7 +148,7 @@ fn parse_launch() -> Result<(Launch, Option<HeadlessOutput>), String> {
             file => launch.path = Some(PathBuf::from(file)),
         }
     }
-    Ok((launch, headless))
+    Ok(Asked::Run((launch, headless)))
 }
 
 /// Run `theviewer api …` (the arguments after `api`) and return the
@@ -147,6 +160,7 @@ fn run_api(args: &[String]) -> i32 {
     let (method, rest) = match args.as_slice() {
         // The methods plugins register are listed with the rest.
         [flag] if flag == "--describe" => ("api.describe", &[][..]),
+        [flag] if flag == "-h" || flag == "--help" => return print_usage(),
         [method, rest @ ..] if !method.starts_with('-') => (method.as_str(), rest),
         _ => {
             eprintln!("theviewer api needs a method, or --describe\n\n{USAGE}");
@@ -209,10 +223,7 @@ fn run_mcp(args: &[String]) -> i32 {
     let mut args = args.iter();
     while let Some(arg) = args.next() {
         match arg.as_str() {
-            "-h" | "--help" => {
-                eprintln!("{USAGE}");
-                return EXIT_USAGE;
-            }
+            "-h" | "--help" => return print_usage(),
             "--output-schemas" => options.output_schemas = true,
             "--all-tools" => options.all_tools = true,
             "--plugins" => match args.next() {
@@ -248,7 +259,7 @@ struct ReplayArgs {
 }
 
 /// Read the arguments after `replay`.
-fn parse_replay(args: &[String]) -> Result<ReplayArgs, String> {
+fn parse_replay(args: &[String]) -> Result<Asked<ReplayArgs>, String> {
     let mut positional = Vec::new();
     let mut parameters = std::collections::BTreeMap::new();
     let mut output = theviewer::recipes::ReplayOutput::Report;
@@ -256,7 +267,7 @@ fn parse_replay(args: &[String]) -> Result<ReplayArgs, String> {
     let mut args = args.iter();
     while let Some(arg) = args.next() {
         match arg.as_str() {
-            "-h" | "--help" => return Err(USAGE.to_string()),
+            "-h" | "--help" => return Ok(Asked::Help),
             "--json" => json = true,
             "--save" if output == theviewer::recipes::ReplayOutput::Report => output = theviewer::recipes::ReplayOutput::SaveInPlace,
             "--out" if output == theviewer::recipes::ReplayOutput::Report => {
@@ -279,7 +290,7 @@ fn parse_replay(args: &[String]) -> Result<ReplayArgs, String> {
     if files.is_empty() {
         return Err(format!("theviewer replay needs at least one file to run '{recipe}' on\n\n{USAGE}"));
     }
-    Ok(ReplayArgs { recipe, files, parameters, output, json })
+    Ok(Asked::Run(ReplayArgs { recipe, files, parameters, output, json }))
 }
 
 /// Run `theviewer replay …` (the arguments after `replay`): the recipe on
@@ -287,7 +298,8 @@ fn parse_replay(args: &[String]) -> Result<ReplayArgs, String> {
 /// exit code when it stopped on any of them.
 fn run_replay(args: &[String]) -> i32 {
     let args = match parse_replay(args) {
-        Ok(args) => args,
+        Ok(Asked::Help) => return print_usage(),
+        Ok(Asked::Run(args)) => args,
         Err(message) => {
             eprintln!("{message}");
             return EXIT_USAGE;
@@ -355,8 +367,9 @@ fn main() -> eframe::Result {
         std::process::exit(run_replay(&args[1..]));
     }
     let launch = match parse_launch() {
-        Ok((launch, Some(output))) => std::process::exit(run_headless(launch.path.as_deref(), output)),
-        Ok((launch, None)) => Launch { restore_layout: true, ..launch },
+        Ok(Asked::Help) => std::process::exit(print_usage()),
+        Ok(Asked::Run((launch, Some(output)))) => std::process::exit(run_headless(launch.path.as_deref(), output)),
+        Ok(Asked::Run((launch, None))) => Launch { restore_layout: true, ..launch },
         Err(message) => {
             eprintln!("{message}");
             std::process::exit(EXIT_USAGE);

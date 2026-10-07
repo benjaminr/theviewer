@@ -30,6 +30,19 @@ fn describe_prints_every_method_with_its_schemas() {
 }
 
 #[test]
+fn help_prints_the_usage_on_standard_output_and_succeeds() {
+    for args in [&["--help"][..], &["-h"], &["api", "--help"], &["mcp", "--help"], &["replay", "--help"]] {
+        let output = theviewer(args);
+        assert_eq!(output.status.code(), Some(0), "{args:?}");
+        assert!(String::from_utf8_lossy(&output.stdout).starts_with("usage: theviewer"), "{args:?}");
+        assert!(output.stderr.is_empty(), "{args:?}: {}", String::from_utf8_lossy(&output.stderr));
+    }
+    let wrong = theviewer(&["--no-such-option"]);
+    assert_eq!(wrong.status.code(), Some(2), "a real mistake still exits 2");
+    assert!(wrong.stdout.is_empty() && String::from_utf8_lossy(&wrong.stderr).contains("unknown option"));
+}
+
+#[test]
 fn output_cut_short_by_its_reader_ends_quietly() {
     let mut child = Command::new(env!("CARGO_BIN_EXE_theviewer"))
         .args(["api", "--describe"])

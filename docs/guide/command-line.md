@@ -14,8 +14,10 @@ theviewer mcp [--plugins DIR]... [--all-tools] [--output-schemas] [FILE...]
 theviewer replay RECIPE FILE... [--param KEY=VALUE]... [--save | --out DIR] [--json]
 ```
 
-`theviewer --help` prints the same summary. A command line that cannot be
-understood exits with code 2; a report, call or run that fails exits
+`theviewer --help` prints the same summary on standard output and exits
+with code 0, and so do `api --help`, `mcp --help` and `replay --help`. A
+command line that cannot be understood prints what is wrong, with the
+summary, on standard error and exits with code 2; a report, call or run that fails exits
 with 1. Output may be piped into a reader that stops early, such as
 `theviewer api --describe | head`: the rest is dropped quietly and the
 exit code is what it would have been.
