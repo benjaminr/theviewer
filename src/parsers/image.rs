@@ -175,6 +175,7 @@ impl Parser for JpegParser {
         let mut at = 2;
         let mut dimensions = None;
         let mut complete = false;
+        let mut exif_tags = 0;
         // Two bytes are enough to see a marker; the end-of-image marker has no length.
         while at + 2 <= bytes.len() && segments.len() < MAX_CHILDREN {
             if bytes[at] != 0xFF {
@@ -211,6 +212,13 @@ impl Parser for JpegParser {
                     Field::new("components", base + data + 5, 1, components.to_string()),
                 ];
             }
+            let segment_data = &bytes[at + 4..at + 2 + length];
+            if marker == 0xE1 && segment_data.starts_with(EXIF_HEADER) {
+                let tiff_at = at + 4 + EXIF_HEADER.len();
+                segment.children = exif_fields(&bytes[tiff_at..at + 2 + length], base + tiff_at);
+                exif_tags += segment.children.len().saturating_sub(1);
+                segment.value = format!("{length} bytes, EXIF");
+            }
             segments.push(segment);
             at += 2 + length;
             if marker == 0xDA {
@@ -227,8 +235,9 @@ impl Parser for JpegParser {
         }
         let (width, height, precision, components) = dimensions?;
         let detail = format!(
-            "JPEG {width}×{height}, {precision}-bit, {components} components, {} segments{}",
+            "JPEG {width}×{height}, {precision}-bit, {components} components, {} segments{}{}",
             segments.len(),
+            if exif_tags > 0 { format!(", {exif_tags} EXIF tags") } else { String::new() },
             if complete { "" } else { ", no EOI" }
         );
         Some(
@@ -239,6 +248,170 @@ impl Parser for JpegParser {
                 .fields(segments),
         )
     }
+}
+
+// ---------------------------------------------------------------------------
+// EXIF (a TIFF structure inside a JPEG's APP1 segment)
+// ---------------------------------------------------------------------------
+
+const EXIF_HEADER: &[u8] = b"Exif\0\0";
+/// Most entries read from one image file directory.
+const MAX_IFD_ENTRIES: usize = 512;
+const EXIF_IFD_POINTER: u16 = 0x8769;
+const GPS_IFD_POINTER: u16 = 0x8825;
+
+/// The tags worth showing, by directory: the camera, the times, and the
+/// free text people and apps leave behind.
+fn exif_tag_name(directory: ExifDirectory, tag: u16) -> Option<&'static str> {
+    match (directory, tag) {
+        (ExifDirectory::Image, 0x010E) => Some("ImageDescription"),
+        (ExifDirectory::Image, 0x010F) => Some("Make"),
+        (ExifDirectory::Image, 0x0110) => Some("Model"),
+        (ExifDirectory::Image, 0x0131) => Some("Software"),
+        (ExifDirectory::Image, 0x0132) => Some("DateTime"),
+        (ExifDirectory::Image, 0x013B) => Some("Artist"),
+        (ExifDirectory::Image, 0x8298) => Some("Copyright"),
+        (ExifDirectory::Exif, 0x9003) => Some("DateTimeOriginal"),
+        (ExifDirectory::Exif, 0x9004) => Some("DateTimeDigitized"),
+        (ExifDirectory::Exif, 0x9286) => Some("UserComment"),
+        (ExifDirectory::Exif, 0xA420) => Some("ImageUniqueID"),
+        (ExifDirectory::Gps, 0x0001) => Some("GPSLatitudeRef"),
+        (ExifDirectory::Gps, 0x0002) => Some("GPSLatitude"),
+        (ExifDirectory::Gps, 0x0003) => Some("GPSLongitudeRef"),
+        (ExifDirectory::Gps, 0x0004) => Some("GPSLongitude"),
+        (ExifDirectory::Gps, 0x0006) => Some("GPSAltitude"),
+        (ExifDirectory::Gps, 0x001D) => Some("GPSDateStamp"),
+        _ => None,
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ExifDirectory {
+    Image,
+    Exif,
+    Gps,
+}
+
+/// A TIFF structure's bytes with their byte order.
+struct Tiff<'a> {
+    bytes: &'a [u8],
+    little_endian: bool,
+}
+
+impl Tiff<'_> {
+    fn u16(&self, at: usize) -> Option<u16> {
+        if self.little_endian { u16le(self.bytes, at) } else { u16be(self.bytes, at) }
+    }
+
+    fn u32(&self, at: usize) -> Option<u32> {
+        if self.little_endian { u32le(self.bytes, at) } else { u32be(self.bytes, at) }
+    }
+
+    /// The `index`th unsigned rational at `at`.
+    fn rational(&self, at: usize, index: usize) -> Option<f64> {
+        let numerator = self.u32(at + index * 8)?;
+        let denominator = self.u32(at + index * 8 + 4)?;
+        (denominator != 0).then(|| f64::from(numerator) / f64::from(denominator))
+    }
+}
+
+/// One tag's value: where it is in the TIFF bytes, and how long.
+struct TagValue {
+    tag: u16,
+    kind: u16,
+    count: usize,
+    at: usize,
+    len: usize,
+}
+
+/// Bytes per value of a TIFF field type.
+fn tiff_type_size(kind: u16) -> Option<usize> {
+    match kind {
+        1 | 2 | 6 | 7 => Some(1),
+        3 | 8 => Some(2),
+        4 | 9 | 11 | 13 => Some(4),
+        5 | 10 | 12 => Some(8),
+        _ => None,
+    }
+}
+
+/// The entries of the directory at `offset`, values located (inline in the
+/// entry when they fit in four bytes).
+fn ifd_entries(tiff: &Tiff, offset: usize) -> Vec<TagValue> {
+    let Some(count) = tiff.u16(offset) else { return Vec::new() };
+    (0..usize::from(count).min(MAX_IFD_ENTRIES))
+        .filter_map(|index| {
+            let entry = offset + 2 + index * 12;
+            let tag = tiff.u16(entry)?;
+            let kind = tiff.u16(entry + 2)?;
+            let count = tiff.u32(entry + 4)? as usize;
+            let len = tiff_type_size(kind)?.checked_mul(count)?;
+            let at = if len <= 4 { entry + 8 } else { tiff.u32(entry + 8)? as usize };
+            tiff.bytes.get(at..at.checked_add(len)?)?;
+            Some(TagValue { tag, kind, count, at, len })
+        })
+        .collect()
+}
+
+/// A tag's value as text: ASCII up to its NUL, a UserComment after its
+/// 8-byte character code, numbers as numbers, GPS positions in degrees.
+fn exif_value_text(tiff: &Tiff, value: &TagValue) -> String {
+    let raw = &tiff.bytes[value.at..value.at + value.len];
+    match (value.tag, value.kind) {
+        (0x9286, _) if raw.len() >= 8 => {
+            let (code, text) = raw.split_at(8);
+            if code.starts_with(b"UNICODE") {
+                let units: Vec<u16> = text.as_chunks::<2>().0.iter().map(|&pair| if tiff.little_endian { u16::from_le_bytes(pair) } else { u16::from_be_bytes(pair) }).collect();
+                String::from_utf16_lossy(&units).trim_end_matches('\0').to_string()
+            } else {
+                String::from_utf8_lossy(text).trim_end_matches(['\0', ' ']).to_string()
+            }
+        }
+        (0x0002 | 0x0004, 5) if value.count == 3 => {
+            let parts: Option<Vec<f64>> = (0..3).map(|index| tiff.rational(value.at, index)).collect();
+            parts.map_or_else(String::new, |parts| format!("{:.6}°", parts[0] + parts[1] / 60.0 + parts[2] / 3600.0))
+        }
+        (_, 2) => String::from_utf8_lossy(raw.split(|&byte| byte == 0).next().unwrap_or_default()).into_owned(),
+        (_, 3) => tiff.u16(value.at).map(|number| number.to_string()).unwrap_or_default(),
+        (_, 4) => tiff.u32(value.at).map(|number| number.to_string()).unwrap_or_default(),
+        (_, 5) => tiff.rational(value.at, 0).map(|number| format!("{number}")).unwrap_or_default(),
+        _ => super::text_preview(raw, 80),
+    }
+}
+
+/// The EXIF tags of the TIFF structure in `bytes`, the data of an APP1
+/// segment after its "Exif\0\0" header, which starts at document offset
+/// `base`. Both byte orders are read; each tag is a field over its value,
+/// the image directory's first, then the EXIF and GPS directories'.
+fn exif_fields(bytes: &[u8], base: usize) -> Vec<Field> {
+    let little_endian = match bytes.get(..4) {
+        Some(b"II*\0") => true,
+        Some(b"MM\0*") => false,
+        _ => return Vec::new(),
+    };
+    let tiff = Tiff { bytes, little_endian };
+    let mut fields = vec![Field::new("byte order", base, 2, if little_endian { "little-endian (II)" } else { "big-endian (MM)" })];
+    let Some(first) = tiff.u32(4) else { return fields };
+    let mut directories = vec![(ExifDirectory::Image, first as usize)];
+    let mut next = 0;
+    while let Some(&(directory, offset)) = directories.get(next) {
+        next += 1;
+        if directories[..next - 1].iter().any(|&(_, earlier)| earlier == offset) {
+            continue;
+        }
+        for value in ifd_entries(&tiff, offset) {
+            match (directory, value.tag) {
+                (ExifDirectory::Image, EXIF_IFD_POINTER) => directories.extend(tiff.u32(value.at).map(|at| (ExifDirectory::Exif, at as usize))),
+                (ExifDirectory::Image, GPS_IFD_POINTER) => directories.extend(tiff.u32(value.at).map(|at| (ExifDirectory::Gps, at as usize))),
+                _ => {
+                    if let Some(name) = exif_tag_name(directory, value.tag) {
+                        fields.push(Field::new(name, base + value.at, value.len, exif_value_text(&tiff, &value)));
+                    }
+                }
+            }
+        }
+    }
+    fields
 }
 
 // ---------------------------------------------------------------------------
@@ -443,6 +616,103 @@ mod tests {
         let finding = BmpParser.parse(&bmp, 0).expect("bmp");
         assert!(finding.detail.starts_with("BMP 3×2"), "{}", finding.detail);
         assert_eq!(finding.len, bmp.len());
+    }
+
+    /// A TIFF structure as a phone writes into APP1: an image directory with
+    /// text tags and pointers to an EXIF and a GPS directory.
+    fn exif_tiff(little_endian: bool) -> Vec<u8> {
+        let u16_bytes = |value: u16| if little_endian { value.to_le_bytes() } else { value.to_be_bytes() };
+        let u32_bytes = |value: u32| if little_endian { value.to_le_bytes() } else { value.to_be_bytes() };
+        // Each directory: (tag, type, count, value bytes); values over four bytes go after it.
+        type Tag = (u16, u16, u32, Vec<u8>);
+        let ascii = |text: &str| -> (u16, u32, Vec<u8>) { (2, text.len() as u32 + 1, [text.as_bytes(), b"\0"].concat()) };
+        let mut out = Vec::new();
+        out.extend_from_slice(if little_endian { b"II*\0" } else { b"MM\0*" });
+        out.extend_from_slice(&u32_bytes(8));
+        let write_directory = |out: &mut Vec<u8>, tags: Vec<Tag>| {
+            let start = out.len();
+            let mut extra_at = start + 2 + tags.len() * 12 + 4;
+            let mut extra = Vec::new();
+            out.extend_from_slice(&u16_bytes(tags.len() as u16));
+            for (tag, kind, count, value) in tags {
+                out.extend_from_slice(&u16_bytes(tag));
+                out.extend_from_slice(&u16_bytes(kind));
+                out.extend_from_slice(&u32_bytes(count));
+                if value.len() <= 4 {
+                    let mut inline = value.clone();
+                    inline.resize(4, 0);
+                    out.extend_from_slice(&inline);
+                } else {
+                    out.extend_from_slice(&u32_bytes(extra_at as u32));
+                    extra.extend_from_slice(&value);
+                    extra_at += value.len();
+                }
+            }
+            out.extend_from_slice(&[0; 4]);
+            out.extend_from_slice(&extra);
+        };
+        let pointer = |value: u32| u32_bytes(value).to_vec();
+        let (make_type, make_count, make) = ascii("Google");
+        let (description_type, description_count, description) = ascii("reminder - backup.zip password: Kestrel!Moor42");
+        let (time_type, time_count, time) = ascii("2026:09:12 08:14:54");
+        let comment = [b"ASCII\0\0\0".as_slice(), b"yellow note\0\0\0\0\0"].concat();
+        // Each directory is a count, 12 bytes a tag and a next link, then its long values.
+        let exif_at = 8 + 2 + 4 * 12 + 4 + make.len() + description.len();
+        let gps_at = exif_at + 2 + 2 * 12 + 4 + time.len() + comment.len();
+        write_directory(&mut out, vec![
+            (0x010E, description_type, description_count, description),
+            (0x010F, make_type, make_count, make),
+            // Pillow writes the pointers with the IFD type (13), others as LONG (4).
+            (EXIF_IFD_POINTER, if little_endian { 4 } else { 13 }, 1, pointer(exif_at as u32)),
+            (GPS_IFD_POINTER, 4, 1, pointer(gps_at as u32)),
+        ]);
+        assert_eq!(out.len(), exif_at);
+        write_directory(&mut out, vec![(0x9003, time_type, time_count, time), (0x9286, 7, comment.len() as u32, comment)]);
+        assert_eq!(out.len(), gps_at);
+        let latitude: Vec<u8> = [(51u32, 1u32), (30, 1), (36, 1)].iter().flat_map(|&(numerator, denominator)| [u32_bytes(numerator), u32_bytes(denominator)].concat()).collect();
+        write_directory(&mut out, vec![(0x0001, 2, 2, b"N\0".to_vec()), (0x0002, 5, 3, latitude)]);
+        out
+    }
+
+    fn jpeg_with_exif(tiff: &[u8]) -> Vec<u8> {
+        let plain = encoded(ImageFormat::Jpeg);
+        let mut app1 = vec![0xFF, 0xE1];
+        app1.extend_from_slice(&((2 + EXIF_HEADER.len() + tiff.len()) as u16).to_be_bytes());
+        app1.extend_from_slice(EXIF_HEADER);
+        app1.extend_from_slice(tiff);
+        [&plain[..2], &app1, &plain[2..]].concat()
+    }
+
+    #[test]
+    fn exif_tags_in_a_jpeg_are_fields_whichever_the_byte_order() {
+        for little_endian in [true, false] {
+            let jpeg = jpeg_with_exif(&exif_tiff(little_endian));
+            let finding = JpegParser.parse(&jpeg, 100).expect("jpeg");
+            let app1 = finding.fields.iter().find(|field| field.name == "APP1").expect("APP1");
+            let tag = |name: &str| app1.children.iter().find(|field| field.name == name).unwrap_or_else(|| panic!("no {name}: {:#?}", app1.children));
+            let description = tag("ImageDescription");
+            assert_eq!(description.value, "reminder - backup.zip password: Kestrel!Moor42");
+            let description_at = description.offset - 100;
+            assert_eq!(&jpeg[description_at..description_at + 8], b"reminder", "the field covers the text itself");
+            assert_eq!(tag("Make").value, "Google");
+            assert_eq!(tag("DateTimeOriginal").value, "2026:09:12 08:14:54");
+            assert_eq!(tag("UserComment").value, "yellow note");
+            assert_eq!(tag("GPSLatitudeRef").value, "N");
+            assert_eq!(tag("GPSLatitude").value, "51.510000°");
+            assert!(finding.detail.contains("6 EXIF tags"), "{}", finding.detail);
+            assert!(finding.detail.starts_with("JPEG 3×2"), "the image is still read: {}", finding.detail);
+        }
+    }
+
+    #[test]
+    fn a_damaged_exif_block_does_not_panic() {
+        let tiff = exif_tiff(true);
+        for cut in [0, 3, 8, 20, 60, tiff.len() - 1] {
+            let _ = JpegParser.parse(&jpeg_with_exif(&tiff[..cut]), 0);
+        }
+        let mut looping = tiff.clone();
+        looping[4..8].copy_from_slice(&8u32.to_le_bytes());
+        let _ = JpegParser.parse(&jpeg_with_exif(&looping), 0);
     }
 
     #[test]
