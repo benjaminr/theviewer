@@ -25,6 +25,7 @@ contains and where.</sub>
 - [Ask Claude about a file](#ask-claude-about-a-file)
 - [Who may change the file](#who-may-change-the-file)
 - [Use theviewer from Claude Code and other MCP clients](#use-theviewer-from-claude-code-and-other-mcp-clients)
+- [Recipes: run an analysis again on other files](#recipes-run-an-analysis-again-on-other-files)
 - [Make it yours](#make-it-yours)
 - [Keyboard shortcuts](#keyboard-shortcuts)
 - [Command line](#command-line)
@@ -497,6 +498,52 @@ revisions that begin with `initialize` (2025-11-25, 2025-06-18, 2025-03-26
 and 2024-11-05), so current and older clients both work. Attaching to the
 running window instead is planned.
 
+## Recipes: run an analysis again on other files
+
+Every step you take, by hand or through Ask, a plugin or an MCP client, is
+a call of the data API. A **recipe** saves a run of those calls in a
+`*.theviewer-recipe.json` file under `~/.config/theviewer/recipes/`, so you
+can repeat the analysis on the next file. You can share the file with
+others.
+
+- **Anchors keep it portable.** An offset that suits one file is wrong for
+  the next, so a step's value can be an anchor that is found when the step
+  runs:
+  - the nth match of some bytes or text;
+  - a field of a parsed structure (`png`, `IHDR.width`);
+  - the nth finding of a category;
+  - what is selected;
+  - a value an earlier step returned;
+  - a parameter you give when you run it.
+
+  Each is written `{"$anchor": …}` in a step's parameters.
+- **Run one in the window** with *File › Run recipe…* or the palette. Pick
+  the recipe and fill in its parameters. Then press *Preview*: it shows each
+  step on this file and where its anchors landed, and changes nothing.
+  *Run* then does it all without asking about each step, because you have
+  seen the preview. One *Undo* takes all of its edits back, as
+  "Recipe steps by recipe:NAME".
+- **Run one over many files** from the command line:
+
+  ```sh
+  theviewer replay "Telemetry frames" capture-*.bin --param key=5a --out decoded/ --json
+  ```
+
+  Each file opens in a workspace of its own. You get a report per file:
+  what each step did, or where and why it stopped. With `--json` the
+  report is JSON. With `--save` each changed file is saved over itself, and
+  with `--out DIR` into DIR. A file the recipe stopped on is not saved, and
+  then the exit code is non-zero.
+- **From Ask and MCP clients** use `recipes.list`, `recipes.describe`,
+  `recipes.save` (whole, or from steps of this session's journal),
+  `recipes.preview` and `recipes.run` ([docs/api.md](docs/api.md)).
+  `recipes.run` is an edit, so Settings › Permissions applies to it.
+  The confirmation window lists its steps, and each step is still checked
+  against that client's policy.
+- **Warnings.** A recipe names the API version and the plugins it was
+  recorded with. Running it warns you if a plugin is missing or has changed,
+  if a method is unknown, or if the file is not the one it was recorded on.
+
 ## Make it yours
 
 **Arrange the panels.** The main view's tab is **Bits**, with **Packets**
@@ -620,6 +667,7 @@ theviewer api bytes.read '{"start": 0, "len": 16}' firmware.bin   # one data API
 theviewer api --save bytes.write '{"start": 0, "data": "7f454c46"}' firmware.bin   # edit and save in one command
 theviewer api --describe                 # every API method with its schemas
 theviewer mcp firmware.bin               # serve it to an MCP client on stdin and stdout
+theviewer replay "Telemetry frames" a.bin b.bin --json   # run a saved recipe on each file
 ```
 
 | Option | Effect |
@@ -638,6 +686,7 @@ theviewer mcp firmware.bin               # serve it to an MCP client on stdin an
 | `--json` | Print the report as JSON and exit: the summary, regions, likely record widths and confident findings, for scripts and CI |
 | `api METHOD ['{JSON}'] [FILE]` | Run one method of the data API on FILE and print its JSON result; an error is printed as JSON on stderr with a non-zero exit code. `api --describe` lists every method. The methods are described in [docs/api.md](docs/api.md) |
 | `mcp [--plugins DIR]… [--all-tools] [--output-schemas] [FILE…]` | Serve the files over MCP on standard input and output until the client closes it; see [above](#use-theviewer-from-claude-code-and-other-mcp-clients). `--plugins` loads plugins from DIR instead of the usual directories. `--all-tools` lists every API method as a tool, not only the core ones with `api_search`, `api_describe` and `api_call` to reach the rest, which makes the tool list a client keeps in its model's context about four times the size. `--output-schemas` lists each tool's result schema as well, which roughly doubles it |
+| `replay RECIPE FILE… [--param KEY=VALUE]… [--save \| --out DIR] [--json]` | Run a recipe on each FILE. RECIPE is a recipe saved in `~/.config/theviewer/recipes/`, by name, or the path of a recipe file. A report is printed per file, as JSON with `--json`. `--save` saves each changed file over itself, and `--out` saves it into DIR. The exit code is non-zero if the recipe stopped on any file; see [Recipes](#recipes-run-an-analysis-again-on-other-files) |
 
 ## Extending it
 
@@ -734,6 +783,7 @@ text.
 | `assistant.rs` | *Ask*: a streaming Claude API client with tools, on a background thread. |
 | `api.rs` `api/` | The data API: one table of methods with JSON schemas, run against the window or a headless workspace; Ask's tools, `theviewer api` and [docs/api.md](docs/api.md) come from it. |
 | `mcp.rs` `mcp/` | `theviewer mcp`: a hand-written, synchronous MCP server over stdio; tools from the method table, resources and subscriptions from the bus, prompts. |
+| `journal/replay.rs` `journal/anchors.rs` `journal/recipe.rs` `recipes.rs` `recipes/` `api/recipes.rs` | Running steps again: the recipe runner and anchors, the recipe file, recipes on disk, `theviewer replay`, "Run recipe…" and `recipes.*`. |
 | `api/permissions.rs` `confirmations.rs` | Who is calling the API and what each client may change; the window that asks you about a change. |
 | `layout.rs` `layouts.rs` `packing.rs` | Dockable panels; recommended and saved layouts; toolbar packing and reordering. |
 | `legend.rs` | The legend bar: the colouring in effect and each highlight layer, with toggles. |

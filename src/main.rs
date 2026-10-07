@@ -30,6 +30,7 @@ usage: theviewer [FILE] [--format NAME] [--palette NAME] [--width PIXELS] [--off
        theviewer api [--save] METHOD ['{JSON PARAMS}'] [FILE]
        theviewer api --describe
        theviewer mcp [--plugins DIR]... [--all-tools] [--output-schemas] [FILE...]
+       theviewer replay RECIPE FILE... [--param KEY=VALUE]... [--save | --out DIR] [--json]
 
   --report   print a plain-text report of FILE without opening a window
   --json     print the same report as JSON, for scripts and CI
@@ -43,6 +44,11 @@ usage: theviewer [FILE] [--format NAME] [--palette NAME] [--width PIXELS] [--off
              --all-tools lists every method instead (about four times the size, which clients
              keep in context); --output-schemas lists each tool's result schema too (about
              twice the size)
+  replay     run a saved recipe (by name, from ~/.config/theviewer/recipes, or a
+             .theviewer-recipe.json path) on each FILE, printing what each step did per file;
+             --param gives a recipe parameter; --save saves each file the recipe ran to its end
+             over itself, --out saves it into DIR instead; --json prints the reports as JSON;
+             exits non-zero when the recipe stopped on any file
 
   --format   one of: bit1 bit1lsb nibble4 gray8 class rgb565 gray16le gray16be rgb8 bgr8 rgba8 bgra8
              or a numeric heatmap: u16le u16be i16le i16be u32le u32be i32le i32be f32le f32be
@@ -211,6 +217,92 @@ fn run_mcp(args: &[String]) -> i32 {
     }
 }
 
+/// What `theviewer replay` was asked to do.
+struct ReplayArgs {
+    recipe: String,
+    files: Vec<PathBuf>,
+    parameters: std::collections::BTreeMap<String, serde_json::Value>,
+    output: theviewer::recipes::ReplayOutput,
+    json: bool,
+}
+
+/// Read the arguments after `replay`.
+fn parse_replay(args: &[String]) -> Result<ReplayArgs, String> {
+    let mut positional = Vec::new();
+    let mut parameters = std::collections::BTreeMap::new();
+    let mut output = theviewer::recipes::ReplayOutput::Report;
+    let mut json = false;
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "-h" | "--help" => return Err(USAGE.to_string()),
+            "--json" => json = true,
+            "--save" if output == theviewer::recipes::ReplayOutput::Report => output = theviewer::recipes::ReplayOutput::SaveInPlace,
+            "--out" if output == theviewer::recipes::ReplayOutput::Report => {
+                let dir = args.next().ok_or("--out needs a folder")?;
+                output = theviewer::recipes::ReplayOutput::OutDir(PathBuf::from(dir));
+            }
+            "--save" | "--out" => return Err(format!("give --save or --out, not both\n\n{USAGE}")),
+            "--param" => {
+                let pair = args.next().ok_or("--param needs KEY=VALUE")?;
+                let (key, value) = pair.split_once('=').ok_or_else(|| format!("--param {pair}: write it as KEY=VALUE"))?;
+                parameters.insert(key.to_string(), serde_json::Value::String(value.to_string()));
+            }
+            other if other.starts_with('-') => return Err(format!("unknown option '{other}' for theviewer replay\n\n{USAGE}")),
+            positional_arg => positional.push(positional_arg.to_string()),
+        }
+    }
+    let mut positional = positional.into_iter();
+    let recipe = positional.next().ok_or_else(|| format!("theviewer replay needs a recipe and at least one file\n\n{USAGE}"))?;
+    let files: Vec<PathBuf> = positional.map(PathBuf::from).collect();
+    if files.is_empty() {
+        return Err(format!("theviewer replay needs at least one file to run '{recipe}' on\n\n{USAGE}"));
+    }
+    Ok(ReplayArgs { recipe, files, parameters, output, json })
+}
+
+/// Run `theviewer replay …` (the arguments after `replay`): the recipe on
+/// each file in a workspace of its own, a report per file, and a non-zero
+/// exit code when it stopped on any of them.
+fn run_replay(args: &[String]) -> i32 {
+    let args = match parse_replay(args) {
+        Ok(args) => args,
+        Err(message) => {
+            eprintln!("{message}");
+            return EXIT_USAGE;
+        }
+    };
+    let found = theviewer::recipes::recipes_dir().and_then(|dir| theviewer::recipes::find(&dir, &args.recipe));
+    let recipe = match found {
+        Ok((recipe, _)) => recipe,
+        Err(error) => {
+            eprintln!("theviewer replay: {}", error.message);
+            return EXIT_FAILURE;
+        }
+    };
+    let (host, _) = app::load_plugin_host();
+    let registry = Arc::new(app::build_registry_with(Some(&host)));
+    let runs: Vec<theviewer::recipes::FileRun> = args
+        .files
+        .iter()
+        .map(|file| {
+            let mut workspace = HeadlessWorkspace::new(Arc::clone(&registry));
+            if let Ok(host) = host.lock() {
+                workspace.set_registered_methods(host.methods());
+                workspace.journal_mut().note_plugins(theviewer::journal::plugins_of(&host));
+            }
+            theviewer::recipes::replay_file(&mut workspace, &recipe, file, &args.parameters, &args.output)
+        })
+        .collect();
+    if args.json {
+        let written = serde_json::json!({ "recipe": recipe.name, "files": runs });
+        println!("{}", serde_json::to_string_pretty(&written).unwrap_or_default());
+    } else {
+        print!("{}", theviewer::recipes::render_text(&recipe, &runs));
+    }
+    if runs.iter().all(theviewer::recipes::FileRun::succeeded) { 0 } else { EXIT_FAILURE }
+}
+
 /// Print the report for `path` and return the process exit code.
 fn run_headless(path: Option<&Path>, output: HeadlessOutput) -> i32 {
     let Some(path) = path else {
@@ -241,6 +333,9 @@ fn main() -> eframe::Result {
     }
     if args.first().is_some_and(|first| first == "mcp") {
         std::process::exit(run_mcp(&args[1..]));
+    }
+    if args.first().is_some_and(|first| first == "replay") {
+        std::process::exit(run_replay(&args[1..]));
     }
     let launch = match parse_launch() {
         Ok((launch, Some(output))) => std::process::exit(run_headless(launch.path.as_deref(), output)),
