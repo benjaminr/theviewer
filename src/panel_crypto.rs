@@ -14,6 +14,7 @@ use crate::blocks::{self, BlockReport};
 use crate::ciphers::{self, CipherCandidate};
 use crate::keys::{self, KeyFinding, KeyFormat, KeyKind};
 use crate::plugin::{Category, Finding};
+use crate::selection_ops::Operation;
 use crate::theme;
 
 /// Largest selection decoded by the cipher attacks.
@@ -356,7 +357,7 @@ fn show_decode(state: &mut CryptoState, app: &mut ViewerApp, ui: &mut Ui) {
             if ui.small_button("Open decoded").on_hover_text("Open the decoded bytes as a document; Back returns").clicked() {
                 action = Some((index, false));
             }
-            if ui.small_button("Apply in place").on_hover_text("Replace the bytes with the decode (undoable)").clicked() {
+            if ui.small_button("Apply").on_hover_text("Apply the decode to the bytes as an undoable step that a recipe can repeat").clicked() {
                 action = Some((index, true));
             }
         });
@@ -411,20 +412,21 @@ fn start_decode(state: &mut CryptoState, app: &mut ViewerApp, start: usize, len:
     app.perform_later("crypto.attack", params);
 }
 
-/// The person uses a decode: written over the bytes as an undoable step
-/// (`bytes.replace`), or opened as a document of its own (`documents.derive`).
+/// The person uses a decode: applied to the bytes as an undoable step
+/// (`transform.apply`), or opened as a document of its own
+/// (`documents.derive` with the transform), the operation named either way
+/// so a recipe repeats it.
 fn apply_decode(app: &mut ViewerApp, start: usize, len: usize, transform: &ciphers::Transform, in_place: bool) {
-    let bytes = app.document.read_range(start, len);
-    let decoded = crate::api::values::encode_bytes(&transform.apply(&bytes), Default::default());
+    let operation = Operation::from(transform.clone());
     let description = transform.describe();
     if in_place {
-        if app.perform("bytes.replace", serde_json::json!({ "start": start, "len": len, "data": decoded })).is_ok() {
+        if app.perform("transform.apply", serde_json::json!({ "selection": { "range": [start, len] }, "operation": operation })).is_ok() {
             app.restore_selection(start, len);
             app.status = format!("{description}: applied to {len} bytes at {start:#x}");
         }
     } else {
         let name = format!("{} › decoded@{start:#x}", app.display_name());
-        if app.perform("documents.derive", serde_json::json!({ "data": decoded, "name": name })).is_ok() {
+        if app.perform("documents.derive", serde_json::json!({ "start": start, "len": len, "name": name, "transform": operation })).is_ok() {
             app.status = format!("Opened the decode ({description})");
         }
     }
@@ -475,15 +477,16 @@ mod tests {
     }
 
     #[test]
-    fn a_decode_is_applied_as_a_replacement_or_opened_as_a_derived_document() {
+    fn a_decode_is_applied_as_a_repeatable_operation_or_opened_as_a_derived_document() {
         let mut app = app_with(&[0x10, 0x20, 0x30, 0x40]);
         let rotate = ciphers::Transform::RotateLeft { bits: 4 };
         apply_decode(&mut app, 1, 2, &rotate, true);
-        assert_eq!(take_performed(), [("bytes.replace".to_string(), json!({"start": 1, "len": 2, "data": "0203"}))]);
+        let operation = json!({"op": "rotate_each_byte", "bits": 4});
+        assert_eq!(take_performed(), [("transform.apply".to_string(), json!({"selection": {"range": [1, 2]}, "operation": operation}))]);
         assert_eq!(app.document.read_range(0, 4), [0x10, 0x02, 0x03, 0x40]);
         assert_eq!(app.status, format!("{}: applied to 2 bytes at 0x1", rotate.describe()));
         apply_decode(&mut app, 0, 1, &rotate, false);
-        assert_eq!(take_performed(), [("documents.derive".to_string(), json!({"data": "01", "name": "test.bin › decoded@0x0"}))]);
+        assert_eq!(take_performed(), [("documents.derive".to_string(), json!({"start": 0, "len": 1, "name": "test.bin › decoded@0x0", "transform": operation}))]);
         assert_eq!(app.display_name(), "test.bin › decoded@0x0");
     }
 }

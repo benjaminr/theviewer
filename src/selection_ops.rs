@@ -8,6 +8,7 @@
 //! step however many ranges it touched. Everything here is pure: no document,
 //! no UI.
 
+use crate::ciphers::{Feedback, Transform};
 use crate::compress::{self, Codec};
 use crate::ops;
 
@@ -40,6 +41,18 @@ pub enum Operation {
     Add(Vec<u8>),
     /// Subtract a key byte by byte, wrapping.
     Subtract(Vec<u8>),
+    /// XOR each byte with a key that steps on: `start + step × i` for the
+    /// byte `i` places into the range.
+    RollingXor { start: u8, step: u8 },
+    /// XOR each byte with the byte before it and a constant (see
+    /// [`Feedback`]); the byte before the range's first counts as zero.
+    XorPrevious { feedback: Feedback, key: u8 },
+    /// XOR each byte with one constant, then add another, wrapping.
+    XorThenAdd { xor: u8, add: u8 },
+    /// Add one constant to each byte, wrapping, then XOR it with another.
+    AddThenXor { add: u8, xor: u8 },
+    /// Rotate the bits of each byte on its own, left by 1 to 7.
+    RotateEachByte(u32),
     /// Reverse the order of the bytes.
     Reverse,
     /// Reverse the bits within each byte.
@@ -78,6 +91,10 @@ impl Operation {
             Operation::Xor(_) => "XORed".to_string(),
             Operation::Add(_) => "Added the key to".to_string(),
             Operation::Subtract(_) => "Subtracted the key from".to_string(),
+            Operation::RollingXor { .. } => "Rolling-XORed".to_string(),
+            Operation::XorPrevious { .. } => "XORed with the previous bytes".to_string(),
+            Operation::XorThenAdd { .. } | Operation::AddThenXor { .. } => "XORed and added to".to_string(),
+            Operation::RotateEachByte(bits) => format!("Rotated each byte left by {bits} in"),
             Operation::Reverse => "Reversed bytes".to_string(),
             Operation::MirrorBits => "Mirrored bits".to_string(),
             Operation::ShiftBits(amount) => format!("Shifted bits by {amount}"),
@@ -102,6 +119,11 @@ impl Operation {
             Operation::Xor(_) => "XOR",
             Operation::Add(_) => "Add",
             Operation::Subtract(_) => "Subtract",
+            Operation::RollingXor { .. } => "Rolling XOR",
+            Operation::XorPrevious { .. } => "XOR with previous",
+            Operation::XorThenAdd { .. } => "XOR then add",
+            Operation::AddThenXor { .. } => "Add then XOR",
+            Operation::RotateEachByte(_) => "Rotate each byte",
             Operation::Reverse => "Reverse",
             Operation::MirrorBits => "Mirror bits",
             Operation::ShiftBits(_) => "Shift bits",
@@ -128,6 +150,17 @@ impl Operation {
             Operation::Xor(key) => format!("XOR {target} with {}", hex(key)),
             Operation::Add(key) => format!("Add {} to {target}", hex(key)),
             Operation::Subtract(key) => format!("Subtract {} from {target}", hex(key)),
+            Operation::RollingXor { start, step } => format!("XOR {target} with a rolling key from {start:02X} in steps of {step}"),
+            Operation::XorPrevious { feedback, key } => {
+                let previous = match feedback {
+                    Feedback::Ciphertext => "input",
+                    Feedback::Plaintext => "output",
+                };
+                format!("XOR each of {target} with the previous {previous} byte and {key:02X}")
+            }
+            Operation::XorThenAdd { xor, add } => format!("XOR {target} with {xor:02X}, then add {add:02X}"),
+            Operation::AddThenXor { add, xor } => format!("Add {add:02X} to {target}, then XOR with {xor:02X}"),
+            Operation::RotateEachByte(bits) => format!("Rotate each of {target} left by {bits} bits"),
             Operation::Reverse => format!("Reverse {target}"),
             Operation::MirrorBits => format!("Mirror the bits of {target}"),
             Operation::ShiftBits(amount) => format!("Shift the bits of {target} by {amount}"),
@@ -203,6 +236,17 @@ enum OperationJson {
         #[schemars(with = "String")]
         key: Vec<u8>,
     },
+    /// XOR each byte with `start + step × i`, i counting from the range's start.
+    RollingXor { start: u8, step: u8 },
+    /// XOR each byte with the byte before it and `key`: the previous input
+    /// byte ("ciphertext") or the previous output byte ("plaintext").
+    XorPrevious { feedback: Feedback, key: u8 },
+    /// XOR each byte with `xor`, then add `add`, wrapping.
+    XorThenAdd { xor: u8, add: u8 },
+    /// Add `add` to each byte, wrapping, then XOR with `xor`.
+    AddThenXor { add: u8, xor: u8 },
+    /// Rotate the bits of each byte left by `bits` (1 to 7).
+    RotateEachByte { bits: u32 },
     /// Reverse the order of the bytes.
     Reverse,
     /// Reverse the bits within each byte.
@@ -236,6 +280,11 @@ impl From<Operation> for OperationJson {
             Operation::Xor(key) => OperationJson::Xor { key },
             Operation::Add(key) => OperationJson::Add { key },
             Operation::Subtract(key) => OperationJson::Subtract { key },
+            Operation::RollingXor { start, step } => OperationJson::RollingXor { start, step },
+            Operation::XorPrevious { feedback, key } => OperationJson::XorPrevious { feedback, key },
+            Operation::XorThenAdd { xor, add } => OperationJson::XorThenAdd { xor, add },
+            Operation::AddThenXor { add, xor } => OperationJson::AddThenXor { add, xor },
+            Operation::RotateEachByte(bits) => OperationJson::RotateEachByte { bits },
             Operation::Reverse => OperationJson::Reverse,
             Operation::MirrorBits => OperationJson::MirrorBits,
             Operation::ShiftBits(amount) => OperationJson::ShiftBits { amount },
@@ -261,6 +310,11 @@ impl From<OperationJson> for Operation {
             OperationJson::Xor { key } => Operation::Xor(key),
             OperationJson::Add { key } => Operation::Add(key),
             OperationJson::Subtract { key } => Operation::Subtract(key),
+            OperationJson::RollingXor { start, step } => Operation::RollingXor { start, step },
+            OperationJson::XorPrevious { feedback, key } => Operation::XorPrevious { feedback, key },
+            OperationJson::XorThenAdd { xor, add } => Operation::XorThenAdd { xor, add },
+            OperationJson::AddThenXor { add, xor } => Operation::AddThenXor { add, xor },
+            OperationJson::RotateEachByte { bits } => Operation::RotateEachByte(bits),
             OperationJson::Reverse => Operation::Reverse,
             OperationJson::MirrorBits => Operation::MirrorBits,
             OperationJson::ShiftBits { amount } => Operation::ShiftBits(amount),
@@ -271,6 +325,22 @@ impl From<OperationJson> for Operation {
             OperationJson::Duplicate => Operation::Duplicate,
             OperationJson::Compress { codec } => Operation::Compress(codec),
             OperationJson::Decompress => Operation::Decompress,
+        }
+    }
+}
+
+/// The operation that decodes as a cipher attack's transform does, so a
+/// candidate can be applied to the bytes it was found in.
+impl From<Transform> for Operation {
+    fn from(transform: Transform) -> Self {
+        match transform {
+            Transform::RollingXor { start, step } => Operation::RollingXor { start, step },
+            Transform::XorPrevious { feedback, key } => Operation::XorPrevious { feedback, key },
+            Transform::Add { key } => Operation::Add(key),
+            Transform::RotateLeft { bits } => Operation::RotateEachByte(bits),
+            Transform::XorThenAdd { xor, add } => Operation::XorThenAdd { xor, add },
+            Transform::AddThenXor { add, xor } => Operation::AddThenXor { add, xor },
+            Transform::RepeatingXor { key } => Operation::Xor(key),
         }
     }
 }
@@ -300,6 +370,16 @@ pub fn transform_range(operation: &Operation, bytes: &[u8], index: usize) -> Res
         Operation::Xor(key) => combine_with_key(&mut out, key, |byte, key| byte ^ key)?,
         Operation::Add(key) => combine_with_key(&mut out, key, u8::wrapping_add)?,
         Operation::Subtract(key) => combine_with_key(&mut out, key, u8::wrapping_sub)?,
+        Operation::RollingXor { start, step } => out = Transform::RollingXor { start: *start, step: *step }.apply(bytes),
+        Operation::XorPrevious { feedback, key } => out = Transform::XorPrevious { feedback: *feedback, key: *key }.apply(bytes),
+        Operation::XorThenAdd { xor, add } => out = Transform::XorThenAdd { xor: *xor, add: *add }.apply(bytes),
+        Operation::AddThenXor { add, xor } => out = Transform::AddThenXor { add: *add, xor: *xor }.apply(bytes),
+        Operation::RotateEachByte(bits) => {
+            if !(1..8).contains(bits) {
+                return Err(format!("Each byte can be rotated left by 1 to 7 bits, not {bits}"));
+            }
+            out = Transform::RotateLeft { bits: *bits }.apply(bytes);
+        }
         Operation::Reverse => out.reverse(),
         Operation::MirrorBits => ops::reverse_bits_in_bytes(&mut out),
         Operation::ShiftBits(amount) => out = ops::shift_bits(bytes, *amount),
@@ -534,6 +614,52 @@ mod tests {
         assert_eq!(apply(Operation::Add(vec![1]), &[0xFF, 0x10]), vec![0x00, 0x11]);
         assert_eq!(apply(Operation::Subtract(vec![1]), &[0x00, 0x10]), vec![0xFF, 0x0F]);
         assert!(transform_range(&Operation::Xor(Vec::new()), &[1], 0).is_err(), "an empty key is an error");
+    }
+
+    #[test]
+    fn rolling_and_chained_xors_undo_the_obfuscation_a_cipher_attack_names() {
+        let plain = b"staged payload";
+        let rolled: Vec<u8> = plain.iter().enumerate().map(|(i, byte)| byte ^ 0x51u8.wrapping_add(5u8.wrapping_mul(i as u8))).collect();
+        assert_eq!(apply(Operation::RollingXor { start: 0x51, step: 5 }, &rolled), plain);
+        let mut previous = 0u8;
+        let chained: Vec<u8> = plain
+            .iter()
+            .map(|&byte| {
+                previous = byte ^ previous ^ 0x5A;
+                previous
+            })
+            .collect();
+        assert_eq!(apply(Operation::XorPrevious { feedback: Feedback::Ciphertext, key: 0x5A }, &chained), plain);
+        let mixed: Vec<u8> = plain.iter().map(|byte| byte.wrapping_sub(0x21) ^ 0xA5).collect();
+        assert_eq!(apply(Operation::XorThenAdd { xor: 0xA5, add: 0x21 }, &mixed), plain);
+        let added: Vec<u8> = plain.iter().map(|byte| (byte ^ 0x0F).wrapping_sub(0x10)).collect();
+        assert_eq!(apply(Operation::AddThenXor { add: 0x10, xor: 0x0F }, &added), plain);
+        let rotated: Vec<u8> = plain.iter().map(|byte| byte.rotate_right(3)).collect();
+        assert_eq!(apply(Operation::RotateEachByte(3), &rotated), plain);
+        assert!(transform_range(&Operation::RotateEachByte(8), plain, 0).is_err());
+    }
+
+    #[test]
+    fn every_cipher_attack_transform_applies_as_the_operation_it_names() {
+        let bytes: Vec<u8> = (0..=255u8).collect();
+        for transform in [
+            Transform::RollingXor { start: 0x37, step: 3 },
+            Transform::XorPrevious { feedback: Feedback::Plaintext, key: 9 },
+            Transform::Add { key: vec![1, 2, 3] },
+            Transform::RotateLeft { bits: 5 },
+            Transform::XorThenAdd { xor: 0x11, add: 0x22 },
+            Transform::AddThenXor { add: 0x33, xor: 0x44 },
+            Transform::RepeatingXor { key: vec![0xDE, 0xAD] },
+        ] {
+            let operation = Operation::from(transform.clone());
+            assert_eq!(apply(operation.clone(), &bytes), transform.apply(&bytes), "{}", transform.describe());
+            let json = serde_json::to_value(&operation).unwrap();
+            assert_eq!(serde_json::from_value::<Operation>(json).unwrap(), operation);
+        }
+        let rolling = serde_json::to_value(Operation::RollingXor { start: 0x51, step: 5 }).unwrap();
+        assert_eq!(rolling, serde_json::json!({"op": "rolling_xor", "start": 0x51, "step": 5}));
+        let previous = serde_json::to_value(Operation::XorPrevious { feedback: Feedback::Ciphertext, key: 1 }).unwrap();
+        assert_eq!(previous, serde_json::json!({"op": "xor_previous", "feedback": "ciphertext", "key": 1}));
     }
 
     #[test]

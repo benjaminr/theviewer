@@ -95,7 +95,8 @@ const MAGICS: [(&[u8], &str); 10] = [
 ];
 
 /// Which byte feeds into the next key byte when XORing with the previous byte.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
 pub enum Feedback {
     /// `out[i] = in[i] ^ in[i-1] ^ key`: undoes `c[i] = p[i] ^ c[i-1] ^ key`.
     Ciphertext,

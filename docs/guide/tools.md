@@ -190,7 +190,8 @@ shorter key, which is listed first when the two decode about as well.
 - Tries rolling XOR, ADD, rotation and combined ciphers, or drags a known
   plaintext such as `PK\x03\x04` across the data to reveal the key.
 
-Decodes open as a document or apply as an edit.
+Decodes open as a document (*Open decoded*) or apply as an edit (*Apply*),
+which is a `transform.apply` step a recipe repeats.
 
 ### Checksums
 

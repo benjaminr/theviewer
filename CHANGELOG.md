@@ -79,6 +79,10 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   out of step with the sync word, above a sync word explaining nearly every
   byte; called address bytes the message type and missed the type after
   them; and gave its template two fields of the same name.
+- `transform.apply` and `documents.derive` take rolling XOR, XOR with the
+  previous byte, XOR then add, add then XOR and per-byte rotation, and each
+  `crypto.attack` candidate carries the `operation` that applies it. The
+  Crypto panel's *Apply* is now a `transform.apply` step a recipe repeats.
 
 ### Fixed
 

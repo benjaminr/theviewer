@@ -18,6 +18,7 @@ use crate::crypto_constants::CryptoMatch;
 use crate::keys::KeyFinding;
 use crate::panel_crypto::{self, DecodeResults};
 use crate::panel_crypto_constants::{self, ConstantsScan};
+use crate::selection_ops::Operation;
 
 /// This module's methods, in the order `api.describe` lists them within
 /// their namespace. A new method is added here, and only here.
@@ -25,7 +26,7 @@ pub(super) const METHODS: &[crate::api::Method] = &[
     method!("crypto.scan_constants", Job, caller scan_constants, ScanConstantsParams, JobStartedResult, "Start a scan of the whole document (an edited one's first 256 MiB) for well-known constants of crypto and compression code (AES S-boxes, hash initial values, CRC tables, deflate tables, Blowfish, DES, ChaCha, TEA, curve primes, Base64 alphabets) as a job: the matches are job.finished's result, and in the window they fill Crypto constants."),
     method!("crypto.repeated_blocks", Job, caller repeated_blocks, CryptoSpanParams, JobStartedResult, "Start a search of a span (at most 16 MiB) for random-looking 8- and 16-byte blocks that repeat, the mark of ECB-mode encryption, as a job: the verdict, the best block size and alignment, the most repeated blocks and the repeats along the span are job.finished's result, and in the window they fill the Crypto panel."),
     method!("crypto.find_keys", Job, caller find_keys, CryptoSpanParams, JobStartedResult, "Start a search of a span (the whole document by default, at most 64 MiB) for PEM blocks, DER certificates and keys, OpenSSH keys and random-looking runs that could be raw symmetric keys, as a job: what was found is job.finished's result, and in the window it fills the Crypto panel."),
-    method!("crypto.attack", Job, caller attack, AttackParams, JobStartedResult, "Start attacks on simple ciphers over a span (at most 1 MiB): rolling XOR, XOR with the previous byte, ADD/SUB with a constant or repeating key, bit rotation, XOR combined with ADD and, with a crib, crib dragging, as a job: the decodes that look most like text or structured data are job.finished's result, and in the window they fill the Crypto panel."),
+    method!("crypto.attack", Job, caller attack, AttackParams, JobStartedResult, "Start attacks on simple ciphers over a span (at most 1 MiB): rolling XOR, XOR with the previous byte, ADD/SUB with a constant or repeating key, bit rotation, XOR combined with ADD and, with a crib, crib dragging, as a job: the decodes that look most like text or structured data, each with the operation that transform.apply or documents.derive takes to apply it, are job.finished's result, and in the window they fill the Crypto panel."),
 ];
 
 /// An example call of each of [`METHODS`], run in order on a fresh
@@ -226,6 +227,9 @@ impl KeysFound {
 pub struct CipherDecode {
     /// What undoes the cipher, such as "rolling XOR: key 0x10 + 3·i".
     pub transform: String,
+    /// The same as an operation for transform.apply (or documents.derive's
+    /// transform) over the span attacked, such as {"op": "rolling_xor", "start": 16, "step": 3}.
+    pub operation: Operation,
     pub score: f64,
     pub printable_fraction: f64,
     /// Bits per byte of the decode.
@@ -240,6 +244,7 @@ impl CipherDecode {
     fn of(candidate: &CipherCandidate) -> Self {
         CipherDecode {
             transform: candidate.transform.describe(),
+            operation: Operation::from(candidate.transform.clone()),
             score: candidate.score,
             printable_fraction: candidate.printable_fraction,
             entropy: candidate.entropy,
@@ -410,5 +415,18 @@ mod tests {
         assert!(best["preview"].as_str().unwrap().starts_with("Attack at dawn"), "{best}");
         assert_eq!(call(&mut workspace, "crypto.attack", json!({"crib": "\\xZZ"})).unwrap_err().code, ErrorCode::InvalidParams);
         assert_eq!(call(&mut workspace, "crypto.attack", json!({"len": 2 * 1024 * 1024})).unwrap_err().code, ErrorCode::OutOfRange);
+    }
+
+    #[test]
+    fn the_top_decode_s_operation_applies_with_transform_apply_and_gives_the_plaintext_back() {
+        let plain = b"Attack at dawn, the quick brown fox jumps over the lazy dog. ".repeat(20);
+        let hidden: Vec<u8> = plain.iter().enumerate().map(|(index, byte)| byte ^ (0x51u8.wrapping_add((index as u8).wrapping_mul(5)))).collect();
+        let mut workspace = workspace_with("stage.bin", &[b"head".as_slice(), &hidden].concat());
+        let status = run_job(&mut workspace, "crypto.attack", json!({"start": 4, "len": hidden.len()}));
+        let operation = status["result"]["candidates"][0]["operation"].clone();
+        assert_eq!(operation, json!({"op": "rolling_xor", "start": 0x51, "step": 5}));
+        call(&mut workspace, "transform.apply", json!({"selection": {"range": [4, hidden.len()]}, "operation": operation})).unwrap();
+        let read = call(&mut workspace, "bytes.read", json!({"start": 4, "len": 14, "encoding": "text"})).unwrap();
+        assert_eq!(read["data"], "Attack at dawn");
     }
 }
