@@ -1144,6 +1144,7 @@ impl ViewerApp {
         const MOST_MATCHES: usize = 100_000;
         let Some(needle) = self.search_needle() else { return };
         let Ok(matches) = self.find_all_in_document(MOST_MATCHES) else { return };
+        let derived_from = self.all_matches_provenance(&matches);
         let ranges: Vec<(usize, usize)> = matches.into_iter().map(|at| (at, needle.len())).collect();
         if ranges.is_empty() {
             self.status = "No match".to_string();
@@ -1151,7 +1152,7 @@ impl ViewerApp {
         }
         let count = ranges.len();
         let end = ranges.last().map_or(0, |&(at, len)| at + len);
-        if !self.select_as_person(crate::selection_menu::selection_of(ranges), end) {
+        if !self.with_provenance(derived_from, |app| app.select_as_person(crate::selection_menu::selection_of(ranges), end)) {
             return;
         }
         self.reveal_cursor_centred();
@@ -1611,7 +1612,8 @@ impl ViewerApp {
 
     /// Select the match at `at`, as `selection.set`, and show it.
     fn show_match(&mut self, at: usize, len: usize, index_hint: &str) {
-        if !self.select_as_person(Some(Selection::Range(at, len)), at + len) {
+        let derived_from = self.match_provenance(at);
+        if !self.with_provenance(derived_from, |app| app.select_as_person(Some(Selection::Range(at, len)), at + len)) {
             return;
         }
         self.reveal_cursor_centred();
@@ -2870,7 +2872,8 @@ impl ViewerApp {
     /// `view.set_shape`.
     pub fn apply_period(&mut self, period: usize) {
         let (width, row_padding) = self.width_for_period(period);
-        if self.perform("view.set_shape", serde_json::json!({ "width": width, "row_padding": row_padding })).is_ok() {
+        let derived_from = self.period_provenance(period, width, row_padding);
+        if self.perform_derived("view.set_shape", serde_json::json!({ "width": width, "row_padding": row_padding }), derived_from).is_ok() {
             self.pan_x = 0.0;
             self.status = format!("Width set from a {period} byte period");
         }

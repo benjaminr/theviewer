@@ -196,7 +196,8 @@ impl ViewerApp {
     /// `selection.set`, and brings them into view.
     pub fn select_finding(&mut self, finding: &Finding) {
         let (start, end) = (finding.start.min(self.document.len()), finding.end().min(self.document.len()));
-        if self.select_as_person(Some(Selection::Range(start, end - start)), end) {
+        let derived_from = self.finding_provenance(finding, start, end - start);
+        if self.with_provenance(derived_from, |app| app.select_as_person(Some(Selection::Range(start, end - start)), end)) {
             self.reveal_finding(finding);
         }
     }

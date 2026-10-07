@@ -146,3 +146,6 @@ impl ViewerApp {
         DerivedFrom::from([("width".to_string(), Anchor::Step { step, path: format!("job.candidates[{candidate}].period") })])
     }
 }
+
+#[cfg(test)]
+mod tests;

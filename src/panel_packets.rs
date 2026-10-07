@@ -636,8 +636,14 @@ fn ask_now(app: &mut ViewerApp, method: &str, params: serde_json::Value, expecte
 /// expecting a set shown; a failure is said in the viewer when it is next
 /// drawn.
 pub(crate) fn ask_after_drawing(state: &mut PacketsState, app: &mut ViewerApp, method: &str, params: serde_json::Value, expected: Expected) {
+    ask_after_drawing_derived(state, app, method, params, expected, Default::default());
+}
+
+/// [`ask_after_drawing`], noting where the values of some parameters came
+/// from (the selection, a detected length field) for the journal.
+pub(crate) fn ask_after_drawing_derived(state: &mut PacketsState, app: &mut ViewerApp, method: &str, params: serde_json::Value, expected: Expected, derived_from: crate::journal::DerivedFrom) {
     state.expected = Some(expected);
-    app.perform_later(method, params);
+    app.perform_later_derived(method, params, derived_from);
 }
 
 /// Load the protocol analysis's messages, starting the analysis first if it
@@ -686,7 +692,10 @@ pub fn capture_containing(app: &mut ViewerApp, offset: usize) -> Option<usize> {
 pub fn add_selection_as_packet(app: &mut ViewerApp) {
     let call = with_state(app, add_selection_call);
     match call {
-        Ok((method, params)) => drop(ask_now(app, method, params, Expected::Set)),
+        Ok((method, params)) => {
+            let derived_from = app.selection_call_provenance(&params);
+            let _ = app.with_provenance(derived_from, |app| ask_now(app, method, params, Expected::Set));
+        }
         Err(note) => app.bench.panels.packets.show_note(note, true),
     }
     app.dock.toggle(DockTab::Packets);
@@ -696,7 +705,10 @@ pub fn add_selection_as_packet(app: &mut ViewerApp) {
 /// `packets.sets.create`, decoded as the viewer decodes frames now.
 pub fn split_selection_by_row_width(app: &mut ViewerApp) {
     match split_call(&app.bench.panels.packets, app, app.shape.row_stride()) {
-        Ok(params) => drop(ask_now(app, "packets.sets.create", params, Expected::Set)),
+        Ok(params) => {
+            let derived_from = app.selection_call_provenance(&params);
+            let _ = app.with_provenance(derived_from, |app| ask_now(app, "packets.sets.create", params, Expected::Set));
+        }
         Err(note) => app.bench.panels.packets.show_note(note, true),
     }
     app.dock.toggle(DockTab::Packets);
@@ -937,7 +949,10 @@ fn delimiter_call(state: &PacketsState, app: &ViewerApp) -> Result<serde_json::V
 /// there is none.
 fn ask_for_set(state: &mut PacketsState, app: &mut ViewerApp, call: Result<(&'static str, serde_json::Value), String>) {
     match call {
-        Ok((method, params)) => ask_after_drawing(state, app, method, params, Expected::Set),
+        Ok((method, params)) => {
+            let derived_from = app.selection_call_provenance(&params);
+            ask_after_drawing_derived(state, app, method, params, Expected::Set, derived_from);
+        }
         Err(note) => state.show_note(note, true),
     }
 }

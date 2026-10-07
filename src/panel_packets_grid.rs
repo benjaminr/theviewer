@@ -396,7 +396,11 @@ pub fn split_now(state: &mut PacketsState, app: &mut ViewerApp) {
         return;
     };
     match split_rule_call(state, app, start, len) {
-        Ok(params) => panel::ask_after_drawing(state, app, "packets.sets.create", params, Expected::Split { start, len }),
+        Ok(params) => {
+            let mut derived_from = app.selection_call_provenance(&params);
+            derived_from.extend(app.length_field_provenance(&params));
+            panel::ask_after_drawing_derived(state, app, "packets.sets.create", params, Expected::Split { start, len }, derived_from);
+        }
         Err(note) => state.note = Some(Note { text: note, is_error: true }),
     }
 }
@@ -408,7 +412,9 @@ pub fn detect_length_field(state: &mut PacketsState, app: &mut ViewerApp) {
         state.note = Some(Note { text: "There are no bytes to look at: the range is empty.".to_string(), is_error: true });
         return;
     };
-    let found = match app.perform_typed::<LengthFieldFound>("packets.detect_length_field", serde_json::json!({ "start": start, "len": len })) {
+    let params = serde_json::json!({ "start": start, "len": len });
+    let derived_from = app.selection_call_provenance(&params);
+    let found = match app.with_provenance(derived_from, |app| app.perform_typed::<LengthFieldFound>("packets.detect_length_field", params)) {
         Ok(found) => found,
         Err(_) => {
             state.note = Some(Note { text: app.status.clone(), is_error: true });
