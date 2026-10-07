@@ -8,8 +8,8 @@
 //! background threads too, and the panel collects each result on a later
 //! frame.
 
-use std::fs::{File, OpenOptions};
-use std::io::{ErrorKind, Read, Write};
+use std::fs::File;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
@@ -21,11 +21,10 @@ use eframe::egui::{self, Color32, RichText, Ui};
 use crate::app::ViewerApp;
 use crate::compress::human_bytes;
 use crate::fuzzy::{self, FuzzyHash, SharedFragment};
-use crate::learn::{self, LearnedFormat, Sample};
+use crate::api::tools::learn::{MAX_FILE_BYTES, run_comparison, run_fragments, run_learning};
+use crate::learn::LearnedFormat;
 use crate::theme;
 
-/// Largest part of each file that is read.
-const MAX_FILE_BYTES: usize = 16 * 1024 * 1024;
 /// How often to look for finished work while something is pending.
 const PENDING_REPAINT: Duration = Duration::from_millis(100);
 /// Tallest a code view grows before it scrolls, in points.
@@ -36,8 +35,6 @@ const FRAGMENT_LIST_HEIGHT: f32 = 240.0;
 const MAX_LISTED_FRAGMENTS: usize = 2000;
 /// Error messages kept on screen.
 const MAX_MESSAGES: usize = 5;
-/// Most numbered variants tried when a catalogue file name is taken.
-const MAX_FILE_NAME_ATTEMPTS: usize = 1000;
 /// Scores at or above this are drawn in the accent colour.
 const STRONG_SIMILARITY: u32 = 50;
 
@@ -49,11 +46,12 @@ const JOB_ENDED_EARLY: &str = "The background job stopped without a result.";
 
 /// A file read from disk, up to [`MAX_FILE_BYTES`].
 #[derive(Debug)]
-struct LoadedFile {
-    name: String,
-    bytes: Arc<[u8]>,
+pub(crate) struct LoadedFile {
+    pub(crate) path: PathBuf,
+    pub(crate) name: String,
+    pub(crate) bytes: Arc<[u8]>,
     /// The file's full length, which may exceed `bytes`.
-    file_len: u64,
+    pub(crate) file_len: u64,
 }
 
 impl LoadedFile {
@@ -63,9 +61,9 @@ impl LoadedFile {
 }
 
 /// A file compared with the document by fuzzy hash.
-struct ComparedFile {
-    file: LoadedFile,
-    hash: FuzzyHash,
+pub(crate) struct ComparedFile {
+    pub(crate) file: LoadedFile,
+    pub(crate) hash: FuzzyHash,
 }
 
 /// Identifies the document's contents, so results can be recomputed when it
@@ -142,7 +140,7 @@ impl LearnState {
 
 /// Draw the Learn panel.
 pub fn show_learn(state: &mut LearnState, app: &mut ViewerApp, ui: &mut Ui) {
-    poll_background_work(state);
+    poll_background_work(state, app);
     if state.is_busy() {
         ui.ctx().request_repaint_after(PENDING_REPAINT);
     }
@@ -165,7 +163,7 @@ pub fn show_learn(state: &mut LearnState, app: &mut ViewerApp, ui: &mut Ui) {
             .show(ui, |ui| jump = show_fuzzy(state, app, ui));
     });
     if let Some(offset) = jump {
-        app.jump_to_offset(offset);
+        app.jump_from_tool(offset);
     }
 }
 
@@ -179,7 +177,7 @@ fn show_learning(state: &mut LearnState, app: &mut ViewerApp, ui: &mut Ui) {
         }
         let can_learn = !state.samples.is_empty() && state.learning.is_none() && !app.document.is_empty();
         if ui.add_enabled(can_learn, egui::Button::new("Learn")).clicked() {
-            start_learning(state, app);
+            ask_to_learn(state, app);
         }
         if state.sample_loading.is_some() {
             ui.spinner();
@@ -219,15 +217,7 @@ fn show_learning(state: &mut LearnState, app: &mut ViewerApp, ui: &mut Ui) {
         ui.label(RichText::new(format!("Saved to {}", path.display())).small().color(theme::ACCENT));
     }
     if save {
-        let toml = learned.catalogue_toml.clone();
-        let id = learned.id.clone();
-        match save_to_catalogue(&id, &toml) {
-            Ok(path) => {
-                state.saved_to = Some(path);
-                app.reload_plugins();
-            }
-            Err(message) => state.report(message),
-        }
+        save_learned(state, app);
     }
     if apply && let Some(learned) = &state.learned {
         let template = learned.template.clone();
@@ -454,7 +444,7 @@ fn take_dialog_answer(dialog: &mut Option<ManyFilesRequest>) -> Option<Vec<PathB
     answer
 }
 
-fn poll_background_work(state: &mut LearnState) {
+fn poll_background_work(state: &mut LearnState, app: &mut ViewerApp) {
     if let Some(paths) = take_dialog_answer(&mut state.sample_dialog) {
         state.sample_loading = Some(spawn_job(move || paths.iter().map(|path| read_file(path)).collect()));
     }
@@ -481,7 +471,7 @@ fn poll_background_work(state: &mut LearnState) {
     }
     poll_document_hash(state);
     if let Some(paths) = take_dialog_answer(&mut state.compare_dialog) {
-        state.compare_loading = Some(spawn_job(move || paths.iter().map(|path| read_and_hash(path)).collect()));
+        app.perform_later("learn.fuzzy_compare", serde_json::json!({ "paths": paths }));
     }
     match take_finished(&mut state.compare_loading) {
         Some(Ok(loaded)) => {
@@ -528,19 +518,13 @@ fn spawn_job<T: Send + 'static>(job: impl FnOnce() -> T + Send + 'static) -> Rec
 }
 
 /// Read up to [`MAX_FILE_BYTES`] of `path`, noting its full length.
-fn read_file(path: &Path) -> Result<LoadedFile, String> {
+pub(crate) fn read_file(path: &Path) -> Result<LoadedFile, String> {
     let name = path.file_name().map_or_else(|| path.display().to_string(), |name| name.to_string_lossy().into_owned());
     let file = File::open(path).map_err(|error| format!("Could not open {name}: {error}"))?;
     let file_len = file.metadata().map_err(|error| format!("Could not read the size of {name}: {error}"))?.len();
     let mut bytes = Vec::new();
     file.take(MAX_FILE_BYTES as u64).read_to_end(&mut bytes).map_err(|error| format!("Could not read {name}: {error}"))?;
-    Ok(LoadedFile { name, bytes: bytes.into(), file_len })
-}
-
-fn read_and_hash(path: &Path) -> Result<ComparedFile, String> {
-    let file = read_file(path)?;
-    let hash = fuzzy::fuzzy_hash(&file.bytes);
-    Ok(ComparedFile { file, hash })
+    Ok(LoadedFile { path: path.to_path_buf(), name, bytes: bytes.into(), file_len })
 }
 
 /// The document's leading bytes, capped like added files.
@@ -560,65 +544,76 @@ fn ensure_document_hash(state: &mut LearnState, app: &mut ViewerApp) {
     state.hashing = Some((key, spawn_job(move || fuzzy::fuzzy_hash(&bytes))));
 }
 
-fn start_learning(state: &mut LearnState, app: &mut ViewerApp) {
-    let document = document_bytes(app);
-    let document_len = app.document.len() as u64;
-    let samples: Vec<(Arc<[u8]>, u64)> = std::iter::once((document, document_len))
-        .chain(state.samples.iter().map(|sample| (Arc::clone(&sample.bytes), sample.file_len)))
-        .collect();
-    state.learning = Some(spawn_job(move || {
-        let views: Vec<Sample> = samples.iter().map(|(bytes, file_len)| Sample { bytes, file_len: *file_len }).collect();
-        learn::learn_format(&views).map_err(|error| format!("Could not learn a format: {error}."))
-    }));
+/// Save the learned signature to the person's catalogue, through
+/// `learn.save_catalogue`, and say where it went or why it could not.
+fn save_learned(state: &mut LearnState, app: &mut ViewerApp) {
+    let Some(learned) = &state.learned else { return };
+    let params = serde_json::json!({ "id": learned.id, "toml": learned.catalogue_toml });
+    match app.perform("learn.save_catalogue", params) {
+        Ok(saved) => state.saved_to = saved["path"].as_str().map(PathBuf::from),
+        Err(error) => state.report(error.message),
+    }
 }
 
+/// Ask to learn the format of the document and the samples, through
+/// `learn.format`.
+fn ask_to_learn(state: &LearnState, app: &mut ViewerApp) {
+    let paths: Vec<&Path> = state.samples.iter().map(|sample| sample.path.as_path()).collect();
+    app.perform_later("learn.format", serde_json::json!({ "paths": paths }));
+}
+
+/// Ask for the shared fragments of the document and the file chosen in
+/// the table, through `learn.fragments`.
 fn start_fragment_search(state: &mut LearnState, app: &mut ViewerApp) {
     let Some(compared) = state.chosen.and_then(|index| state.compared.get(index)) else { return };
-    let other = Arc::clone(&compared.file.bytes);
-    let file_name = compared.file.name.clone();
+    let params = serde_json::json!({ "path": compared.file.path, "block": fuzzy::DEFAULT_FRAGMENT_BLOCK });
+    app.perform_later("learn.fragments", params);
+}
+
+/// Start a job of `producer`'s about the document shown.
+fn start_job_as(app: &mut ViewerApp, kind: &str, title: &str, producer: &str) -> crate::bus::JobHandle {
+    let document = Some((app.document_id(), app.document.version()));
+    app.bus.start_job(kind, title, producer, document)
+}
+
+/// Learn what the document and the files at `paths` share, as
+/// `producer`'s job, and show it here: what `learn.format` does in the
+/// window. Returns the job.
+pub fn learn_as(app: &mut ViewerApp, paths: Vec<PathBuf>, producer: &str) -> String {
+    let document = document_bytes(app);
+    let document_len = app.document.len() as u64;
+    let job = start_job_as(app, "learn", "Learning a format", producer);
+    let id = job.id().to_string();
+    app.bench.panels.learn.learning = Some(spawn_job(move || run_learning(document, document_len, &paths, &job)));
+    id
+}
+
+/// Hash the files at `paths` and score them against the document, as
+/// `producer`'s job, adding them to the table here: what
+/// `learn.fuzzy_compare` does in the window. Returns the job.
+pub fn compare_as(app: &mut ViewerApp, paths: Vec<PathBuf>, producer: &str) -> String {
+    let document = document_bytes(app);
+    let job = start_job_as(app, "fuzzy-compare", "Comparing files", producer);
+    let id = job.id().to_string();
+    app.bench.panels.learn.compare_loading = Some(spawn_job(move || run_comparison(&document, &paths, &job)));
+    id
+}
+
+/// Find the blocks of the document that occur in the file at `path`, as
+/// `producer`'s job, and list them here: what `learn.fragments` does in
+/// the window. Returns the job.
+pub fn fragments_as(app: &mut ViewerApp, path: PathBuf, block: usize, producer: &str) -> String {
     let document = DocumentKey::of(app);
     let here = document_bytes(app);
+    let job = start_job_as(app, "fragments", "Finding shared fragments", producer);
+    let id = job.id().to_string();
+    let state = &mut app.bench.panels.learn;
     state.fragments = None;
     state.fragments_pending = Some(spawn_job(move || {
-        let fragments = fuzzy::shared_fragments(&here, &other, fuzzy::DEFAULT_FRAGMENT_BLOCK).map_err(|error| error.to_string())?;
+        let (file_name, fragments) = run_fragments(&here, &path, block, &job)?;
         Ok(FragmentReport { document, file_name, fragments })
     }));
-}
-
-// ---------------------------------------------------------------------------
-// Saving
-// ---------------------------------------------------------------------------
-
-/// A file name stem from a catalogue id: `user/learned-5158` → `learned-5158`.
-fn file_stem_for(id: &str) -> String {
-    let last = id.rsplit('/').next().unwrap_or(id);
-    let stem: String = last.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '-' }).collect();
-    if stem.is_empty() { "learned".to_string() } else { stem }
-}
-
-/// Write `toml` to a new file in `dir`, named after `id`, adding `-2`, `-3`
-/// and so on rather than overwriting an existing file.
-fn write_new_catalogue_file(dir: &Path, id: &str, toml: &str) -> Result<PathBuf, String> {
-    std::fs::create_dir_all(dir).map_err(|error| format!("Could not create {}: {error}", dir.display()))?;
-    let stem = file_stem_for(id);
-    for attempt in 1..=MAX_FILE_NAME_ATTEMPTS {
-        let name = if attempt == 1 { format!("{stem}.toml") } else { format!("{stem}-{attempt}.toml") };
-        let path = dir.join(name);
-        match OpenOptions::new().write(true).create_new(true).open(&path) {
-            Ok(mut file) => {
-                file.write_all(toml.as_bytes()).map_err(|error| format!("Could not write {}: {error}", path.display()))?;
-                return Ok(path);
-            }
-            Err(error) if error.kind() == ErrorKind::AlreadyExists => continue,
-            Err(error) => return Err(format!("Could not create {}: {error}", path.display())),
-        }
-    }
-    Err(format!("{} already holds {MAX_FILE_NAME_ATTEMPTS} files named {stem}; remove some first", dir.display()))
-}
-
-fn save_to_catalogue(id: &str, toml: &str) -> Result<PathBuf, String> {
-    let dir = crate::app::user_catalog_dir().ok_or("Could not find your catalogue folder: HOME is not set.")?;
-    write_new_catalogue_file(&dir, id, toml)
+    id
 }
 
 #[cfg(test)]
@@ -631,23 +626,6 @@ mod tests {
         dir
     }
 
-    /// Draw the panel once in a headless frame.
-    fn draw_frame(ctx: &egui::Context, state: &mut LearnState, app: &mut ViewerApp) {
-        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| show_learn(state, app, ui));
-        output.textures_delta.clear();
-    }
-
-    /// Draw frames until no background work is pending, or give up.
-    fn draw_until_idle(ctx: &egui::Context, state: &mut LearnState, app: &mut ViewerApp) {
-        for _ in 0..500 {
-            draw_frame(ctx, state, app);
-            if !state.is_busy() {
-                return;
-            }
-            thread::sleep(Duration::from_millis(10));
-        }
-        panic!("background work did not finish");
-    }
 
     /// A "QXF1" file: magic, version, u32 LE total length, varied body.
     fn qxf_sample(version: u8, total_len: usize) -> Vec<u8> {
@@ -662,58 +640,87 @@ mod tests {
         bytes
     }
 
-    fn loaded(name: &str, bytes: Vec<u8>) -> LoadedFile {
-        LoadedFile { name: name.to_string(), file_len: bytes.len() as u64, bytes: bytes.into() }
+    use serde_json::json;
+
+    use crate::actions::take_performed;
+
+    /// Draw the panel once in a headless frame, with its state lent out as
+    /// the window does, after carrying out the actions asked for while drawing.
+    fn draw_app_frame(ctx: &egui::Context, app: &mut ViewerApp) {
+        app.perform_waiting_actions();
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| crate::panels::show(app, ui, |panels| &mut panels.learn, show_learn));
+        output.textures_delta.clear();
+    }
+
+    /// Draw frames until the panel has no background work, or give up.
+    fn draw_app_until_idle(ctx: &egui::Context, app: &mut ViewerApp) {
+        for _ in 0..3000 {
+            draw_app_frame(ctx, app);
+            if !app.bench.panels.learn.is_busy() && app.actions_after_drawing.is_empty() {
+                return;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        panic!("background work did not finish");
     }
 
     #[test]
-    fn learning_hashing_and_fragment_search_run_and_draw_without_panicking() {
-        let ctx = egui::Context::default();
-        let mut app = ViewerApp::new(crate::app::Launch::default());
+    fn learning_comparing_and_finding_fragments_are_the_person_s_steps_shown_in_the_panel() {
+        let dir = scratch_dir("steps");
+        std::fs::create_dir_all(&dir).unwrap();
         let document = qxf_sample(1, 6000);
-        app.document = crate::document::Document::from_bytes(document.clone());
-
-        let mut state = LearnState::default();
-        state.samples.push(loaded("two.qxf", qxf_sample(2, 7000)));
-        state.samples.push(loaded("three.qxf", qxf_sample(3, 5100)));
+        let (two, three, related_path) = (dir.join("two.qxf"), dir.join("three.qxf"), dir.join("related.bin"));
+        std::fs::write(&two, qxf_sample(2, 7000)).unwrap();
+        std::fs::write(&three, qxf_sample(3, 5100)).unwrap();
         // A file that embeds part of the document at another offset.
         let mut related = vec![0x5Au8; 300];
         related.extend_from_slice(&document[1024..5120]);
-        let hash = fuzzy::fuzzy_hash(&related);
-        state.compared.push(ComparedFile { file: loaded("related.bin", related), hash });
-        state.chosen = Some(0);
+        std::fs::write(&related_path, &related).unwrap();
+        let ctx = egui::Context::default();
+        let mut app = ViewerApp::new(crate::app::Launch::default());
+        app.open_bytes(document, "one.qxf".to_string());
+        app.run_bus();
+        take_performed();
 
-        start_learning(&mut state, &mut app);
-        start_fragment_search(&mut state, &mut app);
-        draw_until_idle(&ctx, &mut state, &mut app);
+        let state = &mut app.bench.panels.learn;
+        state.samples.push(read_file(&two).unwrap());
+        state.samples.push(read_file(&three).unwrap());
+        let state = std::mem::take(&mut app.bench.panels.learn);
+        ask_to_learn(&state, &mut app);
+        app.bench.panels.learn = state;
+        app.perform_later("learn.fuzzy_compare", json!({"paths": [related_path]}));
+        draw_app_until_idle(&ctx, &mut app);
+        let state = &app.bench.panels.learn;
         assert!(state.messages.is_empty(), "{:?}", state.messages);
-
-        let learned = state.learned.as_ref().expect("a learned format");
-        assert_eq!(learned.id, "user/learned-51584631");
+        assert_eq!(state.learned.as_ref().map(|learned| learned.id.as_str()), Some("user/learned-51584631"));
+        assert_eq!(state.compared.len(), 1);
         assert!(state.document_hash.is_some());
-        let report = state.fragments.as_ref().expect("fragments");
+
+        let mut state = std::mem::take(&mut app.bench.panels.learn);
+        state.chosen = Some(0);
+        start_fragment_search(&mut state, &mut app);
+        app.bench.panels.learn = state;
+        draw_app_until_idle(&ctx, &mut app);
+        let report = app.bench.panels.learn.fragments.as_ref().expect("fragments");
         assert_eq!(report.fragments, vec![SharedFragment { offset_here: 1024, offset_there: 300, len: 4096 }]);
-        draw_frame(&ctx, &mut state, &mut app);
-    }
-
-    #[test]
-    fn catalogue_files_are_named_after_the_id_and_never_overwritten() {
-        let dir = scratch_dir("save");
-        let first = write_new_catalogue_file(&dir, "user/learned-51584631", "one").unwrap();
-        let second = write_new_catalogue_file(&dir, "user/learned-51584631", "two").unwrap();
-        assert_eq!(first.file_name().unwrap(), "learned-51584631.toml");
-        assert_eq!(second.file_name().unwrap(), "learned-51584631-2.toml");
-        assert_eq!(std::fs::read_to_string(&first).unwrap(), "one");
-        assert_eq!(std::fs::read_to_string(&second).unwrap(), "two");
+        assert_eq!(
+            take_performed(),
+            [
+                ("learn.format".to_string(), json!({"paths": [two, three]})),
+                ("learn.fuzzy_compare".to_string(), json!({"paths": [related_path]})),
+                ("learn.fragments".to_string(), json!({"path": related_path, "block": fuzzy::DEFAULT_FRAGMENT_BLOCK})),
+            ]
+        );
+        let mut state = std::mem::take(&mut app.bench.panels.learn);
+        save_learned(&mut state, &mut app);
+        let saved = state.saved_to.clone().expect("saved to the catalogue");
+        let learned = state.learned.clone().unwrap();
+        assert_eq!(take_performed(), [("learn.save_catalogue".to_string(), json!({"id": learned.id, "toml": learned.catalogue_toml}))]);
+        assert_eq!(std::fs::read_to_string(&saved).unwrap(), learned.catalogue_toml);
+        let _ = std::fs::remove_file(saved);
+        let producers: Vec<String> = app.bus.jobs().list().into_iter().filter(|job| job.title != "Pattern scan").map(|job| job.producer).collect();
+        assert!(producers.iter().filter(|producer| *producer == "panel").count() >= 3, "{producers:?}");
         let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn odd_ids_still_give_safe_file_names() {
-        assert_eq!(file_stem_for("user/learned-ab"), "learned-ab");
-        assert_eq!(file_stem_for("../../etc"), "etc");
-        assert_eq!(file_stem_for("a b/c:d"), "c-d");
-        assert_eq!(file_stem_for(""), "learned");
     }
 
     #[test]
