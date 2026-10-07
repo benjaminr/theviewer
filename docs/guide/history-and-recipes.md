@@ -171,9 +171,23 @@ you leave it empty), then:
   to that one.
 
 Only the steps in effect are saved: undone, failed and refused steps, moves
-along the history, notes, and steps that only opened or saved files are
+along the history, notes, and steps that opened a file or saved one are
 left out. The notes linked to a step become its note in the recipe (see
 [Notes](#notes)).
+
+**Sheets.** A step that makes a new document from another, a **sheet**
+(opening the selection as a document, decompressing a stream, opening an
+unpacked file, decoding a line code), is kept. The steps after it that work
+on the sheet name it by the step that made it, not by its id in this
+session, so on the next file they work on the sheet made there, not on the
+file itself. Each step is saved on the document it actually ran on, and
+the recipe's file is the one its sheets all came from.
+
+If a step would not replay, nothing is saved and the History tab says
+which step and why: a step on a second file you opened, or on a sheet made
+by a step that was undone or by a panel outside the history. Save the
+steps up to before it (*Save up to here as recipe…*), or redo the work
+through steps the history records.
 
 ## Running a recipe in the window
 
@@ -222,6 +236,12 @@ is JSON. Without `--save` or `--out`, no file is changed.
 
 A file the recipe stopped on is not saved. The exit code is non-zero when
 the recipe stopped on any file, or a file could not be opened or saved.
-`--param KEY=VALUE` gives a parameter, and can be repeated. See
+`--param KEY=VALUE` gives a parameter, and can be repeated.
+
+- `--save-sheets DIR` saves each sheet the recipe made, such as an
+  unpacked file or a decoded stream, into DIR.
+- `--allow-writes` lets steps that write files run. Without it, a recipe
+  that would write one (perhaps one someone sent you) stops there.
+- `--plugins DIR` loads plugins from DIR instead of the usual places. See
 [Command line](command-line.md#theviewer-replay) and
 [docs/recipes.md](../recipes.md).

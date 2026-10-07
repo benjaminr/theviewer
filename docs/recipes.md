@@ -12,6 +12,7 @@ values*, *Run recipe…*), see the guide's
 [History and recipes](guide/history-and-recipes.md).
 
 - [A recipe file](#a-recipe-file)
+- [Format 2](#format-2)
 - [Steps and documents](#steps-and-documents)
 - [Parameters](#parameters)
 - [Anchors](#anchors)
@@ -55,12 +56,13 @@ a recipe file anywhere else is used by its path.
 
 | Field | Required | Meaning |
 | --- | --- | --- |
-| `recipe` | yes | The file format, `1`. A recipe of a later format is refused, with a message to update theviewer. |
+| `recipe` | yes | The file format: `1`, or `2` for a recipe that uses what only format 2 can say (see [Format 2](#format-2)). A recipe of a later format is refused, with a message to update theviewer. |
 | `api_version` | yes | The API's major version the steps were recorded against, `"1.x"`. Running under another major version warns. |
 | `name` | yes | The recipe's name, which may not be empty. `recipes.list`, `theviewer replay "NAME"` and the edit labels ("… by recipe:Telemetry frames") use it. |
 | `description` | no | What it is for. |
 | `parameters` | no | The values it asks for when it runs, by name; see [Parameters](#parameters). |
-| `recorded_on` | no | The file it was recorded on: `name`, `size` and `sha256` (left out for a file over 256 MiB). Running on another file warns. |
+| `recorded_on` | no | The file it was recorded on: `name`, `size` and `sha256` (left out for a file over 256 MiB). Running on another file warns. In format 2 it is `inputs.input.recorded_on`. |
+| `inputs` | no | Format 2: the documents it runs on, by name, each with the file it was `recorded_on`. `input` is the one it is run on. |
 | `plugins` | no | The plugins loaded when it was recorded, each `name` and `sha256` of its source. Running without one, or with a changed one, warns. |
 | `steps` | yes | The calls, in order; see below. |
 
@@ -72,24 +74,56 @@ Each step is:
 | `method` | yes | The method to call, such as `packets.sets.create`, a plugin's (`acme.decode_frame`) included. |
 | `params` | no | Its parameters: literals, except where a value is marked as an anchor. |
 | `note` | no | What the step is for, in your words. A recipe made from the history fills it from the notes linked to the step (see [Making the recipe](#making-the-recipe)). |
+| `makes` | no | Format 2: a label for the sheet the step makes, which later steps name as `{"sheet": "label"}`. |
 
 The JSON Schema of the file is the `recipe` parameter's in
 `api.describe` (`recipes.save` takes a recipe whole).
 
+## Format 2
+
+Format 2 adds what format 1 cannot say: [sheet anchors](#sheet-a-document-of-the-run),
+a step's `makes` label, and `inputs`. A recipe is written as format 2 only
+when it uses one of them, so a recipe that needs none of them is still
+format 1 and runs on older builds; this build reads both.
+
+```json
+{
+  "recipe": 2, "api_version": "1.x", "name": "NovaCam triage",
+  "inputs": { "input": { "recorded_on": { "name": "novacam_2.1.0.upd", "size": 1612, "sha256": "…" } } },
+  "steps": [
+    { "step": 1, "method": "documents.derive", "makes": "payload",
+      "params": { "ranges": [[24, 252], [280, 252]] }, "note": "strip the CRC trailers" },
+    { "step": 2, "method": "unpack.run", "params": { "doc": { "$anchor": { "sheet": "payload" } } } },
+    { "step": 3, "method": "unpack.open", "params": { "doc": { "$anchor": { "sheet": { "step": 1 } } }, "path": [0, 1] } },
+    { "step": 4, "method": "strings.find", "params": { "doc": { "$anchor": { "sheet": { "step": 3 } } } } }
+  ]
+}
+```
+
 ## Steps and documents
 
-A recipe runs on one document: the one it is run on (the file given to
-`theviewer replay`, the document named by `recipes.run`'s `doc`, or the
-current one). A step's `doc` that names the document the recipe was
-recorded on means the run's document: a step with no `doc`, with
-`"current"`, or with the id that the first step naming a document names
-(`"doc-1"` as recorded). Recipes made from the journal leave the recorded
-document's `doc` out altogether.
+A recipe runs on one document, its **input**: the one it is run on (the
+file given to `theviewer replay`, the document named by `recipes.run`'s
+`doc`, or the current one). A step with no `doc` (when its method takes
+one), or with `"current"`, runs on the input.
 
-A step's other `doc` values are kept as written. A document an earlier step
-opened (`documents.derive`, `codecs.open_decoded`) is best named by a step
-anchor on that step's result, such as
-`{"$anchor": {"step": 2, "path": "result.doc"}}`.
+Steps that make a document from another make **sheets**:
+`documents.derive`, `codecs.open_decoded`, `bits.open_plane`,
+`bits.decode_linecode`, `unpack.open`, `forensics.open_entry`,
+`crypto.open_decrypted`, and `packets.sets.create` with `gunzip` or
+`packets.http_bodies` with `open`. A recipe repeats them, and later steps
+name what they made with a sheet anchor: `{"$anchor": {"sheet": {"step": 2}}}`
+for the sheet step 2 made, `{"$anchor": {"sheet": "payload"}}` for the one a
+step labelled with its `makes`, and `{"$anchor": {"sheet": "input"}}` for
+the input, at any parameter path. Each such method returns the sheet it made
+as `output: {doc, label?, len}` (or `outputs`, a list, for one that may make
+several), which is how the run knows it.
+
+A document named by its id (`"doc-4"`) is taken as it is, and must be the
+input or a sheet the run made: a step naming any other id stops the run
+before it calls anything, rather than running on some other document. Ids
+belong to the session that made them, so a recipe made from the journal
+never names a document by id.
 
 ## Parameters
 
@@ -230,6 +264,34 @@ selected.
 The value given for the recipe's parameter, or its default; see
 [Parameters](#parameters).
 
+### Sheet: a document of the run
+
+```json
+{ "sheet": { "step": 2 } }
+{ "sheet": { "step": 5, "nth": 1 } }
+{ "sheet": "payload" }
+{ "sheet": "input" }
+```
+
+The id, in this run, of the sheet step `step` made (its `nth` from 0, for a
+step that made several), of the sheet a step labelled `payload` with its
+`makes`, or of the run's input (`"input"`). The step must come earlier and
+have made it; a sheet anchor naming a later step, or a label no earlier
+step gives, is a mistake the recipe's warnings point out. A `doc` that is a
+sheet anchor is resolved first, so the step's other anchors are found in
+that sheet. In a preview, a sheet not yet made is shown as waiting for its
+step, and the anchors to be found in it with it.
+
+| Anchor | JSON | Resolves to |
+| --- | --- | --- |
+| Step | `{"step": 3, "path": "result.at"}` | a value an earlier step was given or returned |
+| Find | `{"find": {"hex": "7ea5"}, "nth": 0}` | where a search matches |
+| Structure | `{"structure": "png", "field": "IHDR.width"}` | a parsed field's offset, length or value |
+| Finding | `{"finding": {"category": "compressed"}}` | a finding's span |
+| Selection | `{"selection": "current"}` | what is selected when the step runs |
+| Param | `{"param": "key"}` | a value given when the recipe runs |
+| Sheet | `{"sheet": {"step": 3}}`, `{"sheet": "payload"}`, `{"sheet": "input"}` | the sheet step 3 made, the sheet labelled payload, or the run's input |
+
 ## Recording a recipe
 
 Every call that changes something is a step of the session's journal, by
@@ -243,11 +305,20 @@ is moved into the journal under its own number. Calls made inside another
 call are part of that call's step. See
 [The journal, undo and replay](api.md#the-journal-undo-and-replay).
 
-**Which steps a recipe takes.** The successful steps in effect: undone,
-failed and refused steps are left out, as are moves along the history
-(`history.undo`, `history.go_back`…), steps that opened a document or wrote
-a file, `plugins.reload` and the live sources' switches. A step that cites
-an earlier step through a step anchor brings that step along.
+**Which steps a recipe takes.** The successful steps in effect, and among
+them the steps that make sheets (`documents.derive`, `unpack.open`…; see
+[Steps and documents](#steps-and-documents)). Undone, failed and refused
+steps are left out, as are moves along the history (`history.undo`,
+`history.go_back`…), steps that opened a file or a source or a new document
+(`documents.open`, `.new`, `.open_source`: those are the recipe's input,
+not its steps), steps that wrote a file, `plugins.reload` and the live
+sources' switches. A step that cites an earlier step through a step anchor
+brings that step along, and so does a step that runs on a sheet: the step
+that made it comes too, when it is in effect.
+
+`history.recipe`, `history.save_recipe`, `recipes.save` and the History
+tab's *Save to my recipes* and *Save as recipe…* all make the recipe with
+one builder, so they keep the same steps.
 
 **Provenance.** Where the window knows where a value came from, it records
 it on the step as an anchor (in the entry's `derived_from`):
@@ -292,10 +363,22 @@ tab's *Save to my recipes* and *Save as recipe…*):
   anchor that cites a step the recipe does not hold stays literal;
 - declares each parameter a param anchor uses, with the type and default
   from the literal, or as `history.make_parameter` gave them;
-- drops a `doc` that names the recorded document, so each step runs on the
-  run's document;
-- records the API version, the plugins loaded and the file the first step
-  was about;
+- takes each step's document from the journal, which recorded the one the
+  call ran on, not from its params, which often name none;
+- takes for the recorded document the file the steps' documents all come
+  from, by the sheets' lineage (a sheet's parent, its parent's, and so on),
+  not the first document a step names; leaves it out of a step's `doc`, so
+  the step runs on the run's input, and names it `{"sheet": "input"}` at
+  any other path;
+- names every other document, at any parameter path, by a sheet anchor on
+  the step that made it (by the label it gave, when it gave one). A step
+  naming a document no step of the recipe made (one opened from a second
+  file, a sheet made outside the history or by a step left out or undone)
+  fails the recipe, with an error naming the step, the document and why,
+  and the problems as `data.problems`; the History tab shows it before
+  asking where to save;
+- records the API version, the plugins loaded and that file;
+- is written as format 1 unless it needs [format 2](#format-2);
 - leaves out the notes written with `history.note` as steps, and puts each
   note's text into the `note` of every step it is linked to, several notes
   on one step joined by a blank line. A step the note cites as `#12` is
@@ -317,7 +400,9 @@ There are four ways, all through the same runner:
 
 A run goes like this:
 
-1. **The document** is the run's (see [Steps and documents](#steps-and-documents)).
+1. **The document** is the run's input (see [Steps and documents](#steps-and-documents)).
+   The sheets each step makes are kept, by step and by label, for later
+   steps' sheet anchors.
 2. **The parameters** are read and checked; the defaults fill in the rest.
 3. **Each step's anchors** are resolved on this document, in order.
 4. **The call** is made as `recipe:NAME`, so it is journalled and its edits
@@ -326,8 +411,9 @@ A run goes like this:
    result kept for later `job.` step anchors.
 6. **The first failure stops the run**: a step whose anchor does not
    resolve, or whose call fails. The report says which step and why.
-7. **The run's edits undo as one step** of the document, "Recipe steps by
-   recipe:NAME", whether the run completed or stopped.
+7. **The run's edits undo as one step** of each document it edited, the
+   input and each sheet, "Recipe steps by recipe:NAME", whether the run
+   completed or stopped.
 
 A **preview** (`recipes.preview`, the window's Preview) resolves and
 describes each step on this file without calling anything. It goes on past
@@ -364,11 +450,12 @@ prints it per file:
 | `steps` | Each step run (or previewed), in order: its number, method, the params it was called with (anchors resolved), what it did in words, each anchor's path and value, `outcome` (`"ok"` or `{"error": {code, message, data}}`), its `result`, the journal step it was recorded as (`journal_step`, absent when the run was itself inside a call such as `recipes.run`), and, for a step that started a job, the job's final status as `job`. |
 | `stopped` | Present when the run stopped early: the `step` and its `error`. |
 | `warnings` | What to know that did not stop it; see [Failures, undo and warnings](#failures-undo-and-warnings). |
+| `sheets` | The sheets the run made, in order: each one's `step`, `doc`, `label` (when its step gave one), `name` and `len`. |
 
 ## theviewer replay
 
 ```text
-theviewer replay RECIPE FILE... [--param KEY=VALUE]... [--save | --out DIR] [--json]
+theviewer replay RECIPE FILE... [--param KEY=VALUE]... [--save | --out DIR] [--save-sheets DIR] [--allow-writes] [--plugins DIR]... [--json]
 ```
 
 Runs the recipe on each FILE in turn, each in a workspace of its own with
@@ -383,6 +470,9 @@ name inside it, in any case.
 | `--param KEY=VALUE` | A value for one of the recipe's parameters, read as its type. Repeat it for several. |
 | `--save` | Save each file the recipe ran to its end over itself, when the run changed it. |
 | `--out DIR` | Save each file the recipe ran to its end into DIR (made if need be), under its own name, whether or not it changed. |
+| `--save-sheets DIR` | Save each sheet the run made into DIR (made if need be), as `FILE.stepN.LABEL.bin` (LABEL being the sheet's label, or its id), whether or not the run completed. |
+| `--allow-writes` | Let steps that write a file run (`documents.export`, `unpack.save`, `packets.extract` with a `path`…). Without it such a step stops the run, as a recipe from someone else could write anywhere. |
+| `--plugins DIR` | Load plugins from DIR instead of `./plugins` and `~/.config/theviewer/plugins`. Repeat it for several. |
 | `--json` | Print the reports as JSON, `{"recipe": NAME, "files": [...]}`. |
 
 Give `--save` or `--out`, not both. Without either, no file is changed: the
@@ -399,10 +489,11 @@ noise.bin: Telemetry frames — Stopped at step 1 (packets.sets.create): the par
   warning: this is not the file the recipe was recorded on (flight-03.bin, 64 bytes); its anchors find their values here, but literal offsets may not fit
 ```
 
-With `--json`, each entry of `files` is `{file, report, saved?, error?}`:
-the file as given, the [report](#running-a-recipe) (absent when the file
-could not be opened), where it was saved, and the error that stopped it
-opening or saving.
+With `--json`, each entry of `files` is `{file, report, saved?, error?,
+sheets_saved?}`: the file as given, the [report](#running-a-recipe) (absent
+when the file could not be opened), where it was saved, the error that
+stopped it opening or saving, and where each sheet was saved with
+`--save-sheets`.
 
 **Exit status.** 0 when the recipe ran to its end on every file (and each
 was saved if asked); 1 when it stopped on any file, a file could not be
@@ -410,8 +501,8 @@ opened or saved, or the recipe could not be found or read; 2 when the
 command line could not be understood (no files, an unknown option, both
 `--save` and `--out`).
 
-Each step runs as `recipe:NAME`, and every step is allowed: the files are
-the ones you named.
+Each step runs as `recipe:NAME`, and every step is allowed, the files being
+the ones you named, but for writing files, which needs `--allow-writes`.
 
 ## The recipes methods
 
@@ -454,7 +545,10 @@ edit. On the command line (`theviewer api`, `theviewer replay`) and through
 ## Failures, undo and warnings
 
 **A failure stops the run** at the step that failed, and later steps do not
-run. The report's `stopped` gives the step and the error; an anchor that
+run. So does a step that names a document by an id that is neither the
+run's input nor a sheet the run made ("step 1 (bytes.insert) names doc-3 at
+doc, which is neither this run's input (doc-1) nor a sheet one of its steps
+made…"): it does not run on the input instead. The report's `stopped` gives the step and the error; an anchor that
 did not resolve says which anchor, at which path, and why ("the parameter
 start: the 1st match of hex 7ea5 did not resolve: doc-1 has no 1st match
 of hex 7ea5: it does not occur").
@@ -476,9 +570,9 @@ of its own.
 - this is not the file it was recorded on (a different size, or a different
   SHA-256 when both are known): its anchors find their values here, but its
   literal offsets may not fit;
-- mistakes in the recipe itself: a step anchor naming a step that does not
-  come before it, a parameter used but not declared, two steps with one
-  number.
+- mistakes in the recipe itself: a step or sheet anchor naming a step that
+  does not come before it, a sheet label no earlier step gives, a parameter
+  used but not declared, two steps with one number.
 
 ## A worked example
 

@@ -52,8 +52,42 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `packets.conversations` and `packets.endpoints` take `sort` (packets,
   bytes, address or first packet).
 - `bytes.insert` takes `start` as well as `at`.
+- **Recipes keep the steps that make sheets.** `documents.derive`,
+  `codecs.open_decoded`, `bits.open_plane`, `bits.decode_linecode`,
+  `unpack.open`, `forensics.open_entry`, `crypto.open_decrypted`,
+  `packets.sets.create` with `gunzip` and `packets.http_bodies` with `open`
+  make a new document, a sheet, from another; a recipe now repeats them and
+  names what they made with a `sheet` anchor: `{"sheet": {"step": 2}}`
+  (the sheet step 2 made), `{"sheet": "payload"}` (one a step labelled with
+  its `makes`) or `{"sheet": "input"}` (the run's document).
+- Each of those methods returns the sheet as `output: {doc, label?, len}`
+  (`outputs` for several), beside its other fields, and `api.describe`
+  lists their `outputs`.
+- `documents.list` and `documents.info` give a derived document's
+  `parent` and `made_by` (the step, method and parameters that made it),
+  and each journal entry the sheets it `made`.
+- **Recipe format 2**, written only when a recipe needs it: sheet anchors,
+  a step's `makes` label and `inputs`. Recipes without them are written as
+  format 1, as before, and this build reads both.
+- The report of a recipe run lists the `sheets` it made.
+- `theviewer replay --save-sheets DIR` saves each sheet a run made, and
+  `--allow-writes` lets steps that write files run; `theviewer replay` and
+  `theviewer api` take `--plugins DIR`, as `theviewer mcp` does.
 
 ### Changed
+
+- A recipe run no longer takes the first document id its steps name for
+  the file it runs on. A step naming a document by an id that is neither
+  the run's input nor a sheet the run made stops the run (format 1 recipes
+  too); a step with no `doc`, or `"current"`, runs on the input.
+- `theviewer replay` refuses a step that writes a file (such as
+  `documents.export`) unless given `--allow-writes`.
+- A recipe run's edits undo as one step of each document it edited, sheets
+  included, rather than only of the input.
+- `documents.derive`, `bits.open_plane`, `unpack.open` and
+  `forensics.open_entry` return the new document's fields with `output`
+  beside them; `packets.sets.create` returns the set's with `output` when
+  it opened a decompressed capture.
 
 - A filter naming a field the packets cannot have is refused with the
   names it was close to, rather than matching nothing.
@@ -68,6 +102,19 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Recipes saved from a session that derived documents did not replay:
+  the steps that made the documents were left out, later steps kept their
+  session's ids (`doc-4`), and the replay ran such a step on the input, or
+  stopped. `history.recipe`, `history.save_recipe`, `recipes.save` and the
+  History tab now share one builder, which keeps the steps that make
+  sheets, takes each step's document from the journal rather than its
+  params (often none), takes the recorded file from the documents' lineage
+  rather than the first id named, and names every document as a sheet
+  anchor, at any parameter path.
+- A recipe that would not replay (a step on a second file, or on a sheet
+  made outside the history or by a step it leaves out) is refused, naming
+  the step and why; the History tab says so before asking where to save.
+- `history.recipe` and `history.save_recipe` kept different steps.
 - `packets.follow_stream` and a filtered `packets.conversations` gave a
   conversation's first packet as 0, or as its place among the packets
   kept, rather than its index in the set.

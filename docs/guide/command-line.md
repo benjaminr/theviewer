@@ -8,10 +8,11 @@ many files, all without a window.
 theviewer [FILE] [--format NAME] [--palette NAME] [--width PIXELS] [--offset BYTES]
           [--cursor BYTES] [--zoom FACTOR] [--detect] [--open] [--tool NAME] [--layout NAME]
 theviewer FILE --report | --json
-theviewer api [--save] METHOD ['{JSON PARAMS}'] [FILE]
+theviewer api [--save] [--plugins DIR]... METHOD ['{JSON PARAMS}'] [FILE]
 theviewer api --describe
 theviewer mcp [--plugins DIR]... [--all-tools] [--output-schemas] [FILE...]
-theviewer replay RECIPE FILE... [--param KEY=VALUE]... [--save | --out DIR] [--json]
+theviewer replay RECIPE FILE... [--param KEY=VALUE]... [--save | --out DIR] [--save-sheets DIR]
+                 [--allow-writes] [--plugins DIR]... [--json]
 ```
 
 `theviewer --help` prints the same summary on standard output and exits
@@ -99,7 +100,8 @@ theviewer api --describe
 - An error is printed as JSON on standard error, with exit code 1.
 
 Every call is allowed: the file is the one you named. Plugins load from
-the usual places, so methods they register can be called too. The methods
+the usual places, so methods they register can be called too; `--plugins
+DIR` loads them from DIR instead (give it more than once for several). The methods
 are listed in [docs/api.md](../api.md).
 
 ## theviewer mcp
@@ -142,6 +144,9 @@ file.
 | `--param KEY=VALUE` | Give a value for one of the recipe's parameters; repeat for several |
 | `--save` | Save each file the recipe ran to its end over itself, if the recipe changed it |
 | `--out DIR` | Save each file the recipe ran to its end into DIR, under its own name, changed or not |
+| `--save-sheets DIR` | Save each sheet the run made (a span derived, a stream decoded, a file unpacked) into DIR, as `FILE.stepN.LABEL.bin`, even when the run stopped |
+| `--allow-writes` | Let the recipe's steps that write files run, such as `documents.export`; without it they stop the run |
+| `--plugins DIR` | Load plugins from DIR instead of the usual places; give it more than once for several |
 | `--json` | Print the reports as JSON |
 
 Give `--save` or `--out`, not both. Without either, nothing is written:
