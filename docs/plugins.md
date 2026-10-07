@@ -135,10 +135,10 @@ It returns a list of finding tables, or `nil`. Offsets in a finding are
 **Categories:** `Signature`, `Executable`, `Image`, `Archive`, `Document`,
 `Filesystem`, `Compressed`, `Encoding`, `Protocol`, `Structure`,
 `Timestamp`, `Counter`, `OffsetTable`, `FloatArray`, `Text`,
-`HighEntropy`, `Padding`, `Custom`. Case does not matter, and the label
-the Findings list shows ("Offset tables", "Plugin findings" for `Custom`)
-works too. (The API and recipes write the same categories in snake case,
-`offset_table`; in a plugin write `OffsetTable`.)
+`HighEntropy`, `Padding`, `Custom`. Case does not matter, and snake case
+as the API and recipes write them (`offset_table`) and the label the
+Findings list shows ("Offset tables", "Plugin findings" for `Custom`) work
+too.
 
 `categories` in the registration says which categories the detector can
 report.

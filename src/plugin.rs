@@ -88,12 +88,28 @@ impl Category {
         Category::ALL.iter().position(|&c| c == self).unwrap_or(0)
     }
 
+    /// The category a script names: as the enum does (`OffsetTable`), in
+    /// snake case as the API and recipes do (`offset_table`), or by the
+    /// Findings list's label ("Offset tables"), in any case.
     pub fn from_name(name: &str) -> Option<Category> {
         let name = name.to_ascii_lowercase();
         Category::ALL.into_iter().find(|c| {
             let label = c.label().to_ascii_lowercase();
-            label == name || format!("{c:?}").to_ascii_lowercase() == name
+            let variant = format!("{c:?}").to_ascii_lowercase();
+            label == name || variant == name || c.snake_case_name() == name
         })
+    }
+
+    /// The name the API and recipes give the category, `offset_table`.
+    fn snake_case_name(self) -> String {
+        let mut name = String::new();
+        for (index, character) in format!("{self:?}").char_indices() {
+            if character.is_ascii_uppercase() && index > 0 {
+                name.push('_');
+            }
+            name.push(character.to_ascii_lowercase());
+        }
+        name
     }
 
     /// Highlight colour. Lives here rather than in the theme so plugins and
@@ -450,6 +466,18 @@ fn isolated<T: Default>(work: impl FnOnce() -> T) -> T {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_plugin_may_name_a_category_as_the_enum_the_api_or_the_findings_list_does() {
+        for name in ["OffsetTable", "offset_table", "OFFSET_TABLE", "Offset tables", "offsettable"] {
+            assert_eq!(Category::from_name(name), Some(Category::OffsetTable), "{name}");
+        }
+        for category in Category::ALL {
+            let snake = serde_json::to_value(category).unwrap();
+            assert_eq!(Category::from_name(snake.as_str().unwrap()), Some(category), "{snake}");
+        }
+        assert_eq!(Category::from_name("offset__table"), None);
+    }
 
     #[test]
     fn findings_round_trip_through_json_with_categories_in_snake_case() {
