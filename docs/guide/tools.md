@@ -193,6 +193,11 @@ shorter key, which is listed first when the two decode about as well.
   text) are listed even when no decode comes of them, as when the key is
   longer than the crib: *key prefix at offset 0* is the start of the key
   to go on from.
+- Decrypts AES-128, AES-192 or AES-256 in ECB, CBC or CTR mode. Type the
+  key as hex, or press *Use this key* beside a raw key found; select the
+  ciphertext and press *Decrypt*, and the plaintext opens as a document.
+  PKCS#7 padding is removed; when it is not there, the bytes are kept whole
+  and the status bar says the key, IV or mode may be wrong.
 
 Decodes open as a document (*Open decoded*) or apply as an edit (*Apply*),
 which is a `transform.apply` step a recipe repeats.

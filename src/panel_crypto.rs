@@ -1,5 +1,6 @@
 //! The crypto and obfuscation panel: repeated-block (ECB) detection, keys and
-//! certificates, and attacks on simple ciphers beyond plain XOR.
+//! certificates, attacks on simple ciphers beyond plain XOR, and AES
+//! decryption with a key found or typed.
 //!
 //! Every search runs on a background thread; results remember which document
 //! they came from and are dropped when another one is shown.
@@ -10,6 +11,7 @@ use std::time::Duration;
 use eframe::egui::{self, Color32, RichText, Sense, Ui, vec2};
 
 use crate::app::ViewerApp;
+use crate::block_cipher::{Algorithm, Mode, Padding};
 use crate::blocks::{self, BlockReport};
 use crate::ciphers::{self, CipherCandidate, KeyFragment};
 use crate::keys::{self, KeyFinding, KeyFormat, KeyKind};
@@ -64,6 +66,25 @@ pub struct CryptoState {
     /// Known plaintext for crib dragging, with `\xHH` escapes.
     crib: String,
     crib_error: Option<String>,
+    decrypt: DecryptForm,
+}
+
+/// The AES decryption's settings, as typed.
+struct DecryptForm {
+    /// The key as hex, typed or filled from a key found.
+    key: String,
+    /// The IV (CBC) or initial counter block (CTR) as hex.
+    iv: String,
+    mode: Mode,
+    padding: Padding,
+    /// Why the last decryption could not be done.
+    error: Option<String>,
+}
+
+impl Default for DecryptForm {
+    fn default() -> Self {
+        DecryptForm { key: String::new(), iv: String::new(), mode: Mode::Ecb, padding: Mode::Ecb.usual_padding(), error: None }
+    }
 }
 
 /// Draw the crypto panel.
@@ -77,6 +98,7 @@ pub fn show_crypto(state: &mut CryptoState, app: &mut ViewerApp, ui: &mut egui::
         egui::CollapsingHeader::new(RichText::new("Repeated blocks").strong()).default_open(true).show(ui, |ui| show_blocks(state, app, ui));
         egui::CollapsingHeader::new(RichText::new("Keys and certificates").strong()).default_open(true).show(ui, |ui| show_keys(state, app, ui));
         egui::CollapsingHeader::new(RichText::new("Decode").strong()).default_open(true).show(ui, |ui| show_decode(state, app, ui));
+        egui::CollapsingHeader::new(RichText::new("Decrypt (AES)").strong()).default_open(true).show(ui, |ui| show_decrypt(state, app, ui));
     });
 }
 
@@ -296,6 +318,7 @@ fn show_keys(state: &mut CryptoState, app: &mut ViewerApp, ui: &mut Ui) {
     let limit_note = if findings.len() >= keys::MAX_FINDINGS { " (stopped at the limit)" } else { "" };
     ui.label(dim(format!("{} found{limit_note}; click one to select it", findings.len())));
     let mut chosen = None;
+    let mut key_to_use = None;
     for finding in findings {
         ui.horizontal(|ui| {
             if ui.add(egui::Label::new(RichText::new(format!("{:#010x}", finding.offset)).monospace().color(theme::TEXT_DIM)).sense(Sense::click())).clicked() {
@@ -303,6 +326,9 @@ fn show_keys(state: &mut CryptoState, app: &mut ViewerApp, ui: &mut Ui) {
             }
             ui.label(RichText::new(finding.kind.label()).small().color(kind_colour(finding.kind)));
             ui.label(dim(format!("{} · {} B · {:.0}%", finding.format.label(), finding.len, finding.confidence * 100.0)));
+            if finding.kind == KeyKind::RawKeyCandidate && ui.small_button("Use this key").on_hover_text("Fill in the key under Decrypt (AES) with these bytes").clicked() {
+                key_to_use = Some((finding.offset, finding.len));
+            }
             ui.scope(|ui| {
                 ui.set_max_width(KEY_DETAIL_WIDTH);
                 let colour = if finding.confidence < 0.5 { theme::TEXT_DIM } else { theme::TEXT };
@@ -314,6 +340,88 @@ fn show_keys(state: &mut CryptoState, app: &mut ViewerApp, ui: &mut Ui) {
     }
     if let Some(finding) = chosen {
         app.select_finding(&finding);
+    }
+    if let Some((offset, len)) = key_to_use {
+        use_key(state, app, offset, len);
+    }
+}
+
+/// The person takes a raw key candidate as the AES key: its bytes fill
+/// the key under Decrypt.
+fn use_key(state: &mut CryptoState, app: &mut ViewerApp, offset: usize, len: usize) {
+    let key = app.document.read_range(offset, len);
+    state.decrypt.key = crate::api::values::encode_bytes(&key, Default::default());
+    state.decrypt.error = None;
+    let algorithm = Algorithm::for_key_len(key.len()).map_or("no AES", Algorithm::label);
+    app.status = format!("The {len} bytes at {offset:#x} are the key under Decrypt ({algorithm})");
+}
+
+// ---------------------------------------------------------------------------
+// Decrypt
+// ---------------------------------------------------------------------------
+
+fn show_decrypt(state: &mut CryptoState, app: &mut ViewerApp, ui: &mut Ui) {
+    let form = &mut state.decrypt;
+    ui.horizontal_wrapped(|ui| {
+        ui.label("Key");
+        if ui.add(egui::TextEdit::singleline(&mut form.key).hint_text("hex, 16, 24 or 32 bytes").desired_width(300.0).font(egui::TextStyle::Monospace)).changed() {
+            form.error = None;
+        }
+        let key_len = crate::ops::parse_hex(&form.key).map_or(0, |key| key.len());
+        match Algorithm::for_key_len(key_len) {
+            Some(algorithm) => ui.label(RichText::new(algorithm.label()).small().color(theme::ACCENT)),
+            None if form.key.is_empty() => ui.label(dim("or Use this key on a raw key found above")),
+            None => ui.label(dim(format!("{key_len} bytes: not an AES key"))),
+        };
+    });
+    ui.horizontal_wrapped(|ui| {
+        ui.label("Mode");
+        for mode in Mode::ALL {
+            if ui.selectable_value(&mut form.mode, mode, mode.label()).changed() {
+                form.padding = mode.usual_padding();
+                form.error = None;
+            }
+        }
+        ui.separator();
+        ui.label("Padding");
+        for padding in [Padding::Pkcs7, Padding::None] {
+            ui.selectable_value(&mut form.padding, padding, padding.label());
+        }
+    });
+    if form.mode.needs_iv() {
+        ui.horizontal(|ui| {
+            ui.label(if form.mode == Mode::Ctr { "Counter" } else { "IV" });
+            ui.add(egui::TextEdit::singleline(&mut form.iv).hint_text("hex, 16 bytes").desired_width(300.0).font(egui::TextStyle::Monospace));
+        });
+    }
+    let (start, len, what) = selection_or_file(app, crate::api::MAX_CALL_BYTES);
+    ui.horizontal(|ui| {
+        let ready = len > 0 && !state.decrypt.key.is_empty();
+        if ui.add_enabled(ready, egui::Button::new(format!("Decrypt {what} ({})…", crate::compress::human_bytes(len)))).on_hover_text("Open the plaintext as a document; Back returns").clicked() {
+            start_decrypt(state, app, start, len);
+        }
+        ui.label(dim("select the ciphertext first; without a selection, the whole file"));
+    });
+    if let Some(error) = &state.decrypt.error {
+        ui.label(RichText::new(error).small().color(theme::DANGER));
+    }
+}
+
+/// The person decrypts `len` bytes at `start` as the form says, opening
+/// the plaintext as a document of its own (`crypto.open_decrypted`). What
+/// stops it is said under the form.
+fn start_decrypt(state: &mut CryptoState, app: &mut ViewerApp, start: usize, len: usize) {
+    let form = &state.decrypt;
+    let mut params = serde_json::json!({ "start": start, "len": len, "mode": form.mode, "key": form.key.trim(), "padding": form.padding });
+    if form.mode.needs_iv() {
+        params["iv"] = serde_json::Value::String(form.iv.trim().to_string());
+    }
+    match app.perform_typed::<crate::api::tools::crypto::OpenDecryptedResult>("crypto.open_decrypted", params) {
+        Ok(result) => {
+            state.decrypt.error = None;
+            app.status = crate::api::tools::crypto::describe_decrypted(&result.done);
+        }
+        Err(error) => state.decrypt.error = Some(error.message),
     }
 }
 
@@ -482,6 +590,33 @@ mod tests {
         assert!(crypto.decode_job.is_some() && crypto.blocks_job.is_some(), "the panel waits for both");
         let report = crypto.blocks_job.as_ref().unwrap().receiver.recv_timeout(Duration::from_secs(60)).expect("the search finishes");
         assert_eq!(report.analysed_len, 4096);
+    }
+
+    #[test]
+    fn a_raw_key_found_fills_the_decrypt_key_and_decrypts_the_selection_into_a_document() {
+        let key = crate::ops::parse_hex("2b7e151628aed2a6abf7158809cf4f3c").unwrap();
+        let ciphertext = crate::ops::parse_hex("3ad77bb40d7a3660a89ecaf32466ef97").unwrap();
+        let mut app = app_with(&[vec![0u8; 32], key, vec![0u8; 32], ciphertext].concat());
+        let mut state = CryptoState::default();
+        use_key(&mut state, &mut app, 32, 16);
+        assert_eq!(state.decrypt.key, "2b7e151628aed2a6abf7158809cf4f3c");
+        state.decrypt.padding = Padding::None;
+        start_decrypt(&mut state, &mut app, 80, 16);
+        let performed = take_performed();
+        assert_eq!(performed[0], ("crypto.open_decrypted".to_string(), json!({"start": 80, "len": 16, "mode": "ecb", "key": "2b7e151628aed2a6abf7158809cf4f3c", "padding": "none"})));
+        assert_eq!(app.display_name(), "test.bin › AES-128-ECB@0x50");
+        assert_eq!(app.document.read_range(0, 16), crate::ops::parse_hex("6bc1bee22e409f96e93d7e117393172a").unwrap());
+        assert!(state.decrypt.error.is_none());
+    }
+
+    #[test]
+    fn a_decryption_that_cannot_be_done_is_said_under_the_form() {
+        let mut app = app_with(&[0u8; 20]);
+        let mut state = CryptoState::default();
+        state.decrypt.key = "000102030405060708090a0b0c0d0e0f".to_string();
+        start_decrypt(&mut state, &mut app, 0, 20);
+        assert!(state.decrypt.error.as_deref().is_some_and(|error| error.contains("4 bytes over")), "{:?}", state.decrypt.error);
+        assert_eq!(app.display_name(), "test.bin", "nothing was opened");
     }
 
     #[test]

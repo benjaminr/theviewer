@@ -1,6 +1,7 @@
 //! `crypto.*`: the Crypto tools' searches: well-known constants that betray
 //! crypto and compression code, repeated cipher blocks (ECB), keys and
-//! certificates, and attacks on simple ciphers beyond plain XOR.
+//! certificates, and attacks on simple ciphers beyond plain XOR; and AES
+//! decryption once they have led to a key.
 
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
@@ -11,8 +12,9 @@ use serde::{Deserialize, Serialize};
 use super::tool_jobs::{self, Summary, ToolSpan};
 use crate::api::jobs::JobStartedResult;
 use crate::api::values::{self, ByteEncoding};
-use crate::api::workspace::{self, Workspace};
+use crate::api::workspace::{self, DocumentInfo, Workspace};
 use crate::api::{ApiError, Caller};
+use crate::block_cipher::{self, Algorithm, Decryption, Mode, Padding};
 use crate::blocks::BlockReport;
 use crate::ciphers::{AttackOptions, CipherCandidate, KeyFragment};
 use crate::crypto_constants::CryptoMatch;
@@ -28,6 +30,8 @@ pub(super) const METHODS: &[crate::api::Method] = &[
     method!("crypto.repeated_blocks", Job, caller repeated_blocks, CryptoSpanParams, JobStartedResult, "Start a search of a span (at most 16 MiB) for random-looking 8- and 16-byte blocks that repeat, the mark of ECB-mode encryption, as a job: the verdict, the best block size and alignment, the most repeated blocks and the repeats along the span are job.finished's result, and in the window they fill the Crypto panel."),
     method!("crypto.find_keys", Job, caller find_keys, CryptoSpanParams, JobStartedResult, "Start a search of a span (the whole document by default, at most 64 MiB) for PEM blocks, DER certificates and keys, OpenSSH keys and random-looking runs that could be raw symmetric keys, as a job: what was found is job.finished's result, and in the window it fills the Crypto panel."),
     method!("crypto.attack", Job, caller attack, AttackParams, JobStartedResult, "Start attacks on simple ciphers over a span (at most 1 MiB): rolling XOR, XOR with the previous byte, ADD/SUB with a constant or repeating key, bit rotation, XOR combined with ADD and, with a crib, crib dragging, as a job: the decodes that look most like text or structured data, each with the operation that transform.apply or documents.derive takes to apply it, and with a crib the key bytes it reveals, are job.finished's result, and in the window they fill the Crypto panel."),
+    method!("crypto.decrypt", Read, decrypt, DecryptParams, DecryptResult, "Decrypt a span with AES-128, AES-192 or AES-256 in ECB, CBC or CTR mode, with a key (and IV) given as hex, removing PKCS#7 padding, and return the plaintext; crypto.open_decrypted opens it as a document instead."),
+    method!("crypto.open_decrypted", View, open_decrypted, OpenDecryptedParams, OpenDecryptedResult, "Decrypt a span as crypto.decrypt does and open the plaintext as a document derived from this one; in the window, Back (or opening the parent by id) returns.").opens_document(true),
 ];
 
 /// An example call of each of [`METHODS`], run in order on a fresh
@@ -40,6 +44,10 @@ pub(super) fn examples() -> Vec<(&'static str, serde_json::Value)> {
         ("crypto.repeated_blocks", json!({"start": 0, "len": 256})),
         ("crypto.find_keys", json!({})),
         ("crypto.attack", json!({"start": 0, "len": 256, "crib": "PK\\x03\\x04"})),
+        ("crypto.decrypt", json!({"start": 0, "len": 32, "mode": "ecb", "key": "2b7e151628aed2a6abf7158809cf4f3c", "padding": "none"})),
+        ("crypto.open_decrypted", json!({"start": 0, "len": 32, "mode": "ctr", "key": "2b7e151628aed2a6abf7158809cf4f3c", "iv": "00000000000000000000000000000000"})),
+        // Back to the example document for the tools after these.
+        ("documents.open", json!({"doc": "doc-1"})),
     ]
 }
 
@@ -295,6 +303,181 @@ pub struct CipherDecodes {
     pub key_fragments: Vec<CribKeyFragment>,
 }
 
+/// Parameters of `crypto.decrypt`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DecryptParams {
+    /// Document id, path or "current" (the default).
+    #[serde(default)]
+    pub doc: Option<String>,
+    /// First offset of the ciphertext (0 by default).
+    #[serde(default)]
+    pub start: u64,
+    /// Bytes of ciphertext, at most 16 MiB, whole 16-byte blocks for ECB and CBC; to the end of the document when omitted.
+    #[serde(default)]
+    pub len: Option<u64>,
+    /// Which AES: "aes-128", "aes-192" or "aes-256"; by default the one the key's length is for.
+    #[serde(default)]
+    pub alg: Option<Algorithm>,
+    /// "ecb", "cbc" or "ctr".
+    pub mode: Mode,
+    /// The key, as hex: 16, 24 or 32 bytes.
+    pub key: String,
+    /// The IV as hex, 16 bytes, for CBC; for CTR, the initial counter block (nonce and counter), counted up big-endian.
+    #[serde(default)]
+    pub iv: Option<String>,
+    /// "pkcs7" or "none"; by default PKCS#7 for ECB and CBC and none for CTR. Padding that is not valid is left in place and said.
+    #[serde(default)]
+    pub padding: Option<Padding>,
+    /// How to write the plaintext: hex (the default), base64 or text.
+    #[serde(default)]
+    pub encoding: ByteEncoding,
+}
+
+/// Parameters of `crypto.open_decrypted`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct OpenDecryptedParams {
+    /// Document id, path or "current" (the default): the parent.
+    #[serde(default)]
+    pub doc: Option<String>,
+    /// First offset of the ciphertext (0 by default).
+    #[serde(default)]
+    pub start: u64,
+    /// Bytes of ciphertext, at most 16 MiB, whole 16-byte blocks for ECB and CBC; to the end of the document when omitted.
+    #[serde(default)]
+    pub len: Option<u64>,
+    /// Which AES: "aes-128", "aes-192" or "aes-256"; by default the one the key's length is for.
+    #[serde(default)]
+    pub alg: Option<Algorithm>,
+    /// "ecb", "cbc" or "ctr".
+    pub mode: Mode,
+    /// The key, as hex: 16, 24 or 32 bytes.
+    pub key: String,
+    /// The IV as hex, 16 bytes, for CBC; for CTR, the initial counter block (nonce and counter), counted up big-endian.
+    #[serde(default)]
+    pub iv: Option<String>,
+    /// "pkcs7" or "none"; by default PKCS#7 for ECB and CBC and none for CTR. Padding that is not valid is left in place and said.
+    #[serde(default)]
+    pub padding: Option<Padding>,
+    /// What to call the new document; the parent's name, the cipher and the offset when omitted.
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+impl OpenDecryptedParams {
+    /// The same decryption, as `crypto.decrypt` takes it.
+    fn as_decrypt(&self) -> DecryptParams {
+        DecryptParams {
+            doc: self.doc.clone(),
+            start: self.start,
+            len: self.len,
+            alg: self.alg,
+            mode: self.mode,
+            key: self.key.clone(),
+            iv: self.iv.clone(),
+            padding: self.padding,
+            encoding: ByteEncoding::Hex,
+        }
+    }
+}
+
+/// How a span was decrypted, and whether the padding fitted.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct DecryptionDone {
+    pub alg: Algorithm,
+    pub mode: Mode,
+    pub padding: Padding,
+    /// First offset and length of the ciphertext.
+    pub start: u64,
+    pub len: u64,
+    /// Padding bytes removed from the end.
+    pub padding_removed: u64,
+    /// Whether PKCS#7 padding was asked for and not found; the plaintext is
+    /// then given whole, and the key, IV or mode is probably wrong.
+    pub padding_invalid: bool,
+    /// Bits per byte of the plaintext: a right key brings it well under 8.
+    pub entropy: f32,
+    pub output_len: u64,
+}
+
+/// The result of `crypto.decrypt`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct DecryptResult {
+    #[serde(flatten)]
+    pub done: DecryptionDone,
+    pub encoding: ByteEncoding,
+    /// The plaintext, written as `encoding` says.
+    pub data: String,
+}
+
+/// The result of `crypto.open_decrypted`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct OpenDecryptedResult {
+    /// The document the plaintext was opened as.
+    pub document: DocumentInfo,
+    #[serde(flatten)]
+    pub done: DecryptionDone,
+}
+
+/// Read and decrypt the span `params` names: the parent document's id, the
+/// plaintext, and how it was done.
+fn decrypt_span(workspace: &mut dyn Workspace, params: &DecryptParams) -> Result<(String, Vec<u8>, DecryptionDone), ApiError> {
+    let key = values::decode_bytes(&params.key, ByteEncoding::Hex).map_err(|_| ApiError::invalid_params(format!("the key '{}' is not hex bytes; write it like \"2b7e1516 28aed2a6 abf71588 09cf4f3c\"", params.key)))?;
+    let iv = match params.iv.as_deref() {
+        Some(text) => Some(values::decode_bytes(text, ByteEncoding::Hex).map_err(|_| ApiError::invalid_params(format!("the iv '{text}' is not hex bytes")))?),
+        None => None,
+    };
+    let alg = match params.alg {
+        Some(alg) => alg,
+        None => Algorithm::for_key_len(key.len()).ok_or_else(|| ApiError::invalid_params(format!("a {}-byte key fits no AES; give 16, 24 or 32 bytes", key.len())))?,
+    };
+    let decryption = Decryption { algorithm: alg, mode: params.mode, key, iv, padding: params.padding.unwrap_or(params.mode.usual_padding()) };
+    let id = workspace::resolve(workspace, params.doc.as_deref())?;
+    let (_, document) = workspace::document(workspace, Some(&id))?;
+    let (start, len) = values::span_within(document.len(), params.start, params.len)?;
+    values::check_call_size(len)?;
+    let ciphertext = document.read_range(start, len);
+    let decrypted = block_cipher::decrypt(&decryption, &ciphertext).map_err(ApiError::invalid_params)?;
+    let done = DecryptionDone {
+        alg,
+        mode: decryption.mode,
+        padding: decryption.padding,
+        start: start as u64,
+        len: len as u64,
+        padding_removed: decrypted.padding_removed as u64,
+        padding_invalid: decrypted.padding_invalid,
+        entropy: crate::analysis::shannon_entropy(&decrypted.bytes),
+        output_len: decrypted.bytes.len() as u64,
+    };
+    Ok((id, decrypted.bytes, done))
+}
+
+/// `crypto.decrypt`: decrypt a span and return the plaintext.
+pub fn decrypt(workspace: &mut dyn Workspace, params: DecryptParams) -> Result<DecryptResult, ApiError> {
+    let (_, plaintext, done) = decrypt_span(workspace, &params)?;
+    Ok(DecryptResult { done, encoding: params.encoding, data: values::encode_bytes(&plaintext, params.encoding) })
+}
+
+/// `crypto.open_decrypted`: decrypt a span and open the plaintext as a
+/// document derived from the one it came from.
+pub fn open_decrypted(workspace: &mut dyn Workspace, params: OpenDecryptedParams) -> Result<OpenDecryptedResult, ApiError> {
+    let (parent, plaintext, done) = decrypt_span(workspace, &params.as_decrypt())?;
+    let name = match params.name {
+        Some(name) => name,
+        None => format!("{} › {}-{}@{:#x}", workspace::info(workspace, &parent)?.name, done.alg.label(), done.mode.label(), done.start),
+    };
+    let id = workspace.open_derived(&parent, plaintext, &name)?;
+    Ok(OpenDecryptedResult { document: workspace::info(workspace, &id)?, done })
+}
+
+/// What a decryption gave, for the status bar: "AES-128-ECB: 304 bytes
+/// decrypted to 288", with a warning when the padding was not valid.
+pub fn describe_decrypted(done: &DecryptionDone) -> String {
+    let warning = if done.padding_invalid { " (no valid PKCS#7 padding: the key, IV or mode may be wrong)" } else { "" };
+    format!("{}-{}: {} bytes at {:#x} decrypted to {}{warning}", done.alg.label(), done.mode.label(), done.len, done.start, done.output_len)
+}
+
 /// `crypto.scan_constants`: scan the document's file mapping (or a copy of
 /// an edited one) on a thread, in parallel chunks.
 pub fn scan_constants(workspace: &mut dyn Workspace, caller: &Caller, params: ScanConstantsParams) -> Result<JobStartedResult, ApiError> {
@@ -481,5 +664,35 @@ mod tests {
         assert!(fragment["reason"].as_str().unwrap().starts_with("key prefix at offset 0"), "{fragment}");
         let without_crib = run_job(&mut workspace, "crypto.attack", json!({"start": 16}));
         assert_eq!(without_crib["result"]["key_fragments"], json!([]));
+    }
+
+    #[test]
+    fn aes_ciphertext_decrypts_to_its_plaintext_and_opens_as_a_derived_document() {
+        let key = "2b7e151628aed2a6abf7158809cf4f3c";
+        let ciphertext = crate::ops::parse_hex("3ad77bb40d7a3660a89ecaf32466ef97").unwrap();
+        let mut workspace = workspace_with("payload.enc", &[b"RSRC".as_slice(), &ciphertext].concat());
+        let decrypted = call(&mut workspace, "crypto.decrypt", json!({"start": 4, "mode": "ecb", "key": key, "padding": "none"})).unwrap();
+        assert_eq!((decrypted["alg"].as_str(), decrypted["data"].as_str()), (Some("aes-128"), Some("6bc1bee22e409f96e93d7e117393172a")), "{decrypted}");
+        assert_eq!(decrypted["padding_invalid"], false);
+        let padded = call(&mut workspace, "crypto.decrypt", json!({"start": 4, "mode": "ecb", "key": key})).unwrap();
+        assert_eq!((padded["padding"].as_str(), padded["padding_invalid"].as_bool(), padded["output_len"].as_u64()), (Some("pkcs7"), Some(true), Some(16)), "invalid padding is said, and the bytes kept");
+        let opened = call(&mut workspace, "crypto.open_decrypted", json!({"start": 4, "mode": "ecb", "key": key, "padding": "none"})).unwrap();
+        assert_eq!((opened["document"]["id"].as_str(), opened["document"]["name"].as_str(), opened["document"]["len"].as_u64()), (Some("doc-2"), Some("payload.enc › AES-128-ECB@0x4"), Some(16)));
+        let read = call(&mut workspace, "bytes.read", json!({"doc": "doc-2", "start": 0, "len": 16})).unwrap();
+        assert_eq!(read["data"], "6bc1bee22e409f96e93d7e117393172a");
+    }
+
+    #[test]
+    fn a_decryption_that_cannot_be_done_is_refused_with_the_reason() {
+        let mut workspace = workspace_with("payload.enc", &[0u8; 20]);
+        let ragged = call(&mut workspace, "crypto.decrypt", json!({"mode": "ecb", "key": "000102030405060708090a0b0c0d0e0f"})).unwrap_err();
+        assert_eq!(ragged.code, ErrorCode::InvalidParams);
+        assert!(ragged.message.contains("4 bytes over"), "{}", ragged.message);
+        let odd_key = call(&mut workspace, "crypto.decrypt", json!({"mode": "ctr", "key": "0001", "iv": "00"})).unwrap_err();
+        assert!(odd_key.message.contains("2-byte key"), "{}", odd_key.message);
+        let no_iv = call(&mut workspace, "crypto.decrypt", json!({"len": 16, "mode": "cbc", "key": "000102030405060708090a0b0c0d0e0f"})).unwrap_err();
+        assert!(no_iv.message.contains("iv"), "{}", no_iv.message);
+        let mismatch = call(&mut workspace, "crypto.decrypt", json!({"len": 16, "alg": "aes-256", "mode": "ecb", "key": "000102030405060708090a0b0c0d0e0f"})).unwrap_err();
+        assert!(mismatch.message.contains("32-byte key"), "{}", mismatch.message);
     }
 }

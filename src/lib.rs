@@ -12,6 +12,7 @@ pub mod app;
 pub mod assistant;
 pub mod base_address;
 pub mod bits;
+pub mod block_cipher;
 pub mod blocks;
 pub mod bookmarks;
 pub mod bus;

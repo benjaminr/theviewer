@@ -86,6 +86,10 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `crypto.attack` with a crib lists the key bytes the crib reveals
   (`key_fragments`), *key prefix at offset 0* first, even when the key is
   longer than the crib and no decode comes of them.
+- `crypto.decrypt` and `crypto.open_decrypted` decrypt AES-128, AES-192
+  and AES-256 in ECB, CBC or CTR mode, with PKCS#7 padding; the Crypto
+  panel has a Decrypt (AES) section, and *Use this key* beside a raw key
+  found fills in its key.
 
 ### Fixed
 
