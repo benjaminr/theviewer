@@ -1,5 +1,10 @@
 //! `unpack.*`: extracting archives and compressed streams recursively, like
 //! binwalk -e, as a tree; opening, reading or saving one of its nodes.
+//!
+//! A node is named by its path in the tree of the document unpacked, its
+//! `tree_doc`. Opening a node makes a sheet, which may become the caller's
+//! focus, so `tree_doc` defaults to the document `unpack.run` last ran on
+//! rather than the focus: the next node opened is still found in the tree.
 
 use std::sync::Arc;
 
@@ -17,9 +22,9 @@ use crate::unpack::{Limits, Node};
 /// their namespace. A new method is added here, and only here.
 pub(super) const METHODS: &[crate::api::Method] = &[
     method!("unpack.run", Job, caller run, UnpackParams, JobStartedResult, "Start extracting the archives and compressed streams in the document (its first 256 MiB) recursively, like binwalk -e, as a job: the tree of what was found, each node with its kind, size and where its bytes came from, is job.finished's result, and in the window it fills the Unpacked tab and the Size map."),
-    method!("unpack.open", View, open, NodeParams, workspace::SheetMade, "Open one node of the unpacked tree (by its path of child indices, as unpack.run gave it) as a derived document.").makes_sheet(),
-    method!("unpack.read", Read, read, ReadNodeParams, NodeBytes, "Read the bytes of one node of the unpacked tree, by its path of child indices, as hex by default, or as base64 or text."),
-    method!("unpack.save", Edit, caller save, SaveNodeParams, SavedNode, "Write the bytes of one node of the unpacked tree (by its path of child indices, as node) to a file; the document is left as it is.").writes_file(crate::api::WritesFile::Always),
+    method!("unpack.open", View, open, NodeParams, workspace::SheetMade, "Open one node of the unpacked tree (by its path of child indices, as unpack.run gave it) as a derived document; the tree is that of tree_doc, by default the document unpack.run last ran on.").makes_sheet().doc_defaults_to(tree_unpacked_last),
+    method!("unpack.read", Read, read, ReadNodeParams, NodeBytes, "Read the bytes of one node of the unpacked tree, by its path of child indices, as hex by default, or as base64 or text; the tree is that of tree_doc, by default the document unpack.run last ran on.").doc_defaults_to(tree_unpacked_last),
+    method!("unpack.save", Edit, caller save, SaveNodeParams, SavedNode, "Write the bytes of one node of the unpacked tree (by its path of child indices, as node) to a file; the document is left as it is. The tree is that of tree_doc, by default the document unpack.run last ran on.").writes_file(crate::api::WritesFile::Always).doc_defaults_to(tree_unpacked_last),
 ];
 
 /// What a call to one of this module's methods would do, in plain words.
@@ -61,9 +66,14 @@ pub struct UnpackParams {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct NodeParams {
-    /// Document id, path or "current" (the default): the parent.
+    /// Document id, path or "current": the document unpacked, as
+    /// `tree_doc`, which it defaults to.
     #[serde(default)]
     pub doc: Option<String>,
+    /// The document unpacked, whose tree the node is in; by default the
+    /// one unpack.run last ran on, else `doc`.
+    #[serde(default)]
+    pub tree_doc: Option<String>,
     /// Child indices from the root, such as [0, 2]; [] is the document itself.
     pub path: Vec<usize>,
     /// The password unpack.run was given, when the tree was unpacked
@@ -76,9 +86,14 @@ pub struct NodeParams {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ReadNodeParams {
-    /// Document id, path or "current" (the default).
+    /// Document id, path or "current": the document unpacked, as
+    /// `tree_doc`, which it defaults to.
     #[serde(default)]
     pub doc: Option<String>,
+    /// The document unpacked, whose tree the node is in; by default the
+    /// one unpack.run last ran on, else `doc`.
+    #[serde(default)]
+    pub tree_doc: Option<String>,
     /// Child indices from the root, such as [0, 2].
     pub path: Vec<usize>,
     /// First offset in the node's bytes (0 by default).
@@ -100,9 +115,14 @@ pub struct ReadNodeParams {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SaveNodeParams {
-    /// Document id, path or "current" (the default).
+    /// Document id, path or "current": the document unpacked, as
+    /// `tree_doc`, which it defaults to.
     #[serde(default)]
     pub doc: Option<String>,
+    /// The document unpacked, whose tree the node is in; by default the
+    /// one unpack.run last ran on, else `doc`.
+    #[serde(default)]
+    pub tree_doc: Option<String>,
     /// The node's child indices from the root, such as [0, 2].
     pub node: Vec<usize>,
     /// The file to write.
@@ -231,13 +251,34 @@ fn tree_of(workspace: &mut dyn Workspace, doc: Option<&str>, password: Option<&s
     Ok((id, unpack_with(bytes, &name, password)))
 }
 
+/// The document an omitted `doc` means for a node's method: `tree_doc`, or
+/// else the document `unpack.run` last ran on, while it is open. The
+/// person at the window opens nodes of the tree the Unpacked tab shows, the
+/// document shown's.
+fn tree_unpacked_last(workspace: &dyn Workspace, caller: &Caller, params: &serde_json::Value) -> Option<String> {
+    if let Some(tree_doc) = params.get("tree_doc").and_then(serde_json::Value::as_str) {
+        return Some(tree_doc.to_string());
+    }
+    if matches!(caller, Caller::Panel) {
+        return None;
+    }
+    let journal = workspace.journal();
+    let unpacked = journal.entries().rev().filter(|entry| entry.method == "unpack.run" && entry.outcome.is_ok() && journal.timeline().is_active(entry.step));
+    unpacked.filter_map(|entry| entry.doc.clone()).find(|doc| workspace.version(doc).is_some())
+}
+
+/// The document whose tree a node's method reads: `tree_doc`, else `doc`.
+fn tree_doc_of(tree_doc: Option<String>, doc: Option<String>) -> Option<String> {
+    tree_doc.or(doc)
+}
+
 /// The node at `path`, or why there is none.
 fn node_at<'a>(tree: &'a Node, path: &[usize]) -> Result<&'a Node, ApiError> {
     tree.find(path).ok_or_else(|| ApiError::not_found(format!("the unpacked tree has no node at {path:?}; unpack.run lists them with their paths")))
 }
 
 pub fn open(workspace: &mut dyn Workspace, params: NodeParams) -> Result<workspace::SheetMade, ApiError> {
-    let (id, tree) = tree_of(workspace, params.doc.as_deref(), params.password.as_deref())?;
+    let (id, tree) = tree_of(workspace, tree_doc_of(params.tree_doc, params.doc).as_deref(), params.password.as_deref())?;
     let node = node_at(&tree, &params.path)?;
     let name = format!("{} › {}", workspace::info(workspace, &id)?.name, node.name);
     let opened = workspace.open_derived(&id, node.data.to_vec(), &name)?;
@@ -245,7 +286,7 @@ pub fn open(workspace: &mut dyn Workspace, params: NodeParams) -> Result<workspa
 }
 
 pub fn read(workspace: &mut dyn Workspace, params: ReadNodeParams) -> Result<NodeBytes, ApiError> {
-    let (_, tree) = tree_of(workspace, params.doc.as_deref(), params.password.as_deref())?;
+    let (_, tree) = tree_of(workspace, tree_doc_of(params.tree_doc, params.doc).as_deref(), params.password.as_deref())?;
     let node = node_at(&tree, &params.path)?;
     let (start, len) = values::span_within(node.data.len(), params.start, params.len)?;
     values::check_size(len, MAX_CALL_BYTES, "the read")?;
@@ -256,7 +297,7 @@ pub fn read(workspace: &mut dyn Workspace, params: ReadNodeParams) -> Result<Nod
 /// are no span of the document, so this, not documents.export, saves them.
 /// The person, at the window, is told on the status bar.
 pub fn save(workspace: &mut dyn Workspace, caller: &Caller, params: SaveNodeParams) -> Result<SavedNode, ApiError> {
-    let (_, tree) = tree_of(workspace, params.doc.as_deref(), params.password.as_deref())?;
+    let (_, tree) = tree_of(workspace, tree_doc_of(params.tree_doc, params.doc).as_deref(), params.password.as_deref())?;
     let node = node_at(&tree, &params.node)?;
     std::fs::write(&params.path, node.data.as_slice()).map_err(|error| ApiError::new(ErrorCode::Unavailable, format!("could not save {} to {}: {error}", node.name, params.path)))?;
     if matches!(caller, Caller::Panel)
@@ -272,8 +313,8 @@ mod tests {
     use serde_json::json;
 
     use super::super::tool_jobs::test_support::run_job;
-    use crate::api::ErrorCode;
     use crate::api::test_support::{call, example_bytes, workspace_with};
+    use crate::api::{ErrorCode, Workspace};
 
     #[test]
     fn a_zlib_stream_unpacks_into_a_node_that_can_be_read_and_opened() {
@@ -305,6 +346,32 @@ mod tests {
         assert_eq!((member["len"].as_u64(), member["note"].as_str()), (Some(secret.len() as u64), Some("decrypted (ZipCrypto)")), "{opened}");
         let read = call(&mut workspace, "unpack.read", json!({"path": [0], "encoding": "text", "password": "Kestrel!Moor42"})).unwrap();
         assert_eq!(read["data"].as_str().unwrap().as_bytes(), secret.as_slice());
+    }
+
+    #[test]
+    fn nodes_are_opened_from_the_tree_unpack_run_made_even_after_the_focus_moves() {
+        use crate::api::Caller;
+        let client = Caller::Mcp("claude-code".into());
+        let mut workspace = workspace_with("outer.bin", b"outer");
+        let container = workspace.add_document("example.bin", crate::document::Document::from_bytes(example_bytes()));
+        let status = run_job_as(&mut workspace, &client, "unpack.run", json!({"doc": container}));
+        assert_eq!(status["state"], "finished", "{status}");
+        crate::api::call(&mut workspace, &client, "documents.activate", json!({"doc": "doc-1"})).unwrap();
+        let opened = crate::api::call(&mut workspace, &client, "unpack.open", json!({"path": [0]})).unwrap();
+        assert_eq!(opened["len"], 300, "the node of the tree unpack.run made, not of the focus, doc-1");
+        let read = crate::api::call(&mut workspace, &client, "unpack.read", json!({"path": [0], "len": 6, "encoding": "text"})).unwrap();
+        assert_eq!(read["data"], "hello ");
+        let step = workspace.journal().entries().last().unwrap();
+        assert_eq!((step.method.as_str(), step.doc.as_deref()), ("unpack.open", Some(container.as_str())), "the step names the tree's document");
+        let named = crate::api::call(&mut workspace, &client, "unpack.read", json!({"tree_doc": "doc-1", "path": [0]})).unwrap_err();
+        assert_eq!(named.code, ErrorCode::NotFound, "a tree_doc given is the one read");
+    }
+
+    /// Run a job as `caller` and wait for it, as a client does.
+    fn run_job_as(workspace: &mut crate::api::HeadlessWorkspace, caller: &crate::api::Caller, method: &str, params: serde_json::Value) -> serde_json::Value {
+        let started = crate::api::call(workspace, caller, method, params).unwrap();
+        let job = started["job"].as_str().unwrap().to_string();
+        serde_json::to_value(crate::journal::replay::wait_for_job(workspace, &job).unwrap()).unwrap()
     }
 
     #[test]

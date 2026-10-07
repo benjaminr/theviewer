@@ -315,9 +315,9 @@ A recipe step that starts a job waits for it (up to 10 minutes), and later steps
 | [`forensics.open_entry`](#forensicsopen_entry) | view |  | Open one file (or volume) of the filesystem image at an offset of the document as a derived document, by its path in the image; a deleted FAT file opens as recovered from its first cluster on. |
 | [`forensics.classify_blocks`](#forensicsclassify_blocks) | job |  | Start labelling every block of the document (its first 256 MiB) as padding, text, markup, machine code, compressed, random, raw image, PCM audio or table data as a job: the runs of one class, with the reason for each, are job.finished's result, and in the window they fill Forensics. |
 | [`unpack.run`](#unpackrun) | job |  | Start extracting the archives and compressed streams in the document (its first 256 MiB) recursively, like binwalk -e, as a job: the tree of what was found, each node with its kind, size and where its bytes came from, is job.finished's result, and in the window it fills the Unpacked tab and the Size map. |
-| [`unpack.open`](#unpackopen) | view |  | Open one node of the unpacked tree (by its path of child indices, as unpack.run gave it) as a derived document. |
-| [`unpack.read`](#unpackread) | read |  | Read the bytes of one node of the unpacked tree, by its path of child indices, as hex by default, or as base64 or text. |
-| [`unpack.save`](#unpacksave) | edit |  | Write the bytes of one node of the unpacked tree (by its path of child indices, as node) to a file; the document is left as it is. |
+| [`unpack.open`](#unpackopen) | view |  | Open one node of the unpacked tree (by its path of child indices, as unpack.run gave it) as a derived document; the tree is that of tree_doc, by default the document unpack.run last ran on. |
+| [`unpack.read`](#unpackread) | read |  | Read the bytes of one node of the unpacked tree, by its path of child indices, as hex by default, or as base64 or text; the tree is that of tree_doc, by default the document unpack.run last ran on. |
+| [`unpack.save`](#unpacksave) | edit |  | Write the bytes of one node of the unpacked tree (by its path of child indices, as node) to a file; the document is left as it is. The tree is that of tree_doc, by default the document unpack.run last ran on. |
 | [`characterise.profile_selection`](#characteriseprofile_selection) | job |  | Start compressing a sample of a span with deflate, bzip2, LZ4, zstd and an order-1 entropy coder as a job: the ratios and the verdict they give (encrypted or random, already compressed, lossy media or structured) are job.finished's result, and in the window they fill Characterise (analysis.compressibility is the quick read). |
 | [`characterise.profile_file`](#characteriseprofile_file) | job |  | Start profiling the compressibility of the whole document as a job, overall and for up to 64 segments sampled along it: the verdicts are job.finished's result, and in the window they fill Characterise with a strip of verdicts. |
 | [`characterise.streams`](#characterisestreams) | job |  | Start a search of the document (its first 256 MiB) for raw MP3/MP2 and AAC frames, H.264 and H.265 Annex B video and 16-bit PCM audio without a container as a job: the runs found are job.finished's result, and in the window they fill Characterise. |
@@ -3411,7 +3411,7 @@ Start extracting the archives and compressed streams in the document (its first 
 
 ### unpack.open
 
-Open one node of the unpacked tree (by its path of child indices, as unpack.run gave it) as a derived document.
+Open one node of the unpacked tree (by its path of child indices, as unpack.run gave it) as a derived document; the tree is that of tree_doc, by default the document unpack.run last ran on.
 
 **Effect:** `view` · **MCP tool:** `unpack_open`, through `api_call`, or with `--all-tools`
 
@@ -3419,9 +3419,10 @@ Open one node of the unpacked tree (by its path of child indices, as unpack.run 
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `doc` | string | no | Document id, path or "current" (the default): the parent. |
+| `doc` | string | no | Document id, path or "current": the document unpacked, as `tree_doc`, which it defaults to. |
 | `password` | string | no | The password unpack.run was given, when the tree was unpacked with one. |
 | `path` | array of integer | yes | Child indices from the root, such as [0, 2]; [] is the document itself. |
+| `tree_doc` | string | no | The document unpacked, whose tree the node is in; by default the one unpack.run last ran on, else `doc`. |
 
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -3440,7 +3441,7 @@ Open one node of the unpacked tree (by its path of child indices, as unpack.run 
 
 ### unpack.read
 
-Read the bytes of one node of the unpacked tree, by its path of child indices, as hex by default, or as base64 or text.
+Read the bytes of one node of the unpacked tree, by its path of child indices, as hex by default, or as base64 or text; the tree is that of tree_doc, by default the document unpack.run last ran on.
 
 **Effect:** `read` · **MCP tool:** `unpack_read`, through `api_call`, or with `--all-tools`
 
@@ -3448,12 +3449,13 @@ Read the bytes of one node of the unpacked tree, by its path of child indices, a
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `doc` | string | no | Document id, path or "current" (the default). |
+| `doc` | string | no | Document id, path or "current": the document unpacked, as `tree_doc`, which it defaults to. |
 | `encoding` | `"hex"` \| `"base64"` \| `"text"` | no | hex (the default), base64 or text. |
 | `len` | integer | no | Bytes read, at most 16 MiB; to the end of the node when omitted. |
 | `password` | string | no | The password unpack.run was given, when the tree was unpacked with one. |
 | `path` | array of integer | yes | Child indices from the root, such as [0, 2]. |
 | `start` | integer | no | First offset in the node's bytes (0 by default). |
+| `tree_doc` | string | no | The document unpacked, whose tree the node is in; by default the one unpack.run last ran on, else `doc`. |
 
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -3464,7 +3466,7 @@ Read the bytes of one node of the unpacked tree, by its path of child indices, a
 
 ### unpack.save
 
-Write the bytes of one node of the unpacked tree (by its path of child indices, as node) to a file; the document is left as it is.
+Write the bytes of one node of the unpacked tree (by its path of child indices, as node) to a file; the document is left as it is. The tree is that of tree_doc, by default the document unpack.run last ran on.
 
 **Effect:** `edit` · **MCP tool:** `unpack_save`, through `api_call`, or with `--all-tools`
 
@@ -3472,10 +3474,11 @@ Write the bytes of one node of the unpacked tree (by its path of child indices, 
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `doc` | string | no | Document id, path or "current" (the default). |
+| `doc` | string | no | Document id, path or "current": the document unpacked, as `tree_doc`, which it defaults to. |
 | `node` | array of integer | yes | The node's child indices from the root, such as [0, 2]. |
 | `password` | string | no | The password unpack.run was given, when the tree was unpacked with one. |
 | `path` | string | yes | The file to write. |
+| `tree_doc` | string | no | The document unpacked, whose tree the node is in; by default the one unpack.run last ran on, else `doc`. |
 
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
