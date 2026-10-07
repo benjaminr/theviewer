@@ -407,6 +407,8 @@ pub struct ViewerApp {
     /// Calls from plugins, Ask and other clients waiting for the person to
     /// allow or deny them, oldest first; the first is shown.
     pub confirmations: crate::confirmations::Confirmations,
+    /// "Run recipe…": pick a saved recipe, preview it on this file, run it.
+    pub recipe_window: crate::recipes::window::RecipeWindow,
     /// The session's journal: every call made through the API that changed
     /// something, for the History tab, undo across steps and recipes.
     pub journal: crate::journal::Journal,
@@ -668,6 +670,7 @@ impl ViewerApp {
             plugin_subscriptions: Vec::new(),
             plugin_inbox: Default::default(),
             confirmations: Default::default(),
+            recipe_window: Default::default(),
             journal: crate::journal::Journal::new(),
         };
         if launch.restore_layout {
@@ -3246,6 +3249,7 @@ impl ViewerApp {
                 ui.separator();
                 if ui.button("Extract selection or stream to file…   Cmd+E").clicked() { self.export_dialog(false); ui.close(); }
                 if ui.button("Extract decompressed contents to file…").clicked() { self.export_dialog(true); ui.close(); }
+                if ui.button("Run recipe…").clicked() { self.open_recipe_window(); ui.close(); }
             });
             ui.menu_button("Edit", |ui| {
                 if ui.add_enabled(self.document.can_undo(), egui::Button::new(history_item("Undo", self.document.undo_label(), "Cmd+Z"))).clicked() { self.undo(); ui.close(); }
@@ -4028,6 +4032,7 @@ impl eframe::App for ViewerApp {
         self.show_plot_window(&ctx);
         self.show_settings_window(&ctx);
         self.show_confirmation_window(&ctx);
+        self.show_recipe_window(&ctx);
         self.show_bookmark_prompt(&ctx);
         crate::selection_menu::show_insert_dialog(self, &ctx);
         commands::show_palette(self, &ctx);

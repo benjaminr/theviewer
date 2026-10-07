@@ -18,12 +18,16 @@
 //! 2. **Anchors** marked `{"$anchor": …}` in a step's params are resolved
 //!    against the step's document, in the order [`super::anchors::anchors_in`]
 //!    lists them, and each is reported in [`StepReport::anchors`].
-//! 3. **The call** is made as `options.caller`. With `options.consented`
-//!    the whole run was already allowed (the person pressed Run after the
-//!    preview, or the caller's `recipes.run` passed its own permission
-//!    check), so each step runs without asking again
-//!    ([`crate::api::call_permitted`]); otherwise each is checked as
-//!    [`crate::api::call`] checks it, under `options.caller`'s policy.
+//! 3. **The call** is made as `options.caller`, so its edits are labelled
+//!    "… by recipe:NAME". With `options.consented` the person allowed the
+//!    whole run (they pressed Run after the preview, or allowed the held
+//!    `recipes.run` whose description lists the steps), so each step runs
+//!    without asking again ([`crate::api::call_permitted`]). Otherwise, with
+//!    `options.checked_as`, each step is checked against the policy of
+//!    whoever started the run (Ask, an MCP client, a plugin), and a step it
+//!    denies or would ask about is refused and stops the run; without it,
+//!    each is checked as [`crate::api::call`] checks it, under
+//!    `options.caller`'s own policy.
 //! 4. **Jobs** a step starts are waited for when `options.await_jobs`
 //!    is set, and the finished job's result is kept beside the step's
 //!    params and result, for later step anchors (`job.candidates[0].period`).
@@ -50,7 +54,7 @@ use serde_json::Value;
 use super::anchors::{Anchor, ResolveContext, anchors_in, replace_at};
 use super::recipe::{Recipe, RecipeStep};
 use super::{FileIdentity, Outcome};
-use crate::api::{self, ApiError, Caller, Effect, ErrorCode, Workspace, workspace};
+use crate::api::{self, ApiError, Caller, Decision, Effect, ErrorCode, Workspace, permissions, workspace};
 use crate::bus::{JobState, JobStatus};
 
 /// Longest a run waits for one step's job before giving up on it.
@@ -83,13 +87,19 @@ pub struct ReplayOptions {
     /// preview, or a `recipes.run` call that passed its own caller's check
     /// started it. Off by default: each step is checked.
     pub consented: bool,
+    /// Who started the run, when not the person: each step is checked
+    /// against this caller's policy rather than `caller`'s, so a recipe
+    /// run by Ask, an MCP client or a plugin may do only what that caller
+    /// may. A step its policy denies, or would ask about, is refused and
+    /// stops the run. Ignored when `consented`.
+    pub checked_as: Option<Caller>,
 }
 
 impl ReplayOptions {
     /// Options to run every step as `caller` on the current document,
     /// waiting for jobs, each step checked against `caller`'s policy.
     pub fn new(caller: Caller) -> Self {
-        ReplayOptions { caller, parameters: BTreeMap::new(), doc: None, through_step: None, preview: false, await_jobs: true, consented: false }
+        ReplayOptions { caller, parameters: BTreeMap::new(), doc: None, through_step: None, preview: false, await_jobs: true, consented: false, checked_as: None }
     }
 }
 
@@ -305,11 +315,7 @@ impl Run<'_> {
         }
         let before = workspace.journal().last_step();
         let outermost = workspace.journal().depth == 0;
-        let called = if self.options.consented {
-            api::call_permitted(workspace, &self.options.caller, &step.method, report.params.clone())
-        } else {
-            api::call(workspace, &self.options.caller, &step.method, report.params.clone())
-        };
+        let called = self.call(workspace, step, report.params.clone());
         let after = workspace.journal().last_step();
         report.journal_step = after.filter(|_| outermost && after != before);
         let result = match called.and_then(|result| self.await_job(workspace, step, result, &mut report)) {
@@ -326,6 +332,23 @@ impl Run<'_> {
         self.done.insert(step.step, done);
         report.result = Some(result);
         report
+    }
+
+    /// Call `step` with `params` as the run's caller, once allowed: at once
+    /// when the run is consented to, else checked against the policy of
+    /// whoever started it (`checked_as`) or of the run's caller.
+    fn call(&self, workspace: &mut dyn Workspace, step: &RecipeStep, params: Value) -> Result<Value, ApiError> {
+        let caller = &self.options.caller;
+        if self.options.consented {
+            return api::call_permitted(workspace, caller, &step.method, params);
+        }
+        let Some(starter) = &self.options.checked_as else { return api::call(workspace, caller, &step.method, params) };
+        let effect = api::find(workspace, &step.method)?.effect();
+        match workspace.permission(starter, effect) {
+            Decision::Allowed => api::call_permitted(workspace, caller, &step.method, params),
+            Decision::Denied => super::record_refusal(workspace, caller, &step.method, effect, &params, permissions::denied(starter, &step.method)),
+            Decision::NeedsConfirmation => Err(permissions::needs_confirmation(starter, &step.method)),
+        }
     }
 
     /// Put the run's document in the step's params and resolve its anchors

@@ -128,6 +128,7 @@ pub fn commands() -> Vec<Command> {
         Command { id: "tools.compare", title: "Compare many files: variation, correlation and recording timeline", keys: "", run: |app, _| app.dock.toggle(crate::dock::DockTab::Compare) },
         Command { id: "tools.crypto", title: "Find encrypted blocks, keys and certificates; try simple ciphers", keys: "", run: |app, _| app.dock.toggle(crate::dock::DockTab::Crypto) },
         Command { id: "app.settings", title: "Settings (API key)", keys: "Cmd+,", run: |app, _| app.open_settings() },
+        Command { id: "recipes.run", title: "Run recipe… (preview a saved recipe on this file, then run it)", keys: "", run: |app, _| app.open_recipe_window() },
         Command { id: "help.keys", title: "Keyboard shortcuts", keys: "?", run: |app, _| app.show_help = true },
     ]
 }

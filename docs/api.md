@@ -183,6 +183,11 @@ Errors are `{code, message, data}`, with these codes:
 | [`sources.record`](#sourcesrecord) | view | Keep every version of a document as it changes (the window's file or capture as it changes on disk, or after each edit), or stop keeping them. |
 | [`sources.stop`](#sourcesstop) | view | Stop the window's serial capture. |
 | [`sources.view_version`](#sourcesview_version) | view | Open a recorded version of a document as a document derived from it; the window marks what changed from the version before. |
+| [`recipes.list`](#recipeslist) | read | The recipes saved in ~/.config/theviewer/recipes/: each one's name, description, steps and the parameters it asks for. |
+| [`recipes.describe`](#recipesdescribe) | read | One recipe in full, by name or path, with what to know before running it here: another API version, a plugin missing or changed, a method this build lacks, or mistakes in its anchors. |
+| [`recipes.save`](#recipessave) | read | Save a recipe in ~/.config/theviewer/recipes/, given whole or made from steps of this session's journal, to run later on other files. |
+| [`recipes.preview`](#recipespreview) | read | What a recipe would do to a document, without changing anything: each step described with its anchors resolved on this file, and where the run would stop. |
+| [`recipes.run`](#recipesrun) | edit | Run a recipe on a document, each step called as recipe:NAME with its anchors resolved on this file, waiting for the jobs steps start; its edits undo as one step, and the first failure stops it with which step and why. |
 
 Each method's full JSON schemas are in `theviewer api --describe`.
 
@@ -2859,6 +2864,89 @@ Open a recorded version of a document as a document derived from it; the window 
 | `name` | string | yes | File name, or the name of a derived document. |
 | `path` | string | no | Path on disk, for documents opened from a file. |
 | `version` | integer | yes | Incremented on every edit. |
+
+### recipes.list
+
+The recipes saved in ~/.config/theviewer/recipes/: each one's name, description, steps and the parameters it asks for.
+
+Parameters: None.
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `dir` | string | yes | The folder recipes are kept in. |
+| `recipes` | array of RecipeSummary | yes | The recipes saved there, by name. |
+
+### recipes.describe
+
+One recipe in full, by name or path, with what to know before running it here: another API version, a plugin missing or changed, a method this build lacks, or mistakes in its anchors.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `name` | string | no | A saved recipe's name, as recipes.list gives it. |
+| `path` | string | no | A recipe file's path. |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `path` | string | no | Its file. |
+| `recipe` | Recipe | yes | A saved analysis, to run on other files. |
+| `warnings` | array of string | yes | What to know before running it here. |
+
+### recipes.save
+
+Save a recipe in ~/.config/theviewer/recipes/, given whole or made from steps of this session's journal, to run later on other files.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `description` | string | no | What it is for (in place of the recipe's own, when one is given). |
+| `journal_steps` | array of integer | no | Steps of this session's journal (history.list gives them) to make the recipe of, as recorded; the failed ones are left out. |
+| `name` | string | no | The recipe's name (in place of the recipe's own, when one is given). |
+| `overwrite` | boolean | no | Replace a recipe saved under the same name. |
+| `recipe` | Recipe | no | The recipe, as a *.theviewer-recipe.json file holds it. |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `name` | string | yes |  |
+| `path` | string | yes | The file it was saved as. |
+| `steps` | integer | yes | How many steps it has. |
+| `warnings` | array of string | yes | What to know before running it. |
+
+### recipes.preview
+
+What a recipe would do to a document, without changing anything: each step described with its anchors resolved on this file, and where the run would stop.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `doc` | string | no | Document id, path or "current" (the default) to run it on. |
+| `name` | string | no | A saved recipe's name, as recipes.list gives it. |
+| `parameters` | object | no | Values for the recipe's parameters, by name; text is read as the parameter's type. Those left out take their defaults. |
+| `path` | string | no | A recipe file's path. |
+| `recipe` | Recipe | no | The recipe itself. |
+| `through_step` | integer | no | Stop after the step with this number. |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `steps` | array of StepReport | yes | Each step run (or previewed), in order. |
+| `stopped` | Stopped | no | Why the run stopped early, if it did. |
+| `warnings` | array of string | no | Things to know that did not stop it: a plugin missing or changed, a different API version, another file than the one recorded on. |
+
+### recipes.run
+
+Run a recipe on a document, each step called as recipe:NAME with its anchors resolved on this file, waiting for the jobs steps start; its edits undo as one step, and the first failure stops it with which step and why.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `doc` | string | no | Document id, path or "current" (the default) to run it on. |
+| `name` | string | no | A saved recipe's name, as recipes.list gives it. |
+| `parameters` | object | no | Values for the recipe's parameters, by name; text is read as the parameter's type. Those left out take their defaults. |
+| `path` | string | no | A recipe file's path. |
+| `recipe` | Recipe | no | The recipe itself. |
+| `through_step` | integer | no | Stop after the step with this number. |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `steps` | array of StepReport | yes | Each step run (or previewed), in order. |
+| `stopped` | Stopped | no | Why the run stopped early, if it did. |
+| `warnings` | array of string | no | Things to know that did not stop it: a plugin missing or changed, a different API version, another file than the one recorded on. |
 
 ## Topics
 
