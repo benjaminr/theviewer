@@ -1278,7 +1278,7 @@ mod tests {
         crate::actions::take_performed();
         let mut state = ReferenceState::default();
         act(&mut state, &mut app, Action::SelectBytes { start: 4, len: 2, name: "magic".to_string() });
-        assert_eq!(crate::actions::take_performed(), [("selection.set".to_string(), serde_json::json!({ "selection": { "range": [4, 2] }, "cursor": 6 }))]);
+        assert_eq!(crate::actions::take_performed(), [("selection.set".to_string(), serde_json::json!({ "selection": { "range": [4, 2] } }))]);
         assert_eq!((app.selection(), app.cursor), (Some((4, 2)), 6));
         assert!(app.status.contains("magic"), "the status bar names the field: {}", app.status);
     }

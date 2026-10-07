@@ -908,7 +908,7 @@ mod tests {
         let mut app = app_with(&zeros_then_text());
         let state = StructureMapState::default();
         apply(&state, &mut app, Action::Select { start: 0x200, len: 0x40, title: "Zeros".to_string() });
-        assert_eq!(take_performed(), [("selection.set".to_string(), json!({ "selection": { "range": [0x200, 0x40] }, "cursor": 0x240 }))]);
+        assert_eq!(take_performed(), [("selection.set".to_string(), json!({ "selection": { "range": [0x200, 0x40] } }))]);
         assert_eq!(app.selection(), Some((0x200, 0x40)));
         assert!(app.status.contains("Zeros"), "the status bar names the segment: {}", app.status);
     }

@@ -37,6 +37,7 @@ use crate::analysis_tools::PROTOCOL_PRODUCER;
 use crate::bus::topics::{FieldsDecoded, FieldsGuessed, FramesDefined, ProtocolIdentified, SelectionChanged, TemplateApplied};
 use crate::bus::{Draft, JobHandle, Message, Payload, Publisher};
 use crate::dock::DockTab;
+use crate::journal::DerivedFrom;
 use crate::packets::sources;
 #[cfg(test)]
 use crate::packets::sources::Recipe;
@@ -631,17 +632,30 @@ fn ask_now(app: &mut ViewerApp, method: &str, params: serde_json::Value, expecte
     done
 }
 
+/// [`ask_now`] for a call whose span is the selection's: the journal notes
+/// that the span equal to the selection came from it, and `also` where
+/// other values came from.
+fn ask_now_of_selection(app: &mut ViewerApp, method: &str, params: serde_json::Value, expected: Expected, also: DerivedFrom) -> bool {
+    let mut derived_from = app.selection_call_provenance(&params);
+    derived_from.extend(also);
+    app.with_provenance(derived_from, |app| ask_now(app, method, params, expected))
+}
+
 /// Ask for `method` once the viewer is drawn (its state is lent out while it
 /// is, and the set the method shows would land on the placeholder),
 /// expecting a set shown; a failure is said in the viewer when it is next
 /// drawn.
 pub(crate) fn ask_after_drawing(state: &mut PacketsState, app: &mut ViewerApp, method: &str, params: serde_json::Value, expected: Expected) {
-    ask_after_drawing_derived(state, app, method, params, expected, Default::default());
+    state.expected = Some(expected);
+    app.perform_later(method, params);
 }
 
-/// [`ask_after_drawing`], noting where the values of some parameters came
-/// from (the selection, a detected length field) for the journal.
-pub(crate) fn ask_after_drawing_derived(state: &mut PacketsState, app: &mut ViewerApp, method: &str, params: serde_json::Value, expected: Expected, derived_from: crate::journal::DerivedFrom) {
+/// [`ask_after_drawing`] for a call whose span is the selection's: the
+/// journal notes that the span equal to the selection came from it, and
+/// `also` where other values came from (a detected length field).
+pub(crate) fn ask_after_drawing_of_selection(state: &mut PacketsState, app: &mut ViewerApp, method: &str, params: serde_json::Value, expected: Expected, also: DerivedFrom) {
+    let mut derived_from = app.selection_call_provenance(&params);
+    derived_from.extend(also);
     state.expected = Some(expected);
     app.perform_later_derived(method, params, derived_from);
 }
@@ -693,8 +707,7 @@ pub fn add_selection_as_packet(app: &mut ViewerApp) {
     let call = with_state(app, add_selection_call);
     match call {
         Ok((method, params)) => {
-            let derived_from = app.selection_call_provenance(&params);
-            let _ = app.with_provenance(derived_from, |app| ask_now(app, method, params, Expected::Set));
+            ask_now_of_selection(app, method, params, Expected::Set, DerivedFrom::new());
         }
         Err(note) => app.bench.panels.packets.show_note(note, true),
     }
@@ -706,8 +719,7 @@ pub fn add_selection_as_packet(app: &mut ViewerApp) {
 pub fn split_selection_by_row_width(app: &mut ViewerApp) {
     match split_call(&app.bench.panels.packets, app, app.shape.row_stride()) {
         Ok(params) => {
-            let derived_from = app.selection_call_provenance(&params);
-            let _ = app.with_provenance(derived_from, |app| ask_now(app, "packets.sets.create", params, Expected::Set));
+            ask_now_of_selection(app, "packets.sets.create", params, Expected::Set, DerivedFrom::new());
         }
         Err(note) => app.bench.panels.packets.show_note(note, true),
     }
@@ -950,8 +962,7 @@ fn delimiter_call(state: &PacketsState, app: &ViewerApp) -> Result<serde_json::V
 fn ask_for_set(state: &mut PacketsState, app: &mut ViewerApp, call: Result<(&'static str, serde_json::Value), String>) {
     match call {
         Ok((method, params)) => {
-            let derived_from = app.selection_call_provenance(&params);
-            ask_after_drawing_derived(state, app, method, params, Expected::Set, derived_from);
+            ask_after_drawing_of_selection(state, app, method, params, Expected::Set, DerivedFrom::new());
         }
         Err(note) => state.show_note(note, true),
     }

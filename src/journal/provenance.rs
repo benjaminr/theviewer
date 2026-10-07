@@ -36,10 +36,11 @@
 //!   from the literal (or as `history.make_parameter` gave them), its
 //!   description as given;
 //! * a `doc` that names the recorded document is dropped, so the step runs
-//!   on whichever document the recipe runs on;
-//! * a `selection.set` whose selection is anchored drops a `cursor` at the
-//!   end of the last range, which is where the cursor goes when it is
-//!   omitted, so it follows the anchored range.
+//!   on whichever document the recipe runs on.
+//!
+//! The window's own `selection.set` leaves out a cursor at the end of the
+//! last range, where an omitted cursor goes, so a recipe whose selection is
+//! anchored puts the cursor at the end of the range it finds.
 //!
 //! **Anchor conventions** this module writes, which resolving follows:
 //!
@@ -404,9 +405,6 @@ impl Recipe {
                 let _ = anchors::replace_at(&mut step.params, path, anchors::marked(&anchor));
             }
             drop_recorded_doc(&mut step.params, entry, recorded_doc.as_deref());
-            if step.method == "selection.set" {
-                drop_default_cursor(&mut step.params, &entry.params);
-            }
         }
         recipe
     }
@@ -469,26 +467,6 @@ fn drop_recorded_doc(params: &mut Value, entry: &JournalEntry, recorded_doc: Opt
         && names_recorded
     {
         fields.remove("doc");
-    }
-}
-
-/// Drop a `selection.set`'s `cursor` at the end of the last range of
-/// `recorded` (where an omitted cursor goes) when its selection is
-/// anchored, so the cursor follows the anchored range.
-fn drop_default_cursor(params: &mut Value, recorded: &Value) {
-    if params.get("cursor").and_then(anchors::as_anchor).is_some() || anchors::anchors_in(params.get("selection").unwrap_or(&Value::Null)).is_empty() {
-        return;
-    }
-    let selection = &recorded["selection"];
-    let last_end = if let Some(range) = selection.get("range") {
-        Some(range[0].as_u64().unwrap_or(0) + range[1].as_u64().unwrap_or(0))
-    } else {
-        selection.get("ranges").and_then(Value::as_array).and_then(|ranges| ranges.last()).map(|range| range[0].as_u64().unwrap_or(0) + range[1].as_u64().unwrap_or(0))
-    };
-    if let (Some(end), Some(fields)) = (last_end, params.as_object_mut())
-        && fields.get("cursor").and_then(Value::as_u64) == Some(end)
-    {
-        fields.remove("cursor");
     }
 }
 

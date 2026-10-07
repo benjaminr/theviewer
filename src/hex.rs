@@ -184,7 +184,7 @@ fn show_structure_tree(app: &mut ViewerApp, ui: &mut Ui) {
     if let Some((start, len)) = chosen {
         let end = start + len.max(1);
         let derived_from = app.field_provenance(&structure, start, len);
-        app.with_provenance(derived_from, |app| app.select_as_person(Some(crate::selection::Selection::Range(start, end - start)), end));
+        app.select_as_person(Some(crate::selection::Selection::Range(start, end - start)), end, derived_from);
         app.reveal_cursor_in_hex(true);
         app.reveal_cursor_centred();
     }

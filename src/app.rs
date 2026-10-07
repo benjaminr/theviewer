@@ -1100,7 +1100,7 @@ impl ViewerApp {
             Some((start, len))
         };
         let cursor = primary.map_or(self.cursor, |(start, len)| start + len);
-        if !self.select_as_person(crate::selection_menu::selection_of(ranges), cursor) {
+        if !self.select_as_person(crate::selection_menu::selection_of(ranges), cursor, crate::journal::DerivedFrom::new()) {
             return;
         }
         self.select_matching_packets();
@@ -1159,7 +1159,7 @@ impl ViewerApp {
         }
         let count = ranges.len();
         let end = ranges.last().map_or(0, |&(at, len)| at + len);
-        if !self.with_provenance(derived_from, |app| app.select_as_person(crate::selection_menu::selection_of(ranges), end)) {
+        if !self.select_as_person(crate::selection_menu::selection_of(ranges), end, derived_from) {
             return;
         }
         self.reveal_cursor_centred();
@@ -1620,7 +1620,7 @@ impl ViewerApp {
     /// Select the match at `at`, as `selection.set`, and show it.
     fn show_match(&mut self, at: usize, len: usize, index_hint: &str) {
         let derived_from = self.match_provenance(at);
-        if !self.with_provenance(derived_from, |app| app.select_as_person(Some(Selection::Range(at, len)), at + len)) {
+        if !self.select_as_person(Some(Selection::Range(at, len)), at + len, derived_from) {
             return;
         }
         self.reveal_cursor_centred();
@@ -2269,7 +2269,7 @@ impl ViewerApp {
     /// Select every byte, as `selection.set`.
     pub fn select_all(&mut self) {
         let len = self.document.len();
-        self.select_as_person(Some(Selection::Range(0, len)), len);
+        self.select_as_person(Some(Selection::Range(0, len)), len, crate::journal::DerivedFrom::new());
     }
 
     // ------------------------------------------------------------------
@@ -4240,7 +4240,7 @@ mod tests {
 
         app.cursor = 0x28;
         app.select_stream_at_cursor();
-        assert_eq!(take_performed(), [("selection.set".to_string(), json!({ "selection": { "range": [0x20, 0x30] }, "cursor": 0x50 }))]);
+        assert_eq!(take_performed(), [("selection.set".to_string(), json!({ "selection": { "range": [0x20, 0x30] } }))]);
         assert_eq!((app.selection(), app.cursor), (Some((0x20, 0x30)), 0x50));
         assert!(app.status.contains("gzip stream"), "the status bar names the stream: {}", app.status);
     }

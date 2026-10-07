@@ -18,6 +18,7 @@ use crate::app::ViewerApp;
 use crate::compress::{self, Codec};
 use crate::document::Document;
 use crate::ops;
+use crate::journal::DerivedFrom;
 use crate::plugin::Finding;
 use crate::selection::Selection;
 use crate::selection_ops::{self, CopyFormat, Operation};
@@ -147,23 +148,28 @@ impl ViewerApp {
     }
 
     /// The person selects `selection` (nothing when `None`) with the cursor
-    /// at `cursor`, as `selection.set`. The cursor is in the step when it
-    /// sits where the API allows (an end of one of the ranges, a column's
-    /// end); otherwise it goes to the end of the last range. The views stay
-    /// where the action leaves them. Returns whether it was selected.
-    pub fn select_as_person(&mut self, selection: Option<Selection>, cursor: usize) -> bool {
+    /// at `cursor`, as `selection.set`, its values taken from where
+    /// `derived_from` says (nothing when they are the person's own). The
+    /// cursor is in the step when it sits where the API allows (an end of
+    /// one of the ranges, a column's end) and is not where it goes anyway,
+    /// the end of the last range, so that a recipe whose selection is
+    /// anchored puts the cursor at the end of the range it finds. The views
+    /// stay where the action leaves them. Returns whether it was selected.
+    pub fn select_as_person(&mut self, selection: Option<Selection>, cursor: usize, derived_from: DerivedFrom) -> bool {
         let cursor = cursor.min(self.document.len());
         let ranges = selection.as_ref().map(|selected| selected.ranges(self.document.len())).unwrap_or_default();
+        let end_of_last = ranges.last().map(|&(start, len)| start + len);
         let cursor_fits = match &selection {
             None => true,
-            Some(Selection::Columns(_)) => ranges.last().is_some_and(|&(start, len)| cursor == start + len),
+            Some(_) if end_of_last == Some(cursor) => false,
+            Some(Selection::Columns(_)) => false,
             Some(_) => ranges.iter().any(|&(start, len)| cursor == start || cursor == start + len),
         };
         let mut params = serde_json::json!({ "selection": selection });
         if cursor_fits {
             params["cursor"] = serde_json::json!(cursor);
         }
-        self.keeping_the_hex_dump_still(|app| app.perform("selection.set", params).is_ok())
+        self.keeping_the_hex_dump_still(|app| app.with_provenance(derived_from, |app| app.perform("selection.set", params).is_ok()))
     }
 
     /// The person moves the cursor to `target` (a click, an arrow key);
@@ -178,7 +184,7 @@ impl ViewerApp {
         let anchor = self.anchor.unwrap_or(self.cursor);
         let mut ranges = self.extra_ranges.clone();
         ranges.push((anchor.min(target), anchor.abs_diff(target)));
-        self.select_as_person(selection_of(ranges), target);
+        self.select_as_person(selection_of(ranges), target, DerivedFrom::new());
     }
 
     /// Esc: the person selects nothing, leaving the cursor where it is, as
@@ -187,7 +193,7 @@ impl ViewerApp {
         self.pending_low_nibble = false;
         if self.anchor.is_some() || !self.extra_ranges.is_empty() || self.column_selection.is_some() {
             let cursor = self.cursor;
-            self.select_as_person(None, cursor);
+            self.select_as_person(None, cursor, DerivedFrom::new());
         }
     }
 
@@ -197,7 +203,7 @@ impl ViewerApp {
     pub fn select_finding(&mut self, finding: &Finding) {
         let (start, end) = (finding.start.min(self.document.len()), finding.end().min(self.document.len()));
         let derived_from = self.finding_provenance(finding, start, end - start);
-        if self.with_provenance(derived_from, |app| app.select_as_person(Some(Selection::Range(start, end - start)), end)) {
+        if self.select_as_person(Some(Selection::Range(start, end - start)), end, derived_from) {
             self.reveal_finding(finding);
         }
     }
@@ -782,6 +788,27 @@ mod tests {
     }
 
     #[test]
+    fn the_person_s_selection_leaves_out_a_cursor_that_goes_to_the_end_of_the_last_range_anyway() {
+        let mut app = app_with(&[0; 16]);
+        take_performed();
+        app.select_as_person(Some(Selection::Range(4, 2)), 6, Default::default());
+        app.select_as_person(Some(Selection::Range(4, 2)), 4, Default::default());
+        app.select_as_person(Some(Selection::Ranges(vec![(0, 2), (8, 2)])), 2, Default::default());
+        app.select_as_person(None, 3, Default::default());
+        let performed: Vec<serde_json::Value> = take_performed().into_iter().map(|(_, params)| params).collect();
+        assert_eq!(
+            performed,
+            [
+                json!({"selection": {"range": [4, 2]}}),
+                json!({"selection": {"range": [4, 2]}, "cursor": 4}),
+                json!({"selection": {"ranges": [[0, 2], [8, 2]]}, "cursor": 2}),
+                json!({"selection": null, "cursor": 3}),
+            ]
+        );
+        assert_eq!(app.cursor, 3);
+    }
+
+    #[test]
     fn inverting_the_selection_from_the_palette_is_the_person_s_step_through_the_api() {
         let mut app = app_with(&[0x0F; 8]);
         app.restore_selection(2, 3);
@@ -964,11 +991,11 @@ mod tests {
             take_performed(),
             [
                 find(1, false),
-                performed("selection.set", json!({"selection": {"range": [4, 2]}, "cursor": 6})),
+                performed("selection.set", json!({"selection": {"range": [4, 2]}})),
                 find(5, false),
-                performed("selection.set", json!({"selection": {"range": [0, 2]}, "cursor": 2})),
+                performed("selection.set", json!({"selection": {"range": [0, 2]}})),
                 find(0, true),
-                performed("selection.set", json!({"selection": {"range": [4, 2]}, "cursor": 6})),
+                performed("selection.set", json!({"selection": {"range": [4, 2]}})),
             ]
         );
         app.search_text = "ZIP".to_string();
@@ -987,7 +1014,7 @@ mod tests {
             take_performed(),
             [
                 performed("search.find_all", json!({"query": "PK", "mode": "text", "little_endian": true, "limit": crate::api::values::MAX_PAGE})),
-                performed("selection.set", json!({"selection": {"ranges": [[0, 2], [4, 2]]}, "cursor": 6})),
+                performed("selection.set", json!({"selection": {"ranges": [[0, 2], [4, 2]]}})),
             ]
         );
         assert_eq!((app.current_selection(), app.status.as_str()), (Some(Selection::Ranges(vec![(0, 2), (4, 2)])), "Selected 2 matches"));

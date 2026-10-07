@@ -85,7 +85,7 @@ impl ViewerApp {
             self.end_drag_selection();
             if selecting {
                 let cursor = self.cursor;
-                self.select_as_person(self.current_selection(), cursor);
+                self.select_as_person(self.current_selection(), cursor, crate::journal::DerivedFrom::new());
             }
             return;
         };
@@ -272,7 +272,7 @@ mod tests {
             take_performed(),
             [
                 performed("cursor.set", json!({"offset": 1})),
-                performed("selection.set", json!({"selection": {"range": [1, 2]}, "cursor": 3})),
+                performed("selection.set", json!({"selection": {"range": [1, 2]}})),
                 performed("selection.set", json!({"selection": {"range": [0, 1]}, "cursor": 0})),
             ]
         );
@@ -289,7 +289,7 @@ mod tests {
         let cursor = app.bus.cursor();
         crate::view::click_byte(&mut app, 5, Modifiers::NONE);
         crate::view::click_byte(&mut app, 9, Modifiers::SHIFT);
-        assert_eq!(take_performed(), [performed("cursor.set", json!({"offset": 5})), performed("selection.set", json!({"selection": {"range": [5, 4]}, "cursor": 9}))]);
+        assert_eq!(take_performed(), [performed("cursor.set", json!({"offset": 5})), performed("selection.set", json!({"selection": {"range": [5, 4]}}))]);
         assert_eq!(app.current_selection(), Some(Selection::Range(5, 4)));
         app.run_bus();
         let changed = app.bus.changed_since(cursor).messages.into_iter().rev().find(|message| message.topic() == Topic::SelectionChanged).unwrap();
@@ -305,7 +305,7 @@ mod tests {
         assert_eq!(app.current_selection(), Some(Selection::Ranges(vec![(2, 1), (5, 4)])));
         assert!(app.status.starts_with("Selected "), "{}", app.status);
         crate::view::click_byte(&mut app, 2, Modifiers::COMMAND);
-        assert_eq!(take_performed(), [performed("selection.set", json!({"selection": {"range": [5, 4]}, "cursor": 9}))]);
+        assert_eq!(take_performed(), [performed("selection.set", json!({"selection": {"range": [5, 4]}}))]);
         assert_eq!(app.current_selection(), Some(Selection::Range(5, 4)));
     }
 
@@ -326,8 +326,7 @@ mod tests {
         app.finish_drag();
         let selected = app.current_selection();
         assert!(matches!(selected, Some(Selection::Columns(_))), "{selected:?}");
-        let (start, len) = app.selection().unwrap();
-        assert_eq!(take_performed(), [performed("selection.set", json!({"selection": selected, "cursor": start + len}))]);
+        assert_eq!(take_performed(), [performed("selection.set", json!({"selection": selected}))], "a column's cursor is at its end, where it goes anyway");
     }
 
     #[test]
@@ -346,7 +345,7 @@ mod tests {
         app.select_all();
         assert_eq!(app.current_selection(), Some(Selection::Range(0, 16)));
         app.clear_selection_as_person();
-        assert_eq!(take_performed(), [performed("selection.set", json!({"selection": {"range": [0, 16]}, "cursor": 16})), performed("selection.set", json!({"selection": null, "cursor": 16}))]);
+        assert_eq!(take_performed(), [performed("selection.set", json!({"selection": {"range": [0, 16]}})), performed("selection.set", json!({"selection": null, "cursor": 16}))]);
         assert_eq!((app.cursor, app.anchor, app.current_selection()), (16, None, None));
         app.clear_selection_as_person();
         assert!(take_performed().is_empty(), "with nothing selected Esc calls nothing");
@@ -357,7 +356,7 @@ mod tests {
         let mut app = app_with(&[0u8; 64]);
         let finding = crate::plugin::Finding::new("test", "test", crate::plugin::Category::Compressed, 8, 16).title("A stream");
         app.select_finding(&finding);
-        assert_eq!(take_performed(), [performed("selection.set", json!({"selection": {"range": [8, 16]}, "cursor": 24}))]);
+        assert_eq!(take_performed(), [performed("selection.set", json!({"selection": {"range": [8, 16]}}))]);
         assert_eq!(app.current_selection(), Some(Selection::Range(8, 16)));
         assert_eq!(app.status, finding.description());
     }

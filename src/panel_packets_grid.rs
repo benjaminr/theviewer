@@ -397,9 +397,8 @@ pub fn split_now(state: &mut PacketsState, app: &mut ViewerApp) {
     };
     match split_rule_call(state, app, start, len) {
         Ok(params) => {
-            let mut derived_from = app.selection_call_provenance(&params);
-            derived_from.extend(app.length_field_provenance(&params));
-            panel::ask_after_drawing_derived(state, app, "packets.sets.create", params, Expected::Split { start, len }, derived_from);
+            let length_field = app.length_field_provenance(&params);
+            panel::ask_after_drawing_of_selection(state, app, "packets.sets.create", params, Expected::Split { start, len }, length_field);
         }
         Err(note) => state.note = Some(Note { text: note, is_error: true }),
     }

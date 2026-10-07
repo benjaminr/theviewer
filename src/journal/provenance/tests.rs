@@ -83,17 +83,15 @@ fn a_step_anchor_citing_a_step_the_recipe_leaves_out_stays_literal() {
 }
 
 #[test]
-fn a_selection_found_again_drops_the_cursor_that_would_go_to_its_end_anyway() {
+fn a_selection_found_again_keeps_the_cursor_as_the_person_placed_it() {
     let anchored = DerivedFrom::from([("selection.range[0]".into(), find_7ea5(0))]);
     let entries = [
-        entry(1, "selection.set", json!({"selection": {"range": [96, 2]}, "cursor": 98}), anchored.clone()),
+        entry(1, "selection.set", json!({"selection": {"range": [96, 2]}}), anchored.clone()),
         entry(2, "selection.set", json!({"selection": {"range": [96, 2]}, "cursor": 96}), anchored),
-        entry(3, "selection.set", json!({"selection": {"range": [96, 2]}, "cursor": 98}), DerivedFrom::new()),
     ];
     let recipe = Recipe::with_anchors("Select", &session(), &entries, &BTreeMap::new());
-    assert!(recipe.steps[0].params.get("cursor").is_none());
+    assert!(recipe.steps[0].params.get("cursor").is_none(), "the cursor goes to the end of the range found");
     assert_eq!(recipe.steps[1].params["cursor"], 96, "a cursor at the start is the person's choice");
-    assert_eq!(recipe.steps[2].params["cursor"], 98, "a literal selection keeps its cursor");
 }
 
 #[test]
