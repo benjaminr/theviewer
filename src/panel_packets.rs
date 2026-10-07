@@ -2457,6 +2457,24 @@ mod tests {
     }
 
     #[test]
+    fn a_packet_picked_in_the_list_shows_its_innermost_protocol_in_the_reference_tab() {
+        let (document, at) = document_with_capture();
+        let mut harness = harness_for(document);
+        load_capture_into(&mut harness, at);
+        settle(&mut harness);
+        let first = harness.state().0.packet_set().unwrap().packets[0].clone();
+        // As a click in the list: show the packet in detail, select its bytes.
+        let (state, app) = harness.state_mut();
+        state.focus = Some(0);
+        select_in_document(state, app, first.offset, first.len, "Packet 1".to_string());
+        settle(&mut harness);
+        let app = &mut harness.state_mut().1;
+        let stack = crate::panel_reference::stack_at_cursor(app);
+        let labels: Vec<&str> = stack.iter().map(|entry| entry.label.as_str()).collect();
+        assert_eq!(labels.last(), Some(&"DNS"), "not just the record header at the packet's first byte: {labels:?}");
+    }
+
+    #[test]
     fn splitting_the_selection_by_row_width_makes_an_api_packet_set_the_viewer_shows() {
         let mut app = ViewerApp::new(Launch::default());
         app.open_bytes(vec![0x42; 96], "records.bin".to_string());

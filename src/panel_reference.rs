@@ -359,7 +359,18 @@ fn position_of(stack: &[StackEntry], key: &str) -> Option<usize> {
 /// Where the stack is built for: the selection's start, or the cursor (a
 /// selection made by clicking a field leaves the cursor just after it).
 fn focus_position(app: &ViewerApp) -> usize {
-    app.selection().map_or(app.cursor, |(start, _)| start)
+    let Some((start, len)) = app.selection() else { return app.cursor };
+    innermost_layer_in(app, start, len).unwrap_or(start)
+}
+
+/// Where the innermost layer of the decoded packet at `start` begins, when
+/// it begins inside the selection `start..start + len`: a packet chosen in
+/// the packet viewer selects its record header too, but is about its DNS.
+fn innermost_layer_in(app: &ViewerApp, start: usize, len: usize) -> Option<usize> {
+    let fact = decoded_at(app, start)?;
+    let (span, decoded) = (fact.draft.span?, fact.payload_as::<FieldsDecoded>()?);
+    let packet = PacketLayers::from_decoded(span.start, span.len, decoded);
+    packet.layers.iter().map(|layer| packet.offset + layer.offset).filter(|&layer_start| layer_start >= start && layer_start < start + len).max()
 }
 
 /// The findings covering `position`, with the parsed structure at the
