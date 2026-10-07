@@ -25,6 +25,60 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   model to note its reasoning as it works.
 - A recipe made from the history carries the notes linked to each step in
   that step's `note`.
+- **Packet filters as expressions.** `and`/`&&`, `or`/`||`, `not`/`!` and
+  brackets; `"quoted text"`; `tcp.port`, `udp.port` and `ip.addr` for
+  either end; the DNS flag bits (`dns.flags.response==0`); the parts of an
+  HTTP request or status line and any HTTP header (`http.request.method`,
+  `http.content_encoding`); and numbers for named values
+  (`dns.qry.type==16`).
+- **Template fields in filters:** `template.type==60`, or `type==60` when
+  the name is the template's; the packet summary shows up to twelve of a
+  template's fields.
+- **Sorting and de-duplicating packets** by any column or field, in the
+  Packets panel (*Sort by*, *Desc.*, *Unique*) and in `packets.list`
+  (`sort`, `descending`, `dedupe`). Packets opened, saved or exported
+  together come out in the order shown.
+- `packets.extract` takes a field by name (`field_name`), at each packet's
+  own offset and length, and one `label` of a DNS name.
+- **HTTP bodies.** `packets.http_bodies` and the Follow stream view's *Open
+  body as document* give each request's and response's body put together,
+  de-chunked and decompressed (gzip, deflate).
+- **Resynchronising length-field splits.** `resync` and `sync` in
+  `packets.sets.create`'s `length_field` find the place again at the sync
+  word after a stray byte or a frame cut short, and the description lists
+  the stretches skipped.
+- **Sync word and length framing** in the protocol analysis, which
+  `packets.detect_length_field` returns with its sync word.
+- `packets.conversations` and `packets.endpoints` take `sort` (packets,
+  bytes, address or first packet).
+- `bytes.insert` takes `start` as well as `at`.
+
+### Changed
+
+- A filter naming a field the packets cannot have is refused with the
+  names it was close to, rather than matching nothing.
+- `bytes.read` past the end of a document returns the bytes there are,
+  with `len` and `short`, rather than failing.
+- Packets are counted from 0 everywhere in the API: `packets.columns.read`
+  and the `packets.follow_stream` text now number them by their index, as
+  the other methods do. The Packets panel's *No.* still counts from 1.
+- `alignment.run` clusters an even sample of a long set of messages and
+  puts every other message into the type it is most like, rather than
+  looking at only the first 256; the result's notes say so.
+
+### Fixed
+
+- `packets.follow_stream` and a filtered `packets.conversations` gave a
+  conversation's first packet as 0, or as its place among the packets
+  kept, rather than its index in the set.
+- Fields tshark decoded never reached the API's filters or
+  `packets.dissect`.
+- A length-field split that lost its place said "the frames cover every
+  byte"; it now says where frames stop starting with the sync word.
+- The protocol analysis ranked a few-message u16 length chain, or a chain
+  out of step with the sync word, above a sync word explaining nearly every
+  byte; called address bytes the message type and missed the type after
+  them; and gave its template two fields of the same name.
 
 ## [0.3.1] - 2026-10-07
 

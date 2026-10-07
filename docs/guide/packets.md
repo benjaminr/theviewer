@@ -54,7 +54,13 @@ optionally skipping some bytes first:
   byte order, whether it counts the whole frame, the bytes after it or the
   payload after a header, a constant to add, and the longest frame to
   believe. *Auto-detect* fills these in from
-  the protocol tool.
+  the protocol tool. When the frames start with a sync word, a stray byte
+  between frames no longer throws the rest out of step: the split (as
+  `packets.sets.create` with `resync`, or a `sync` word, in its
+  `length_field`) skips to the next sync word, cuts a frame short where the
+  next one's sync word comes early, and lists the stretches it skipped in
+  the set's description. Without resync the description warns when the
+  frames stop starting with the sync word the first ones share.
 - **Pattern:** bytes such as `AA 55 ?? 01`, `0D 0A` or `"GET "` (`??` is
   any byte) that start each frame, end it, or sit between frames.
 
@@ -115,8 +121,9 @@ framing found are a protocol the packet viewer dissects.
 
 ## Filters
 
-Type a filter and press *Filter*. A filter is a list of terms separated by
-spaces, and a packet must match them all:
+Type a filter and press *Filter*. Terms side by side must all match; join
+them with `and` (`&&`), `or` (`||`) and `not` (`!`), and group them with
+brackets: `dns and not (ip.src==10.0.0.1 or len>200)`.
 
 | Term | Shows packets that… |
 | --- | --- |
@@ -124,16 +131,41 @@ spaces, and a packet must match them all:
 | `proto:dhcp` | contain that protocol, by our name or tshark's filter name |
 | `port:53` | use that port at either end |
 | `ip:10.0.0.2` | come from or go to that address |
-| `len>60` (also `<`, `>=`, `<=`, `=`) | have that many bytes |
+| `len>60` (also `<`, `>=`, `<=`, `==`, `!=`) | have that many bytes |
 | `hex:DEADBEEF` | contain those bytes |
 | `ip.ttl==64` (also `!=`, `<`, `<=`, `>`, `>=`) | have a field, by its Wireshark name, with that value |
 | `dns.qry.name~example` | have a field that contains that text (`~` means contains) |
+| `template.type==60`, or just `type==60` | have a field of the template decoding them with that value |
 | `ip.ttl` | have that field at all |
-| any other word | mention it in their summary, ignoring case |
+| `"standard query"`, or any other word | mention it in their summary, ignoring case |
 
 Wireshark field names reach our own fields through the Wireshark names in
 the [reference notes](reference-notes.md#wireshark-names), and tshark's
-fields directly once packets are decoded with it.
+fields directly once packets are decoded with it. Some names are worked
+out as Wireshark does: `tcp.port`, `udp.port` and `ip.addr` match either
+end, `dns.flags.response`, `dns.flags.rcode` and the other flag bits come
+from the DNS flags, `http.request.method`, `http.request.uri` and
+`http.response.code` from the request or status line, and `http.` with a
+header's name in lower case, `-` written `_`, matches that header
+(`http.content_encoding~gzip`).
+
+A value matches when it is the field's whole text, its first word, what
+it has in brackets, or the same number: a DNS query of type `TXT (16)`
+matches both `dns.qry.type==TXT` and `dns.qry.type==16`, and a template
+field shown as `0x3c (unlock)` matches `60`, `0x3c` and `unlock`.
+
+A field name the packets cannot have is not quietly matched against
+nothing: the line under the filter says so, with the names it was close
+to (`'dns.qry.nmae': … did you mean dns.qry.name?`).
+
+### Sorting
+
+*Sort by* puts the list in the order of a column (*No.*, *Time*, *Source*,
+*Destination*, *Protocol*, *Length*, *Info*) or of any field a filter can
+name (`dns.qry.name`, `template.seq`), numbers in numeric order, and *Desc.*
+turns it round. *Unique* keeps only the first packet of each value of that
+field, so a chunk sent twice is shown once. Packets selected and opened
+as a document, saved, or exported come out in the order shown.
 
 ## Packets as rows: the raster and hex grids
 
@@ -175,9 +207,18 @@ dissected again a moment after any edit, wherever it was made.
 
 *Conversations* lists each pair of endpoints with its packets and bytes;
 *Follow* shows only that conversation's packets. *Endpoints* lists every
-address. *Follow stream* shows the payloads of both directions in order,
-as text or hex; *Copy as text* copies them and *Open as document* opens
-them as a document of their own.
+address. Both can be sorted by packets, bytes or address. *Follow stream*
+shows the payloads of both directions in order, as text or hex; *Copy as
+text* copies them and *Open as document* opens them as a document of their
+own.
+
+When the stream is HTTP, *Open body as document* opens a request's or
+response's body as the server or client meant it: put together across
+segments, de-chunked when it was sent chunked, and decompressed when its
+`Content-Encoding` is gzip or deflate.
+
+Packets are numbered from 1 in the list's *No.* column and in the stream
+view; the API counts them from 0, as the index each packet has in its set.
 
 ## More protocols with tshark
 

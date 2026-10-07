@@ -103,13 +103,25 @@ structure](finding-structure.md#columns).
 ### Protocol
 
 For captures, serial logs and streams of messages. It finds the framing
-(sync words, delimiters, length prefixes or a fixed size), splits the
-messages, and identifies types, sequence numbers, lengths, timestamps and
-checksums. If the first framing is wrong, pick another from its chips.
+(sync words, delimiters, length prefixes, a sync word followed by a length,
+or a fixed size), splits the messages, and identifies types, sequence
+numbers, lengths, timestamps and checksums. If the first framing is wrong,
+pick another from its chips. A length chain that explains the stream with
+a handful of messages, or with messages of wildly different lengths, or
+that runs out of step with a sync word starting nearly every message, is
+ranked down. Of the header bytes that take a few values (addresses, types),
+the one that best goes with the messages' lengths is named the message
+type; the others are enums, each with a name of its own in the template.
+When the messages are not back to back, the template says that
+`Message[until_end]` stops at the first gap, and to decode the messages as
+packets with it instead.
 
 *Align messages* groups the messages into types and lines them up, so
 constant, counting and length fields line up even when messages differ in
-length.
+length. In a long set it clusters an even sample from across the whole
+set, then puts every other message into the type it is most like, so a
+type that only turns up late still gets its own group; the notes say when
+it did.
 
 When the messages are a protocol the [packet viewer](packets.md)
 dissects, the tab says so; *Open in packet viewer* takes them there.
