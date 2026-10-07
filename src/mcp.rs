@@ -58,6 +58,7 @@ pub fn start(options: &Options) -> Result<Server, String> {
     }
     let mut workspace = HeadlessWorkspace::new(Arc::new(plugins.registry()));
     workspace.set_registered_methods(plugins.methods());
+    workspace.journal_mut().note_plugins(plugins.recorded());
     for file in &options.files {
         workspace.open_path(file).map_err(|error| error.message)?;
     }

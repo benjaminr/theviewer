@@ -71,6 +71,11 @@ impl PluginRuntime {
         self.host.lock().map(|host| host.methods()).unwrap_or_default()
     }
 
+    /// The scripts loaded, with their sources' hashes, for the journal.
+    pub fn recorded(&self) -> Vec<crate::journal::RecordedPlugin> {
+        self.host.lock().map(|host| crate::journal::plugins_of(&host)).unwrap_or_default()
+    }
+
     /// Whether a script was added, removed or changed since they were loaded.
     pub fn changed_on_disk(&self) -> bool {
         stamps_of(&self.dirs) != self.stamps

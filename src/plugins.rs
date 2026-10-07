@@ -712,6 +712,9 @@ fn install_api(lua: &Lua, state: Weak<ScriptState>) -> mlua::Result<()> {
 /// One loaded script and everything it registered.
 struct Script {
     state: Arc<ScriptState>,
+    /// SHA-256 of the source it was loaded from, lower-case hex, for the
+    /// journal's record of which plugins a session used.
+    sha256: String,
     /// The plugin's name: the one it declared, or its file's stem. Its own
     /// topics and methods are named after it.
     namespace: String,
@@ -851,6 +854,7 @@ impl LuaHost {
             .map(|(topic, handler)| Arc::new(Subscription { state: state.clone(), topic, plugin: name.to_string(), namespace: namespace.clone(), edits, handler }))
             .collect();
         let script = Script {
+            sha256: crate::journal::sha256_hex(source.as_bytes()),
             namespace,
             edits,
             subscriptions,
@@ -981,6 +985,11 @@ impl LuaHost {
 
     pub fn script_names(&self) -> Vec<String> {
         self.scripts.iter().map(|script| script.state.name.clone()).collect()
+    }
+
+    /// Each script's file name with the SHA-256 of its source, in load order.
+    pub fn script_digests(&self) -> Vec<(String, String)> {
+        self.scripts.iter().map(|script| (script.state.name.clone(), script.sha256.clone())).collect()
     }
 }
 

@@ -23,6 +23,7 @@ use crate::bus::topics::{CursorMoved, DocumentEdited, DocumentOpened, FindingsPu
 use crate::bus::{Bus, Draft, MessageId, Payload};
 use crate::document::Document;
 use crate::folds::Folds;
+use crate::journal::Journal;
 use crate::plugin::Registry;
 use crate::selection::Selection;
 use crate::sources::{self, Recording};
@@ -171,6 +172,9 @@ pub trait Workspace {
     fn window(&mut self) -> Option<&mut ViewerApp> {
         None
     }
+    /// The session's journal of calls (see [`crate::journal`]).
+    fn journal(&self) -> &Journal;
+    fn journal_mut(&mut self) -> &mut Journal;
 }
 
 /// `document.edited` with the changes `document` made since `published`,
@@ -261,11 +265,12 @@ pub struct HeadlessWorkspace {
     /// selections it makes are published as caused by.
     cause: Option<MessageId>,
     packet_sets: PacketSets,
+    journal: Journal,
 }
 
 impl HeadlessWorkspace {
     pub fn new(registry: Arc<Registry>) -> Self {
-        HeadlessWorkspace { documents: Vec::new(), current: None, registry, opened: 0, bus: Bus::new(), methods: Vec::new(), cause: None, packet_sets: PacketSets::default() }
+        HeadlessWorkspace { documents: Vec::new(), current: None, registry, opened: 0, bus: Bus::new(), methods: Vec::new(), cause: None, packet_sets: PacketSets::default(), journal: Journal::new() }
     }
 
     /// Offer the methods plugins registered.
@@ -505,6 +510,14 @@ impl Workspace for HeadlessWorkspace {
 
     fn packet_sets_mut(&mut self) -> &mut PacketSets {
         &mut self.packet_sets
+    }
+
+    fn journal(&self) -> &Journal {
+        &self.journal
+    }
+
+    fn journal_mut(&mut self) -> &mut Journal {
+        &mut self.journal
     }
 }
 
@@ -802,6 +815,14 @@ impl Workspace for ViewerApp {
 
     fn window(&mut self) -> Option<&mut ViewerApp> {
         Some(self)
+    }
+
+    fn journal(&self) -> &Journal {
+        &self.journal
+    }
+
+    fn journal_mut(&mut self) -> &mut Journal {
+        &mut self.journal
     }
 }
 

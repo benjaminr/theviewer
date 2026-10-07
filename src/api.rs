@@ -69,6 +69,7 @@ pub mod documents;
 pub mod edits;
 pub mod events;
 pub mod findings;
+pub mod history;
 pub mod jobs;
 pub mod numbers;
 pub mod packet_sets;
@@ -91,6 +92,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::journal;
 pub use permissions::{Caller, Decision, HeldCall, Policy};
 pub use workspace::{HeadlessWorkspace, Workspace};
 
@@ -413,6 +415,7 @@ const PARTS: &[Part] = &[
     part!(tools),
     part!(view),
     part!(application),
+    part!(history),
 ];
 
 /// For modules whose calls need no description of their own.
@@ -474,20 +477,49 @@ pub fn all_methods(workspace: &dyn Workspace) -> Vec<MethodRef> {
 /// policy. A call that must be confirmed fails here with a `read_only`
 /// error for which [`ApiError::needs_confirmation`] holds; callers that can
 /// wait for the person hold it instead (see [`Workspace::hold_for_confirmation`]).
+///
+/// Every call is journalled (see [`crate::journal`]): an edit, view change
+/// or job as a step, whether it succeeded, failed or was denied; a read in
+/// the ring of recent reads.
 pub fn call(workspace: &mut dyn Workspace, caller: &Caller, name: &str, params: Value) -> Result<Value, ApiError> {
     let method = find(workspace, name)?;
     match workspace.permission(caller, method.effect()) {
-        Decision::Allowed => method.run(workspace, caller, params),
-        Decision::Denied => Err(permissions::denied(caller, name)),
+        Decision::Allowed => run_journalled(workspace, &method, caller, params),
+        Decision::Denied => journal::record_refusal(workspace, caller, name, method.effect(), &params, permissions::denied(caller, name)),
         Decision::NeedsConfirmation => Err(permissions::needs_confirmation(caller, name)),
     }
 }
 
+/// [`call`], noting where the values of some parameters came from (by
+/// parameter path, such as `start` or `length_field.offset`), so the
+/// journal entry carries them as `derived_from` and a recipe made from it
+/// uses the anchors in place of the literals.
+pub fn call_derived(workspace: &mut dyn Workspace, caller: &Caller, name: &str, params: Value, derived_from: journal::DerivedFrom) -> Result<Value, ApiError> {
+    if !derived_from.is_empty() {
+        workspace.journal_mut().set_pending_provenance(derived_from);
+    }
+    let result = call(workspace, caller, name, params);
+    // A call that never ran (no such method, or held for confirmation)
+    // leaves nothing for the next.
+    workspace.journal_mut().take_pending_provenance();
+    result
+}
+
 /// Run the method called `name` without checking the caller's permission:
 /// for calls the person has just allowed, calls inside a call already
-/// allowed (a transaction's), and plugin actions the person ran.
+/// allowed (a transaction's), and plugin actions the person ran. Journalled
+/// as [`call`] is; a call inside another is part of that one's step.
 pub fn call_permitted(workspace: &mut dyn Workspace, caller: &Caller, name: &str, params: Value) -> Result<Value, ApiError> {
-    find(workspace, name)?.run(workspace, caller, params)
+    let method = find(workspace, name)?;
+    run_journalled(workspace, &method, caller, params)
+}
+
+/// Run `method` for `caller` and record the call in the journal.
+fn run_journalled(workspace: &mut dyn Workspace, method: &MethodRef, caller: &Caller, params: Value) -> Result<Value, ApiError> {
+    let record = journal::begin(workspace, caller, method.name(), method.effect(), &params);
+    let result = method.run(workspace, caller, params);
+    journal::finish(workspace, record, &result);
+    result
 }
 
 /// Run `name` for `caller` if allowed, refuse it if denied, and otherwise
@@ -501,10 +533,13 @@ pub fn call_or_hold(workspace: &mut dyn Workspace, caller: Caller, name: &str, p
     };
     match workspace.permission(&caller, method.effect()) {
         Decision::Allowed => {
-            let result = method.run(workspace, &caller, params);
+            let result = run_journalled(workspace, &method, &caller, params);
             reply(workspace, result);
         }
-        Decision::Denied => reply(workspace, Err(permissions::denied(&caller, name))),
+        Decision::Denied => {
+            let refused = journal::record_refusal(workspace, &caller, name, method.effect(), &params, permissions::denied(&caller, name));
+            reply(workspace, refused);
+        }
         Decision::NeedsConfirmation => {
             let description = describe_call(workspace, name, &params);
             let held = HeldCall { caller, method: name.to_string(), params, description, reply };

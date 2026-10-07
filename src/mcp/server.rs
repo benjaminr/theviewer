@@ -335,6 +335,7 @@ impl Server {
         }
         self.workspace.set_registry(std::sync::Arc::new(self.plugins.registry()));
         self.workspace.set_registered_methods(self.plugins.methods());
+        self.workspace.journal_mut().note_plugins(self.plugins.recorded());
     }
 
     fn drain(&mut self) -> Drained {

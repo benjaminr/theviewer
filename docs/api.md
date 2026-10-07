@@ -55,6 +55,9 @@ Errors are `{code, message, data}`, with these codes:
 | [`history.undo`](#historyundo) | edit | Undo the document's last step, whoever made it, and put the cursor where it was. |
 | [`history.redo`](#historyredo) | edit | Redo the last step undone, and put the cursor where it was. |
 | [`history.transaction`](#historytransaction) | edit | Run several calls on one document as one undoable step; when one fails, every change the others made is reversed. |
+| [`history.list`](#historylist) | read | The session's journal: each edit, view change and job made through the API, by any caller, in order, with its parameters, result, outcome and a description; optionally the recent reads too. Pass back next as since to follow it. |
+| [`history.entry`](#historyentry) | read | One step of the journal, or one recent read, in full. |
+| [`history.session`](#historysession) | read | What the journal's session ran with: when it started, the API version, the plugins loaded with their hashes, and each document as first seen, with its size and SHA-256. |
 | [`search.find`](#searchfind) | read | The next (or previous) occurrence of hex bytes, text, UTF-16 text or an integer from an offset. |
 | [`search.find_all`](#searchfind_all) | read | Every occurrence of hex bytes, text, UTF-16 text or an integer in the document, a page at a time. |
 | [`search.count`](#searchcount) | read | How many times hex bytes, text, UTF-16 text or an integer occur in the document, up to a cap. |
@@ -724,6 +727,64 @@ Run several calls on one document as one undoable step; when one fails, every ch
 | `len` | integer | yes | The document's length afterwards. |
 | `results` | array of any | yes | Each call's result, in order. |
 | `version` | integer | yes | The document's version afterwards. |
+
+### history.list
+
+The session's journal: each edit, view change and job made through the API, by any caller, in order, with its parameters, result, outcome and a description; optionally the recent reads too. Pass back next as since to follow it.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `include_reads` | boolean | no | Also list the recent reads still held, whose effect is `read`. |
+| `limit` | integer | no | Most entries to return (100 when omitted). |
+| `since` | integer | no | List the steps after this one (a `next` from before); from the first when omitted. |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `dropped` | Dropped | yes | The oldest entries the journal no longer holds. |
+| `entries` | array of JournalEntry | yes | The entries, in step order. |
+| `last_step` | integer | no | The last step recorded or read in the session. |
+| `next` | integer | no | The last step listed, to pass as `since` for the entries after it; none when this is all there is now. |
+| `revision` | integer | yes | Changes whenever anything recorded changes (a read promoted into the journal takes its own, earlier, step number). |
+
+### history.entry
+
+One step of the journal, or one recent read, in full.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `step` | integer | yes | The step's number. |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `at` | string | yes | When the call was made, UTC, such as "2026-10-06T14:02:11Z". |
+| `caller` | string | yes | Who called: `panel`, `plugin:sync.lua`, `ask`, `mcp:claude-code`, `cli` or `recipe:Telemetry frames`. |
+| `derived_from` | object | no | Where parameters' values came from, by parameter path: the anchors a recipe made from this step uses in place of the literals. |
+| `description` | string | yes | What the call did in plain words, the same text the confirmation window shows: "XOR 128 selected bytes with 5A". Empty for a read not promoted into the journal. |
+| `doc` | string | no | The document the call was about: the one its `doc` named, or the current one. |
+| `effect` | `"read"` \| `"edit"` \| `"view"` \| `"job"` | yes | What calling a method does. |
+| `merged` | integer | no | How many earlier calls of the same setter this one replaced. |
+| `method` | string | yes | The method called, such as `packets.sets.create`. |
+| `outcome` | Outcome | yes | How a recorded call ended. |
+| `params` | any | yes | The parameters as given (or, when `params_summarised`, a summary). |
+| `params_summarised` | boolean | no | Whether `params` were too large to keep and are a summary: such a step cannot be repeated exactly. |
+| `result` | any | no | What the call returned (or, when `result_summarised`, a summary that keeps the ids of what it made); none when it failed. |
+| `result_summarised` | boolean | no |  |
+| `step` | integer | yes | The step's number, unique in the session and increasing; reads share the sequence, so the steps listed may skip numbers. |
+| `version_after` | integer | no | Its version after (none when the call closed it). |
+| `version_before` | integer | no | That document's version before the call. |
+
+### history.session
+
+What the journal's session ran with: when it started, the API version, the plugins loaded with their hashes, and each document as first seen, with its size and SHA-256.
+
+Parameters: None.
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `api_version` | string | yes | The API version, such as "1.0". |
+| `documents` | array of RecordedDocument | yes | Each document a call was about, as it was the first time. |
+| `plugins` | array of RecordedPlugin | yes | The plugin scripts loaded, as last loaded. |
+| `started_at` | string | yes | When the session started, UTC. |
 
 ### search.find
 
@@ -2719,6 +2780,7 @@ What tools, panels and plugins publish on the workspace bus. Facts are kept, the
 | [`job.progress`](#jobprogress) | event | How far background work that counts its work has got. |
 | [`job.finished`](#jobfinished) | event | Background work finished, with a one-line outcome (and, for a job started through the API, its result), or was cancelled. |
 | [`plugin.log`](#pluginlog) | event | A plugin logged a line, or one of its callbacks failed (in a background scan, say). |
+| [`journal.recorded`](#journalrecorded) | event | A call was recorded in the session's journal (an edit, view change or job, by any caller, or a read kept because a later step used its result); history.entry gives it in full. |
 | [`x.*`](#x*) | event | A plugin's own topic, named x.<plugin>.<name>, with a payload of its choosing. |
 
 ### document.opened
@@ -2936,6 +2998,18 @@ A plugin logged a line, or one of its callbacks failed (in a background scan, sa
 | `level` | `"info"` \| `"error"` | yes | `error` for a failed callback, `info` for a line the plugin logged. |
 | `plugin` | string | yes | The plugin's file name, such as `modbus_rtu.lua`. |
 | `text` | string | yes |  |
+
+### journal.recorded
+
+A call was recorded in the session's journal (an edit, view change or job, by any caller, or a read kept because a later step used its result); history.entry gives it in full.
+
+| Payload field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `caller` | string | yes | Who called it: `panel`, `plugin:sync.lua`, `ask`, `mcp:claude-code`, `cli` or `recipe:<name>`. |
+| `description` | string | yes | What it did in plain words. |
+| `method` | string | yes | The method called, such as `transform.apply`. |
+| `ok` | boolean | yes | Whether it succeeded; a failed edit, view change or job is recorded with its error. |
+| `step` | integer | yes | Its step number, for history.entry. |
 
 ### x.*
 

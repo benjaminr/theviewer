@@ -163,6 +163,7 @@ fn call_headless(method: &str, params: &str, file: Option<&Path>, save: bool) ->
     let mut workspace = HeadlessWorkspace::new(Arc::new(app::build_registry_with(Some(&host))));
     if let Ok(host) = host.lock() {
         workspace.set_registered_methods(host.methods());
+        workspace.journal_mut().note_plugins(theviewer::journal::plugins_of(&host));
     }
     if let Some(file) = file {
         workspace.open_path(file)?;

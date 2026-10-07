@@ -407,6 +407,9 @@ pub struct ViewerApp {
     /// Calls from plugins, Ask and other clients waiting for the person to
     /// allow or deny them, oldest first; the first is shown.
     pub confirmations: crate::confirmations::Confirmations,
+    /// The session's journal: every call made through the API that changed
+    /// something, for the History tab, undo across steps and recipes.
+    pub journal: crate::journal::Journal,
 }
 
 /// Matches of the Find box within a window of the document, for highlighting.
@@ -665,6 +668,7 @@ impl ViewerApp {
             plugin_subscriptions: Vec::new(),
             plugin_inbox: Default::default(),
             confirmations: Default::default(),
+            journal: crate::journal::Journal::new(),
         };
         if launch.restore_layout {
             app.persist_layout = true;
@@ -2070,6 +2074,7 @@ impl ViewerApp {
         self.plugin_methods = host.methods();
         self.plugin_subscriptions = host.subscriptions();
         self.plugin_inbox = Default::default();
+        self.journal.note_plugins(crate::journal::plugins_of(&host));
     }
 
     /// Load one plugin from source, as if from a file called `name`, and

@@ -50,6 +50,7 @@ pub mod headless;
 pub mod hex;
 pub mod hilbert;
 pub mod image_finder;
+pub mod journal;
 pub mod keys;
 pub mod layout;
 pub mod layouts;

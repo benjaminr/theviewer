@@ -36,6 +36,20 @@ impl ViewerApp {
         result
     }
 
+    /// [`ViewerApp::perform`], noting where the values of some parameters
+    /// came from (a split started from a search match records that match),
+    /// by parameter path, so the journal entry carries them as
+    /// `derived_from` and a recipe made from it is portable.
+    pub fn perform_derived(&mut self, method: &str, params: Value, derived_from: crate::journal::DerivedFrom) -> Result<Value, ApiError> {
+        if !derived_from.is_empty() {
+            self.journal.set_pending_provenance(derived_from);
+        }
+        let result = self.perform(method, params);
+        // A call that never ran (no such method) leaves nothing for the next.
+        self.journal.take_pending_provenance();
+        result
+    }
+
     /// [`ViewerApp::perform`] once the frame's drawing is over: for a panel
     /// drawn with its state lent out (`panels::show`, `panels::with`), whose
     /// action calls a method that writes that same state (a packet set

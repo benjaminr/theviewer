@@ -119,6 +119,7 @@ topics! {
     JobProgress(JobProgress) = "job.progress", Event, "How far background work that counts its work has got.";
     JobFinished(JobFinished) = "job.finished", Event, "Background work finished, with a one-line outcome (and, for a job started through the API, its result), or was cancelled.";
     PluginLog(PluginLog) = "plugin.log", Event, "A plugin logged a line, or one of its callbacks failed (in a background scan, say).";
+    JournalRecorded(JournalRecorded) = "journal.recorded", Event, "A call was recorded in the session's journal (an edit, view change or job, by any caller, or a read kept because a later step used its result); history.entry gives it in full.";
     Custom(CustomTopic) = "x.*", Event, "A plugin's own topic, named x.<plugin>.<name>, with a payload of its choosing.";
 }
 
@@ -228,6 +229,7 @@ impl Payload {
             | Payload::JobProgress(_)
             | Payload::JobFinished(_)
             | Payload::PluginLog(_)
+            | Payload::JournalRecorded(_)
             | Payload::Custom(_) => {}
         }
     }
@@ -518,6 +520,21 @@ pub struct PluginLog {
     /// `error` for a failed callback, `info` for a line the plugin logged.
     pub level: LogLevel,
     pub text: String,
+}
+
+/// A step recorded in the journal.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct JournalRecorded {
+    /// Its step number, for history.entry.
+    pub step: u64,
+    /// The method called, such as `transform.apply`.
+    pub method: String,
+    /// Who called it: `panel`, `plugin:sync.lua`, `ask`, `mcp:claude-code`, `cli` or `recipe:<name>`.
+    pub caller: String,
+    /// What it did in plain words.
+    pub description: String,
+    /// Whether it succeeded; a failed edit, view change or job is recorded with its error.
+    pub ok: bool,
 }
 
 /// A message on a plugin's own topic.

@@ -170,6 +170,7 @@ fn summary(payload: &Payload, document_len: usize) -> String {
         },
         Payload::JobFinished(finished) => format!("{}: {}", finished.title, finished.outcome),
         Payload::PluginLog(line) => format!("{}: {}", line.plugin, line.text),
+        Payload::JournalRecorded(recorded) => format!("step {} by {}: {}", recorded.step, recorded.caller, recorded.description),
         Payload::Custom(custom) => {
             let text = custom.payload.to_string();
             if text.chars().count() > CUSTOM_SUMMARY_CHARS { format!("{}…", text.chars().take(CUSTOM_SUMMARY_CHARS).collect::<String>()) } else { text }

@@ -35,11 +35,15 @@ pub enum Caller {
     Mcp(String),
     /// `theviewer api` on the command line.
     Cli,
+    /// A recipe being run, by its name (`Telemetry frames`), from the
+    /// History tab, `theviewer replay` or `recipes.run`.
+    Recipe(String),
 }
 
 impl Caller {
     /// The producer id its edits and messages are published as:
-    /// `panel`, `plugin:sync_word.lua`, `ask`, `mcp:claude-code` or `cli`.
+    /// `panel`, `plugin:sync_word.lua`, `ask`, `mcp:claude-code`, `cli`
+    /// or `recipe:Telemetry frames`.
     pub fn producer(&self) -> String {
         match self {
             Caller::Panel => "panel".to_string(),
@@ -47,6 +51,21 @@ impl Caller {
             Caller::Ask => "ask".to_string(),
             Caller::Mcp(name) => format!("mcp:{name}"),
             Caller::Cli => "cli".to_string(),
+            Caller::Recipe(name) => format!("recipe:{name}"),
+        }
+    }
+
+    /// The caller a producer id names, as the journal keeps it; an id of no
+    /// known kind is taken as a plugin's.
+    pub fn from_producer(producer: &str) -> Caller {
+        match producer.split_once(':') {
+            None if producer == "panel" => Caller::Panel,
+            None if producer == "ask" => Caller::Ask,
+            None if producer == "cli" => Caller::Cli,
+            Some(("plugin", name)) => Caller::Plugin(name.to_string()),
+            Some(("mcp", name)) => Caller::Mcp(name.to_string()),
+            Some(("recipe", name)) => Caller::Recipe(name.to_string()),
+            _ => Caller::Plugin(producer.to_string()),
         }
     }
 
@@ -74,6 +93,7 @@ impl Caller {
             Caller::Ask => "Ask".to_string(),
             Caller::Mcp(name) => format!("The MCP client {name}"),
             Caller::Cli => "The command line".to_string(),
+            Caller::Recipe(name) => format!("The recipe {name}"),
         }
     }
 }
@@ -233,5 +253,13 @@ mod tests {
         assert_eq!(Caller::Mcp("claude-code".into()).to_string(), "mcp:claude-code");
         assert_eq!(Caller::Panel.client(), None);
         assert_eq!(Caller::Ask.client().as_deref(), Some("ask"));
+        assert_eq!(Caller::Recipe("Telemetry frames".into()).producer(), "recipe:Telemetry frames");
+    }
+
+    #[test]
+    fn a_caller_is_found_again_from_the_id_the_journal_keeps() {
+        for caller in [Caller::Panel, Caller::Ask, Caller::Cli, Caller::Plugin("sync.lua".into()), Caller::Mcp("claude-code".into()), Caller::Recipe("Telemetry: frames".into())] {
+            assert_eq!(Caller::from_producer(&caller.producer()), caller);
+        }
     }
 }
