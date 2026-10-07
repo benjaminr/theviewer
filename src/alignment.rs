@@ -25,8 +25,13 @@ pub const MISMATCH_SCORE: i32 = -1;
 /// Score for aligning a byte against a gap.
 pub const GAP_SCORE: i32 = -2;
 
-/// Most messages clustered; the rest are left out with a note.
+/// Most messages clustered against one another: past it, an even sample
+/// across the set is clustered and every other message joins the type it
+/// is most like, with a note.
 pub const MAX_CLUSTERED_MESSAGES: usize = 256;
+/// Most types the messages left out of the sample may add, when one is
+/// like none of the types the sample found.
+const MAX_ADDED_CLUSTERS: usize = 64;
 /// Bytes of each message compared when measuring similarity.
 pub const SIMILARITY_PREFIX: usize = 64;
 /// Most messages aligned in one cluster.
@@ -193,26 +198,79 @@ impl Default for AlignmentOptions {
 // Whole analysis
 // ---------------------------------------------------------------------------
 
+/// `count` indices spread evenly over `0..total`, first and last
+/// included; every index when there are no more than `count`.
+pub fn even_sample(total: usize, count: usize) -> Vec<usize> {
+    if total <= count {
+        return (0..total).collect();
+    }
+    if count <= 1 {
+        return vec![0; count.min(total)];
+    }
+    let mut sample: Vec<usize> = (0..count).map(|step| step * (total - 1) / (count - 1)).collect();
+    sample.dedup();
+    sample
+}
+
 /// Cluster the messages, align each cluster and classify its columns.
+/// Past [`MAX_CLUSTERED_MESSAGES`], an even sample across the whole set is
+/// clustered, and every other message then joins the cluster whose first
+/// member it is most like, or starts one of its own when it is like none,
+/// so a type that turns up only late in the set is still found.
 pub fn analyse(messages: &[Vec<u8>], options: &AlignmentOptions) -> AlignmentReport {
     let mut notes = Vec::new();
-    if messages.len() > MAX_CLUSTERED_MESSAGES {
-        notes.push(format!("Clustered the first {MAX_CLUSTERED_MESSAGES} of {} messages.", messages.len()));
-    }
-    let slices: Vec<&[u8]> = messages.iter().take(MAX_CLUSTERED_MESSAGES).map(Vec::as_slice).collect();
+    let slices: Vec<&[u8]> = messages.iter().map(Vec::as_slice).collect();
     if slices.is_empty() {
         notes.push("No messages to align.".to_string());
         return AlignmentReport { clusters: Vec::new(), notes };
     }
-    let clusters = cluster(&slices, options.threshold).into_iter().map(|members| analyse_cluster(&slices, members)).collect();
+    let sample = even_sample(slices.len(), MAX_CLUSTERED_MESSAGES);
+    let sampled: Vec<&[u8]> = sample.iter().map(|&index| slices[index]).collect();
+    let mut groups: Vec<Vec<usize>> = cluster(&sampled, options.threshold).into_iter().map(|members| members.into_iter().map(|member| sample[member]).collect()).collect();
+    if sample.len() < slices.len() {
+        let added = join_the_rest(&slices, &sample, &mut groups, options.threshold);
+        let types = if added > 0 { format!(", and {added} that were like none of them started types of their own") } else { String::new() };
+        notes.push(format!(
+            "Clustered an even sample of {} of the {} messages, from across the whole set; the other {} each joined the type they were most like{types}.",
+            sample.len(),
+            slices.len(),
+            slices.len() - sample.len()
+        ));
+        for members in &mut groups {
+            members.sort_unstable();
+        }
+        groups.sort_by(|a, b| b.len().cmp(&a.len()).then(a[0].cmp(&b[0])));
+    }
+    let clusters = groups.into_iter().map(|members| analyse_cluster(&slices, members)).collect();
     AlignmentReport { clusters, notes }
+}
+
+/// Put every message not in `sample` into the group whose first member it
+/// is most like, or into a new group when it is like none (up to
+/// [`MAX_ADDED_CLUSTERS`] new ones). Returns how many groups were added.
+fn join_the_rest(messages: &[&[u8]], sample: &[usize], groups: &mut Vec<Vec<usize>>, threshold: f64) -> usize {
+    let in_sample: std::collections::HashSet<usize> = sample.iter().copied().collect();
+    let mut representatives: Vec<usize> = groups.iter().filter_map(|members| members.first().copied()).collect();
+    let mut added = 0;
+    for index in (0..messages.len()).filter(|index| !in_sample.contains(index)) {
+        let best = representatives.iter().enumerate().map(|(group, &representative)| (group, similarity(messages[index], messages[representative]))).max_by(|a, b| a.1.total_cmp(&b.1));
+        match best {
+            Some((group, likeness)) if likeness >= threshold || added >= MAX_ADDED_CLUSTERS => groups[group].push(index),
+            _ => {
+                groups.push(vec![index]);
+                representatives.push(index);
+                added += 1;
+            }
+        }
+    }
+    added
 }
 
 fn analyse_cluster(messages: &[&[u8]], members: Vec<usize>) -> ClusterReport {
     let mut notes = Vec::new();
-    let aligned: Vec<usize> = members.iter().copied().take(MAX_ALIGNED_PER_CLUSTER).collect();
+    let aligned: Vec<usize> = even_sample(members.len(), MAX_ALIGNED_PER_CLUSTER).into_iter().map(|position| members[position]).collect();
     if members.len() > aligned.len() {
-        notes.push(format!("Aligned the first {} of {} messages.", aligned.len(), members.len()));
+        notes.push(format!("Aligned an even sample of {} of its {} messages.", aligned.len(), members.len()));
     }
     if aligned.iter().any(|&index| messages[index].len() > MAX_ALIGNED_LEN) {
         notes.push(format!("Messages longer than {MAX_ALIGNED_LEN} bytes were aligned on their first {MAX_ALIGNED_LEN} bytes."));
@@ -716,7 +774,29 @@ mod tests {
         let cluster = &report.clusters[0];
         assert_eq!(cluster.members.len(), messages.len());
         assert_eq!(cluster.alignment.rows.len(), MAX_ALIGNED_PER_CLUSTER);
-        assert!(cluster.notes.iter().any(|n| n.contains("Aligned the first")));
+        assert!(cluster.notes.iter().any(|n| n.contains("Aligned an even sample of 64 of its 70")), "{:?}", cluster.notes);
+        assert_eq!(cluster.alignment.rows.last().map(|row| row.message), Some(messages.len() - 1), "the sample reaches the last message");
+    }
+
+    #[test]
+    fn a_type_seen_only_late_in_a_long_set_is_still_clustered_and_the_sampling_is_said() {
+        let mut messages: Vec<Vec<u8>> = (0..2000u32).map(|index| binary_message(index as u8, (index % 7) as u8)).collect();
+        for late in [1801, 1902, 1999] {
+            messages[late] = vec![0x3C, 0x3C, 0x3C, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09];
+        }
+        let report = analyse(&messages, &AlignmentOptions::default());
+        assert!(report.notes.iter().any(|note| note.contains("even sample of 256 of the 2000 messages")), "{:?}", report.notes);
+        let late = report.clusters.iter().find(|cluster| messages[cluster.members[0]][0] == 0x3C).expect("the late type has a cluster");
+        assert_eq!(late.members, vec![1801, 1902, 1999]);
+        let total: usize = report.clusters.iter().map(|cluster| cluster.members.len()).sum();
+        assert_eq!(total, 2000, "every message is in a cluster");
+    }
+
+    #[test]
+    fn an_even_sample_spans_the_whole_range() {
+        assert_eq!(even_sample(5, 10), vec![0, 1, 2, 3, 4]);
+        assert_eq!(even_sample(101, 3), vec![0, 50, 100]);
+        assert!(even_sample(0, 4).is_empty());
     }
 
     #[test]
