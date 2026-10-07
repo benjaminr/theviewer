@@ -166,7 +166,7 @@ A recipe step that starts a job waits for it (up to 10 minutes), and later steps
 
 ## Methods
 
-174 methods in 45 namespaces. The MCP column says which are listed as tools of their own by `theviewer mcp` (every one is with `--all-tools`; the rest are reached with `api_call`).
+175 methods in 45 namespaces. The MCP column says which are listed as tools of their own by `theviewer mcp` (every one is with `--all-tools`; the rest are reached with `api_call`).
 
 | Method | Effect | MCP | Summary |
 | --- | --- | --- | --- |
@@ -180,7 +180,7 @@ A recipe step that starts a job waits for it (up to 10 minutes), and later steps
 | [`documents.derive`](#documentsderive) | view |  | Open bytes of a document (a span, several ranges one after another, or bytes given), or what a transform such as decompress or XOR makes of them, as a document of their own derived from it, and make it current; in the window, Back goes back to the parent. |
 | [`documents.export`](#documentsexport) | edit |  | Write a span of a document (or several ranges one after another) to a file, or what decompresses at a span's start; the document is left as it is. |
 | [`documents.open_source`](#documentsopen_source) | view |  | Open a file, URL, block device, serial port (serial:PORT@BAUD) or a process's memory region (pid:PID@ADDRESS) as a new document. The window reads a URL, device or region in the background and opens it when it arrives, and pid:PID lists a process's regions in the Live tab; headless, the bytes are read before the call returns. |
-| [`bytes.read`](#bytesread) | read | core | Read a span of bytes, as hex by default, or as base64 or text. |
+| [`bytes.read`](#bytesread) | read | core | Read a span of bytes, as hex by default, or as base64 or text; a span running past the end of the document is read to the end, and len says how many bytes came back. |
 | [`bytes.hexdump`](#byteshexdump) | read | core | A classic hex dump of a span, 16 bytes per line with an ASCII column, at most 1 MiB. |
 | [`bytes.write`](#byteswrite) | edit | core | Overwrite bytes in place with new ones, as one undoable step; the document keeps its length. |
 | [`bytes.insert`](#bytesinsert) | edit |  | Insert bytes at an offset, as one undoable step; the bytes after it move along. |
@@ -244,26 +244,27 @@ A recipe step that starts a job waits for it (up to 10 minutes), and later steps
 | [`packets.sets.create`](#packetssetscreate) | analysis | core | Take a set of packets from a document: a capture in it, a range cut into fixed records, by a length field, at a pattern or with the protocol framing, or the selection's ranges, with how to decode frames of unknown format; returns the set's id and what was worked out (the capture found, the framing), so the call can be made again exactly. |
 | [`packets.sets.remove`](#packetssetsremove) | analysis |  | Forget a packet set: its id stops working and it leaves packets.sets.list. Its document is not changed. |
 | [`packets.sets.list`](#packetssetslist) | read |  | The packet sets made, with their ids, documents, sources, packet counts and decoding. |
-| [`packets.list`](#packetslist) | read |  | A set's packets the display filter keeps, a page at a time: each one's index, offset, length, summary columns, protocols and addresses. |
+| [`packets.list`](#packetslist) | read |  | A set's packets the display filter keeps, a page at a time, in capture order or sorted by a field, and de-duplicated by a field if asked: each one's index, offset, length, summary columns, protocols and addresses. |
 | [`packets.dissect`](#packetsdissect) | read | core | Dissect one packet of a set into protocol layers and fields, as the set decodes frames of unknown format. |
 | [`packets.decode_as`](#packetsdecode_as) | analysis |  | Choose the protocol a set's frames of unknown format are decoded as, or detection, and a template for frames no protocol reads. |
 | [`packets.export_pcap`](#packetsexport_pcap) | analysis |  | A set's packets (those a filter keeps) as a pcap file, returned or written to a path given (which needs leave to edit). |
-| [`packets.conversations`](#packetsconversations) | read |  | The conversations in a set (the packets a filter keeps): each pair of endpoints with its transport, packets and bytes each way, and a filter for it. |
+| [`packets.conversations`](#packetsconversations) | read |  | The conversations in a set (the packets a filter keeps): each pair of endpoints with its transport, packets and bytes each way, its first packet's index in the set, and a filter for it; in order of first packet, or sorted by packets, bytes or address. |
 | [`packets.follow_stream`](#packetsfollow_stream) | read |  | The payloads of a packet's conversation in order, each with its direction, and the stream as text. |
+| [`packets.http_bodies`](#packetshttp_bodies) | analysis |  | The HTTP/1 requests and responses in a packet's TCP stream, each with its head and its body as meant: put together across segments, de-chunked, and decompressed by its Content-Encoding (gzip or deflate); the bodies are returned, or opened as documents of their own with open. |
 | [`packets.find_captures`](#packetsfind_captures) | read |  | The captures inside a span of a document (pcap, pcapng, snoop, Network Monitor or ERF, or one of these compressed with gzip), each with its offset, format, link type and packets, for packets.sets.create. |
 | [`packets.sets.add_packets`](#packetssetsadd_packets) | view |  | Add ranges of the document to a set as packets of their own, so packets can be gathered one at a time; the set then keeps its packets where they are. |
 | [`packets.sets.refresh`](#packetssetsrefresh) | view |  | Find a set's packets again, the way they were found, in another document (the current one by default), which the set then belongs to. |
 | [`packets.detect_length_field`](#packetsdetect_length_field) | read |  | Look for a length field that cuts a span into frames, with the protocol analysis's framing detection; returns it as packets.sets.create's length_field, or the best framing found instead. |
-| [`packets.endpoints`](#packetsendpoints) | read |  | The addresses in a set (the packets a filter keeps), busiest first, with the packets and bytes each sent and received. |
-| [`packets.extract`](#packetsextract) | analysis |  | Some of a set's packets' bytes one after another, returned or written to a path given (which needs leave to edit). |
+| [`packets.endpoints`](#packetsendpoints) | read |  | The addresses in a set (the packets a filter keeps), busiest first or sorted by packets or address, with the packets and bytes each sent and received. |
+| [`packets.extract`](#packetsextract) | analysis |  | Some of a set's packets' bytes one after another, in the order given: whole, the same span of each, or each packet's own field by name (one label of a DNS name, say); returned or written to a path given (which needs leave to edit). |
 | [`packets.delete`](#packetsdelete) | edit |  | Remove packets from the document (their whole capture records, so a capture stays readable), as one undoable step. |
 | [`packets.fix_checksums`](#packetsfix_checksums) | edit |  | Recompute the IPv4 header, TCP and UDP checksums of some of a set's packets, as one undoable step. |
 | [`packets.apply`](#packetsapply) | edit |  | Invert, fill or XOR some of a set's packets, or the same field of each, as one undoable step. |
 | [`packets.write_field`](#packetswrite_field) | edit |  | Write a value (a number, or hex bytes as wide as the field) into a field of one packet, as one undoable step. |
 | [`packets.columns.apply`](#packetscolumnsapply) | edit |  | Change the same columns (byte offsets) of every packet, or of some, laid out one packet per row: invert, fill, XOR, add, set, number or swap the byte order, as one undoable step. |
 | [`packets.columns.delete`](#packetscolumnsdelete) | edit |  | Remove the same columns (byte offsets) from every packet, or from some, as one undoable step; length fields and checksums are not changed. |
-| [`packets.columns.read`](#packetscolumnsread) | read |  | The same columns (byte offsets) of every packet, or of some, as hex lines or CSV. |
-| [`packets.tshark_decode`](#packetstshark_decode) | job |  | Have Wireshark's tshark decode some of a set's packets (run locally with -n) as a background job; the protocols it named are the job's result, and in the window its layers merge into the Packets panel's. |
+| [`packets.columns.read`](#packetscolumnsread) | read |  | The same columns (byte offsets) of every packet, or of some, as hex lines or CSV, each packet named by its index in the set (from 0, as every packet method counts). |
+| [`packets.tshark_decode`](#packetstshark_decode) | job |  | Have Wireshark's tshark decode some of a set's packets (run locally with -n) as a background job; the protocols it named are the job's result, and once it finishes its layers and fields are merged into the set's, so packets.dissect shows them and filters (packets.list and the rest) can name tshark's fields, such as dns.flags.response; in the window they merge into the Packets panel's too. |
 | [`analysis.overview`](#analysisoverview) | read | core | Map the whole document: a summary of what it is, its regions with offsets, likely record widths and confident findings. |
 | [`analysis.overview_job`](#analysisoverview_job) | job | core | Start analysis.overview as a background job and return its id at once; the report arrives as job.finished's result and from jobs.status, for large files and clients that should not wait. |
 | [`analysis.statistics`](#analysisstatistics) | read |  | Measure a span: entropy, chi-square, serial correlation, printable, zero and high-byte fractions, distinct values and a verdict. |
@@ -554,7 +555,7 @@ Open a file, URL, block device, serial port (serial:PORT@BAUD) or a process's me
 
 ### bytes.read
 
-Read a span of bytes, as hex by default, or as base64 or text.
+Read a span of bytes, as hex by default, or as base64 or text; a span running past the end of the document is read to the end, and len says how many bytes came back.
 
 **Effect:** `read` · **MCP tool:** `bytes_read`, listed by default
 
@@ -564,7 +565,7 @@ Read a span of bytes, as hex by default, or as base64 or text.
 | --- | --- | --- | --- |
 | `doc` | string | no | Document id, path or "current" (the default). |
 | `encoding` | `"hex"` \| `"base64"` \| `"text"` | no | How to write the bytes: hex (the default), base64 or text. |
-| `len` | integer | no | Bytes to read, at most 16 MiB; to the end of the document when omitted. |
+| `len` | integer | no | Bytes to read, at most 16 MiB; to the end of the document when omitted, or when the document ends sooner. |
 | `start` | integer | yes | Offset of the first byte. |
 
 | Result field | Type | Required | Description |
@@ -572,7 +573,8 @@ Read a span of bytes, as hex by default, or as base64 or text.
 | `data` | string | yes | The bytes, written as `encoding` says. |
 | `doc` | string | yes | Id of the document read. |
 | `encoding` | `"hex"` \| `"base64"` \| `"text"` | yes | How `data` is written. |
-| `len` | integer | yes | Bytes read. |
+| `len` | integer | yes | Bytes read: fewer than asked for when the document ends first. |
+| `short` | boolean | no | Whether the document ended before the span asked for did. |
 | `start` | integer | yes | Offset of the first byte. |
 
 ### bytes.hexdump
@@ -631,7 +633,7 @@ Insert bytes at an offset, as one undoable step; the bytes after it move along.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `at` | integer | yes | Offset to insert at; the document's length appends. |
+| `at` | integer | yes | Offset to insert at; the document's length appends. Also taken as `start`, as the other byte methods call it. |
 | `coalesce` | boolean | no | Join the caller's previous step when that step wrote or inserted just the one byte at `at`. |
 | `data` | string | yes | The bytes to insert, written as `encoding` says. |
 | `doc` | string | no | Document id, path or "current" (the default). |
@@ -1913,7 +1915,7 @@ Parameters: None.
 
 ### packets.list
 
-A set's packets the display filter keeps, a page at a time: each one's index, offset, length, summary columns, protocols and addresses.
+A set's packets the display filter keeps, a page at a time, in capture order or sorted by a field, and de-duplicated by a field if asked: each one's index, offset, length, summary columns, protocols and addresses.
 
 **Effect:** `read` · **MCP tool:** `packets_list`, through `api_call`, or with `--all-tools`
 
@@ -1921,10 +1923,13 @@ A set's packets the display filter keeps, a page at a time: each one's index, of
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `filter` | string | no | A display filter, as the Packets panel takes: protocol names, addresses, ports, `len > 60`, Wireshark field names and more. |
+| `dedupe` | string | no | Keep only the first packet (in the order listed) of each value of this field, named as for `sort`: a chunk sent twice is listed once. |
+| `descending` | boolean | no | With `sort`, highest first. |
+| `filter` | string | no | A display filter, as the Packets panel takes: protocol names, addresses, ports, `len > 60`, Wireshark field names such as `dns.qry.type==16` or `tcp.port==80`, template fields as `template.type==60`, joined with and, or, not and brackets. |
 | `limit` | integer | no | Most packets to return (100 by default). |
 | `next` | string | no | The `next` cursor of the previous page. |
 | `set` | string | yes |  |
+| `sort` | string | no | Put the packets in the order of this field, lowest first (numbers in numeric order): a field a filter can name (`dns.qry.name`, `template.seq`, or a template field's bare name), or `len`, `offset`, `time`, `source`, `destination`, `protocol` or `info`. Packets without the field come last. In capture order when omitted. |
 
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -2014,7 +2019,7 @@ A set's packets (those a filter keeps) as a pcap file, returned or written to a 
 
 ### packets.conversations
 
-The conversations in a set (the packets a filter keeps): each pair of endpoints with its transport, packets and bytes each way, and a filter for it.
+The conversations in a set (the packets a filter keeps): each pair of endpoints with its transport, packets and bytes each way, its first packet's index in the set, and a filter for it; in order of first packet, or sorted by packets, bytes or address.
 
 **Effect:** `read` · **MCP tool:** `packets_conversations`, through `api_call`, or with `--all-tools`
 
@@ -2024,6 +2029,7 @@ The conversations in a set (the packets a filter keeps): each pair of endpoints 
 | --- | --- | --- | --- |
 | `filter` | string | no | Only the packets this display filter keeps. |
 | `set` | string | yes |  |
+| `sort` | `"packets"` \| `"bytes"` \| `"address"` \| `"first"` | no | The order: conversations come in order of their first packet and endpoints busiest first (by bytes) when omitted. |
 
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -2047,8 +2053,28 @@ The payloads of a packet's conversation in order, each with its direction, and t
 | `conversation` | ConversationEntry | no | The conversation followed; absent when the packet has no addresses and ports, and so nothing to follow. |
 | `parts` | array of StreamPart | yes | The payloads in order, each with who sent it. |
 | `retransmissions` | integer | yes | TCP segments sent again and left out. |
-| `text` | string | yes | The whole stream as text, each direction's turns marked. |
+| `text` | string | yes | The whole stream as text, each direction's turns marked with the packet's index in the set (from 0, as `parts` give it). |
 | `truncated` | boolean | yes | Whether the stream was longer than is kept. |
+
+### packets.http_bodies
+
+The HTTP/1 requests and responses in a packet's TCP stream, each with its head and its body as meant: put together across segments, de-chunked, and decompressed by its Content-Encoding (gzip or deflate); the bodies are returned, or opened as documents of their own with open.
+
+**Effect:** `analysis` · **MCP tool:** `packets_http_bodies`, through `api_call`, or with `--all-tools`
+
+**History:** Journalled as a step; it has no inverse, so going back past it runs the session's steps again; repeated by going back, playback and recipes.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `encoding` | `"hex"` \| `"base64"` \| `"text"` | no | How returned bodies are written: base64 (the default), hex or text. |
+| `index` | integer | yes | Any packet of the TCP conversation. |
+| `open` | boolean | no | Open each body that is not empty as a document of its own, derived from the set's, rather than returning it. |
+| `set` | string | yes |  |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `messages` | array of HttpBody | yes | The messages in the order they start. |
+| `note` | string | no | Why there are none, when there are none. |
 
 ### packets.find_captures
 
@@ -2154,7 +2180,7 @@ Look for a length field that cuts a span into frames, with the protocol analysis
 
 ### packets.endpoints
 
-The addresses in a set (the packets a filter keeps), busiest first, with the packets and bytes each sent and received.
+The addresses in a set (the packets a filter keeps), busiest first or sorted by packets or address, with the packets and bytes each sent and received.
 
 **Effect:** `read` · **MCP tool:** `packets_endpoints`, through `api_call`, or with `--all-tools`
 
@@ -2164,6 +2190,7 @@ The addresses in a set (the packets a filter keeps), busiest first, with the pac
 | --- | --- | --- | --- |
 | `filter` | string | no | Only the packets this display filter keeps. |
 | `set` | string | yes |  |
+| `sort` | `"packets"` \| `"bytes"` \| `"address"` \| `"first"` | no | The order: conversations come in order of their first packet and endpoints busiest first (by bytes) when omitted. |
 
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -2171,7 +2198,7 @@ The addresses in a set (the packets a filter keeps), busiest first, with the pac
 
 ### packets.extract
 
-Some of a set's packets' bytes one after another, returned or written to a path given (which needs leave to edit).
+Some of a set's packets' bytes one after another, in the order given: whole, the same span of each, or each packet's own field by name (one label of a DNS name, say); returned or written to a path given (which needs leave to edit).
 
 **Effect:** `analysis` · **MCP tool:** `packets_extract`, through `api_call`, or with `--all-tools`
 
@@ -2181,7 +2208,9 @@ Some of a set's packets' bytes one after another, returned or written to a path 
 | --- | --- | --- | --- |
 | `encoding` | `"hex"` \| `"base64"` \| `"text"` | no | How the returned bytes are written: base64 (the default) or hex. |
 | `field` | FieldSpan | no | Only this field of each packet (a transfer's data blocks without their headers, say), cut short where a packet ends; packets that end before it starts give nothing. |
+| `field_name` | string | no | Only this field of each packet, by the name a filter uses (`dns.qry.name`, `template.payload`), at each packet's own offset and length; packets without it give nothing. |
 | `indices` | array of integer | yes | The packets, by their index in the set, in the order wanted. |
+| `label` | integer | no | With `field_name`, only this label (from 0) of a DNS name, without its length byte: label 1 of `0001.MFRGG.t.example.com` is `MFRGG`. |
 | `path` | string | no | Write the bytes here instead of returning them; needs leave to edit, as writing a file does. |
 | `set` | string | yes |  |
 
@@ -2360,7 +2389,7 @@ Remove the same columns (byte offsets) from every packet, or from some, as one u
 
 ### packets.columns.read
 
-The same columns (byte offsets) of every packet, or of some, as hex lines or CSV.
+The same columns (byte offsets) of every packet, or of some, as hex lines or CSV, each packet named by its index in the set (from 0, as every packet method counts).
 
 **Effect:** `read` · **MCP tool:** `packets_columns_read`, through `api_call`, or with `--all-tools`
 
@@ -2384,7 +2413,7 @@ The same columns (byte offsets) of every packet, or of some, as hex lines or CSV
 
 ### packets.tshark_decode
 
-Have Wireshark's tshark decode some of a set's packets (run locally with -n) as a background job; the protocols it named are the job's result, and in the window its layers merge into the Packets panel's.
+Have Wireshark's tshark decode some of a set's packets (run locally with -n) as a background job; the protocols it named are the job's result, and once it finishes its layers and fields are merged into the set's, so packets.dissect shows them and filters (packets.list and the rest) can name tshark's fields, such as dns.flags.response; in the window they merge into the Packets panel's too.
 
 **Effect:** `job` · **MCP tool:** `packets_tshark_decode`, through `api_call`, or with `--all-tools`
 
