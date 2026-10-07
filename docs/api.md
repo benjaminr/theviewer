@@ -31,7 +31,7 @@ theviewer api --save history.transaction '{"calls": [
 theviewer api --describe
 ```
 
-`theviewer api [--save] METHOD ['{JSON PARAMS}'] [FILE]` opens FILE (when given) in a workspace of its own without a window, loads the plugins from `./plugins` and `~/.config/theviewer/plugins` (so their methods can be called too), makes the one call as `cli` and prints its result as JSON on standard output. A failed call prints the error as JSON on standard error and exits with status 1; a command line that cannot be understood exits with status 2. With `--save`, a call that left the file's document with unsaved edits is followed by `documents.save`, which writes them over FILE; without it the file is never changed. Every call is allowed: the file is the one you named. The call is the whole session, so a method whose effect is `job` prints only its job's id: use such methods from the window, from an MCP client, or in a recipe (`theviewer replay` waits for each job a step starts). Plugins' subscription handlers do not run here.
+`theviewer api [--save] METHOD ['{JSON PARAMS}'] [FILE]` opens FILE (when given) in a workspace of its own without a window, loads the plugins from `./plugins` and `~/.config/theviewer/plugins` (so their methods can be called too), makes the one call as `cli` and prints its result as JSON on standard output. A failed call prints the error as JSON on standard error and exits with status 1; a command line that cannot be understood exits with status 2. With `--save`, a call that left the file's document with unsaved edits is followed by `documents.save`, which writes them over FILE; without it the file is never changed. Every call is allowed: the file is the one you named. The call is the whole session, so a method whose effect is `job` prints only its job's id: use such methods from the window, from an MCP client, or in a recipe (`theviewer replay` waits for each job a step starts). Plugins' subscription handlers do not run here. The [command line guide](guide/command-line.md) covers the other commands.
 
 ### From an MCP client
 
@@ -60,7 +60,7 @@ workspace.open_path(Path::new("capture.bin"))?;
 let head = api::call(&mut workspace, &Caller::Cli, "bytes.read", json!({"start": 0, "len": 16}))?;
 ```
 
-`api::call` checks the parameters against the method's schema, checks the caller's permission, runs the method and records the call in the journal. In the app, `ViewerApp::perform(method, params)` calls as the person and shows a failure in the status bar; `ViewerApp::perform_derived` also notes where parameters' values came from, for recipes. Callers that cannot wait for the person to confirm (Ask, plugins' handlers) use `api::call_or_hold`. Each namespace module (`theviewer::api::bytes`, `theviewer::api::search`…) also offers its methods as typed functions.
+`api::call` checks the parameters against the method's schema, checks the caller's permission, runs the method and records the call in the journal. In the app, `ViewerApp::perform(method, params)` calls as the person and shows a failure in the status bar; `ViewerApp::perform_derived` also notes where parameters' values came from, for recipes. Callers that cannot wait for the person to confirm (Ask, plugins' handlers) use `api::call_or_hold`. Each namespace module (`theviewer::api::bytes`, `theviewer::api::search`…) also offers its methods as typed functions. Building theviewer, its tests and how the code is laid out are in [docs/development.md](development.md).
 
 ## Conventions
 
@@ -3869,7 +3869,7 @@ Plugins may publish any topic but those the app itself publishes (`document.open
 | [`job.finished`](#jobfinished) | event | Background work finished, with a one-line outcome (and, for a job started through the API, its result), or was cancelled. |
 | [`plugin.log`](#pluginlog) | event | A plugin logged a line, or one of its callbacks failed (in a background scan, say). |
 | [`journal.recorded`](#journalrecorded) | event | A call was recorded in the session's journal (an edit, view change or job, by any caller, or a read kept because a later step used its result); history.entry gives it in full. |
-| [`x.*`](#x*) | event | A plugin's own topic, named x.<plugin>.<name>, with a payload of its choosing. |
+| [`x.*`](#x) | event | A plugin's own topic, named x.<plugin>.<name>, with a payload of its choosing. |
 
 ### document.opened
 

@@ -46,7 +46,7 @@ theviewer api --save history.transaction '{"calls": [
 theviewer api --describe
 ```
 
-`theviewer api [--save] METHOD ['{JSON PARAMS}'] [FILE]` opens FILE (when given) in a workspace of its own without a window, loads the plugins from `./plugins` and `~/.config/theviewer/plugins` (so their methods can be called too), makes the one call as `cli` and prints its result as JSON on standard output. A failed call prints the error as JSON on standard error and exits with status 1; a command line that cannot be understood exits with status 2. With `--save`, a call that left the file's document with unsaved edits is followed by `documents.save`, which writes them over FILE; without it the file is never changed. Every call is allowed: the file is the one you named. The call is the whole session, so a method whose effect is `job` prints only its job's id: use such methods from the window, from an MCP client, or in a recipe (`theviewer replay` waits for each job a step starts). Plugins' subscription handlers do not run here.
+`theviewer api [--save] METHOD ['{JSON PARAMS}'] [FILE]` opens FILE (when given) in a workspace of its own without a window, loads the plugins from `./plugins` and `~/.config/theviewer/plugins` (so their methods can be called too), makes the one call as `cli` and prints its result as JSON on standard output. A failed call prints the error as JSON on standard error and exits with status 1; a command line that cannot be understood exits with status 2. With `--save`, a call that left the file's document with unsaved edits is followed by `documents.save`, which writes them over FILE; without it the file is never changed. Every call is allowed: the file is the one you named. The call is the whole session, so a method whose effect is `job` prints only its job's id: use such methods from the window, from an MCP client, or in a recipe (`theviewer replay` waits for each job a step starts). Plugins' subscription handlers do not run here. The [command line guide](guide/command-line.md) covers the other commands.
 
 ### From an MCP client
 
@@ -75,7 +75,7 @@ workspace.open_path(Path::new("capture.bin"))?;
 let head = api::call(&mut workspace, &Caller::Cli, "bytes.read", json!({"start": 0, "len": 16}))?;
 ```
 
-`api::call` checks the parameters against the method's schema, checks the caller's permission, runs the method and records the call in the journal. In the app, `ViewerApp::perform(method, params)` calls as the person and shows a failure in the status bar; `ViewerApp::perform_derived` also notes where parameters' values came from, for recipes. Callers that cannot wait for the person to confirm (Ask, plugins' handlers) use `api::call_or_hold`. Each namespace module (`theviewer::api::bytes`, `theviewer::api::search`…) also offers its methods as typed functions.
+`api::call` checks the parameters against the method's schema, checks the caller's permission, runs the method and records the call in the journal. In the app, `ViewerApp::perform(method, params)` calls as the person and shows a failure in the status bar; `ViewerApp::perform_derived` also notes where parameters' values came from, for recipes. Callers that cannot wait for the person to confirm (Ask, plugins' handlers) use `api::call_or_hold`. Each namespace module (`theviewer::api::bytes`, `theviewer::api::search`…) also offers its methods as typed functions. Building theviewer, its tests and how the code is laid out are in [docs/development.md](development.md).
 "#;
 
 /// The conventions every method follows; `{max_call}` and the page sizes
@@ -256,7 +256,7 @@ fn methods_section() -> String {
     );
     for method in METHODS.iter() {
         let listed = if is_core_tool(method.name) { "core" } else { "" };
-        let _ = writeln!(out, "| [`{}`](#{}) | {} | {listed} | {} |", method.name, method.name.replace('.', ""), effect_name(method.effect), method.summary);
+        let _ = writeln!(out, "| [`{}`](#{}) | {} | {listed} | {} |", method.name, anchor_of(method.name), effect_name(method.effect), method.summary);
     }
     out.push_str("\nEach method's full JSON schemas are in `api.describe` (`theviewer api --describe`).\n");
     for method in METHODS.iter() {
@@ -294,7 +294,7 @@ Plugins may publish any topic but those the app itself publishes (`document.open
     );
     for topic in &description.topics {
         let kind = serde_json::to_value(topic.kind).ok().and_then(|value| value.as_str().map(str::to_string)).unwrap_or_default();
-        let _ = writeln!(out, "| [`{}`](#{}) | {kind} | {} |", topic.name, topic.name.replace('.', ""), topic.description);
+        let _ = writeln!(out, "| [`{}`](#{}) | {kind} | {} |", topic.name, anchor_of(&topic.name), topic.description);
     }
     for topic in &description.topics {
         let _ = write!(out, "\n### {}\n\n{}\n\n", topic.name, topic.description);
@@ -379,6 +379,12 @@ fn move_name(kind: Move) -> &'static str {
         Move::UndoStep => "undoing one step",
         Move::GoBack => "going back",
     }
+}
+
+/// The anchor GitHub gives a heading of `name`: its letters, digits, `_`
+/// and `-`, so `bytes.read` is `bytesread` and `x.*` is `x`.
+fn anchor_of(name: &str) -> String {
+    name.chars().filter(|c| c.is_alphanumeric() || matches!(c, '_' | '-')).collect()
 }
 
 /// Whether `theviewer mcp` lists the method as a tool by default.
