@@ -2098,6 +2098,7 @@ Some of a set's packets' bytes one after another, returned or written to a path 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `encoding` | `"hex"` \| `"base64"` \| `"text"` | no | How the returned bytes are written: base64 (the default) or hex. |
+| `field` | FieldSpan | no | Only this field of each packet (a transfer's data blocks without their headers, say), cut short where a packet ends; packets that end before it starts give nothing. |
 | `indices` | array of integer | yes | The packets, by their index in the set, in the order wanted. |
 | `path` | string | no | Write the bytes here instead of returning them; needs leave to edit, as writing a file does. |
 | `set` | string | yes |  |

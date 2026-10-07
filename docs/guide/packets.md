@@ -207,4 +207,8 @@ edited.
 *Export pcap…* saves the shown packets as a pcap file Wireshark opens, or
 only the selected ones when several are selected.
 *Save bytes…* saves the selected packets' bytes, and *Open as document*
-opens them as a document of their own.
+opens them as a document of their own. With a field chosen in the detail
+and *only the chosen field* ticked, both take just that field from each
+packet, one after another, cut short where a packet ends: choose a TFTP
+data block's data, select every data packet, and *Open as document*
+reassembles the file that was sent.

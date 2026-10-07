@@ -78,6 +78,15 @@ pub struct FieldSpan {
     pub len: usize,
 }
 
+impl FieldSpan {
+    /// The field's bytes in a packet of `packet_len` bytes, as
+    /// `(offset, len)` from its first byte, cut short at the packet's end;
+    /// none when the packet ends before the field starts.
+    pub fn within(&self, packet_len: usize) -> Option<(usize, usize)> {
+        (self.offset < packet_len).then(|| (self.offset, self.len.min(packet_len - self.offset)))
+    }
+}
+
 /// Parameters of `packets.apply`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -243,6 +252,11 @@ pub struct ExtractParams {
     pub set: String,
     /// The packets, by their index in the set, in the order wanted.
     pub indices: Vec<u64>,
+    /// Only this field of each packet (a transfer's data blocks without
+    /// their headers, say), cut short where a packet ends; packets that end
+    /// before it starts give nothing.
+    #[serde(default)]
+    pub field: Option<FieldSpan>,
     /// Write the bytes here instead of returning them; needs leave to edit,
     /// as writing a file does.
     #[serde(default)]
@@ -576,7 +590,14 @@ pub fn extract(workspace: &mut dyn Workspace, params: ExtractParams) -> Result<E
         let mut bytes = Vec::new();
         for &index in &chosen {
             let packet = &stored.packets.packets[index];
-            bytes.extend(document.read_range(packet.offset, packet.len.min(PACKET_READ_LIMIT)));
+            let packet_len = packet.len.min(PACKET_READ_LIMIT);
+            let span = match params.field {
+                Some(field) => field.within(packet_len),
+                None => Some((0, packet_len)),
+            };
+            if let Some((offset, len)) = span {
+                bytes.extend(document.read_range(packet.offset + offset, len));
+            }
         }
         Ok((chosen.len(), bytes))
     })?;
@@ -724,5 +745,16 @@ mod tests {
         assert_eq!(extracted["data"], "101112131415161700010203040506 07".replace(' ', ""));
         let failed = call(&mut workspace, "packets.extract", json!({"set": "set-1", "indices": [0], "path": "/no/such/dir/packets.bin"})).unwrap_err();
         assert_eq!(failed.code, ErrorCode::Unavailable);
+    }
+
+    #[test]
+    fn a_transfer_s_data_is_reassembled_from_the_same_field_of_each_packet_cut_short_at_its_end() {
+        let mut workspace = records();
+        let data = call(&mut workspace, "packets.extract", json!({"set": "set-1", "indices": [0, 1], "field": {"offset": 2, "len": 3}, "encoding": "hex"})).unwrap();
+        assert_eq!(data["data"], "0203040a0b0c");
+        let tails = call(&mut workspace, "packets.extract", json!({"set": "set-1", "indices": [0, 1], "field": {"offset": 6, "len": 512}, "encoding": "hex"})).unwrap();
+        assert_eq!(tails["data"], "06070e0f", "a field running past a packet's end stops there");
+        let beyond = call(&mut workspace, "packets.extract", json!({"set": "set-1", "indices": [0], "field": {"offset": 8, "len": 4}, "encoding": "hex"})).unwrap();
+        assert_eq!((beyond["count"].as_u64(), beyond["len"].as_u64()), (Some(1), Some(0)));
     }
 }

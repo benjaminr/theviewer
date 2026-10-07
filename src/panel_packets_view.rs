@@ -287,7 +287,7 @@ fn show_operations(state: &mut PacketsState, app: &mut ViewerApp, ui: &mut Ui) {
             None => "only the chosen field (choose one below)".to_string(),
         };
         ui.add_enabled(field.is_some(), egui::Checkbox::new(&mut state.operation_on_field, field_label))
-            .on_hover_text("Apply to the same field in every selected packet instead of the whole packets");
+            .on_hover_text("Work on the same field in every selected packet instead of the whole packets: Invert, Fill and XOR change only it, and Save bytes and Open as document take only it, one packet's after another");
     });
 }
 
@@ -313,7 +313,7 @@ pub fn apply_operation(state: &mut PacketsState, app: &mut ViewerApp, operation:
         ByteOperation::Fill(key) => (PacketOp::Fill, Some(crate::ops::to_compact_hex(key))),
         ByteOperation::Xor(key) => (PacketOp::Xor, Some(crate::ops::to_compact_hex(key))),
     };
-    let field = if state.operation_on_field { state.selected_field.map(|(offset, len)| FieldSpan { offset, len }) } else { None };
+    let field = chosen_field(state);
     let mut params = serde_json::json!({ "indices": targets(state), "op": op });
     if let Some(key) = key {
         params["key"] = serde_json::json!(key);
@@ -384,15 +384,37 @@ pub fn delete_selected_packets(state: &mut PacketsState, app: &mut ViewerApp) {
 /// Save the target packets' bytes, or open them as a document.
 fn extract_selected(state: &mut PacketsState, app: &mut ViewerApp, open: bool) {
     let count = targets(state).len();
-    let name = if count == 1 { format!("packet {}", state.focus.map_or(0, |i| i + 1)) } else { format!("{count} packets") };
+    let field = chosen_field(state);
+    let packets = if count == 1 { format!("packet {}", state.focus.map_or(0, |i| i + 1)) } else { format!("{count} packets") };
+    let name = if field.is_some() { format!("field of {packets}") } else { packets };
     if open {
         let Some(set) = &state.set else { return };
-        let ranges: Vec<(usize, usize)> = targets(state).into_iter().filter_map(|index| set.packets.get(index)).map(|packet| (packet.offset, packet.len.min(panel::PACKET_READ_LIMIT))).collect();
+        let ranges: Vec<(usize, usize)> = targets(state)
+            .into_iter()
+            .filter_map(|index| set.packets.get(index))
+            .filter_map(|packet| {
+                let packet_len = packet.len.min(panel::PACKET_READ_LIMIT);
+                let (offset, len) = match field {
+                    Some(field) => field.within(packet_len)?,
+                    None => (0, packet_len),
+                };
+                Some((packet.offset + offset, len))
+            })
+            .collect();
         open_as_document(state, app, serde_json::json!({ "ranges": ranges, "name": name }));
     } else if let Some(set) = panel::api_set_id(state, app) {
-        let params = serde_json::json!({ "set": set, "indices": targets(state) });
+        let mut params = serde_json::json!({ "set": set, "indices": targets(state) });
+        if let Some(field) = field {
+            params["field"] = serde_json::json!(field);
+        }
         app.save_dialog_then_call("Save packet bytes", &format!("{}.bin", name.replace(' ', "-")), "packets.extract", params, "path");
     }
+}
+
+/// The field chosen in the detail, when the operations are to be on it
+/// alone rather than on whole packets.
+fn chosen_field(state: &PacketsState) -> Option<FieldSpan> {
+    if state.operation_on_field { state.selected_field.map(|(offset, len)| FieldSpan { offset, len }) } else { None }
 }
 
 /// Open bytes as a document derived from the one shown, through
@@ -1033,5 +1055,19 @@ mod tests {
         assert_eq!(crate::actions::take_performed(), [("documents.derive".to_string(), serde_json::json!({ "ranges": [[at, packet.len()]], "name": "packet 1" }))]);
         assert_eq!(app.document.read_range(0, packet.len()), packet);
         assert!(state.foreign_document, "the packets describe the document left behind");
+    }
+
+    #[test]
+    fn opening_only_the_chosen_field_takes_it_from_each_packet_cut_short_at_the_end() {
+        let (mut state, mut app, at, packet) = one_packet();
+        state.selected_field = Some((28, 4096));
+        state.operation_on_field = true;
+        crate::actions::take_performed();
+        extract_selected(&mut state, &mut app, true);
+        assert_eq!(
+            crate::actions::take_performed(),
+            [("documents.derive".to_string(), serde_json::json!({ "ranges": [[at + 28, packet.len() - 28]], "name": "field of packet 1" }))]
+        );
+        assert_eq!(app.document.read_range(0, packet.len() - 28), &packet[28..]);
     }
 }
