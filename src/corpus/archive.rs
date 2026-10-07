@@ -34,17 +34,22 @@ pub fn unpack(name: &str, bytes: Vec<u8>, limit: usize) -> Unpacked {
     let mut unpacked = Unpacked::default();
     // Some servers send a ".tar.gz" already decompressed.
     if bytes.get(TAR_MAGIC_AT..TAR_MAGIC_AT + TAR_MAGIC.len()) == Some(TAR_MAGIC) && !lower.ends_with(".tar") {
-        let stem = lower.trim_end_matches(".gz").trim_end_matches(".tgz").trim_end_matches(".tar");
-        return unpack(&format!("{}.tar", &name[..stem.len()]), bytes, limit);
+        // The suffixes are ASCII, so their length is the same in `name`;
+        // lower-casing can change the length of the rest.
+        let stem_len = name.len() - (lower.len() - lower.trim_end_matches(".gz").trim_end_matches(".tgz").trim_end_matches(".tar").len());
+        return unpack(&format!("{}.tar", &name[..stem_len]), bytes, limit);
     }
-    let decompressed = if let Some(stem) = lower.strip_suffix(".tgz") {
-        decompress_gzip(&bytes, limit).map(|data| (format!("{}.tar", &name[..stem.len()]), data))
-    } else if let Some(stem) = lower.strip_suffix(".gz") {
-        decompress_gzip(&bytes, limit).map(|data| (name[..stem.len()].to_string(), data))
-    } else if let Some(stem) = lower.strip_suffix(".bz2") {
-        decompress_bzip2(&bytes, limit).map(|data| (name[..stem.len()].to_string(), data))
-    } else if let Some(stem) = lower.strip_suffix(".xz") {
-        decompress_xz(&bytes, limit).map(|data| (name[..stem.len()].to_string(), data))
+    // The name without an ASCII suffix, cut by the suffix's length so a
+    // name whose lower case is longer (such as "İ") is cut where it ends.
+    let without = |suffix: &str| &name[..name.len() - suffix.len()];
+    let decompressed = if lower.ends_with(".tgz") {
+        decompress_gzip(&bytes, limit).map(|data| (format!("{}.tar", without(".tgz")), data))
+    } else if lower.ends_with(".gz") {
+        decompress_gzip(&bytes, limit).map(|data| (without(".gz").to_string(), data))
+    } else if lower.ends_with(".bz2") {
+        decompress_bzip2(&bytes, limit).map(|data| (without(".bz2").to_string(), data))
+    } else if lower.ends_with(".xz") {
+        decompress_xz(&bytes, limit).map(|data| (without(".xz").to_string(), data))
     } else if lower.ends_with(".zip") {
         let (files, problems) = unzip(&bytes, limit);
         unpacked.problems = problems;
@@ -295,6 +300,13 @@ mod tests {
         let unpacked = unpack("trace.pcap.gz", gzip(b"capture bytes"), LIMIT);
         assert_eq!(unpacked.files, vec![("trace.pcap".to_string(), b"capture bytes".to_vec())]);
         assert!(unpacked.problems.is_empty());
+    }
+
+    #[test]
+    fn a_name_whose_lower_case_is_longer_keeps_its_own_stem() {
+        // "İ" is two bytes, and three in lower case.
+        let unpacked = unpack("İSTANBUL.pcap.GZ", gzip(b"capture bytes"), LIMIT);
+        assert_eq!(unpacked.files, vec![("İSTANBUL.pcap".to_string(), b"capture bytes".to_vec())]);
     }
 
     #[test]
