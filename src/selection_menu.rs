@@ -720,7 +720,9 @@ pub fn show_floating_toolbar(app: &mut ViewerApp, ctx: &egui::Context, view: Sel
     let y = if above { anchor.min.y - TOOLBAR_GAP - TOOLBAR_HEIGHT } else { (anchor.max.y + TOOLBAR_GAP).min(clip.max.y - TOOLBAR_HEIGHT) };
     let x = anchor.min.x.clamp(clip.min.x, (clip.max.x - 160.0).max(clip.min.x));
     let id = Id::new(("floating-selection-toolbar", view as u8));
-    egui::Area::new(id).order(Order::Foreground).fixed_pos(Pos2::new(x, y)).show(ctx, |ui| {
+    // Above the views but among the windows, so a window opened over the
+    // view (an image being viewed, say) is not drawn under the toolbar.
+    egui::Area::new(id).order(Order::Middle).fixed_pos(Pos2::new(x, y)).show(ctx, |ui| {
         Frame::popup(ui.style()).inner_margin(4).show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 4.0;
