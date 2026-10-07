@@ -4,7 +4,7 @@
 //! state and one warm accent (amber) for the cursor, so the data itself stays
 //! the most colourful thing on screen.
 
-use eframe::egui::{self, Color32, CornerRadius, Frame, Label, Margin, RichText, Stroke, Ui, Vec2, Visuals};
+use eframe::egui::{self, Color32, CornerRadius, FontDefinitions, FontFamily, Frame, Label, Margin, RichText, Stroke, Ui, Vec2, Visuals};
 
 
 pub const BACKGROUND: Color32 = Color32::from_rgb(20, 22, 27);
@@ -33,6 +33,7 @@ pub const CLASS_HIGH: Color32 = Color32::from_rgb(255, 125, 95);
 pub const CLASS_FULL: Color32 = Color32::from_rgb(245, 245, 250);
 
 pub fn apply(ctx: &egui::Context) {
+    ctx.set_fonts(fonts());
     ctx.set_theme(egui::Theme::Dark);
     let mut visuals = Visuals::dark();
     visuals.override_text_color = Some(TEXT);
@@ -94,6 +95,20 @@ pub fn apply(ctx: &egui::Context) {
     });
 }
 
+/// egui's fonts, with the monospace font (Hack) as the proportional font's
+/// first fallback: the proportional font (Ubuntu Light) has no arrows, so
+/// "←", "→", "↑" and "↓" in labels and buttons drew as boxes.
+fn fonts() -> FontDefinitions {
+    let mut fonts = FontDefinitions::default();
+    let monospace = fonts.families.get(&FontFamily::Monospace).and_then(|family| family.first().cloned());
+    if let Some(monospace) = monospace {
+        let proportional = fonts.families.entry(FontFamily::Proportional).or_default();
+        let after_primary = proportional.len().min(1);
+        proportional.insert(after_primary, monospace);
+    }
+    fonts
+}
+
 /// A framed, captioned group of related controls laid out horizontally.
 /// Toolbar groups are placed by [`crate::packing::RowPacker`].
 pub fn group<R>(ui: &mut Ui, caption: &str, add_contents: impl FnOnce(&mut Ui) -> R) -> R {
@@ -128,4 +143,18 @@ pub fn keycap(ui: &mut Ui, keys: &str) {
             .color(TEXT)
             .background_color(SURFACE_RAISED),
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn labels_fall_back_to_the_monospace_font_which_has_arrows() {
+        let fonts = fonts();
+        let monospace = &fonts.families[&FontFamily::Monospace][0];
+        let proportional = &fonts.families[&FontFamily::Proportional];
+        assert_eq!(&proportional[1], monospace, "the monospace font should back up the proportional one: {proportional:?}");
+        assert_ne!(&proportional[0], monospace, "the proportional font should still come first");
+    }
 }
