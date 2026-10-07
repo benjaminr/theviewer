@@ -1,7 +1,7 @@
 //! The `theviewer api` command line, run as a separate process.
 
 use std::path::PathBuf;
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 
 use serde_json::Value;
 
@@ -27,6 +27,22 @@ fn describe_prints_every_method_with_its_schemas() {
     assert_eq!(description["version"], "1.0");
     let methods = description["methods"].as_array().unwrap();
     assert!(methods.iter().any(|method| method["name"] == "bytes.read" && method["params"]["type"] == "object"));
+}
+
+#[test]
+fn output_cut_short_by_its_reader_ends_quietly() {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_theviewer"))
+        .args(["api", "--describe"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the theviewer binary runs");
+    // As `head` does: the reader goes away before the output is written.
+    drop(child.stdout.take());
+    let output = child.wait_with_output().unwrap();
+    let errors = String::from_utf8_lossy(&output.stderr);
+    assert!(!errors.contains("panicked"), "{errors}");
+    assert!(output.status.success(), "{:?}: {errors}", output.status);
 }
 
 #[test]

@@ -16,7 +16,9 @@ theviewer replay RECIPE FILE... [--param KEY=VALUE]... [--save | --out DIR] [--j
 
 `theviewer --help` prints the same summary. A command line that cannot be
 understood exits with code 2; a report, call or run that fails exits
-with 1.
+with 1. Output may be piped into a reader that stops early, such as
+`theviewer api --describe | head`: the rest is dropped quietly and the
+exit code is what it would have been.
 
 - [Opening a window](#opening-a-window)
 - [Printing a report](#printing-a-report)

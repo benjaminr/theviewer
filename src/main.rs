@@ -3,6 +3,7 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -63,6 +64,19 @@ usage: theviewer [FILE] [--format NAME] [--palette NAME] [--width PIXELS] [--off
              structure firmware signals forensics compare focus, or the name of one you saved
   --tool     open the tools dock on a tab: report reference structure-map size-map ask dot-plot trigrams images template columns protocol packets bits statistics characterise strings xor crypto checksums learn disassembly firmware unpacked forensics diff compare live
 ";
+
+/// Write `text` to standard output. When the reader has gone away, as
+/// `head` does in `theviewer api … | head`, the rest is dropped quietly and
+/// the command carries on to its usual exit code; any other failure to
+/// write is reported on standard error.
+fn print_out(text: &str) {
+    let mut out = std::io::stdout().lock();
+    match out.write_all(text.as_bytes()).and_then(|()| out.flush()) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => {}
+        Err(error) => eprintln!("theviewer: could not write the output: {error}"),
+    }
+}
 
 /// How to print a report without opening a window.
 #[derive(Clone, Copy)]
@@ -151,7 +165,7 @@ fn run_api(args: &[String]) -> i32 {
     };
     match call_headless(method, params, file.map(Path::new), save) {
         Ok(result) => {
-            println!("{}", serde_json::to_string_pretty(&result).unwrap_or_default());
+            print_out(&format!("{}\n", serde_json::to_string_pretty(&result).unwrap_or_default()));
             0
         }
         Err(error) => {
@@ -299,9 +313,9 @@ fn run_replay(args: &[String]) -> i32 {
         .collect();
     if args.json {
         let written = serde_json::json!({ "recipe": recipe.name, "files": runs });
-        println!("{}", serde_json::to_string_pretty(&written).unwrap_or_default());
+        print_out(&format!("{}\n", serde_json::to_string_pretty(&written).unwrap_or_default()));
     } else {
-        print!("{}", theviewer::recipes::render_text(&recipe, &runs));
+        print_out(&theviewer::recipes::render_text(&recipe, &runs));
     }
     if runs.iter().all(theviewer::recipes::FileRun::succeeded) { 0 } else { EXIT_FAILURE }
 }
@@ -317,8 +331,8 @@ fn run_headless(path: Option<&Path>, output: HeadlessOutput) -> i32 {
     match headless::analyse(path, &registry) {
         Ok(report) => {
             match output {
-                HeadlessOutput::Text => print!("{}", headless::render_text(&report)),
-                HeadlessOutput::Json => println!("{}", headless::render_json(&report)),
+                HeadlessOutput::Text => print_out(&headless::render_text(&report)),
+                HeadlessOutput::Json => print_out(&format!("{}\n", headless::render_json(&report))),
             }
             0
         }
