@@ -228,10 +228,24 @@ fn show_toolbar(state: &mut HistoryState, app: &mut ViewerApp, ui: &mut Ui) {
         ui.separator();
         ui.add(egui::TextEdit::singleline(&mut state.recipe_name).desired_width(140.0).hint_text("Recipe name"));
         let any = state.rows.iter().any(|row| row.status == StepStatus::Active);
-        if ui.add_enabled(any, egui::Button::new("Save as recipe…")).on_hover_text("Save the steps in effect as a recipe to run on other files").clicked() {
+        if ui.add_enabled(any, egui::Button::new("Save as recipe…")).on_hover_text("Save the steps in effect as a recipe file to run on other files").clicked() {
             save_as_recipe(app, &state.recipe_name);
         }
+        if ui.add_enabled(any, egui::Button::new("Save to my recipes")).on_hover_text("Keep the steps in effect among your recipes, to run from Run recipe…").clicked() {
+            state.note = save_to_my_recipes(app, &state.recipe_name).err().map(|error| error.message);
+        }
+        if ui.button("Run recipe…").clicked() {
+            app.open_recipe_window();
+        }
     });
+}
+
+/// Keep the steps in effect among the person's recipes as `name`, through
+/// `recipes.save`, with the anchors and parameters recorded for them.
+pub fn save_to_my_recipes(app: &mut ViewerApp, name: &str) -> Result<Value, crate::api::ApiError> {
+    let steps: Vec<u64> = timeline::entries_for_recipe(&app.journal, None).iter().map(|entry| entry.step).collect();
+    let name = if name.trim().is_empty() { "My analysis" } else { name.trim() };
+    app.perform("recipes.save", json!({"name": name, "journal_steps": steps, "overwrite": true}))
 }
 
 /// Ask where to save the steps in effect as a recipe called `name`, then
@@ -663,6 +677,20 @@ mod tests {
         std::fs::remove_file(&path).ok();
         assert_eq!(recipe.name, "Patch");
         assert_eq!(recipe.steps.iter().map(|step| step.method.as_str()).collect::<Vec<_>>(), ["bytes.write", "view.set_shape"]);
+    }
+
+    #[test]
+    fn saving_to_my_recipes_keeps_only_the_steps_in_effect() {
+        let mut app = app_with(&[0u8; 8]);
+        let dir = std::env::temp_dir().join(format!("theviewer-history-tab-recipes-{}", std::process::id()));
+        crate::recipes::use_dir_for_this_thread(dir.clone());
+        app.perform("bytes.write", json!({"start": 0, "data": "41"})).unwrap();
+        app.perform("bytes.write", json!({"start": 1, "data": "42"})).unwrap();
+        app.perform("history.undo_step", json!({"step": 2})).unwrap();
+        take_performed();
+        save_to_my_recipes(&mut app, "Patch").unwrap();
+        assert_eq!(take_performed(), [("recipes.save".to_string(), json!({"name": "Patch", "journal_steps": [1], "overwrite": true}))]);
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
