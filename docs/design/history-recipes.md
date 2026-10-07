@@ -51,8 +51,10 @@ steps, playback, and recipes that run on other files.
 - **Session header** (`JournalSession`), from `history.session`:
   - `started_at` and `api_version`;
   - `documents`: each document a call was about, the first time
-    (`{id, version, file: {name, size, sha256}}`), hashed before the call
-    ran, and not hashed over 256 MiB;
+    (`{id, version, file: {name, size, sha256}}`), as it was before the
+    call ran, and not hashed over 256 MiB. The hash is worked out on a
+    thread of its own, so the call does not wait for it;
+    `RecordedDocument::file()` waits for it when it is needed;
   - `plugins`: `[{name, sha256}]` of the scripts loaded. The window, `theviewer
     api`, and `theviewer mcp` note them on every load and reload
     (`LuaHost::script_digests`, `journal::plugins_of`).
@@ -85,8 +87,8 @@ A journal entry:
 A failed entry has `"outcome": {"error": {"code": "out_of_range", "message":
 "…"}}` and no `result`. `params_summarised`, `result_summarised` and
 `merged` appear only when set. `JournalEntry::changed_document()` says
-whether the bytes changed, and `JournalEntry::caller()` gives back the
-`Caller`.
+whether the bytes changed, and `Caller::from_producer(&entry.caller)`
+gives back the `Caller`.
 
 ### Shared types (`src/journal/anchors.rs`, `recipe.rs`, `replay.rs`)
 
@@ -135,7 +137,9 @@ whether the bytes changed, and `JournalEntry::caller()` gives back the
   ```
 
   - `ReplayOptions {caller, parameters, doc, through_step, preview,
-    await_jobs}`, made by `ReplayOptions::new(caller)`;
+    checked_as}`, made by `ReplayOptions::new(caller)` (`checked_as` is
+    whose policy each step is checked against, `None` when the person
+    allowed the whole run);
   - `RunReport {steps: [StepReport {step, method, params, description,
     anchors: [{path, anchor, value}], outcome, result?, journal_step?}],
     stopped?: {step, error}, warnings}`, with `completed()`.
@@ -251,7 +255,7 @@ whether the bytes changed, and `JournalEntry::caller()` gives back the
     `StepReport.anchors`;
   - calls the step through `api::call` as `options.caller`;
   - keeps `{params, result}` per step number for later step anchors;
-  - waits for the jobs that steps start when `await_jobs` is set;
+  - waits for the jobs that steps start;
   - stops at the first failure or anchor that does not resolve, with
     `stopped`;
   - `preview` resolves and describes without calling;
