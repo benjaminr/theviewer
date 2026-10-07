@@ -80,6 +80,12 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   byte; called address bytes the message type and missed the type after
   them; and gave its template two fields of the same name.
 
+### Fixed
+
+- `xor.recover_keys` and the XOR tab fold a long key that nearly repeats a
+  shorter one (one column solved wrongly) to that shorter key, offer both,
+  and rank the shorter first when they score alike.
+
 ## [0.3.1] - 2026-10-07
 
 ### Fixed

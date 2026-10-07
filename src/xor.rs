@@ -29,6 +29,13 @@ pub struct XorCandidate {
 const SAMPLE: usize = 1024 * 1024;
 /// Key lengths solved column by column.
 const LENGTHS_TO_SOLVE: usize = 3;
+/// A key is offered folded to a shorter period when at least this share of
+/// its bytes equal the shorter key's: with few bytes per column, a long key
+/// solves one or two columns of the true short key wrongly.
+const FOLD_AGREEMENT: f64 = 0.9;
+/// Scores closer than this count as a tie, which the shorter of a key and
+/// its fold wins: the long key's extra freedom fits noise, not the data.
+const FOLD_SCORE_TIE: f64 = 0.01;
 
 /// XOR `bytes` with `key`, where `bytes[0]` lines up with `key[key_phase]`.
 /// Applying it twice gives the original back.
@@ -182,8 +189,20 @@ pub fn recover_keys(bytes: &[u8], max_key_len: usize, top: usize) -> Vec<XorCand
         candidates.push((key, format!("repeating key seen verbatim in a run at {start:#x} that was probably zeros")));
     }
 
+    // Each long key also folded to the shortest period it nearly repeats.
+    let folds: Vec<(Vec<u8>, String)> = candidates
+        .iter()
+        .filter_map(|(key, _)| {
+            let key = minimal_period(key);
+            let (folded, agreeing) = fold_to_shorter_period(bytes, &key)?;
+            let reason = format!("{}-byte key folded from a {}-byte one, {agreeing} of whose {} bytes repeat it", folded.len(), key.len(), key.len());
+            Some((folded, reason))
+        })
+        .collect();
+    candidates.extend(folds);
+
     let mut seen: HashMap<Vec<u8>, ()> = HashMap::new();
-    let mut ranked: Vec<XorCandidate> = candidates
+    let ranked: Vec<XorCandidate> = candidates
         .into_iter()
         .filter_map(|(key, reason)| {
             let key = minimal_period(&key);
@@ -197,9 +216,46 @@ pub fn recover_keys(bytes: &[u8], max_key_len: usize, top: usize) -> Vec<XorCand
             Some(XorCandidate { key, score: (text * (1.0 - echo)).max(zeros), printable_fraction: printable, preview, reason })
         })
         .collect();
-    ranked.sort_by(|a, b| b.score.total_cmp(&a.score).then(a.key.len().cmp(&b.key.len())));
-    ranked.truncate(top);
-    ranked
+    let ranking: Vec<f64> = ranked.iter().map(|candidate| ranking_score(candidate, &ranked)).collect();
+    let mut ranked: Vec<(f64, XorCandidate)> = ranking.into_iter().zip(ranked).collect();
+    ranked.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.key.len().cmp(&b.1.key.len())));
+    ranked.into_iter().take(top).map(|(_, candidate)| candidate).collect()
+}
+
+/// The score `candidate` is ranked by: its own, except that a key which
+/// nearly repeats a shorter candidate scoring within [`FOLD_SCORE_TIE`] of
+/// it takes that shorter key's score, so ranks after it (ties go to the
+/// shorter key).
+fn ranking_score(candidate: &XorCandidate, all: &[XorCandidate]) -> f64 {
+    all.iter()
+        .filter(|shorter| shorter.key.len() < candidate.key.len() && candidate.score - shorter.score <= FOLD_SCORE_TIE)
+        .filter(|shorter| repeats_nearly(&candidate.key, &shorter.key))
+        .map(|shorter| shorter.score)
+        .fold(candidate.score, f64::min)
+}
+
+/// Whether `key` is `shorter` repeated, at least [`FOLD_AGREEMENT`] of its
+/// bytes agreeing.
+fn repeats_nearly(key: &[u8], shorter: &[u8]) -> bool {
+    !shorter.is_empty() && key.len().is_multiple_of(shorter.len()) && agreement(key, shorter) as f64 >= FOLD_AGREEMENT * key.len() as f64
+}
+
+/// How many bytes of `key` equal `shorter` repeated.
+fn agreement(key: &[u8], shorter: &[u8]) -> usize {
+    key.iter().enumerate().filter(|&(i, &byte)| byte == shorter[i % shorter.len()]).count()
+}
+
+/// The shortest period that `key` nearly repeats: the key solved column by
+/// column from `bytes` at each period dividing the key's length, shortest
+/// first, until one agrees with at least [`FOLD_AGREEMENT`] of the key's
+/// bytes. Returns the folded key and how many bytes agreed; `None` when the
+/// key repeats no shorter period, or does so exactly.
+fn fold_to_shorter_period(bytes: &[u8], key: &[u8]) -> Option<(Vec<u8>, usize)> {
+    (1..key.len()).filter(|&period| key.len().is_multiple_of(period)).find_map(|period| {
+        let folded: Vec<u8> = (0..period).map(|column| solve_column(&bytes.iter().skip(column).step_by(period).copied().collect::<Vec<u8>>())).collect();
+        let agreeing = agreement(key, &folded);
+        (repeats_nearly(key, &folded) && agreeing < key.len()).then_some((folded, agreeing))
+    })
 }
 
 /// Share of `decoded` that repeats `period` bytes later without being a run
@@ -319,6 +375,34 @@ impatiently. You want to tell me, and I have no objection to hearing it. This wa
         let found = recover_keys(&cipher, 32, 5);
         assert_eq!(found[0].key, key.to_vec(), "{found:?}");
         assert_eq!(apply(&cipher, &found[0].key, 0), plain);
+    }
+
+    /// The report hidden in the DNS exfiltration challenge's loot.bin.
+    const SHORT_REPORT: &str = "NIGHT OWL - staging report\n==========================\nTarget: payroll export for Q3, all cost centres.\n\
+Archive split in two halves so that neither channel carries the whole file.\nHalf one went out over DNS TXT lookups, half two over the telemetry upload.\n\
+Operator: remember to rotate the XOR key for the next job.\nProof of access: FLAG{owls_midnight_reunited_twice_9d82}\nEnd of report.\n";
+
+    #[test]
+    fn a_short_text_s_true_key_ranks_above_a_longer_key_that_repeats_it_with_a_column_wrong() {
+        let key = [0x65, 0xFF, 0xB3, 0x35];
+        let cipher = apply(SHORT_REPORT.as_bytes(), &key, 0);
+        let found = recover_keys(&cipher, 32, 5);
+        assert_eq!(found[0].key, key.to_vec(), "{found:?}");
+        assert!(apply(&cipher, &found[0].key, 0).ends_with(b"FLAG{owls_midnight_reunited_twice_9d82}\nEnd of report.\n"));
+        let longer = found.iter().find(|candidate| candidate.key.len() > key.len());
+        assert!(longer.is_none_or(|candidate| candidate.key.len() % key.len() == 0), "the longer key is still offered: {found:?}");
+    }
+
+    #[test]
+    fn a_long_key_that_nearly_repeats_is_folded_to_its_period() {
+        let key = b"SECRET";
+        let cipher = apply(TEXT.as_bytes(), key, 0);
+        let mut overfitted = key.repeat(4);
+        overfitted[9] ^= 0x20;
+        let (folded, agreeing) = fold_to_shorter_period(&cipher, &overfitted).expect("23 of 24 bytes repeat SECRET");
+        assert_eq!((folded.as_slice(), agreeing), (key.as_slice(), 23));
+        assert!(fold_to_shorter_period(&cipher, &key.repeat(2)).is_none(), "an exact repeat is folded by minimal_period already");
+        assert!(fold_to_shorter_period(&cipher, b"SECRETsecret").is_none(), "half the bytes differ");
     }
 
     #[test]
