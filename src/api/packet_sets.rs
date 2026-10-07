@@ -12,8 +12,9 @@
 //! found first. In the window, a set made through the API is shown in the
 //! Packets panel.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
+use std::sync::{Arc, Mutex};
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -26,7 +27,8 @@ use crate::bus::topics::{FieldsGuessed, FramesDefined};
 use crate::bus::{Draft, Payload};
 use crate::document::Document;
 use crate::packets::sources;
-use crate::packets::split::{self, BytePattern, LengthCounts, LengthEncoding, LengthField, PatternMode};
+use crate::packets::split::{self, BytePattern, LengthCounts, LengthEncoding, LengthField, PatternMode, Resync, SyncWord};
+use crate::packets::tshark_layers::{self, TsharkLayers, TsharkMode};
 use crate::packets::{self, Dissection, ExportPacket, Flow, FrameProtocol, LinkKind, PacketSet, RawFrames, SetHints, Summary};
 use crate::protocol::{self, Framing};
 use crate::templates::Template;
@@ -41,13 +43,13 @@ pub(super) const METHODS: &[super::Method] = &[
     method!("packets.dissect", Read, dissect, PacketParams, PacketDissection, "Dissect one packet of a set into protocol layers and fields, as the set decodes frames of unknown format."),
     method!("packets.decode_as", Analysis, caller decode_as, DecodeAsParams, SetInfo, "Choose the protocol a set's frames of unknown format are decoded as, or detection, and a template for frames no protocol reads.").reverses(crate::api::Reverse::Decoding),
     method!("packets.export_pcap", Analysis, export_pcap, ExportParams, ExportResult, "A set's packets (those a filter keeps) as a pcap file, returned or written to a path given (which needs leave to edit).").writes_file(crate::api::WritesFile::WhenGiven("path")),
-    method!("packets.conversations", Read, conversations, ConversationsParams, ConversationList, "The conversations in a set (the packets a filter keeps): each pair of endpoints with its transport, packets and bytes each way, and a filter for it."),
+    method!("packets.conversations", Read, conversations, ConversationsParams, ConversationList, "The conversations in a set (the packets a filter keeps): each pair of endpoints with its transport, packets and bytes each way, its first packet's index in the set, and a filter for it; in order of first packet, or sorted by packets, bytes or address."),
     method!("packets.follow_stream", Read, follow_stream, PacketParams, StreamResult, "The payloads of a packet's conversation in order, each with its direction, and the stream as text."),
     method!("packets.find_captures", Read, find_captures, FindCapturesParams, CaptureList, "The captures inside a span of a document (pcap, pcapng, snoop, Network Monitor or ERF, or one of these compressed with gzip), each with its offset, format, link type and packets, for packets.sets.create."),
     method!("packets.sets.add_packets", View, caller add_packets, AddPacketsParams, SetInfo, "Add ranges of the document to a set as packets of their own, so packets can be gathered one at a time; the set then keeps its packets where they are."),
     method!("packets.sets.refresh", View, caller refresh, RefreshParams, SetInfo, "Find a set's packets again, the way they were found, in another document (the current one by default), which the set then belongs to."),
     method!("packets.detect_length_field", Read, detect_length_field, SpanParams, LengthFieldFound, "Look for a length field that cuts a span into frames, with the protocol analysis's framing detection; returns it as packets.sets.create's length_field, or the best framing found instead."),
-    method!("packets.endpoints", Read, endpoints, ConversationsParams, EndpointList, "The addresses in a set (the packets a filter keeps), busiest first, with the packets and bytes each sent and received."),
+    method!("packets.endpoints", Read, endpoints, ConversationsParams, EndpointList, "The addresses in a set (the packets a filter keeps), busiest first or sorted by packets or address, with the packets and bytes each sent and received."),
     method!("packets.extract", Analysis, editing::extract, ExtractParams, ExtractResult, "Some of a set's packets' bytes one after another, returned or written to a path given (which needs leave to edit).").writes_file(crate::api::WritesFile::WhenGiven("path")),
     method!("packets.delete", Edit, caller editing::delete, IndicesParams, PacketEditResult, "Remove packets from the document (their whole capture records, so a capture stays readable), as one undoable step."),
     method!("packets.fix_checksums", Edit, caller editing::fix_checksums, IndicesParams, PacketEditResult, "Recompute the IPv4 header, TCP and UDP checksums of some of a set's packets, as one undoable step."),
@@ -55,8 +57,8 @@ pub(super) const METHODS: &[super::Method] = &[
     method!("packets.write_field", Edit, caller editing::write_field, WriteFieldParams, PacketEditResult, "Write a value (a number, or hex bytes as wide as the field) into a field of one packet, as one undoable step."),
     method!("packets.columns.apply", Edit, caller editing::apply_to_columns, ColumnOperationParams, PacketEditResult, "Change the same columns (byte offsets) of every packet, or of some, laid out one packet per row: invert, fill, XOR, add, set, number or swap the byte order, as one undoable step."),
     method!("packets.columns.delete", Edit, caller editing::delete_columns, ColumnsParams, PacketEditResult, "Remove the same columns (byte offsets) from every packet, or from some, as one undoable step; length fields and checksums are not changed."),
-    method!("packets.columns.read", Read, editing::read_columns, ColumnsReadParams, ColumnsText, "The same columns (byte offsets) of every packet, or of some, as hex lines or CSV."),
-    method!("packets.tshark_decode", Job, caller tshark::decode, TsharkParams, super::jobs::JobStartedResult, "Have Wireshark's tshark decode some of a set's packets (run locally with -n) as a background job; the protocols it named are the job's result, and in the window its layers merge into the Packets panel's."),
+    method!("packets.columns.read", Read, editing::read_columns, ColumnsReadParams, ColumnsText, "The same columns (byte offsets) of every packet, or of some, as hex lines or CSV, each packet named by its index in the set (from 0, as every packet method counts)."),
+    method!("packets.tshark_decode", Job, caller tshark::decode, TsharkParams, super::jobs::JobStartedResult, "Have Wireshark's tshark decode some of a set's packets (run locally with -n) as a background job; the protocols it named are the job's result, and once it finishes its layers and fields are merged into the set's, so packets.dissect shows them and filters (packets.list and the rest) can name tshark's fields, such as dns.flags.response; in the window they merge into the Packets panel's too."),
 ];
 
 mod editing;
@@ -185,6 +187,17 @@ pub struct LengthFieldSpec {
     /// Longest frame believed (64 KiB by default).
     #[serde(default)]
     pub max_frame: Option<usize>,
+    /// Find the place again when a frame does not fit (a stray byte between
+    /// frames, a frame cut short), rather than stopping or reading on out of
+    /// step: at the sync word the first frames share before the length
+    /// field (or `sync`), else at the next plausible frames. The stretches
+    /// skipped are said in the set's description.
+    #[serde(default)]
+    pub resync: bool,
+    /// The sync word, as hex such as "A5 5A", that starts every frame; given,
+    /// it is resynchronised at (resync need not be given too).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sync: Option<String>,
 }
 
 fn big_endian_by_default() -> bool {
@@ -210,7 +223,19 @@ impl LengthFieldSpec {
             },
             adjustment: self.adjustment,
             max_frame: self.max_frame.unwrap_or(split::DEFAULT_MAX_FRAME),
+            resync: match self.sync_word() {
+                Ok(Some(word)) => Resync::Sync(word),
+                _ if self.resync || self.sync.is_some() => Resync::Learn,
+                _ => Resync::Off,
+            },
         }
+    }
+
+    /// The sync word given, read from its hex.
+    pub fn sync_word(&self) -> Result<Option<SyncWord>, ApiError> {
+        let Some(text) = &self.sync else { return Ok(None) };
+        let bytes = packets::parse_hex(text).map_err(|reason| ApiError::invalid_params(format!("the sync word does not read: {reason}")))?;
+        SyncWord::new(&bytes).map(Some).ok_or_else(|| ApiError::invalid_params(format!("a sync word is 1 to {} bytes", split::MAX_SYNC_LEN)))
     }
 
     /// `field` as `packets.sets.create` takes it.
@@ -233,6 +258,11 @@ impl LengthFieldSpec {
             header_len,
             adjustment: field.adjustment,
             max_frame: (field.max_frame != split::DEFAULT_MAX_FRAME).then_some(field.max_frame),
+            resync: field.resync != Resync::Off,
+            sync: match field.resync {
+                Resync::Sync(word) => Some(word.describe()),
+                _ => None,
+            },
         }
     }
 }
@@ -513,7 +543,7 @@ pub struct ExportResult {
     pub path: Option<String>,
 }
 
-/// Parameters of `packets.conversations`.
+/// Parameters of `packets.conversations` and `packets.endpoints`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ConversationsParams {
@@ -521,6 +551,24 @@ pub struct ConversationsParams {
     /// Only the packets this display filter keeps.
     #[serde(default)]
     pub filter: Option<String>,
+    /// The order: conversations come in order of their first packet and
+    /// endpoints busiest first (by bytes) when omitted.
+    #[serde(default)]
+    pub sort: Option<TrafficOrder>,
+}
+
+/// How conversations or endpoints are put in order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum TrafficOrder {
+    /// Most packets first.
+    Packets,
+    /// Most bytes first.
+    Bytes,
+    /// By address (and port), lowest first.
+    Address,
+    /// Conversations by their first packet; for endpoints, by address.
+    First,
 }
 
 /// Two endpoints and the traffic between them.
@@ -564,7 +612,8 @@ pub struct StreamResult {
     pub conversation: Option<ConversationEntry>,
     /// The payloads in order, each with who sent it.
     pub parts: Vec<StreamPart>,
-    /// The whole stream as text, each direction's turns marked.
+    /// The whole stream as text, each direction's turns marked with the
+    /// packet's index in the set (from 0, as `parts` give it).
     pub text: String,
     /// TCP segments sent again and left out.
     pub retransmissions: u64,
@@ -680,10 +729,56 @@ pub struct EndpointList {
     pub endpoints: Vec<EndpointEntry>,
 }
 
+/// tshark's layers for some of a set's packets, for the document version
+/// and decoding they were made from.
+pub(crate) struct TsharkDecodes {
+    version: u64,
+    generation: u64,
+    mode: TsharkMode,
+    /// Counts what was stored, so dissections are merged again.
+    revision: u64,
+    layers: HashMap<usize, TsharkLayers>,
+}
+
+/// Where a tshark run, on its own thread, leaves its layers for the set.
+pub(crate) type SharedTshark = Arc<Mutex<Option<TsharkDecodes>>>;
+
+/// Keep tshark's `layers`, made from document version `version` and
+/// decoding `generation` with `mode`, with any made from the same.
+pub(crate) fn store_tshark(slot: &SharedTshark, (version, generation): (u64, u64), mode: TsharkMode, layers: &HashMap<usize, TsharkLayers>) {
+    let Ok(mut slot) = slot.lock() else { return };
+    let revision = slot.as_ref().map_or(0, |decodes| decodes.revision) + 1;
+    match slot.as_mut() {
+        Some(decodes) if (decodes.version, decodes.generation, decodes.mode) == (version, generation, mode) => {
+            decodes.layers.extend(layers.iter().map(|(&index, layers)| (index, layers.clone())));
+            decodes.revision = revision;
+        }
+        _ => *slot = Some(TsharkDecodes { version, generation, mode, revision, layers: layers.clone() }),
+    }
+}
+
+/// The revision of tshark's layers that fit the set as it is, if any.
+fn tshark_revision(stored: &StoredSet, version: u64) -> u64 {
+    let Ok(slot) = stored.tshark.lock() else { return 0 };
+    slot.as_ref().filter(|decodes| decodes.version == version && decodes.generation == stored.generation).map_or(0, |decodes| decodes.revision)
+}
+
+/// Packet `index` dissected as `ours`, with tshark's layers merged in when
+/// tshark decoded it for the set as it is.
+fn with_tshark(stored: &StoredSet, version: u64, index: usize, ours: Dissection) -> Dissection {
+    let Ok(slot) = stored.tshark.lock() else { return ours };
+    match slot.as_ref().filter(|decodes| decodes.version == version && decodes.generation == stored.generation).and_then(|decodes| Some((decodes.mode, decodes.layers.get(&index)?))) {
+        Some((mode, layers)) => tshark_layers::merge(ours, layers, mode),
+        None => ours,
+    }
+}
+
 /// Every packet dissected, for one document version and decoding.
 struct Decoded {
     version: u64,
     generation: u64,
+    /// The revision of tshark's layers merged in (0 for none).
+    tshark_revision: u64,
     bytes: Vec<Vec<u8>>,
     dissections: Vec<Dissection>,
     raw: RawFrames,
@@ -701,6 +796,8 @@ pub struct StoredSet {
     /// Counts changes of decoding, so dissections are made again.
     generation: u64,
     decoded: Option<Decoded>,
+    /// tshark's layers, once packets.tshark_decode has run.
+    pub(crate) tshark: SharedTshark,
 }
 
 /// The packet sets of a workspace.
@@ -768,7 +865,7 @@ impl PacketSets {
             framing: None,
             notes: Vec::new(),
         };
-        self.sets.push(StoredSet { info, params, packets, built: (version, len), generation: 0, decoded: None });
+        self.sets.push(StoredSet { info, params, packets, built: (version, len), generation: 0, decoded: None, tshark: SharedTshark::default() });
         id
     }
 }
@@ -817,7 +914,9 @@ fn find_packets(document: &mut Document, view_ranges: Vec<(usize, usize)>, param
             Ok(Found { packets: set, ranges: vec![(start as u64, len as u64)], framing: None })
         }
         SetSource::LengthField => {
-            let field = params.length_field.as_ref().ok_or_else(|| needs("length_field, where each frame's length is"))?.field();
+            let spec = params.length_field.as_ref().ok_or_else(|| needs("length_field, where each frame's length is"))?;
+            spec.sync_word()?;
+            let field = spec.field();
             let (start, len) = range(document)?;
             let bytes = document.read_range(start, len.min(SPLIT_READ_LIMIT));
             let set = split::split_by_length_field(&bytes, start, &field, link).map_err(source_error)?;
@@ -936,7 +1035,7 @@ pub fn create(workspace: &mut dyn Workspace, caller: &Caller, params: CreatePara
         framing,
         notes,
     };
-    sets.sets.push(StoredSet { info: info.clone(), params, packets: found, built, generation: 0, decoded: None });
+    sets.sets.push(StoredSet { info: info.clone(), params, packets: found, built, generation: 0, decoded: None, tshark: SharedTshark::default() });
     publish_set(workspace, caller, &id);
     workspace.show_packet_set(&id);
     Ok(info)
@@ -1033,7 +1132,8 @@ fn follow_document(stored: &mut StoredSet, document: &mut Document) {
 
 /// Every packet of the set read and dissected, as the set decodes them.
 fn decode<'a>(stored: &'a mut StoredSet, document: &mut Document) -> &'a Decoded {
-    let current = stored.decoded.as_ref().is_some_and(|decoded| decoded.version == document.version() && decoded.generation == stored.generation);
+    let tshark_revision = tshark_revision(stored, document.version());
+    let current = stored.decoded.as_ref().is_some_and(|decoded| decoded.version == document.version() && decoded.generation == stored.generation && decoded.tshark_revision == tshark_revision);
     if !current {
         let mut room = DISSECT_READ_LIMIT;
         let bytes: Vec<Vec<u8>> = stored
@@ -1052,8 +1152,9 @@ fn decode<'a>(stored: &'a mut StoredSet, document: &mut Document) -> &'a Decoded
         let unknown: Vec<&[u8]> = bytes.iter().zip(&links).filter(|(_, link)| **link == LinkKind::Unknown).map(|(bytes, _)| bytes.as_slice()).collect();
         let detected = (stored.info.decode_as.is_none() && stored.info.detect && !unknown.is_empty()).then(|| packets::detect_frame_protocol(&unknown)).flatten().map(|found| found.protocol);
         raw.decode_as = stored.info.decode_as.or(detected);
-        let dissections = bytes.iter().zip(&links).map(|(bytes, &link)| packets::dissect_with(bytes, link, &raw)).collect();
-        stored.decoded = Some(Decoded { version: document.version(), generation: stored.generation, bytes, dissections, raw, detected });
+        let version = document.version();
+        let dissections = bytes.iter().zip(&links).enumerate().map(|(index, (bytes, &link))| with_tshark(stored, version, index, packets::dissect_with(bytes, link, &raw))).collect();
+        stored.decoded = Some(Decoded { version, generation: stored.generation, tshark_revision, bytes, dissections, raw, detected });
     }
     stored.decoded.as_ref().expect("decoded above")
 }
@@ -1062,15 +1163,15 @@ fn decode<'a>(stored: &'a mut StoredSet, document: &mut Document) -> &'a Decoded
 fn filtered(stored: &StoredSet, decoded: &Decoded, filter: Option<&str>) -> Result<Vec<usize>, ApiError> {
     let all = 0..decoded.dissections.len();
     let Some(text) = filter.filter(|text| !text.trim().is_empty()) else { return Ok(all.collect()) };
-    let filter = packets::parse_filter(text).map_err(|error| ApiError::invalid_params(format!("the filter does not read: {error}")))?;
-    let tshark: Vec<String> = Vec::new();
+    let known = packets::filter::KnownFields::of(&decoded.dissections);
+    let filter = packets::filter::parse_filter_for(text, &known).map_err(|error| ApiError::invalid_params(format!("the filter does not read: {error}")))?;
     Ok(all
         .filter(|&index| {
             let dissection = &decoded.dissections[index];
             let values = |name: &str| packets::filter::wireshark_values(dissection, name);
             let subject = packets::FilterSubject {
                 protocols: &dissection.protocols,
-                tshark_protocols: &tshark,
+                tshark_protocols: &dissection.tshark_protocols,
                 flow: dissection.flow.as_ref(),
                 summary: &dissection.summary,
                 bytes: &decoded.bytes[index],
@@ -1151,7 +1252,7 @@ pub fn dissect(workspace: &mut dyn Workspace, params: PacketParams) -> Result<Pa
         let decoded = stored.decoded.as_ref().expect("decoded");
         let packet = &stored.packets.packets[index];
         // Dissected afresh, with every note, from the bytes as they are.
-        let dissection = packets::dissect_with(&decoded.bytes[index], packet.link, &decoded.raw);
+        let dissection = with_tshark(stored, decoded.version, index, packets::dissect_with(&decoded.bytes[index], packet.link, &decoded.raw));
         Ok(PacketDissection { index: index as u64, offset: packet.offset as u64, len: packet.len as u64, dissection: dissection_result(dissection) })
     })
 }
@@ -1277,7 +1378,13 @@ pub fn conversations(workspace: &mut dyn Workspace, params: ConversationsParams)
         decode(stored, document);
         let decoded = stored.decoded.as_ref().expect("decoded");
         let kept = filtered(stored, decoded, params.filter.as_deref())?;
-        let found = packets::conversations(kept.iter().map(|&index| (decoded.dissections[index].flow.as_ref(), stored.packets.packets[index].len)));
+        let mut found = packets::flows::conversations_of(kept.iter().map(|&index| (index, decoded.dissections[index].flow.as_ref(), stored.packets.packets[index].len)));
+        match params.sort.unwrap_or(TrafficOrder::First) {
+            TrafficOrder::Packets => found.sort_by_key(|conversation| (std::cmp::Reverse(conversation.packets), conversation.first_packet)),
+            TrafficOrder::Bytes => found.sort_by_key(|conversation| (std::cmp::Reverse(conversation.bytes), conversation.first_packet)),
+            TrafficOrder::Address => found.sort_by_key(|conversation| (conversation.key.a, conversation.key.b, conversation.key.transport)),
+            TrafficOrder::First => found.sort_by_key(|conversation| conversation.first_packet),
+        }
         Ok(ConversationList { conversations: found.iter().map(conversation_entry).collect() })
     })
 }
@@ -1300,14 +1407,14 @@ pub fn follow_stream(workspace: &mut dyn Workspace, params: PacketParams) -> Res
             decoded.dissections.iter().enumerate().filter_map(|(index, dissection)| Some((index, dissection.flow.as_ref()?, payload_of(index, dissection)?))).collect();
         let lengths: BTreeMap<usize, usize> = stored.packets.packets.iter().enumerate().map(|(index, packet)| (index, packet.len)).collect();
         let stream = packets::follow_stream(&key, members);
-        let in_conversation = decoded.dissections.iter().enumerate().filter(|(_, dissection)| dissection.flow.is_some_and(|other| other.key() == key)).map(|(index, dissection)| (dissection.flow.as_ref(), lengths[&index]));
-        let conversation = packets::conversations(in_conversation).into_iter().next().map(|found| conversation_entry(&found));
+        let in_conversation = decoded.dissections.iter().enumerate().filter(|(_, dissection)| dissection.flow.is_some_and(|other| other.key() == key)).map(|(index, dissection)| (index, dissection.flow.as_ref(), lengths[&index]));
+        let conversation = packets::flows::conversations_of(in_conversation).into_iter().next().map(|found| conversation_entry(&found));
         let parts = stream
             .segments
             .iter()
             .map(|segment| StreamPart { packet: segment.packet as u64, a_to_b: segment.a_to_b, data: crate::ops::to_compact_hex(&stream.bytes[segment.start..segment.start + segment.len]) })
             .collect();
-        Ok(StreamResult { conversation, parts, text: stream.marked_text(), retransmissions: stream.retransmissions as u64, truncated: stream.truncated })
+        Ok(StreamResult { conversation, parts, text: stream.marked_text(0), retransmissions: stream.retransmissions as u64, truncated: stream.truncated })
     })
 }
 
@@ -1316,7 +1423,13 @@ pub fn endpoints(workspace: &mut dyn Workspace, params: ConversationsParams) -> 
         decode(stored, document);
         let decoded = stored.decoded.as_ref().expect("decoded");
         let kept = filtered(stored, decoded, params.filter.as_deref())?;
-        let found = packets::endpoints(kept.iter().map(|&index| (decoded.dissections[index].flow.as_ref(), stored.packets.packets[index].len)));
+        let mut found = packets::endpoints(kept.iter().map(|&index| (decoded.dissections[index].flow.as_ref(), stored.packets.packets[index].len)));
+        match params.sort.unwrap_or(TrafficOrder::Bytes) {
+            TrafficOrder::Packets => found.sort_by_key(|endpoint| (std::cmp::Reverse(endpoint.packets_sent + endpoint.packets_received), endpoint.address)),
+            // packets::endpoints gives the busiest by bytes first already.
+            TrafficOrder::Bytes => {}
+            TrafficOrder::Address | TrafficOrder::First => found.sort_by_key(|endpoint| endpoint.address),
+        }
         let endpoints = found
             .into_iter()
             .map(|endpoint| EndpointEntry {
@@ -1691,5 +1804,87 @@ mod tests {
         assert!(created["framing"]["kind"].is_string(), "{created}");
         let again = call(&mut workspace, "packets.sets.create", json!({"from": "protocol_framing", "framing": created["framing"]})).unwrap();
         assert_eq!(again["count"], created["count"], "the framing returned makes the same set");
+    }
+
+    #[test]
+    fn a_mistyped_field_is_refused_with_the_names_it_was_close_to_rather_than_matching_nothing() {
+        let mut workspace = workspace_with("traffic.bin", &dns_capture(2));
+        call(&mut workspace, "packets.sets.create", json!({"from": "capture"})).unwrap();
+        let refused = call(&mut workspace, "packets.list", json!({"set": "set-1", "filter": "dns.qry.nmae~example"})).unwrap_err();
+        assert_eq!(refused.code, ErrorCode::InvalidParams);
+        assert!(refused.message.contains("dns.qry.name"), "{}", refused.message);
+        let total = |workspace: &mut crate::api::HeadlessWorkspace, filter: &str| call(workspace, "packets.list", json!({"set": "set-1", "filter": filter})).unwrap()["total"].clone();
+        assert_eq!(total(&mut workspace, "udp.port==53 && dns.flags.response==0 && dns.qry.type==1"), 2);
+        assert_eq!(total(&mut workspace, "not udp.srcport==4000"), 1);
+        assert_eq!(total(&mut workspace, "udp.srcport==4000 or udp.srcport==4001"), 2);
+    }
+
+    #[test]
+    fn frames_are_filtered_on_their_template_fields_by_template_name_or_bare_name() {
+        let frames: Vec<u8> = [0x01u8, 0x3C, 0x01, 0x81].iter().enumerate().flat_map(|(seq, &kind)| [0xA5, 0x5A, kind, seq as u8, 0, 0, 0, 7]).collect();
+        let mut workspace = workspace_with("bus.bin", &frames);
+        call(&mut workspace, "packets.sets.create", json!({"from": "split_fixed", "record_len": 8, "detect": false})).unwrap();
+        let total = |workspace: &mut crate::api::HeadlessWorkspace, filter: &str| call(workspace, "packets.list", json!({"set": "set-1", "filter": filter})).unwrap()["total"].clone();
+        let refused = call(&mut workspace, "packets.list", json!({"set": "set-1", "filter": "type==60"})).unwrap_err();
+        assert!(refused.message.contains("template"), "without a template the error says how to get one: {}", refused.message);
+        call(&mut workspace, "packets.decode_as", json!({"set": "set-1", "detect": false, "template": "struct Frame { sync: u16be  type: u8 display hex  seq: u8  a: u8  b: u8  c: u8  last: u8 }"})).unwrap();
+        assert_eq!(total(&mut workspace, "template.type==60"), 1);
+        assert_eq!(total(&mut workspace, "type==0x3c"), 1, "a bare name is the template's own");
+        assert_eq!(total(&mut workspace, "type==1 && template.seq>0"), 1);
+        let unknown = call(&mut workspace, "packets.list", json!({"set": "set-1", "filter": "template.tpye==1"})).unwrap_err();
+        assert!(unknown.message.contains("type"), "{}", unknown.message);
+        let listed = call(&mut workspace, "packets.list", json!({"set": "set-1"})).unwrap();
+        assert!(listed["packets"][1]["summary"]["info"].as_str().unwrap().contains("last=7"), "more than four fields reach the summary: {listed}");
+    }
+
+    #[test]
+    fn a_conversation_s_first_packet_is_its_index_in_the_set_when_followed_or_filtered() {
+        let mut workspace = workspace_with("traffic.bin", &dns_capture(3));
+        call(&mut workspace, "packets.sets.create", json!({"from": "capture"})).unwrap();
+        let followed = call(&mut workspace, "packets.follow_stream", json!({"set": "set-1", "index": 2})).unwrap();
+        assert_eq!(followed["conversation"]["first_packet"], 2);
+        let filtered = call(&mut workspace, "packets.conversations", json!({"set": "set-1", "filter": "udp.srcport==4001"})).unwrap();
+        assert_eq!(filtered["conversations"][0]["first_packet"], 1);
+    }
+
+    #[test]
+    fn conversations_and_endpoints_are_sorted_by_traffic_or_address_when_asked() {
+        let mut bytes = dns_capture(3);
+        // A fourth query from port 4002, so that conversation has two packets.
+        let extra = dns_capture(3);
+        let record = &extra[24..];
+        let third = record.len() / 3 * 2;
+        bytes.extend(&record[third..]);
+        let mut workspace = workspace_with("traffic.bin", &bytes);
+        call(&mut workspace, "packets.sets.create", json!({"from": "capture"})).unwrap();
+        let by_packets = call(&mut workspace, "packets.conversations", json!({"set": "set-1", "sort": "packets"})).unwrap();
+        let first = &by_packets["conversations"][0];
+        assert_eq!((first["packets"].as_u64(), first["first_packet"].as_u64()), (Some(2), Some(2)), "{by_packets}");
+        let in_order = call(&mut workspace, "packets.conversations", json!({"set": "set-1"})).unwrap();
+        assert_eq!(in_order["conversations"][0]["first_packet"], 0);
+        let endpoints = call(&mut workspace, "packets.endpoints", json!({"set": "set-1", "sort": "address"})).unwrap();
+        assert_eq!(endpoints["endpoints"][0]["address"], "10.0.0.1");
+    }
+
+    #[test]
+    fn a_length_field_split_resynchronises_after_stray_bytes_and_says_where_it_lost_its_place() {
+        let mut stream = vec![0x00, 0x13];
+        for index in 0..40u8 {
+            stream.extend([0xA5, 0x5A, 4, index, 1, 2, 3, 0xC0, 0xC1]);
+            if index % 9 == 4 {
+                stream.push(0);
+            }
+        }
+        let mut workspace = workspace_with("bus.bin", &stream);
+        let field = json!({"offset": 2, "encoding": "u8", "adjustment": 2});
+        let lost = call(&mut workspace, "packets.sets.create", json!({"from": "length_field", "start": 2, "length_field": field})).unwrap();
+        assert!(lost["count"].as_u64().unwrap() < 40 && lost["description"].as_str().unwrap().contains("resync"), "{lost}");
+        let resynced = call(&mut workspace, "packets.sets.create", json!({"from": "length_field", "start": 2, "length_field": {"offset": 2, "encoding": "u8", "adjustment": 2, "resync": true}})).unwrap();
+        assert_eq!(resynced["count"], 40, "{resynced}");
+        assert!(resynced["description"].as_str().unwrap().contains("lost its place 4 times"), "{resynced}");
+        let from_the_start = call(&mut workspace, "packets.sets.create", json!({"from": "length_field", "length_field": {"offset": 2, "encoding": "u8", "adjustment": 2, "sync": "A55A"}})).unwrap();
+        assert_eq!(from_the_start["count"], 40, "a given sync word skips the lead-in too: {from_the_start}");
+        let refused = call(&mut workspace, "packets.sets.create", json!({"from": "length_field", "length_field": {"offset": 2, "sync": "A5Z"}})).unwrap_err();
+        assert_eq!(refused.code, ErrorCode::InvalidParams);
     }
 }

@@ -1,9 +1,12 @@
 //! `packets.tshark_decode`: some of a set's packets decoded by Wireshark's
 //! tshark, run locally with `-n` on a background thread as a job. The job's
-//! result names the protocols tshark found in each packet; in the window,
-//! when the set is the one the Packets panel shows, its layers are merged
-//! into the panel's as the panel's own "Decode with tshark" does.
+//! result names the protocols tshark found in each packet, and the set keeps
+//! tshark's layers, merged into its dissections, so filters can name
+//! tshark's fields; in the window, when the set is the one the Packets panel
+//! shows, its layers are merged into the panel's as the panel's own "Decode
+//! with tshark" does.
 
+use std::collections::HashMap;
 use std::sync::atomic::AtomicUsize;
 
 use schemars::JsonSchema;
@@ -12,9 +15,9 @@ use serde::{Deserialize, Serialize};
 use super::super::jobs::JobStartedResult;
 use super::super::workspace::Workspace;
 use super::super::{ApiError, Caller};
-use super::{decode as decode_set, filtered, packet_indices, with_set};
+use super::{decode as decode_set, filtered, packet_indices, store_tshark, with_set};
 use crate::packets::tshark::find_tshark;
-use crate::packets::tshark_layers::TsharkMode;
+use crate::packets::tshark_layers::{TsharkLayers, TsharkMode};
 use crate::panel_packets_tshark::{self as panel_tshark, MAX_TSHARK_PACKETS, Request};
 
 /// How tshark's layers go with ours.
@@ -77,7 +80,7 @@ pub struct TsharkResult {
 }
 
 pub fn decode(workspace: &mut dyn Workspace, caller: &Caller, params: TsharkParams) -> Result<JobStartedResult, ApiError> {
-    let (doc, version, indices, requests, raw) = with_set(workspace, &params.set, |stored, document| {
+    let (doc, version, indices, requests, raw, slot, generation) = with_set(workspace, &params.set, |stored, document| {
         decode_set(stored, document);
         let decoded = stored.decoded.as_ref().expect("decoded");
         let mut chosen = filtered(stored, decoded, params.filter.as_deref())?;
@@ -95,25 +98,30 @@ pub fn decode(workspace: &mut dyn Workspace, caller: &Caller, params: TsharkPara
                 Request { index, bytes: decoded.bytes[index].clone(), original_len: packet.len, timestamp: packet.timestamp, link_type, link }
             })
             .collect();
-        Ok((stored.info.doc.clone(), document.version(), chosen, requests, decoded.raw.clone()))
+        Ok((stored.info.doc.clone(), document.version(), chosen, requests, decoded.raw.clone(), stored.tshark.clone(), stored.generation))
     })?;
+    let mode = params.mode.mode();
+    // The set keeps tshark's layers, so its filters and dissections use them.
+    let keep = move |layers: &HashMap<usize, TsharkLayers>| store_tshark(&slot, (version, generation), mode, layers);
     if requests.is_empty() {
         return Err(ApiError::invalid_params("no packets to decode: the filter or indices leave none"));
     }
     if let Some(app) = workspace.window()
         && app.bench.panels.packets.api_set.as_deref() == Some(params.set.as_str())
     {
-        return Ok(JobStartedResult { job: panel_tshark::start_for(app, Some(indices), params.mode.mode()) });
+        return Ok(JobStartedResult { job: panel_tshark::start_for(app, Some(indices), mode, Some(Box::new(keep))) });
     }
     let job = workspace.bus().start_job("tshark", "Decoding with tshark", caller.producer(), Some((doc, version)));
     let started = JobStartedResult { job: job.id().to_string() };
-    let mode = params.mode.mode();
     std::thread::spawn(move || {
         let Some(program) = find_tshark(None) else {
             return job.finish(false, panel_tshark::NOT_FOUND);
         };
         match panel_tshark::run(&program, requests, &raw, mode, &job, &AtomicUsize::new(0)) {
-            Ok(finished) => job.finish_with(true, format!("{} packets decoded", finished.packets.len()), serde_json::to_value(finished.result()).ok()),
+            Ok(finished) => {
+                keep(&finished.packets);
+                job.finish_with(true, format!("{} packets decoded", finished.packets.len()), serde_json::to_value(finished.result()).ok());
+            }
             Err(error) => job.finish(false, error),
         }
     });
@@ -137,5 +145,32 @@ mod tests {
         assert_eq!(none.code, ErrorCode::InvalidParams);
         assert_eq!(call(&mut workspace, "packets.tshark_decode", json!({"set": "set-1", "indices": [7]})).unwrap_err().code, ErrorCode::OutOfRange);
         assert_eq!(call(&mut workspace, "packets.tshark_decode", json!({"set": "set-2"})).unwrap_err().code, ErrorCode::NotFound);
+    }
+
+    #[test]
+    fn fields_tshark_decoded_reach_the_set_s_filters_and_dissections() {
+        use crate::packets::dissect::{Layer, WiresharkNames};
+        use crate::api::Workspace;
+        use crate::packets::tshark_layers::{TsharkLayers, TsharkMode};
+        use crate::plugin::Field;
+        let mut workspace = workspace_with("traffic.bin", &super::super::tests::dns_capture(2));
+        call(&mut workspace, "packets.sets.create", json!({"from": "capture"})).unwrap();
+        let refused = call(&mut workspace, "packets.list", json!({"set": "set-1", "filter": "dns.flags.checkdisable_x==1"})).unwrap_err();
+        assert_eq!(refused.code, ErrorCode::InvalidParams, "a name nothing gives is refused");
+        // What tshark gives for the second query, as its job would leave it.
+        let layers = TsharkLayers {
+            layers: vec![Layer { name: "Domain Name System".into(), offset: 42, len: 12, fields: vec![Field::new("Checking disabled", 44, 2, "1")] }],
+            filter_names: vec!["dns".into()],
+            wireshark_names: vec![WiresharkNames { protocol: "dns".into(), fields: vec![(vec![0], "dns.flags.checkdisable_x".into())] }],
+            protocols: vec!["eth".into(), "ip".into(), "udp".into(), "dns".into()],
+            ..TsharkLayers::default()
+        };
+        let stored = workspace.packet_sets().get("set-1").unwrap();
+        let (slot, built, generation) = (stored.tshark.clone(), stored.built.0, stored.generation);
+        super::store_tshark(&slot, (built, generation), TsharkMode::Everything, &[(1, layers)].into_iter().collect());
+        let listed = call(&mut workspace, "packets.list", json!({"set": "set-1", "filter": "dns.flags.checkdisable_x==1"})).unwrap();
+        assert_eq!((listed["total"].as_u64(), listed["packets"][0]["index"].as_u64()), (Some(1), Some(1)));
+        let dissected = call(&mut workspace, "packets.dissect", json!({"set": "set-1", "index": 1})).unwrap();
+        assert_eq!(dissected["dissection"]["layers"][0]["name"], "Domain Name System", "tshark's layers are shown");
     }
 }

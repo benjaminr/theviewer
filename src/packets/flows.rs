@@ -142,11 +142,19 @@ impl Conversation {
 }
 
 /// Group packets into conversations, in order of each one's first packet.
-/// Each item is a packet's flow (if it has addresses) and its length.
+/// Each item is a packet's flow (if it has addresses) and its length, and
+/// a packet's index is its place among the items.
 pub fn conversations<'a>(packets: impl IntoIterator<Item = (Option<&'a Flow>, usize)>) -> Vec<Conversation> {
+    conversations_of(packets.into_iter().enumerate().map(|(index, (flow, len))| (index, flow, len)))
+}
+
+/// [`conversations`] of some of a set's packets, each item giving the
+/// packet's index in the set with its flow and length, so a conversation's
+/// first packet is counted in the set and not among the packets given.
+pub fn conversations_of<'a>(packets: impl IntoIterator<Item = (usize, Option<&'a Flow>, usize)>) -> Vec<Conversation> {
     let mut by_key: HashMap<ConversationKey, usize> = HashMap::new();
     let mut found: Vec<Conversation> = Vec::new();
-    for (index, (flow, len)) in packets.into_iter().enumerate() {
+    for (index, flow, len) in packets {
         let Some(flow) = flow else { continue };
         let key = flow.key();
         let position = *by_key.entry(key).or_insert_with(|| {
@@ -217,14 +225,16 @@ pub struct Stream {
 }
 
 impl Stream {
-    /// The stream as text, each segment headed by its direction. Bytes that
-    /// are not printable text are shown as `.`.
-    pub fn marked_text(&self) -> String {
+    /// The stream as text, each segment headed by its direction and its
+    /// packet, numbered from `first_number` (0 for the API's indices, 1 for
+    /// the packet list's "No."). Bytes that are not printable text are
+    /// shown as `.`.
+    pub fn marked_text(&self, first_number: usize) -> String {
         let mut text = String::new();
         for segment in &self.segments {
             let (from, to) = if segment.a_to_b { (self.key.a, self.key.b) } else { (self.key.b, self.key.a) };
             let arrow = if segment.a_to_b { "→" } else { "←" };
-            text.push_str(&format!("{arrow} {from} to {to}, packet {}, {} bytes\n", segment.packet + 1, segment.len));
+            text.push_str(&format!("{arrow} {from} to {to}, packet {}, {} bytes\n", segment.packet + first_number, segment.len));
             let bytes = &self.bytes[segment.start..segment.start + segment.len];
             let shown = &bytes[..bytes.len().min(SEGMENT_TEXT_LIMIT)];
             text.extend(shown.iter().map(|&byte| printable(byte)));
@@ -310,6 +320,16 @@ mod tests {
     }
 
     #[test]
+    fn a_conversation_among_some_packets_starts_at_its_first_packet_in_the_whole_set() {
+        let client = endpoint("10.0.0.2", 51000);
+        let server = endpoint("10.0.0.1", 80);
+        let flows = [tcp(client, server, 1), tcp(server, client, 7)];
+        let found = conversations_of([(310, Some(&flows[0]), 60), (312, Some(&flows[1]), 1500)]);
+        assert_eq!(found[0].first_packet, 310);
+        assert_eq!(found[0].packets, 2);
+    }
+
+    #[test]
     fn endpoints_count_what_each_address_sent_and_received() {
         let a = endpoint("192.168.1.1", 1);
         let b = endpoint("192.168.1.2", 2);
@@ -344,9 +364,11 @@ mod tests {
         let client_is_a = request.is_a_to_b(&request.key());
         assert_eq!(order, vec![(0, client_is_a), (1, !client_is_a), (4, !client_is_a)]);
         assert_eq!(stream.retransmissions, 1);
-        let text = stream.marked_text();
+        let text = stream.marked_text(1);
         assert!(text.contains("10.0.0.2:40000 to 10.0.0.1:80, packet 1"), "{text}");
         assert!(text.contains("10.0.0.1:80 to 10.0.0.2:40000, packet 2"), "{text}");
+        let indexed = stream.marked_text(0);
+        assert!(indexed.contains("10.0.0.2:40000 to 10.0.0.1:80, packet 0,"), "counted as the API counts: {indexed}");
     }
 
     #[test]

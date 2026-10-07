@@ -99,7 +99,9 @@ fn show_filter(state: &mut PacketsState, ui: &mut Ui) {
                 .hint_text("Filter: udp port:53 ip:10.0.0.2 len>100 hex:DEADBEEF ip.ttl==64 text")
                 .desired_width(ui.available_width().clamp(160.0, 420.0)),
         )
-        .on_hover_text("Space-separated terms, all of which must match: a protocol (tcp, dns…), port:N, ip:ADDRESS, len>N (or <, >=, <=, =), hex:BYTES, or text from the summary");
+        .on_hover_text(
+            "Terms side by side must all match; join them with and (&&), or (||), not (!) and brackets. A term is a protocol (tcp, dns…), port:N, ip:ADDRESS, len>N (or <, >=, <=, ==, !=), hex:BYTES, a Wireshark field such as ip.ttl==64, tcp.port==80 or dns.qry.type==16 (also !=, <, >, ~ for contains), a template field as template.type==60 (or type==60), or text from the summary (\"in quotes\" for several words)",
+        );
         if !state.filter_text.is_empty() && ui.small_button("Clear").clicked() {
             state.filter_text.clear();
         }
@@ -925,7 +927,7 @@ pub fn show_stream(state: &mut PacketsState, app: &mut ViewerApp, ui: &mut Ui) {
         );
         ui.checkbox(&mut state.stream_as_hex, "Hex");
         if ui.small_button("Copy as text").clicked() {
-            ui.ctx().copy_text(stream.marked_text());
+            ui.ctx().copy_text(stream.marked_text(1));
         }
         if ui.small_button("Open as document").on_hover_text("Both directions' payloads, one after the other").clicked() {
             open = true;

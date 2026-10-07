@@ -150,13 +150,15 @@ fn requests(state: &PacketsState, indices: Option<Vec<usize>>) -> Vec<Request> {
 /// What `packets.tshark_decode` does in the window for the set the panel
 /// shows: decode packets `indices` (the shown ones when `None`) with
 /// tshark's layers merged as `mode` says, and return the job's id.
-pub fn start_for(app: &mut ViewerApp, indices: Option<Vec<usize>>, mode: TsharkMode) -> String {
+/// `finished` is also handed tshark's layers when the run ends well, so the
+/// API's set can filter on them too.
+pub fn start_for(app: &mut ViewerApp, indices: Option<Vec<usize>>, mode: TsharkMode, finished: Option<OnFinished>) -> String {
     let mut state = std::mem::take(&mut app.bench.panels.packets);
     if state.tshark.mode != mode {
         state.tshark.mode = mode;
         remerge_rows(&mut state);
     }
-    let job = start(&mut state, app, indices);
+    let job = start_with(&mut state, app, indices, finished);
     app.bench.panels.packets = state;
     job
 }
@@ -165,6 +167,13 @@ pub fn start_for(app: &mut ViewerApp, indices: Option<Vec<usize>>, mode: TsharkM
 /// Returns the job's id; when tshark is missing or there is nothing to
 /// decode, the job has already failed and the panel says why.
 fn start(state: &mut PacketsState, app: &mut ViewerApp, indices: Option<Vec<usize>>) -> String {
+    start_with(state, app, indices, None)
+}
+
+/// What else is told of tshark's layers, by packet index, when a run ends well.
+pub type OnFinished = Box<dyn FnOnce(&HashMap<usize, TsharkLayers>) + Send>;
+
+fn start_with(state: &mut PacketsState, app: &mut ViewerApp, indices: Option<Vec<usize>>, on_finished: Option<OnFinished>) -> String {
     let job = app.start_job("tshark", "Decoding with tshark");
     let id = job.id().to_string();
     let Some(program) = state.tshark.program(&app.preferences.tshark_path) else {
@@ -189,7 +198,12 @@ fn start(state: &mut PacketsState, app: &mut ViewerApp, indices: Option<Vec<usiz
     thread::spawn(move || {
         let finished = run(&program, requests, &raw, mode, &job, &thread_done);
         match &finished {
-            Ok(finished) => job.finish_with(true, format!("{} packets decoded", finished.packets.len()), serde_json::to_value(finished.result()).ok()),
+            Ok(finished) => {
+                if let Some(on_finished) = on_finished {
+                    on_finished(&finished.packets);
+                }
+                job.finish_with(true, format!("{} packets decoded", finished.packets.len()), serde_json::to_value(finished.result()).ok());
+            }
             Err(error) => job.finish(false, error.clone()),
         }
         let _ = sender.send(finished);

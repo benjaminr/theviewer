@@ -11,7 +11,7 @@ use crate::bits::{BitOrder, BitStream};
 /// This module's methods, in the order `api.describe` lists them within
 /// their namespace. A new method is added here, and only here.
 pub(super) const METHODS: &[super::Method] = &[
-    method!("bytes.read", Read, read, ReadParams, ReadResult, "Read a span of bytes, as hex by default, or as base64 or text."),
+    method!("bytes.read", Read, read, ReadParams, ReadResult, "Read a span of bytes, as hex by default, or as base64 or text; a span running past the end of the document is read to the end, and len says how many bytes came back."),
     method!("bytes.hexdump", Read, hexdump, HexdumpParams, HexdumpResult, "A classic hex dump of a span, 16 bytes per line with an ASCII column, at most 1 MiB."),
     method!("bits.read", Read, read_bits, BitsParams, BitsResult, "Read a span of bits, most or least significant bit of each byte first, as a string of 0s and 1s and, up to 64 bits, as a number."),
 ];
@@ -51,7 +51,8 @@ pub struct ReadParams {
     pub doc: Option<String>,
     /// Offset of the first byte.
     pub start: u64,
-    /// Bytes to read, at most 16 MiB; to the end of the document when omitted.
+    /// Bytes to read, at most 16 MiB; to the end of the document when
+    /// omitted, or when the document ends sooner.
     #[serde(default)]
     pub len: Option<u64>,
     /// How to write the bytes: hex (the default), base64 or text.
@@ -66,8 +67,11 @@ pub struct ReadResult {
     pub doc: String,
     /// Offset of the first byte.
     pub start: u64,
-    /// Bytes read.
+    /// Bytes read: fewer than asked for when the document ends first.
     pub len: u64,
+    /// Whether the document ended before the span asked for did.
+    #[serde(default)]
+    pub short: bool,
     /// How `data` is written.
     pub encoding: ByteEncoding,
     /// The bytes, written as `encoding` says.
@@ -136,10 +140,12 @@ pub struct BitsResult {
 
 pub fn read(workspace: &mut dyn Workspace, params: ReadParams) -> Result<ReadResult, ApiError> {
     let (doc, document) = workspace::document(workspace, params.doc.as_deref())?;
-    let (start, len) = values::span_within(document.len(), params.start, params.len)?;
+    let (start, room) = values::span_within(document.len(), params.start, None)?;
+    let asked = params.len.map_or(room, |len| usize::try_from(len).unwrap_or(usize::MAX));
+    let len = asked.min(room);
     values::check_call_size(len)?;
     let bytes = document.read_range(start, len);
-    Ok(ReadResult { doc, start: start as u64, len: len as u64, encoding: params.encoding, data: values::encode_bytes(&bytes, params.encoding) })
+    Ok(ReadResult { doc, start: start as u64, len: len as u64, short: len < asked, encoding: params.encoding, data: values::encode_bytes(&bytes, params.encoding) })
 }
 
 pub fn hexdump(workspace: &mut dyn Workspace, params: HexdumpParams) -> Result<HexdumpResult, ApiError> {
@@ -190,9 +196,13 @@ mod tests {
     }
 
     #[test]
-    fn reading_past_the_end_is_out_of_range() {
+    fn reading_past_the_end_gives_the_bytes_there_are_and_starting_past_it_is_out_of_range() {
         let mut workspace = workspace_with("a.bin", b"abcd");
-        assert_eq!(call(&mut workspace, "bytes.read", json!({"start": 2, "len": 3})).unwrap_err().code, ErrorCode::OutOfRange);
+        let short = call(&mut workspace, "bytes.read", json!({"start": 2, "len": 3})).unwrap();
+        assert_eq!((short["data"].as_str(), short["len"].as_u64(), short["short"].as_bool()), (Some("6364"), Some(2), Some(true)));
+        let whole = call(&mut workspace, "bytes.read", json!({"start": 0, "len": 4})).unwrap();
+        assert_eq!(whole["short"], false);
+        assert_eq!(call(&mut workspace, "bytes.read", json!({"start": 5, "len": 1})).unwrap_err().code, ErrorCode::OutOfRange);
         assert_eq!(call(&mut workspace, "bytes.hexdump", json!({"start": 5})).unwrap_err().code, ErrorCode::OutOfRange);
     }
 

@@ -100,7 +100,9 @@ pub struct InsertParams {
     /// Document id, path or "current" (the default).
     #[serde(default)]
     pub doc: Option<String>,
-    /// Offset to insert at; the document's length appends.
+    /// Offset to insert at; the document's length appends. Also taken as
+    /// `start`, as the other byte methods call it.
+    #[serde(alias = "start")]
     pub at: u64,
     /// The bytes to insert, written as `encoding` says.
     pub data: String,
@@ -1038,5 +1040,12 @@ mod tests {
         assert_eq!(describe(&mut workspace, "acme.decode", json!({"start": 1})), r#"Call acme.decode with {"start":1}"#);
         let transaction = describe(&mut workspace, "history.transaction", json!({"calls": [{"method": "bytes.delete", "params": {"start": 0, "len": 2}}]}));
         assert_eq!(transaction, "Make 1 change as one step:\n• Delete 2 bytes at 0x0");
+    }
+
+    #[test]
+    fn bytes_are_inserted_at_start_as_the_other_byte_methods_name_an_offset() {
+        let mut workspace = workspace_with("a.bin", b"abcd");
+        call(&mut workspace, "bytes.insert", json!({"start": 2, "data": "--", "encoding": "text"})).unwrap();
+        assert_eq!(bytes_of(&mut workspace), b"ab--cd");
     }
 }

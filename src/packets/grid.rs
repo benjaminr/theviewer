@@ -295,7 +295,7 @@ pub fn deletion_ranges(slices: &[ColumnSlice]) -> Vec<(usize, usize)> {
 
 /// One packet's bytes in the selected columns, for copying.
 pub struct ColumnText<'a> {
-    /// Packet number as shown (counting from 1).
+    /// The packet's index in its set (counting from 0, as the API does).
     pub packet: usize,
     pub offset: usize,
     pub bytes: &'a [u8],

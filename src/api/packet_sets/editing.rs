@@ -573,7 +573,7 @@ pub fn read_columns(workspace: &mut dyn Workspace, params: ColumnsReadParams) ->
                 break;
             }
             total += slice.len;
-            contents.push((slice.row + 1, slice.offset, document.read_range(slice.offset, slice.len)));
+            contents.push((slice.row, slice.offset, document.read_range(slice.offset, slice.len)));
         }
         let rows: Vec<ColumnText<'_>> = contents.iter().map(|(packet, offset, bytes)| ColumnText { packet: *packet, offset: *offset, bytes }).collect();
         let text = match params.format {
@@ -682,7 +682,7 @@ mod tests {
     fn columns_read_as_csv_name_each_packet_and_its_offset() {
         let mut workspace = records();
         let read = call(&mut workspace, "packets.columns.read", json!({"set": "set-1", "first": 1, "width": 2, "indices": [0, 4], "format": "csv"})).unwrap();
-        assert_eq!(read["text"], "packet,offset,+1,+2\n1,0x1,01,02\n5,0x21,21,22\n");
+        assert_eq!(read["text"], "packet,offset,+1,+2\n0,0x1,01,02\n4,0x21,21,22\n", "packets by their index in the set, as every method numbers them");
     }
 
     #[test]

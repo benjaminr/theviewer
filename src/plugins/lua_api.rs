@@ -904,7 +904,7 @@ mod tests {
         assert_eq!(missing.code, ErrorCode::InvalidParams);
         let wrong = api::call(&mut app, &Caller::Panel, "beacon.decode_frame", json!({"start": "zero"})).unwrap_err();
         assert_eq!(wrong.code, ErrorCode::InvalidParams);
-        let past = api::call(&mut app, &Caller::Panel, "beacon.decode_frame", json!({"start": 7})).unwrap_err();
+        let past = api::call(&mut app, &Caller::Panel, "beacon.decode_frame", json!({"start": 9})).unwrap_err();
         assert_eq!(past.code, ErrorCode::PluginFailed, "its error is the plugin's");
         assert!(past.message.contains("out_of_range"), "{}", past.message);
     }
