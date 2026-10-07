@@ -693,11 +693,32 @@ fn install_api(lua: &Lua, state: Weak<ScriptState>) -> mlua::Result<()> {
 
     lua_api::install(lua, &api)?;
 
+    let log_state = state.clone();
     api.set(
         "log",
         lua.create_function(move |_, text: String| {
-            if let Some(state) = state.upgrade() {
+            if let Some(state) = log_state.upgrade() {
                 state.log(LogLevel::Info, text);
+            }
+            Ok(())
+        })?,
+    )?;
+
+    // Lua's own `print` writes to standard output, which under `theviewer
+    // mcp` is the protocol's channel. This one writes a line to the plugin's
+    // log instead, its values converted by `tostring` and joined by tabs as
+    // Lua's would be.
+    lua.globals().set(
+        "print",
+        lua.create_function(move |lua, values: mlua::Variadic<Value>| {
+            let tostring: Function = lua.globals().get("tostring")?;
+            let mut parts = Vec::with_capacity(values.len());
+            for value in values {
+                let text: mlua::LuaString = tostring.call(value)?;
+                parts.push(text.to_string_lossy());
+            }
+            if let Some(state) = state.upgrade() {
+                state.log(LogLevel::Info, parts.join("\t"));
             }
             Ok(())
         })?,
@@ -1216,6 +1237,21 @@ mod tests {
         let log = host.take_log();
         assert!(log.contains(&"chatty.lua: loaded".to_string()), "{log:?}");
         assert!(log.contains(&"chatty.lua: scanned 4".to_string()), "{log:?}");
+    }
+
+    #[test]
+    fn print_writes_to_the_plugin_log_rather_than_standard_output() {
+        let mut host = LuaHost::new();
+        host.load_source(
+            "printer.lua",
+            "print('loaded', 1, true, nil); theviewer.register_detector{ id='p', scan=function(w, ctx) print('scanned ' .. w:len()); return {} end }",
+        )
+        .unwrap();
+        let detector = host.detectors().remove(0);
+        detector.scan(&[0u8; 4], &ScanContext::default());
+        let lines = host.take_entries();
+        let texts: Vec<_> = lines.iter().map(|line| (line.plugin.as_str(), line.level, line.text.as_str())).collect();
+        assert_eq!(texts, [("printer.lua", LogLevel::Info, "loaded\t1\ttrue\tnil"), ("printer.lua", LogLevel::Info, "scanned 4")]);
     }
 
     #[test]

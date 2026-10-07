@@ -86,8 +86,9 @@ Each script runs in a Lua state of its own:
   findings, `false` from `detect`, a failed decode, a `plugin_failed` error
   for a method's caller) and the error is logged with the script's name;
   see [Debugging](#debugging). Nothing a script does can crash the viewer.
-- **`print`** is there but writes to the process's standard output, which
-  under `theviewer mcp` is the protocol's channel: use `theviewer.log`.
+- **`print`** writes to the plugin's log, like `theviewer.log`, never to
+  standard output: its values are converted with `tostring` and joined by
+  tabs into one line.
 
 A script's callbacks are run one at a time: its Lua state is locked while
 one runs.
@@ -579,7 +580,8 @@ What happens:
 
 ## Debugging
 
-- **The log.** `theviewer.log(text)` writes a line to the plugin's log;
+- **The log.** `theviewer.log(text)` (or `print(...)`) writes a line to
+  the plugin's log;
   every callback error is written there too, with the script's name. Each
   line is published on the bus as `plugin.log`, with the plugin and a
   level (`info`, or `error` for failures).
