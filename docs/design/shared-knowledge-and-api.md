@@ -680,6 +680,11 @@ Each phase is useful on its own and keeps the app working.
      "go back to step N".
    - Anchors and parameters, recipes saved and run in the app, with
      `theviewer replay` and the `recipes.*` methods.
+   - **Foundation, as built:** the journal, recorded in `api::call` for
+     every caller and published on `journal.recorded`, its session header,
+     `history.list`, `history.entry` and `history.session`, and the shared
+     anchor, recipe and replay types. `docs/design/history-recipes.md`
+     describes them and briefs the three areas building the rest.
 
 ## Decisions
 

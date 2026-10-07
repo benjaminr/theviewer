@@ -75,6 +75,8 @@ pub mod numbers;
 pub mod packet_sets;
 pub mod packets;
 pub mod permissions;
+pub mod provenance;
+pub mod recipes;
 pub mod reference;
 pub mod search;
 pub mod selection;
@@ -416,6 +418,8 @@ const PARTS: &[Part] = &[
     part!(view),
     part!(application),
     part!(history),
+    part!(provenance),
+    part!(recipes),
 ];
 
 /// For modules whose calls need no description of their own.

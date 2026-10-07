@@ -37,8 +37,10 @@
 //! steps again). `docs/design/history-recipes.md` says who owns what.
 
 pub mod anchors;
+pub mod provenance;
 pub mod recipe;
 pub mod replay;
+pub mod timeline;
 
 use std::collections::{BTreeMap, VecDeque};
 use std::time::{SystemTime, UNIX_EPOCH};
