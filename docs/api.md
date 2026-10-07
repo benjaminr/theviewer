@@ -305,8 +305,8 @@ A recipe step that starts a job waits for it (up to 10 minutes), and later steps
 | [`firmware.identify`](#firmwareidentify) | job |  | Start identifying the processor of a span of headerless code (at most 64 MiB) as a job, disassembling samples as every supported architecture and ranking them by typical instructions, idioms and branch targets: the ranking is job.finished's result, and in the window it fills Firmware (analysis.processor is the quick read). |
 | [`firmware.find_load_address`](#firmwarefind_load_address) | job |  | Start a search for the address a firmware image is loaded at (the address of offset 0, over the document's first 64 MiB) as a job: the bases that make most stored pointers land on the start of a string, as rbasefind does, are job.finished's result, and in the window they fill Firmware. |
 | [`firmware.vector_tables`](#firmwarevector_tables) | job |  | Start a search of a span (the whole document by default, at most 64 MiB) for ARM Cortex-M vector tables as a job: each table's stack pointer, handlers and the flash base they imply are job.finished's result, and in the window they fill Firmware. |
-| [`forensics.find_filesystems`](#forensicsfind_filesystems) | job |  | Start a search of the document (its first 256 MiB) for SquashFS, CramFS, JFFS2 and UBI images as a job: each image found, with its files, is job.finished's result, and in the window they fill Forensics. |
-| [`forensics.open_entry`](#forensicsopen_entry) | view |  | Open one file (or volume) of the filesystem image at an offset of the document as a derived document, by its path in the image. |
+| [`forensics.find_filesystems`](#forensicsfind_filesystems) | job |  | Start a search of the document (its first 256 MiB) for SquashFS, CramFS, JFFS2, UBI and FAT images (FAT at any 512-byte boundary, so inside a disk's partitions) as a job: each image found, with its files, deleted FAT entries included, is job.finished's result, and in the window they fill Forensics. |
+| [`forensics.open_entry`](#forensicsopen_entry) | view |  | Open one file (or volume) of the filesystem image at an offset of the document as a derived document, by its path in the image; a deleted FAT file opens as recovered from its first cluster on. |
 | [`forensics.classify_blocks`](#forensicsclassify_blocks) | job |  | Start labelling every block of the document (its first 256 MiB) as padding, text, markup, machine code, compressed, random, raw image, PCM audio or table data as a job: the runs of one class, with the reason for each, are job.finished's result, and in the window they fill Forensics. |
 | [`unpack.run`](#unpackrun) | job |  | Start extracting the archives and compressed streams in the document (its first 256 MiB) recursively, like binwalk -e, as a job: the tree of what was found, each node with its kind, size and where its bytes came from, is job.finished's result, and in the window it fills the Unpacked tab and the Size map. |
 | [`unpack.open`](#unpackopen) | view |  | Open one node of the unpacked tree (by its path of child indices, as unpack.run gave it) as a derived document. |
@@ -3236,7 +3236,7 @@ Start a search of a span (the whole document by default, at most 64 MiB) for ARM
 
 ### forensics.find_filesystems
 
-Start a search of the document (its first 256 MiB) for SquashFS, CramFS, JFFS2 and UBI images as a job: each image found, with its files, is job.finished's result, and in the window they fill Forensics.
+Start a search of the document (its first 256 MiB) for SquashFS, CramFS, JFFS2, UBI and FAT images (FAT at any 512-byte boundary, so inside a disk's partitions) as a job: each image found, with its files, deleted FAT entries included, is job.finished's result, and in the window they fill Forensics.
 
 **Effect:** `job` · **MCP tool:** `forensics_find_filesystems`, through `api_call`, or with `--all-tools`
 
@@ -3252,7 +3252,7 @@ Start a search of the document (its first 256 MiB) for SquashFS, CramFS, JFFS2 a
 
 ### forensics.open_entry
 
-Open one file (or volume) of the filesystem image at an offset of the document as a derived document, by its path in the image.
+Open one file (or volume) of the filesystem image at an offset of the document as a derived document, by its path in the image; a deleted FAT file opens as recovered from its first cluster on.
 
 **Effect:** `view` · **MCP tool:** `forensics_open_entry`, through `api_call`, or with `--all-tools`
 
@@ -3302,6 +3302,7 @@ Start extracting the archives and compressed streams in the document (its first 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `doc` | string | no | Document id, path or "current" (the default). |
+| `password` | string | no | Password for ZipCrypto-encrypted zip entries. Without one they are listed, marked encrypted, with no content. |
 
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -3318,6 +3319,7 @@ Open one node of the unpacked tree (by its path of child indices, as unpack.run 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `doc` | string | no | Document id, path or "current" (the default): the parent. |
+| `password` | string | no | The password unpack.run was given, when the tree was unpacked with one. |
 | `path` | array of integer | yes | Child indices from the root, such as [0, 2]; [] is the document itself. |
 
 | Result field | Type | Required | Description |
@@ -3343,6 +3345,7 @@ Read the bytes of one node of the unpacked tree, by its path of child indices, a
 | `doc` | string | no | Document id, path or "current" (the default). |
 | `encoding` | `"hex"` \| `"base64"` \| `"text"` | no | hex (the default), base64 or text. |
 | `len` | integer | no | Bytes read, at most 16 MiB; to the end of the node when omitted. |
+| `password` | string | no | The password unpack.run was given, when the tree was unpacked with one. |
 | `path` | array of integer | yes | Child indices from the root, such as [0, 2]. |
 | `start` | integer | no | First offset in the node's bytes (0 by default). |
 
@@ -3365,6 +3368,7 @@ Write the bytes of one node of the unpacked tree (by its path of child indices, 
 | --- | --- | --- | --- |
 | `doc` | string | no | Document id, path or "current" (the default). |
 | `node` | array of integer | yes | The node's child indices from the root, such as [0, 2]. |
+| `password` | string | no | The password unpack.run was given, when the tree was unpacked with one. |
 | `path` | string | yes | The file to write. |
 
 | Result field | Type | Required | Description |

@@ -99,6 +99,24 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `crypto.find_keys` reports a raw key with a zero at its edge, beside
   zero padding, at its aligned offset, and the alignment one byte along as
   an alternative, rather than only the earlier one.
+- Forensics reads FAT12, FAT16 and FAT32 volumes, inside a disk image's
+  partitions too, with long names, DOS times and deleted files recovered
+  on a contiguous assumption; `forensics.open_entry` opens them.
+- The FAT boot sector shows sectors per FAT, hidden sectors, media, the
+  serial number and the FAT, root and data offsets, and takes its type from
+  the cluster count.
+- JPEG field trees show EXIF tags; a new PDF parser lists objects, streams
+  with their filters and offsets, and embedded files.
+- The ZIP field tree shows each entry's flags: encrypted, data descriptor,
+  UTF-8 names. `unpack.run` takes a `password`, and the Unpacked tab a
+  password field, to decrypt ZipCrypto entries.
+
+### Fixed
+
+- Unpacking an encrypted ZIP lists every member, marked "encrypted
+  (ZipCrypto)" or "encrypted (AES)" with no content, instead of showing
+  ciphertext as the file and dropping deflated members; a member that does
+  not inflate is kept with the error.
 
 ## [0.3.1] - 2026-10-07
 

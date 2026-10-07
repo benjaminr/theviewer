@@ -103,10 +103,13 @@ recognises: a PNG chunk, an ELF header, a ZIP entry and so on. Pointing at
 a field explains it from the [reference notes](reference-notes.md); its
 *Reference* button opens the Reference tab on that format.
 
-Field trees cover executables (ELF, PE, Mach-O), images (PNG, JPEG, GIF,
-BMP), archives (ZIP, tar, ar, cpio), packet captures, DER and X.509
-certificates, partition tables and filesystems, and schemaless formats
-such as Protocol Buffers, CBOR and MessagePack.
+Field trees cover executables (ELF, PE, Mach-O), images (PNG, JPEG with
+its EXIF tags, GIF, BMP), archives (ZIP, with each entry's flags, tar, ar,
+cpio), PDF documents (objects, streams with their filters, embedded
+files), packet captures, DER and X.509 certificates, partition tables and
+filesystems (a FAT boot sector with the FAT, root directory and data
+offsets it implies), and schemaless formats such as Protocol Buffers,
+CBOR and MessagePack.
 
 ## Moving around
 

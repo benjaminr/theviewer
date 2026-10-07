@@ -237,15 +237,30 @@ For a raw firmware image:
 ### Unpacked
 
 Extracts ZIP, tar, compressed streams and embedded filesystems (SquashFS,
-CramFS, JFFS2 and UBI volumes) recursively into a tree you can browse,
+CramFS, JFFS2, UBI and FAT volumes) recursively into a tree you can browse,
 open or save. *Tools › Unpack everything* starts it.
+
+An encrypted ZIP entry is listed with the note "encrypted (ZipCrypto)" or
+"encrypted (AES)" and no content, never with its ciphertext standing in
+for the file. When there are any, a password field appears above the
+tree: *Decrypt* unpacks again, decrypting ZipCrypto entries (AES is not
+decrypted). An entry whose data does not inflate is kept, with the error
+as its note.
 
 ### Forensics
 
-Lists the embedded filesystems in the file with their files, and
-classifies every block (padding, text, markup, machine code, compressed,
-random, raw image, audio, tables) as a coloured strip, for carving
-fragments that have no headers.
+Lists the filesystems in the file with their files, and classifies every
+block (padding, text, markup, machine code, compressed, random, raw
+image, audio, tables) as a coloured strip, for carving fragments that
+have no headers.
+
+FAT12, FAT16 and FAT32 volumes are found at any 512-byte boundary, so a
+whole disk image's partitions are listed too. Their long names, created
+and modified times (local times, as FAT keeps no zone) and deleted files
+are shown; a deleted file is struck through and recovered from its first
+cluster on, on the assumption that its clusters were contiguous, which
+its note says ("deleted; recovered, contiguous assumption", or how many
+of those clusters other files now use).
 
 ### Diff
 
