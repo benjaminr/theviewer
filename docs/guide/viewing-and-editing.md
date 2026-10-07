@@ -193,9 +193,10 @@ Images (PNG, JPEG, GIF including animation, BMP, WebP, TIFF, ICO), audio
 (WAV, MP3, FLAC, Ogg Vorbis, Ogg Opus, AAC, M4A, AIFF, CAF) and video
 (MP4, QuickTime, WebM, Matroska, AVI, MPEG-TS, FLV, Ogg Theora) open where
 they sit: put the cursor on one and press `Cmd+Enter`, or use the *Media*
-group that appears in the toolbar. `Space` plays and pauses. Images and
-audio are decoded by theviewer itself; video, and HEIF and AVIF stills,
-need `ffmpeg` and `ffprobe` on the `PATH`.
+group that appears in the toolbar. `Space` plays and pauses, and `Esc`
+closes the viewer. Images and audio are decoded by theviewer itself;
+video, and HEIF and AVIF stills, need `ffmpeg` and `ffprobe` on the
+`PATH`.
 
 ![An embedded PNG opened in the media viewer, with its header highlighted in the hex dump](../images/media.png)
 

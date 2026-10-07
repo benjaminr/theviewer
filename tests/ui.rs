@@ -912,6 +912,11 @@ fn embedded_images_audio_and_video_open_in_the_media_window() {
     wait_ready(&mut harness);
     assert_eq!(harness.state().media.kind(), Some(MediaKind::Image), "{}", harness.state().status);
     assert!(harness.state().media.is_ready(), "{:?}", harness.state().media.error());
+    // Escape closes the viewer and leaves the view's cursor be.
+    harness.key_press(Key::Escape);
+    steps(&mut harness, 2);
+    assert!(!harness.state().media.is_open(), "Escape closes the image");
+    assert_eq!(harness.state().cursor, png_at + 20);
 
     // Audio: opened from the start of the WAV, analysed to its one-second length.
     harness.state_mut().set_cursor(wav_at, false);

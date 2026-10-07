@@ -222,14 +222,14 @@ the full list.
 | `Alt+←` `Alt+→` | Start offset −1 / +1 bit (when nothing is selected) |
 | `-` `+` | Zoom out, zoom in |
 | `H` | Pattern highlights on or off |
-| `Cmd+Enter`, `Space` | Open the media at the cursor; play and pause |
+| `Cmd+Enter`, `Space` | Open the media at the cursor; play and pause; `Esc` closes it |
 | `Cmd+D` | Open the compressed block at the cursor; back up a level where there is none |
 | `Cmd+E` | Save the selection or stream to a file |
 | `Cmd+[` | Back to the parent document |
 | `Cmd+J` | Fold the tools away or back |
 | `Cmd+L` | Ask Claude |
 | `Cmd+,` | Settings |
-| `Esc` | Clear the selection |
+| `Esc` | Close the media being viewed, else clear the selection |
 | `?` | Shortcut window |
 
 ## Licence

@@ -3012,6 +3012,11 @@ impl ViewerApp {
 
         let cmd = Modifiers::COMMAND;
         let cmd_shift = Modifiers::COMMAND | Modifiers::SHIFT;
+        // Escape closes an image, sound or video being viewed before it
+        // does anything to the view behind it.
+        if self.media.is_open() && !text_field_focused && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
+            self.media.close();
+        }
         // Global shortcuts work even while a text field has focus.
         if ctx.input_mut(|i| i.consume_key(cmd, Key::O)) {
             self.open_dialog();
@@ -3959,7 +3964,7 @@ impl ViewerApp {
                     ("- +", "Zoom out / in (also Cmd+ + scroll, pinch)"),
                     ("Scroll", "Rows; Shift+scroll pans horizontally"),
                     ("Cmd+O Cmd+S Shift+Cmd+S Cmd+N", "Open, save, save as, new"),
-                    ("Esc", "Clear the selection"),
+                    ("Esc", "Close the image or video being viewed, else clear the selection"),
                     ("Cmd+K", "Command palette: every action, searchable"),
                     ("Cmd+F  F3  Shift+F3", "Find bytes, text or a number; next and previous match"),
                     ("Cmd+G", "Go to offset"),
