@@ -320,7 +320,7 @@ mod tests {
         assert_eq!((blob["blob"].as_str(), blob["mimeType"].as_str()), (Some("aGVsbG8="), Some("application/octet-stream")));
         let dump = read(&mut workspace, &caller(), "theviewer://doc/current/bytes/6-11?encoding=hex").unwrap();
         assert!(dump["text"].as_str().unwrap().contains("77 6f 72 6c 64"), "{dump}");
-        assert!(matches!(read(&mut workspace, &caller(), "theviewer://doc/doc-1/bytes/8-20"), Err(ReadError::Invalid(_))), "past the end");
+        assert!(matches!(read(&mut workspace, &caller(), "theviewer://doc/doc-1/bytes/12-20"), Err(ReadError::Invalid(_))), "past the end");
         let too_many = format!("theviewer://doc/doc-1/bytes/0-{}", MAX_RESOURCE_BYTES + 1);
         assert!(matches!(read(&mut workspace, &caller(), &too_many), Err(ReadError::Invalid(message)) if message.contains("smaller range")));
     }

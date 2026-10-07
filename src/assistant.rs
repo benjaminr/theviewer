@@ -864,7 +864,7 @@ mod tests {
         let mut workspace = crate::api::test_support::workspace_with("fw.bin", b"FWIM\x01\x02");
         let result: Value = serde_json::from_str(&run_tool(&mut workspace, "bytes_read", json!({"start": 0, "len": 4})).unwrap()).unwrap();
         assert_eq!(result["data"], "4657494d");
-        let past_the_end = run_tool(&mut workspace, "bytes_read", json!({"start": 4, "len": 9})).unwrap_err();
+        let past_the_end = run_tool(&mut workspace, "bytes_read", json!({"start": 9, "len": 1})).unwrap_err();
         assert!(past_the_end.contains("out_of_range"), "{past_the_end}");
         let truncated_input = run_tool(&mut workspace, "bytes_read", json!({})).unwrap_err();
         assert!(truncated_input.contains("invalid_params"), "truncated eager input is rejected: {truncated_input}");

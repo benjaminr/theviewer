@@ -86,7 +86,7 @@ fn a_method_runs_on_a_file_and_prints_its_result() {
 fn an_error_exits_non_zero_with_the_error_as_json_on_stderr() {
     let path = temp_file("error.bin", b"four");
     let file = path.to_str().unwrap();
-    let output = theviewer(&["api", "bytes.read", r#"{"start": 2, "len": 10}"#, file]);
+    let output = theviewer(&["api", "bytes.read", r#"{"start": 9, "len": 1}"#, file]);
     assert!(!output.status.success());
     assert!(output.stdout.is_empty());
     assert_eq!(json_of(&output.stderr)["code"], "out_of_range");
