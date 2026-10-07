@@ -3035,7 +3035,9 @@ impl ViewerApp {
         if ctx.input_mut(|i| i.consume_key(cmd, Key::E)) {
             self.export_dialog(false);
         }
-        if ctx.input_mut(|i| i.consume_key(cmd, Key::Enter)) {
+        // Left to a focused text field, where Cmd+Enter adds a note or
+        // runs what was typed.
+        if !text_field_focused && ctx.input_mut(|i| i.consume_key(cmd, Key::Enter)) {
             self.open_media();
         }
         if ctx.input_mut(|i| i.consume_key(cmd, Key::Comma)) {

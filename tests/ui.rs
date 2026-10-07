@@ -1664,3 +1664,18 @@ fn an_edit_from_ask_is_shown_for_confirmation_and_applied_only_when_allowed() {
     assert!(refused.message.contains("declined"), "{}", refused.message);
     assert_eq!(harness.state().document.len(), SAMPLE_LEN, "nothing was deleted");
 }
+
+#[test]
+fn cmd_enter_in_the_history_note_box_adds_the_note_rather_than_opening_media() {
+    let mut harness = harness(sample_file("note-box"));
+    harness.state_mut().dock.toggle(theviewer::dock::DockTab::History);
+    steps(&mut harness, 3);
+    harness.ctx.memory_mut(|memory| memory.request_focus(egui::Id::new("history-note-box-text")));
+    steps(&mut harness, 2);
+    harness.event(Event::Text("the header looks like a vendor container".to_string()));
+    steps(&mut harness, 2);
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::Enter);
+    steps(&mut harness, 3);
+    let notes = theviewer::api::call(harness.state_mut(), &theviewer::api::Caller::Panel, "history.list", serde_json::json!({})).unwrap();
+    assert!(notes.to_string().contains("the header looks like a vendor container"), "{notes}");
+}
