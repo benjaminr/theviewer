@@ -233,3 +233,56 @@ fn a_serial_bound_from_one_file_s_strings_decrypts_the_config_of_another_through
     assert_eq!(report["steps"][1]["result"]["value"], "NC500-2F357657", "the variant's own serial");
     assert_eq!(config_of(&mut other), "[camera]\nflag=FLAG{bound}\n");
 }
+
+#[test]
+fn a_bound_value_made_a_parameter_is_found_by_its_anchor_unless_one_is_given() {
+    let mut recorded = workspace_with("a.upd", &firmware_with_serial("NC500-8D98EE98"));
+    bind_serial_and_decrypt(&mut recorded);
+    let bound = latest_step_of(&recorded, "vars.set");
+    let made = call(&mut recorded, "history.make_parameter", json!({"step": bound, "path": "value", "name": "serial", "description": "The unit's serial"})).unwrap();
+    assert_eq!(made["parameter"]["default"], "NC500-8D98EE98");
+    assert_eq!(made["parameter"]["default_anchor"]["pick"]["list"], "job.strings", "{made}");
+    let recipe = call(&mut recorded, "history.recipe", json!({"name": "Config"})).unwrap();
+    assert_eq!(recipe["parameters"]["serial"]["default_anchor"]["pick"]["step"], 1, "renumbered with the recipe's steps");
+    assert_eq!(recipe["steps"][1]["params"]["value"], json!({"$anchor": {"param": "serial"}}));
+
+    let mut found = workspace_with("b.upd", &firmware_with_serial("NC500-2F357657"));
+    let report = call(&mut found, "recipes.run", json!({"recipe": recipe})).unwrap();
+    assert_eq!(report["steps"][1]["result"]["value"], "NC500-2F357657", "{report}");
+    let mut given = workspace_with("b.upd", &firmware_with_serial("NC500-2F357657"));
+    let report = call(&mut given, "recipes.run", json!({"recipe": recipe, "parameters": {"serial": "NC500-00000000"}})).unwrap();
+    assert_eq!(report["steps"][1]["result"]["value"], "NC500-00000000");
+}
+
+/// The latest step of `method` in `workspace`'s journal.
+fn latest_step_of(workspace: &crate::api::HeadlessWorkspace, method: &str) -> u64 {
+    workspace.journal().entries().rev().find(|entry| entry.method == method).unwrap().step
+}
+
+#[test]
+fn a_literal_found_in_an_earlier_list_is_offered_picks_by_its_shape_and_place() {
+    let mut workspace = workspace_with("a.upd", &firmware_with_serial("NC500-8D98EE98"));
+    let started = call(&mut workspace, "strings.find", json!({"min_chars": 5})).unwrap();
+    let strings = workspace.journal().last_step().unwrap();
+    crate::journal::replay::wait_for_job(&mut workspace, started["job"].as_str().unwrap()).unwrap();
+    call(&mut workspace, "vars.set", json!({"name": "serial", "value": "NC500-8D98EE98"})).unwrap();
+    let bound = workspace.journal().last_step().unwrap();
+    let suggested = call(&mut workspace, "history.suggest_anchors", json!({"step": bound})).unwrap();
+    let literals = suggested["literals"].as_array().unwrap();
+    let value = literals.iter().find(|literal| literal["path"] == "value").expect("the text is listed, as a list holds it");
+    let first = &value["suggestions"][0];
+    assert_eq!(first["anchor"], json!({"pick": {"step": strings, "list": "job.strings", "where": {"text": {"regex": "^NC500\\-[0-9A-F]{8}$"}}, "field": "text"}}));
+    assert!(first["reason"].as_str().unwrap().starts_with("the first text in job.strings of step"), "{first}");
+    assert!(value["suggestions"].as_array().unwrap().iter().any(|suggestion| suggestion["anchor"]["pick"]["nth"].is_u64()), "and by its place: {value}");
+    assert!(!literals.iter().any(|literal| literal["path"] == "name"), "text no list holds is not listed");
+}
+
+#[test]
+fn text_is_given_a_pattern_of_its_shape() {
+    use crate::journal::provenance::shape_of;
+    assert_eq!(shape_of("NC500-2F357657").as_deref(), Some("^NC500\\-[0-9A-F]{8}$"));
+    assert_eq!(shape_of("65ffb335").as_deref(), Some("^[0-9a-f]{8}$"));
+    assert_eq!(shape_of("key=Kestrel42").as_deref(), Some("^key=[0-9A-Za-z]{9}$"));
+    assert_eq!(shape_of("hello"), None, "plain words have no shape to find again");
+    assert_eq!(shape_of("a-b"), None);
+}

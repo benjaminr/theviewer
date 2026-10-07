@@ -217,9 +217,9 @@ A recipe step that starts a job waits for it (up to 10 minutes), and later steps
 | [`history.edit_note`](#historyedit_note) | read |  | Change a note's text and the steps it is linked to, in place; the note then says when and by whom it was edited. Only notes can be edited. |
 | [`history.delete_note`](#historydelete_note) | read |  | Take a note out of the history; the steps it was linked to no longer list it. Only notes can be deleted. |
 | [`history.export_notes`](#historyexport_notes) | read |  | The session's notes as Markdown, in the order written, each with the steps it cites (number, caller and description), returned or written to a path given (which needs leave to edit). |
-| [`history.suggest_anchors`](#historysuggest_anchors) | read |  | Anchors that could stand for a step's literals in a recipe: search matches, structure fields and findings at the same offset in its document as it is now, the selection an earlier step set, and earlier steps' values equal to it, those that port to other files first. |
+| [`history.suggest_anchors`](#historysuggest_anchors) | read |  | Anchors that could stand for a step's literals in a recipe: search matches, structure fields and findings at the same offset in its document as it is now, the selection an earlier step set, picks from lists earlier steps returned (strings, keys, candidates), and earlier steps' values equal to it, those that port to other files first. |
 | [`history.make_anchor`](#historymake_anchor) | read |  | Turn the literal at a path of a step's params into an anchor in its derived_from, so a recipe made from it finds the value when it runs; a read it cites becomes a step of the journal. |
-| [`history.make_parameter`](#historymake_parameter) | read |  | Turn the literal at a path of a step's params into a named recipe parameter, the person's to supply when the recipe runs, the literal its default. |
+| [`history.make_parameter`](#historymake_parameter) | read |  | Turn the literal at a path of a step's params into a named recipe parameter, the person's to supply when the recipe runs, the literal its default (and the anchor that found it, if one did, its default_anchor). |
 | [`history.clear_anchor`](#historyclear_anchor) | read |  | Clear the anchor at a path of a step's params, so a recipe made from it repeats the literal. |
 | [`history.recipe`](#historyrecipe) | read |  | A recipe of the journal's successful steps (or those chosen, with the steps they cite), each recorded provenance as an anchor, parameters declared, steps numbered from 1 and the recorded document left out. |
 | [`search.find`](#searchfind) | read | core | The next (or previous) occurrence of hex bytes, text, UTF-16 text or an integer from an offset. |
@@ -1311,7 +1311,7 @@ The session's notes as Markdown, in the order written, each with the steps it ci
 
 ### history.suggest_anchors
 
-Anchors that could stand for a step's literals in a recipe: search matches, structure fields and findings at the same offset in its document as it is now, the selection an earlier step set, and earlier steps' values equal to it, those that port to other files first.
+Anchors that could stand for a step's literals in a recipe: search matches, structure fields and findings at the same offset in its document as it is now, the selection an earlier step set, picks from lists earlier steps returned (strings, keys, candidates), and earlier steps' values equal to it, those that port to other files first.
 
 **Effect:** `read` · **MCP tool:** `history_suggest_anchors`, through `api_call`, or with `--all-tools`
 
@@ -1350,7 +1350,7 @@ Turn the literal at a path of a step's params into an anchor in its derived_from
 
 ### history.make_parameter
 
-Turn the literal at a path of a step's params into a named recipe parameter, the person's to supply when the recipe runs, the literal its default.
+Turn the literal at a path of a step's params into a named recipe parameter, the person's to supply when the recipe runs, the literal its default (and the anchor that found it, if one did, its default_anchor).
 
 **Effect:** `read` · **MCP tool:** `history_make_parameter`, through `api_call`, or with `--all-tools`
 

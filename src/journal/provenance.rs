@@ -18,7 +18,7 @@
 //! A client that passed a literal it took from an earlier result can say so
 //! afterwards with `history.make_anchor {step, path, anchor}`, which also
 //! promotes a cited read; `history.suggest_anchors` offers the anchors that
-//! fit a step's literals.
+//! fit a step's literals, picks from earlier steps' lists among them.
 //!
 //! **Editing.** [`make_anchor`], [`make_parameter`] and [`clear_anchor`] set
 //! or clear one parameter's anchor in an entry's `derived_from`;
@@ -108,6 +108,14 @@ const MOST_SUGGESTIONS: usize = 12;
 const MOST_STEP_SUGGESTIONS: usize = 3;
 /// Most fields of one structure looked through.
 const MOST_FIELDS_SEARCHED: usize = 10_000;
+/// Most pick anchors suggested for one literal.
+const MOST_PICK_SUGGESTIONS: usize = 4;
+/// Most items of one list looked through for a literal.
+const MOST_ITEMS_SEARCHED: usize = 100_000;
+/// The shortest text, and the smallest number, a pick is suggested for:
+/// shorter or smaller ones turn up in lists by chance.
+const SHORTEST_PICKED_TEXT: usize = 3;
+const SMALLEST_PICKED_NUMBER: u64 = 16;
 
 // ---------------------------------------------------------------------------
 // Anchors for what the window knows
@@ -359,7 +367,10 @@ pub fn entry_value(entry: &JournalEntry) -> Value {
 
 /// Turn the literal at `path` of step `step` into the recipe parameter
 /// `name`, of `kind` (the literal's type when omitted), described as
-/// `description`. The literal becomes the parameter's default.
+/// `description`. The literal becomes the parameter's default; when an
+/// anchor found it (a `vars.set` of a value picked from a list, say), that
+/// anchor becomes its `default_anchor`, which finds the value again when no
+/// value is given.
 pub fn make_parameter(workspace: &mut dyn Workspace, step: u64, path: &str, name: &str, description: Option<String>, kind: Option<ParameterType>) -> Result<(AnchorChange, RecipeParameter), ApiError> {
     check_parameter_name(name)?;
     let value = literal_at(workspace, step, path)?;
@@ -371,7 +382,9 @@ pub fn make_parameter(workspace: &mut dyn Workspace, step: u64, path: &str, name
     if let Some(earlier) = workspace.journal().parameters().get(name).filter(|earlier| earlier.kind != kind) {
         return Err(ApiError::invalid_params(format!("the parameter '{name}' is already of type {}", earlier.kind.name())));
     }
-    let parameter = RecipeParameter { kind, description: description.unwrap_or_default(), default: Some(value), default_anchor: None };
+    // A value an anchor found stays found by it unless one is given.
+    let default_anchor = workspace.journal().entry(step).and_then(|entry| entry.derived_from.get(path).cloned()).filter(|anchor| !matches!(anchor, Anchor::Param { .. }));
+    let parameter = RecipeParameter { kind, description: description.unwrap_or_default(), default: Some(value), default_anchor };
     workspace.journal_mut().declare_parameter(name, parameter.clone());
     let change = make_anchor(workspace, step, path, Anchor::Param { param: name.to_string() })?;
     Ok((change, parameter))
@@ -810,15 +823,22 @@ pub struct LiteralSuggestions {
 /// What `step`'s integer literals (or the literal at `only`) could be
 /// anchored to: earlier steps' values, search matches, findings and
 /// structure fields at the same offset in the step's document as it is
-/// now, and the selection an earlier step set.
+/// now, the selection an earlier step set, and items of lists earlier
+/// steps returned (strings, keys, candidates), chosen by what they hold.
+/// Its text literals are listed too when an earlier list holds them.
 pub fn suggest_anchors(workspace: &mut dyn Workspace, step: u64, only: Option<&str>) -> Result<Vec<LiteralSuggestions>, ApiError> {
     let entry = workspace.journal().entry(step).cloned().ok_or_else(|| not_a_step(step))?;
+    let earlier = earlier_entries(workspace.journal(), step);
+    let lists = earlier_lists(workspace, &earlier);
     let literals = match only {
         Some(path) => vec![(path.to_string(), literal_at(workspace, step, path)?)],
-        None => integer_literals(&entry.params),
+        None => {
+            let mut literals = integer_literals(&entry.params);
+            literals.extend(text_literals(&entry.params).into_iter().filter(|(_, value)| lists.iter().any(|list| list.position_of(value).is_some())));
+            literals
+        }
     };
     let numbers: Vec<u64> = literals.iter().filter_map(|(_, value)| value.as_u64()).collect();
-    let earlier = earlier_entries(workspace.journal(), step);
     let mut context = SuggestionContext { finds: find_offsets(workspace, &earlier, entry.doc.as_deref()), findings: Vec::new(), selection: earlier_selection(&earlier, entry.doc.as_deref()) };
     if let Some(doc) = entry.doc.as_deref()
         && !numbers.is_empty()
@@ -835,6 +855,7 @@ pub fn suggest_anchors(workspace: &mut dyn Workspace, step: u64, only: Option<&s
             context.suggest_findings(number, &numbers, &mut suggestions);
             context.suggest_selection(number, &mut suggestions);
         }
+        suggest_picks(&lists, &value, &mut suggestions);
         suggest_steps(&earlier, &value, &mut suggestions);
         suggestions.truncate(MOST_SUGGESTIONS);
         let anchor = entry.derived_from.get(&path).cloned();
@@ -853,6 +874,135 @@ fn integer_literals(params: &Value) -> Vec<(String, Value)> {
         true
     });
     found
+}
+
+/// Every text in `params` with its path, leaving out `doc`.
+fn text_literals(params: &Value) -> Vec<(String, Value)> {
+    let mut found = Vec::new();
+    anchors::visit_paths(params, "", &mut |path, value| {
+        if value.is_string() && path != "doc" {
+            found.push((path.to_string(), value.clone()));
+        }
+        true
+    });
+    found
+}
+
+/// A list of items an earlier step returned, such as `job.strings`.
+struct EarlierList {
+    step: u64,
+    method: String,
+    /// Where it is in the step's `{"params", "result", "job"}`.
+    path: String,
+    items: Vec<Value>,
+}
+
+impl EarlierList {
+    /// The first item with a field holding `value`, and that field.
+    fn position_of(&self, value: &Value) -> Option<(usize, String)> {
+        let picked = match value {
+            Value::String(text) => text.chars().count() >= SHORTEST_PICKED_TEXT,
+            Value::Number(number) => number.as_u64().is_some_and(|number| number >= SMALLEST_PICKED_NUMBER),
+            _ => false,
+        };
+        if !picked {
+            return None;
+        }
+        self.items.iter().take(MOST_ITEMS_SEARCHED).enumerate().find_map(|(index, item)| {
+            let fields = item.as_object()?;
+            fields.iter().find(|(_, field)| *field == value).map(|(name, _)| (index, name.clone()))
+        })
+    }
+
+    /// The first item that passes `condition`, if any.
+    fn first_passing(&self, condition: &serde_json::Map<String, Value>) -> Option<usize> {
+        self.items.iter().take(MOST_ITEMS_SEARCHED).position(|item| anchors::pick::passes(item, condition).unwrap_or(false))
+    }
+}
+
+/// The lists of items (objects) in what `earlier` steps were given and
+/// returned, a finished job's result among them.
+fn earlier_lists(workspace: &mut dyn Workspace, earlier: &[JournalEntry]) -> Vec<EarlierList> {
+    let mut lists = Vec::new();
+    for entry in earlier {
+        let mut value = entry_value(entry);
+        if let Some(job) = entry.result.as_ref().and_then(|result| result.get("job")).and_then(Value::as_str)
+            && let Some(result) = workspace.bus().jobs().status(job).and_then(|status| status.result)
+        {
+            value["job"] = result;
+        }
+        anchors::visit_paths(&value, "", &mut |path, found| {
+            if let Some(items) = found.as_array().filter(|items| items.first().is_some_and(Value::is_object)) {
+                lists.push(EarlierList { step: entry.step, method: entry.method.clone(), path: path.to_string(), items: items.clone() });
+                return false;
+            }
+            true
+        });
+    }
+    lists
+}
+
+/// Pick anchors for `value` from the lists earlier steps returned: by a
+/// pattern its text fits, by its item's tag, or by its place in the list.
+fn suggest_picks(lists: &[EarlierList], value: &Value, suggestions: &mut Vec<Suggestion>) {
+    let mut offered = 0;
+    for list in lists {
+        let Some((index, field)) = list.position_of(value) else { continue };
+        let pick = |condition: Option<serde_json::Map<String, Value>>, nth: usize| Anchor::Pick {
+            pick: anchors::Pick { step: anchors::StepRef::Number(list.step), list: list.path.clone(), condition, sort: None, nth, field: Some(field.clone()) },
+        };
+        let whose = format!("{} of step {} ({})", list.path, list.step, list.method);
+        let mut offers = Vec::new();
+        if let Some(pattern) = value.as_str().and_then(shape_of) {
+            let condition = serde_json::Map::from_iter([(field.clone(), serde_json::json!({ "regex": pattern }))]);
+            if list.first_passing(&condition) == Some(index) {
+                offers.push((pick(Some(condition), 0), format!("the first {field} in {whose} matching /{pattern}/")));
+            }
+        }
+        if let Some(tag) = list.items[index].get("tag").filter(|tag| tag.is_string()) {
+            let condition = serde_json::Map::from_iter([("tag".to_string(), tag.clone())]);
+            if list.first_passing(&condition) == Some(index) {
+                offers.push((pick(Some(condition), 0), format!("the {field} of the first item in {whose} tagged {}", tag.as_str().unwrap_or_default())));
+            }
+        }
+        offers.push((pick(None, index), format!("the {field} of the {} item in {whose}", anchors::ordinal(index))));
+        for (anchor, reason) in offers {
+            if offered == MOST_PICK_SUGGESTIONS {
+                return;
+            }
+            push_new(suggestions, anchor, reason);
+            offered += 1;
+        }
+    }
+}
+
+/// A pattern for text of the same shape as `text`, which finds such text
+/// again in another file: what comes up to its last separator as it is,
+/// then the kind and number of characters after it (`NC500-2F357657` is
+/// `^NC500-[0-9A-F]{8}$`); or, for hex with no separator, hex of its
+/// length. `None` for text with neither.
+pub fn shape_of(text: &str) -> Option<String> {
+    let separator = text.char_indices().rev().find(|(_, character)| matches!(character, '-' | '_' | ':' | '=' | '/' | '.' | ' ')).map(|(at, character)| at + character.len_utf8());
+    let (prefix, tail) = match separator {
+        Some(at) => text.split_at(at),
+        None => ("", text),
+    };
+    let count = tail.chars().count();
+    if count < 4 || !tail.chars().all(|character| character.is_ascii_alphanumeric()) {
+        return None;
+    }
+    let class = if tail.chars().all(|character| character.is_ascii_digit()) {
+        "[0-9]"
+    } else if tail.chars().all(|character| character.is_ascii_digit() || ('A'..='F').contains(&character)) {
+        "[0-9A-F]"
+    } else if tail.chars().all(|character| character.is_ascii_hexdigit() && !character.is_ascii_uppercase()) {
+        "[0-9a-f]"
+    } else if prefix.is_empty() {
+        return None;
+    } else {
+        "[0-9A-Za-z]"
+    };
+    Some(format!("^{}{class}{{{count}}}$", regex_lite::escape(prefix)))
 }
 
 /// The successful entries and reads before `step`, the latest first.
