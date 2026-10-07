@@ -409,11 +409,13 @@ pub fn field_matches(dissection: &Dissection, name: &str) -> Vec<FieldMatch> {
     if let Some(path) = name.strip_prefix(TEMPLATE_PREFIX) {
         return template_matches(dissection, path);
     }
-    let found = named_matches(dissection, &name);
-    if !found.is_empty() {
-        return found;
+    let mut found = named_matches(dissection, &name);
+    // tshark gives a flag as words ("Message is a query"), so the number
+    // worked out from the flags word is offered as well.
+    if found.is_empty() || DERIVED_NAMES.contains(&name.as_str()) {
+        found.extend(derived_matches(dissection, &name));
     }
-    derived_matches(dissection, &name)
+    found
 }
 
 /// Values of a field named by tshark or by the notes.
@@ -1204,6 +1206,22 @@ mod tests {
         assert!(keeps("dns.qry.type>=16 && dns.qry.type<17", &query));
         assert!(!keeps("dns.qry.type==1", &query));
         assert!(!keeps("dns.qry.type==A", &query));
+    }
+
+    #[test]
+    fn a_flag_tshark_gives_in_words_is_still_found_by_its_number() {
+        use crate::packets::dissect::Layer;
+        let flags = Field::new("Flags", 44, 2, "0x0100 Standard query").with_children(vec![Field::new("Response", 44, 2, "Message is a query")]);
+        let dissection = Dissection {
+            layers: vec![Layer { name: "Domain Name System (query)".into(), offset: 42, len: 12, fields: vec![flags] }],
+            tshark_layers: vec![0],
+            tshark_names: vec![WiresharkNames { protocol: "dns".into(), fields: vec![(vec![0], "dns.flags".into()), (vec![0, 0], "dns.flags.response".into())] }],
+            tshark_protocols: vec!["dns".into()],
+            ..Dissection::default()
+        };
+        assert!(keeps("dns.flags.response==0", &dissection));
+        assert!(keeps("dns.flags.response~query", &dissection), "tshark's words still match");
+        assert!(!keeps("dns.flags.response==1", &dissection));
     }
 
     #[test]
