@@ -51,6 +51,10 @@ pub struct UnpackParams {
     /// Document id, path or "current" (the default).
     #[serde(default)]
     pub doc: Option<String>,
+    /// Password for ZipCrypto-encrypted zip entries. Without one they are
+    /// listed, marked encrypted, with no content.
+    #[serde(default)]
+    pub password: Option<String>,
 }
 
 /// Parameters of `unpack.open`.
@@ -62,6 +66,10 @@ pub struct NodeParams {
     pub doc: Option<String>,
     /// Child indices from the root, such as [0, 2]; [] is the document itself.
     pub path: Vec<usize>,
+    /// The password unpack.run was given, when the tree was unpacked
+    /// with one.
+    #[serde(default)]
+    pub password: Option<String>,
 }
 
 /// Parameters of `unpack.read`.
@@ -82,6 +90,10 @@ pub struct ReadNodeParams {
     /// hex (the default), base64 or text.
     #[serde(default)]
     pub encoding: ByteEncoding,
+    /// The password unpack.run was given, when the tree was unpacked
+    /// with one.
+    #[serde(default)]
+    pub password: Option<String>,
 }
 
 /// Parameters of `unpack.save`.
@@ -95,6 +107,10 @@ pub struct SaveNodeParams {
     pub node: Vec<usize>,
     /// The file to write.
     pub path: String,
+    /// The password unpack.run was given, when the tree was unpacked
+    /// with one.
+    #[serde(default)]
+    pub password: Option<String>,
 }
 
 /// The result of `unpack.save`.
@@ -178,18 +194,25 @@ fn document_bytes(workspace: &mut dyn Workspace, doc: Option<&str>) -> Result<(T
 pub fn run(workspace: &mut dyn Workspace, caller: &Caller, params: UnpackParams) -> Result<JobStartedResult, ApiError> {
     let id = workspace::resolve(workspace, params.doc.as_deref())?;
     if let Some(app) = tool_jobs::window_showing(workspace, &id) {
-        return Ok(JobStartedResult { job: app.unpack_as(&caller.producer()) });
+        return Ok(JobStartedResult { job: app.unpack_as(&caller.producer(), params.password) });
     }
     let (span, name, bytes) = document_bytes(workspace, Some(&id))?;
+    let password = params.password;
     Ok(tool_jobs::spawn(
         workspace,
         &caller.producer(),
         ("unpack", "Unpack"),
         &span,
         None,
-        move |_| crate::unpack::unpack(bytes, &name, &Limits::default()),
+        move |_| unpack_with(bytes, &name, password.as_deref()),
         tree_summary,
     ))
+}
+
+/// Unpack `bytes` with the default limits, and `password` for encrypted
+/// zip entries.
+pub(crate) fn unpack_with(bytes: Arc<Vec<u8>>, name: &str, password: Option<&str>) -> Node {
+    crate::unpack::unpack_with_password(bytes, name, &Limits::default(), password.map(str::as_bytes))
 }
 
 /// What a finished unpacking says: how many items, and the tree.
@@ -197,14 +220,15 @@ pub(crate) fn tree_summary(tree: &Node) -> Summary {
     Summary::of(format!("{} items", tree.count().saturating_sub(1)), UnpackedNode::of(tree, Vec::new()))
 }
 
-/// The tree of document `doc`: the one the window unpacked, else unpacked now.
-fn tree_of(workspace: &mut dyn Workspace, doc: Option<&str>) -> Result<(String, Node), ApiError> {
+/// The tree of document `doc`: the one the window unpacked, else unpacked
+/// now, with `password` for encrypted zip entries.
+fn tree_of(workspace: &mut dyn Workspace, doc: Option<&str>, password: Option<&str>) -> Result<(String, Node), ApiError> {
     let id = workspace::resolve(workspace, doc)?;
     if let Some(tree) = tool_jobs::window_showing(workspace, &id).and_then(|app| app.bench.unpacked.clone()) {
         return Ok((id, tree));
     }
     let (_, name, bytes) = document_bytes(workspace, Some(&id))?;
-    Ok((id, crate::unpack::unpack(bytes, &name, &Limits::default())))
+    Ok((id, unpack_with(bytes, &name, password)))
 }
 
 /// The node at `path`, or why there is none.
@@ -213,7 +237,7 @@ fn node_at<'a>(tree: &'a Node, path: &[usize]) -> Result<&'a Node, ApiError> {
 }
 
 pub fn open(workspace: &mut dyn Workspace, params: NodeParams) -> Result<DocumentInfo, ApiError> {
-    let (id, tree) = tree_of(workspace, params.doc.as_deref())?;
+    let (id, tree) = tree_of(workspace, params.doc.as_deref(), params.password.as_deref())?;
     let node = node_at(&tree, &params.path)?;
     let name = format!("{} › {}", workspace::info(workspace, &id)?.name, node.name);
     let opened = workspace.open_derived(&id, node.data.to_vec(), &name)?;
@@ -221,7 +245,7 @@ pub fn open(workspace: &mut dyn Workspace, params: NodeParams) -> Result<Documen
 }
 
 pub fn read(workspace: &mut dyn Workspace, params: ReadNodeParams) -> Result<NodeBytes, ApiError> {
-    let (_, tree) = tree_of(workspace, params.doc.as_deref())?;
+    let (_, tree) = tree_of(workspace, params.doc.as_deref(), params.password.as_deref())?;
     let node = node_at(&tree, &params.path)?;
     let (start, len) = values::span_within(node.data.len(), params.start, params.len)?;
     values::check_size(len, MAX_CALL_BYTES, "the read")?;
@@ -232,7 +256,7 @@ pub fn read(workspace: &mut dyn Workspace, params: ReadNodeParams) -> Result<Nod
 /// are no span of the document, so this, not documents.export, saves them.
 /// The person, at the window, is told on the status bar.
 pub fn save(workspace: &mut dyn Workspace, caller: &Caller, params: SaveNodeParams) -> Result<SavedNode, ApiError> {
-    let (_, tree) = tree_of(workspace, params.doc.as_deref())?;
+    let (_, tree) = tree_of(workspace, params.doc.as_deref(), params.password.as_deref())?;
     let node = node_at(&tree, &params.node)?;
     std::fs::write(&params.path, node.data.as_slice()).map_err(|error| ApiError::new(ErrorCode::Unavailable, format!("could not save {} to {}: {error}", node.name, params.path)))?;
     if matches!(caller, Caller::Panel)
@@ -264,6 +288,23 @@ mod tests {
         let opened = call(&mut workspace, "unpack.open", json!({"path": [0]})).unwrap();
         assert_eq!(opened["len"], 300);
         assert!(opened["name"].as_str().unwrap().starts_with("example.bin › "));
+    }
+
+    #[test]
+    fn an_encrypted_zip_is_marked_encrypted_until_unpacked_with_its_password() {
+        let secret = b"%PDF-1.4 the confidential design".to_vec();
+        let archive = crate::unpack::test_support::encrypted_entry("Q3_specs.pdf", &secret, false, b"Kestrel!Moor42");
+        let mut workspace = workspace_with("backup.zip", &archive);
+        let locked = run_job(&mut workspace, "unpack.run", json!({}));
+        let member = &locked["result"]["children"][0];
+        assert_eq!((member["name"].as_str(), member["len"].as_u64()), (Some("Q3_specs.pdf"), Some(0)), "{locked}");
+        assert!(member["note"].as_str().unwrap().starts_with("encrypted (ZipCrypto)"), "{member}");
+
+        let opened = run_job(&mut workspace, "unpack.run", json!({"password": "Kestrel!Moor42"}));
+        let member = &opened["result"]["children"][0];
+        assert_eq!((member["len"].as_u64(), member["note"].as_str()), (Some(secret.len() as u64), Some("decrypted (ZipCrypto)")), "{opened}");
+        let read = call(&mut workspace, "unpack.read", json!({"path": [0], "encoding": "text", "password": "Kestrel!Moor42"})).unwrap();
+        assert_eq!(read["data"].as_str().unwrap().as_bytes(), secret.as_slice());
     }
 
     #[test]

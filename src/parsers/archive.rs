@@ -30,6 +30,41 @@ fn zip_method_name(method: u16) -> String {
     }
 }
 
+const ZIP_FLAG_ENCRYPTED: u16 = 0x0001;
+const ZIP_FLAG_DESCRIPTOR: u16 = 0x0008;
+const ZIP_FLAG_UTF8: u16 = 0x0800;
+const ZIP_METHOD_AES: u16 = 99;
+
+/// The general-purpose flags that matter to a reader, in words, such as
+/// "encrypted (ZipCrypto), UTF-8 names".
+fn zip_flags_text(flags: u16, method: u16) -> String {
+    let mut parts = Vec::new();
+    if let Some(encryption) = zip_encryption(flags, method) {
+        parts.push(format!("encrypted ({encryption})"));
+    }
+    if flags & ZIP_FLAG_DESCRIPTOR != 0 {
+        parts.push("sizes in a data descriptor".to_string());
+    }
+    if flags & ZIP_FLAG_UTF8 != 0 {
+        parts.push("UTF-8 names".to_string());
+    }
+    if parts.is_empty() {
+        parts.push("none set".to_string());
+    }
+    format!("{flags:#06x}: {}", parts.join(", "))
+}
+
+/// How an entry is encrypted, if it is.
+fn zip_encryption(flags: u16, method: u16) -> Option<&'static str> {
+    if method == ZIP_METHOD_AES {
+        Some("AES")
+    } else if flags & ZIP_FLAG_ENCRYPTED != 0 {
+        Some("ZipCrypto")
+    } else {
+        None
+    }
+}
+
 impl Parser for ZipParser {
     fn id(&self) -> &str {
         "zip"
@@ -63,23 +98,27 @@ impl Parser for ZipParser {
             let name_len = u16le(bytes, at + 26)? as usize;
             let extra_len = u16le(bytes, at + 28)? as usize;
             let name_start = at + 30;
-            let name = text_preview(bytes.get(name_start..name_start + name_len)?, 80);
+            let raw_name = bytes.get(name_start..name_start + name_len)?;
+            let name = if flags & ZIP_FLAG_UTF8 != 0 { String::from_utf8_lossy(raw_name).chars().take(80).collect() } else { text_preview(raw_name, 80) };
             let data_start = name_start + name_len + extra_len;
-            let uses_descriptor = flags & 0x08 != 0 && compressed == 0;
+            let uses_descriptor = flags & ZIP_FLAG_DESCRIPTOR != 0 && compressed == 0;
             let entry_len = 30 + name_len + extra_len + compressed;
+            // An encrypted entry's stored bytes are ciphertext, whatever its method.
+            let encryption = zip_encryption(flags, method).map(|kind| format!("encrypted ({kind}), ")).unwrap_or_default();
             entries.push(
                 Field::new(
                     name,
                     base + at,
                     entry_len,
                     format!(
-                        "{}, {} → {}, crc {crc:08x}",
+                        "{encryption}{}, {} → {}, crc {crc:08x}",
                         zip_method_name(method),
                         human_bytes(compressed as u64),
                         human_bytes(uncompressed as u64)
                     ),
                 )
                 .with_children(vec![
+                    Field::new("flags", base + at + 6, 2, zip_flags_text(flags, method)),
                     Field::new("method", base + at + 8, 2, zip_method_name(method)),
                     Field::new("compressed size", base + at + 18, 4, compressed.to_string()),
                     Field::new("uncompressed size", base + at + 22, 4, uncompressed.to_string()),
@@ -433,6 +472,24 @@ mod tests {
         assert!(entry.value.starts_with("stored"), "{}", entry.value);
         assert_eq!(entry.offset, 10);
         assert!(finding.detail.contains("1 local entries"), "{}", finding.detail);
+        assert_eq!(entry.children[0].value, "0x0000: none set");
+    }
+
+    #[test]
+    fn an_encrypted_zip_entry_says_so_rather_than_reading_as_plain_stored_data() {
+        let mut bytes = zip_with_one_stored_entry("café.txt".as_bytes(), b"ciphertext, not plaintext");
+        bytes[6..8].copy_from_slice(&(0x0001u16 | 0x0008 | 0x0800).to_le_bytes());
+        let finding = ZipParser.parse(&bytes, 0).expect("zip");
+        let entry = &finding.fields[0].children[0];
+        assert_eq!(entry.name, "café.txt", "a UTF-8 name is decoded as UTF-8");
+        assert!(entry.value.starts_with("encrypted (ZipCrypto), stored"), "{}", entry.value);
+        let flags = &entry.children[0];
+        assert_eq!((flags.name.as_str(), flags.offset, flags.len), ("flags", 6, 2));
+        assert_eq!(flags.value, "0x0809: encrypted (ZipCrypto), sizes in a data descriptor, UTF-8 names");
+
+        bytes[8..10].copy_from_slice(&99u16.to_le_bytes());
+        let finding = ZipParser.parse(&bytes, 0).expect("zip");
+        assert!(finding.fields[0].children[0].value.starts_with("encrypted (AES), AES"), "{}", finding.fields[0].children[0].value);
     }
 
     #[test]

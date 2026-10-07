@@ -82,8 +82,22 @@ struct Budget {
     bytes: usize,
 }
 
+/// What one unpacking works within: its limits, and the password tried on
+/// encrypted archive entries.
+struct Settings<'a> {
+    limits: &'a Limits,
+    password: Option<&'a [u8]>,
+}
+
 /// Unpack `bytes` (called `name`) recursively.
 pub fn unpack(bytes: Arc<Vec<u8>>, name: &str, limits: &Limits) -> Node {
+    unpack_with_password(bytes, name, limits, None)
+}
+
+/// Unpack `bytes` recursively, decrypting ZipCrypto entries with `password`.
+/// Without one, an encrypted entry is listed with a note and no content.
+pub fn unpack_with_password(bytes: Arc<Vec<u8>>, name: &str, limits: &Limits, password: Option<&[u8]>) -> Node {
+    let settings = Settings { limits, password };
     let mut root = Node {
         name: name.to_string(),
         kind: "file".to_string(),
@@ -95,15 +109,16 @@ pub fn unpack(bytes: Arc<Vec<u8>>, name: &str, limits: &Limits) -> Node {
         method: None,
     };
     let mut budget = Budget { nodes: 1, bytes: 0 };
-    expand(&mut root, 0, limits, &mut budget);
+    expand(&mut root, 0, &settings, &mut budget);
     root
 }
 
-fn expand(node: &mut Node, depth: usize, limits: &Limits, budget: &mut Budget) {
+fn expand(node: &mut Node, depth: usize, settings: &Settings, budget: &mut Budget) {
+    let limits = settings.limits;
     // Decompression is capped by what is left of the total, so a small archive
     // of highly compressible entries cannot allocate far beyond the limit.
     let mut bytes_left = limits.max_total_bytes.saturating_sub(budget.bytes);
-    let found = find_children(&node.data, limits, &mut bytes_left);
+    let found = find_children(&node.data, settings, &mut bytes_left);
     if bytes_left == 0 {
         node.note = Some("stopped: size limit reached".to_string());
     }
@@ -118,7 +133,7 @@ fn expand(node: &mut Node, depth: usize, limits: &Limits, budget: &mut Budget) {
         if !admit(node, &child, limits, budget) {
             break;
         }
-        descend(&mut child, depth + 1, limits, budget);
+        descend(&mut child, depth + 1, settings, budget);
         node.children.push(child);
     }
 }
@@ -142,18 +157,18 @@ fn admit(parent: &mut Node, child: &Node, limits: &Limits, budget: &mut Budget) 
 /// Look inside a newly found node. Most are searched for containers and
 /// streams; an embedded filesystem arrives as a folder that already holds its
 /// files, so each of those is counted and searched instead.
-fn descend(node: &mut Node, depth: usize, limits: &Limits, budget: &mut Budget) {
+fn descend(node: &mut Node, depth: usize, settings: &Settings, budget: &mut Budget) {
     if node.children.is_empty() {
-        expand(node, depth, limits, budget);
+        expand(node, depth, settings, budget);
         return;
     }
     let files = std::mem::take(&mut node.children);
     for mut child in files {
-        if !admit(node, &child, limits, budget) {
+        if !admit(node, &child, settings.limits, budget) {
             break;
         }
-        if depth < limits.max_depth {
-            descend(&mut child, depth + 1, limits, budget);
+        if depth < settings.limits.max_depth {
+            descend(&mut child, depth + 1, settings, budget);
         }
         node.children.push(child);
     }
@@ -164,14 +179,15 @@ fn descend(node: &mut Node, depth: usize, limits: &Limits, budget: &mut Budget) 
 ///
 /// Extracted bytes are taken from `bytes_left`; once it runs out, no more
 /// children are extracted.
-fn find_children(data: &[u8], limits: &Limits, bytes_left: &mut usize) -> Vec<Node> {
+fn find_children(data: &[u8], settings: &Settings, bytes_left: &mut usize) -> Vec<Node> {
+    let limits = settings.limits;
     // Filesystems first: their compressed blocks and stored files must not be
     // reported again as loose streams or archive entries.
     let mut children = crate::embedfs::filesystem_nodes(data, limits, bytes_left);
     let in_filesystem = |offset: usize| {
         children.iter().any(|fs| offset >= fs.source_offset && offset < fs.source_offset + fs.source_len)
     };
-    let archived: Vec<Node> = zip_entries(data, limits, bytes_left)
+    let archived: Vec<Node> = zip_entries(data, settings, bytes_left)
         .into_iter()
         .chain(tar_entries(data, limits, bytes_left))
         .filter(|entry| !in_filesystem(entry.source_offset))
@@ -235,6 +251,14 @@ const ZIP_CENTRAL: &[u8] = b"PK\x01\x02";
 const ZIP_LOCAL_HEADER_LEN: usize = 30;
 const ZIP_CENTRAL_HEADER_LEN: usize = 46;
 const MAX_ENTRIES: usize = 4096;
+/// General-purpose flag: the entry is encrypted.
+const ZIP_FLAG_ENCRYPTED: usize = 0x0001;
+/// General-purpose flag: sizes and CRC follow the data in a descriptor.
+const ZIP_FLAG_DESCRIPTOR: usize = 0x0008;
+const ZIP_METHOD_STORED: usize = 0;
+const ZIP_METHOD_DEFLATE: usize = 8;
+/// WinZip AES: the real method is in an extra field, the data AES-encrypted.
+const ZIP_METHOD_AES: usize = 99;
 
 fn u16le(data: &[u8], at: usize) -> Option<usize> {
     data.get(at..at + 2).map(|b| u16::from_le_bytes([b[0], b[1]]) as usize)
@@ -258,36 +282,62 @@ fn positions(data: &[u8], needle: &[u8]) -> Vec<usize> {
     found
 }
 
-/// Sizes recorded in the central directory, keyed by file name: used when a
-/// local header defers its sizes to a data descriptor.
-fn central_sizes(data: &[u8]) -> Vec<(Vec<u8>, usize, usize)> {
+/// What the central directory records of one entry: used when a local
+/// header defers its sizes and CRC to a data descriptor.
+struct CentralRecord {
+    name: Vec<u8>,
+    crc: usize,
+    compressed: usize,
+    uncompressed: usize,
+}
+
+fn central_records(data: &[u8]) -> Vec<CentralRecord> {
     positions(data, ZIP_CENTRAL)
         .into_iter()
         .filter_map(|at| {
-            let compressed = u32le(data, at + 20)?;
-            let uncompressed = u32le(data, at + 24)?;
             let name_len = u16le(data, at + 28)?;
             let name = data.get(at + ZIP_CENTRAL_HEADER_LEN..at + ZIP_CENTRAL_HEADER_LEN + name_len)?;
-            Some((name.to_vec(), compressed, uncompressed))
+            Some(CentralRecord { name: name.to_vec(), crc: u32le(data, at + 16)?, compressed: u32le(data, at + 20)?, uncompressed: u32le(data, at + 24)? })
         })
         .collect()
 }
 
-fn zip_entries(data: &[u8], limits: &Limits, bytes_left: &mut usize) -> Vec<Node> {
+fn zip_entries(data: &[u8], settings: &Settings, bytes_left: &mut usize) -> Vec<Node> {
     let locals = positions(data, ZIP_LOCAL);
     if locals.is_empty() {
         return Vec::new();
     }
-    let central = central_sizes(data);
-    locals.into_iter().filter_map(|at| zip_entry(data, at, &central, limits, bytes_left)).collect()
+    let central = central_records(data);
+    locals.into_iter().filter_map(|at| zip_entry(data, at, &central, settings, bytes_left)).collect()
 }
 
-fn zip_entry(data: &[u8], at: usize, central: &[(Vec<u8>, usize, usize)], limits: &Limits, bytes_left: &mut usize) -> Option<Node> {
-    let cap = node_cap(limits, *bytes_left)?;
-    let flags = u16le(data, at + 6)?;
-    let method = u16le(data, at + 8)?;
-    let mut compressed = u32le(data, at + 18)?;
-    let mut uncompressed = u32le(data, at + 22)?;
+/// A local header's facts, with sizes and CRC taken from the central
+/// directory when the header defers them to a data descriptor.
+struct LocalHeader {
+    flags: usize,
+    method: usize,
+    /// DOS modification time, whose high byte checks a ZipCrypto password
+    /// when the entry has a data descriptor.
+    time: usize,
+    crc: usize,
+    compressed: usize,
+    uncompressed: usize,
+    data_start: usize,
+}
+
+impl LocalHeader {
+    fn encrypted(&self) -> bool {
+        self.flags & ZIP_FLAG_ENCRYPTED != 0 || self.method == ZIP_METHOD_AES
+    }
+
+    /// The byte a ZipCrypto header ends with when the password is right.
+    fn check_byte(&self) -> u8 {
+        if self.flags & ZIP_FLAG_DESCRIPTOR != 0 { (self.time >> 8) as u8 } else { (self.crc >> 24) as u8 }
+    }
+}
+
+fn zip_entry(data: &[u8], at: usize, central: &[CentralRecord], settings: &Settings, bytes_left: &mut usize) -> Option<Node> {
+    let cap = node_cap(settings.limits, *bytes_left)?;
     let name_len = u16le(data, at + 26)?;
     let extra_len = u16le(data, at + 28)?;
     let name_bytes = data.get(at + ZIP_LOCAL_HEADER_LEN..at + ZIP_LOCAL_HEADER_LEN + name_len)?;
@@ -295,45 +345,179 @@ fn zip_entry(data: &[u8], at: usize, central: &[(Vec<u8>, usize, usize)], limits
     if name.is_empty() || name.ends_with('/') {
         return None; // Directories hold no data.
     }
-    let data_start = at + ZIP_LOCAL_HEADER_LEN + name_len + extra_len;
-    let has_descriptor = flags & 0x08 != 0;
-    if has_descriptor
-        && compressed == 0
-        && let Some((_, c, u)) = central.iter().find(|(n, _, _)| n == name_bytes)
+    let mut header = LocalHeader {
+        flags: u16le(data, at + 6)?,
+        method: u16le(data, at + 8)?,
+        time: u16le(data, at + 10)?,
+        crc: u32le(data, at + 14)?,
+        compressed: u32le(data, at + 18)?,
+        uncompressed: u32le(data, at + 22)?,
+        data_start: at + ZIP_LOCAL_HEADER_LEN + name_len + extra_len,
+    };
+    if header.flags & ZIP_FLAG_DESCRIPTOR != 0
+        && header.compressed == 0
+        && let Some(record) = central.iter().find(|record| record.name == name_bytes)
     {
-        compressed = *c;
-        uncompressed = *u;
+        header.crc = record.crc;
+        header.compressed = record.compressed;
+        header.uncompressed = record.uncompressed;
     }
-    let rest = data.get(data_start..)?;
-    let (bytes, consumed, method_name, note) = match method {
-        0 => {
-            let len = if compressed > 0 { compressed } else { uncompressed };
-            let stored = rest.get(..len.min(cap))?;
-            (stored.to_vec(), stored.len(), None, None)
-        }
-        8 => {
-            // Inflate tells us exactly where the deflate data ends, which also
-            // covers descriptor entries the central directory did not list.
-            let input = if compressed > 0 { rest.get(..compressed).unwrap_or(rest) } else { rest };
-            let decoded = compress::decompress(Codec::Deflate, input, cap).ok()?;
-            let note = decoded.truncated.then(|| "stopped: node size limit reached".to_string());
-            (decoded.data, decoded.consumed, Some("deflate".to_string()), note)
-        }
-        other => {
-            let raw = rest.get(..compressed.min(rest.len()).min(cap))?;
-            (raw.to_vec(), raw.len(), None, Some(format!("unsupported compression method {other}")))
-        }
+    let rest = data.get(header.data_start..)?;
+    let member = if header.encrypted() {
+        encrypted_member(&header, rest, settings.password, cap)
+    } else {
+        decode_member(header.method, header.compressed, header.uncompressed, rest, cap)
     };
     Some(charge(Node {
         name,
         kind: "zip entry".to_string(),
         source_offset: at,
-        source_len: data_start - at + consumed,
-        data: Arc::new(bytes),
+        source_len: header.data_start - at + member.consumed,
+        data: Arc::new(member.bytes),
         children: Vec::new(),
-        note,
-        method: method_name,
+        note: member.note,
+        method: member.method,
     }, bytes_left))
+}
+
+/// What came of one entry's data.
+struct Member {
+    bytes: Vec<u8>,
+    /// Bytes of the entry's stored data used.
+    consumed: usize,
+    method: Option<String>,
+    note: Option<String>,
+}
+
+impl Member {
+    /// An entry left without content, with why.
+    fn empty(consumed: usize, method: Option<String>, note: String) -> Self {
+        Member { bytes: Vec::new(), consumed, method, note: Some(note) }
+    }
+}
+
+/// Decompress an entry's stored data, `rest` running from its start to the
+/// end of the scanned bytes. A stream that does not inflate is still an
+/// entry, with the error as its note.
+fn decode_member(method: usize, compressed: usize, uncompressed: usize, rest: &[u8], cap: usize) -> Member {
+    match method {
+        ZIP_METHOD_STORED => {
+            let len = if compressed > 0 { compressed } else { uncompressed };
+            let stored = &rest[..len.min(cap).min(rest.len())];
+            Member { bytes: stored.to_vec(), consumed: stored.len(), method: None, note: None }
+        }
+        ZIP_METHOD_DEFLATE => {
+            // Inflate tells us exactly where the deflate data ends, which also
+            // covers descriptor entries the central directory did not list.
+            let input = if compressed > 0 { rest.get(..compressed).unwrap_or(rest) } else { rest };
+            match compress::decompress(Codec::Deflate, input, cap) {
+                Ok(decoded) => {
+                    let note = decoded.truncated.then(|| "stopped: node size limit reached".to_string());
+                    Member { bytes: decoded.data, consumed: decoded.consumed, method: Some("deflate".to_string()), note }
+                }
+                Err(error) => Member::empty(compressed.min(rest.len()), Some("deflate".to_string()), format!("could not inflate: {error}")),
+            }
+        }
+        other => {
+            let raw = &rest[..compressed.min(rest.len()).min(cap)];
+            Member { bytes: raw.to_vec(), consumed: raw.len(), method: None, note: Some(format!("unsupported compression method {other}")) }
+        }
+    }
+}
+
+/// An encrypted entry: decrypted when it is ZipCrypto and `password` fits,
+/// otherwise listed with a note and no content, never with its ciphertext
+/// standing in for the file.
+fn encrypted_member(header: &LocalHeader, rest: &[u8], password: Option<&[u8]>, cap: usize) -> Member {
+    let stored = &rest[..header.compressed.min(rest.len())];
+    if header.method == ZIP_METHOD_AES {
+        return Member::empty(stored.len(), None, "encrypted (AES): not decrypted".to_string());
+    }
+    let Some(password) = password else {
+        return Member::empty(stored.len(), None, "encrypted (ZipCrypto): unpack with a password to decrypt".to_string());
+    };
+    if stored.len() < zipcrypto::HEADER_LEN {
+        return Member::empty(stored.len(), None, "encrypted (ZipCrypto): the encryption header is cut short".to_string());
+    }
+    let plain = zipcrypto::decrypt(password, stored);
+    if plain[zipcrypto::HEADER_LEN - 1] != header.check_byte() {
+        return Member::empty(stored.len(), None, "encrypted (ZipCrypto): the password does not fit".to_string());
+    }
+    let payload = &plain[zipcrypto::HEADER_LEN..];
+    let mut member = decode_member(header.method, payload.len(), header.uncompressed, payload, cap);
+    member.consumed = stored.len();
+    if member.note.is_none() {
+        let fits = crc32fast::hash(&member.bytes) as usize == header.crc;
+        member.note = Some(if fits { "decrypted (ZipCrypto)" } else { "decrypted (ZipCrypto), but the CRC does not match: the password may be wrong" }.to_string());
+    }
+    member
+}
+
+/// The traditional PKWARE stream cipher ("ZipCrypto"): three 32-bit keys
+/// stirred by each plaintext byte, with a 12-byte header before the data
+/// whose last byte checks the password.
+mod zipcrypto {
+    pub const HEADER_LEN: usize = 12;
+
+    struct Keys([u32; 3]);
+
+    impl Keys {
+        fn new(password: &[u8]) -> Self {
+            let mut keys = Keys([0x1234_5678, 0x2345_6789, 0x3456_7890]);
+            for &byte in password {
+                keys.update(byte);
+            }
+            keys
+        }
+
+        fn update(&mut self, plain: u8) {
+            let [k0, k1, k2] = &mut self.0;
+            *k0 = crc32_byte(*k0, plain);
+            *k1 = k1.wrapping_add(*k0 & 0xFF).wrapping_mul(134_775_813).wrapping_add(1);
+            *k2 = crc32_byte(*k2, (*k1 >> 24) as u8);
+        }
+
+        fn stream_byte(&self) -> u8 {
+            let temp = (self.0[2] | 2) & 0xFFFF;
+            (temp.wrapping_mul(temp ^ 1) >> 8) as u8
+        }
+    }
+
+    /// One step of the CRC-32 the keys are stirred with.
+    fn crc32_byte(crc: u32, byte: u8) -> u32 {
+        let mut value = (crc ^ byte as u32) & 0xFF;
+        for _ in 0..8 {
+            value = if value & 1 != 0 { (value >> 1) ^ 0xEDB8_8320 } else { value >> 1 };
+        }
+        value ^ (crc >> 8)
+    }
+
+    /// Decrypt `cipher` (encryption header included) with `password`.
+    pub fn decrypt(password: &[u8], cipher: &[u8]) -> Vec<u8> {
+        let mut keys = Keys::new(password);
+        cipher
+            .iter()
+            .map(|&byte| {
+                let plain = byte ^ keys.stream_byte();
+                keys.update(plain);
+                plain
+            })
+            .collect()
+    }
+
+    /// Encrypt `plain` (encryption header included) with `password`.
+    #[cfg(test)]
+    pub fn encrypt(password: &[u8], plain: &[u8]) -> Vec<u8> {
+        let mut keys = Keys::new(password);
+        plain
+            .iter()
+            .map(|&byte| {
+                let cipher = byte ^ keys.stream_byte();
+                keys.update(byte);
+                cipher
+            })
+            .collect()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -415,6 +599,36 @@ fn walk_tar(data: &[u8], start: usize, limits: &Limits, bytes_left: &mut usize, 
         }
     }
     at
+}
+
+#[cfg(test)]
+pub(crate) mod test_support {
+    use super::*;
+
+    /// A ZipCrypto-encrypted local entry, as PKWARE's tools write one: a
+    /// 12-byte header ending in the CRC's high byte, then the encrypted data.
+    pub fn encrypted_entry(name: &str, content: &[u8], deflate: bool, password: &[u8]) -> Vec<u8> {
+        let crc = crc32fast::hash(content);
+        let payload = if deflate { compress::compress(Codec::Deflate, content).unwrap() } else { content.to_vec() };
+        let mut plain = b"random head".to_vec();
+        plain.push((crc >> 24) as u8);
+        plain.extend_from_slice(&payload);
+        let cipher = zipcrypto::encrypt(password, &plain);
+        let mut out = Vec::new();
+        out.extend_from_slice(ZIP_LOCAL);
+        out.extend_from_slice(&20u16.to_le_bytes());
+        out.extend_from_slice(&(ZIP_FLAG_ENCRYPTED as u16).to_le_bytes());
+        out.extend_from_slice(&(if deflate { ZIP_METHOD_DEFLATE as u16 } else { ZIP_METHOD_STORED as u16 }).to_le_bytes());
+        out.extend_from_slice(&[0; 4]);
+        out.extend_from_slice(&crc.to_le_bytes());
+        out.extend_from_slice(&(cipher.len() as u32).to_le_bytes());
+        out.extend_from_slice(&(content.len() as u32).to_le_bytes());
+        out.extend_from_slice(&(name.len() as u16).to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(name.as_bytes());
+        out.extend_from_slice(&cipher);
+        out
+    }
 }
 
 #[cfg(test)]
@@ -616,5 +830,75 @@ mod tests {
         for input in [junk, truncated, b"PK".to_vec(), Vec::new()] {
             let _ = unpack(Arc::new(input), "junk", &Limits::default());
         }
+    }
+
+    const PASSWORD: &[u8] = b"Kestrel!Moor42";
+
+    fn encrypted_archive() -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+        let pdf = b"%PDF-1.4\n1 0 obj << /Type /Catalog >> endobj\n%%EOF\n".to_vec();
+        let csv = text(40);
+        let mut archive = test_support::encrypted_entry("Q3_specs.pdf", &pdf, false, PASSWORD);
+        archive.extend(test_support::encrypted_entry("board_rev3.png", &noise(300), true, PASSWORD));
+        archive.extend(test_support::encrypted_entry("ledger.csv", &csv, true, PASSWORD));
+        (archive, pdf, csv)
+    }
+
+    #[test]
+    fn every_member_of_an_encrypted_zip_is_listed_as_encrypted_and_none_shows_ciphertext_as_its_content() {
+        let (archive, _, _) = encrypted_archive();
+        let root = unpack(Arc::new(archive), "backup_0912.zip", &Limits::default());
+        let names: Vec<&str> = root.children.iter().map(|child| child.name.as_str()).collect();
+        assert_eq!(names, ["Q3_specs.pdf", "board_rev3.png", "ledger.csv"], "{root:#?}");
+        for member in &root.children {
+            assert!(member.data.is_empty(), "{} presents {} bytes", member.name, member.data.len());
+            assert!(member.note.as_deref().is_some_and(|note| note.starts_with("encrypted (ZipCrypto)")), "{member:#?}");
+            assert!(member.summary().contains("encrypted (ZipCrypto)"));
+        }
+    }
+
+    #[test]
+    fn the_right_password_decrypts_stored_and_deflated_members() {
+        let (archive, pdf, csv) = encrypted_archive();
+        let root = unpack_with_password(Arc::new(archive), "backup_0912.zip", &Limits::default(), Some(PASSWORD));
+        assert_eq!(root.children.len(), 3, "{root:#?}");
+        assert_eq!(root.children[0].data.as_slice(), pdf.as_slice());
+        assert_eq!(root.children[2].data.as_slice(), csv.as_slice());
+        assert_eq!(root.children[2].method.as_deref(), Some("deflate"));
+        assert!(root.children.iter().all(|member| member.note.as_deref() == Some("decrypted (ZipCrypto)")), "{root:#?}");
+    }
+
+    #[test]
+    fn a_wrong_password_leaves_members_encrypted_rather_than_showing_garbage() {
+        let (archive, _, _) = encrypted_archive();
+        let root = unpack_with_password(Arc::new(archive), "backup_0912.zip", &Limits::default(), Some(b"hunter2"));
+        assert_eq!(root.children.len(), 3, "{root:#?}");
+        for member in &root.children {
+            let note = member.note.as_deref().unwrap_or_default();
+            assert!(member.data.is_empty() || note.contains("CRC does not match"), "{member:#?}");
+            assert!(note.contains("ZipCrypto") && note != "decrypted (ZipCrypto)", "{note}");
+        }
+    }
+
+    #[test]
+    fn an_aes_member_is_listed_as_encrypted_with_no_content() {
+        let (mut stored, _, _) = zip_local("secret.txt", b"not really aes", false, false);
+        stored[8..10].copy_from_slice(&99u16.to_le_bytes());
+        let root = unpack(Arc::new(stored), "aes.zip", &Limits::default());
+        assert_eq!(root.children.len(), 1);
+        assert!(root.children[0].data.is_empty());
+        assert_eq!(root.children[0].note.as_deref(), Some("encrypted (AES): not decrypted"));
+    }
+
+    #[test]
+    fn a_deflated_member_that_does_not_inflate_is_kept_with_its_error() {
+        let (mut broken, _, _) = zip_local("broken.txt", &text(50), true, false);
+        let data_at = ZIP_LOCAL_HEADER_LEN + "broken.txt".len();
+        broken[data_at] = 0xFF; // An invalid block type.
+        let root = unpack(Arc::new(broken), "broken.zip", &Limits::default());
+        assert_eq!(root.children.len(), 1, "{root:#?}");
+        let member = &root.children[0];
+        assert_eq!(member.name, "broken.txt");
+        assert!(member.data.is_empty());
+        assert!(member.note.as_deref().is_some_and(|note| note.starts_with("could not inflate")), "{member:#?}");
     }
 }

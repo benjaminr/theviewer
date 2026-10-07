@@ -28,7 +28,7 @@ use crate::raster::{self, PixelFormat};
 use crate::sources::{self, FileWatcher, Recording, SerialCapture, SourceSpec};
 use crate::templates::{self, Applied, Template};
 use crate::theme;
-use crate::unpack::{self, Node};
+use crate::unpack::Node;
 use crate::player;
 
 /// Largest prefix of a file the report and unpacker read into memory.
@@ -145,6 +145,8 @@ pub struct Workbench {
     pub template_applied_source: String,
 
     pub unpacked: Option<Node>,
+    /// The password typed in the Unpacked tab for encrypted zip entries.
+    pub unpack_password: String,
 
     /// State of the self-contained tool panels.
     pub panels: PanelStates,
@@ -190,6 +192,7 @@ impl Default for Workbench {
             template_records: 8,
             template_applied_source: String::new(),
             unpacked: None,
+            unpack_password: String::new(),
             panels: PanelStates::default(),
             serial: None,
             serial_seen: 0,
@@ -884,14 +887,14 @@ impl ViewerApp {
     /// Unpack the document on a thread as a job of `producer`'s, the tree
     /// filling the Unpacked tab and the Size map: what `unpack.run` does in
     /// the window. Returns the job.
-    pub(crate) fn unpack_as(&mut self, producer: &str) -> String {
+    pub(crate) fn unpack_as(&mut self, producer: &str, password: Option<String>) -> String {
         let bytes = Arc::new(self.document.read_range(0, ANALYSIS_READ_LIMIT));
         let name = self.display_name();
         let (sender, receiver) = mpsc::channel();
         let job = self.bus.start_job("unpack", "Unpack", producer, Some((self.document_id(), self.document.version())));
         let id = job.id().to_string();
         thread::spawn(move || {
-            let tree = unpack::unpack(bytes, &name, &unpack::Limits::default());
+            let tree = crate::api::tools::unpack::unpack_with(bytes, &name, password.as_deref());
             if job.is_cancelled() {
                 return job.finish_cancelled();
             }
@@ -916,6 +919,9 @@ impl ViewerApp {
             ui.label(RichText::new("Extracts archives and compressed streams recursively, like binwalk -e, as a browsable tree.").small().color(theme::TEXT_DIM));
         });
         let Some(root) = self.bench.unpacked.clone() else { return };
+        if has_encrypted_entries(&root) {
+            self.show_unpack_password(ui);
+        }
         let mut action: Option<NodeAction> = None;
         egui::ScrollArea::vertical().id_salt("unpacked-tree").show(ui, |ui| {
             for (index, child) in root.children.iter().enumerate() {
@@ -937,6 +943,21 @@ impl ViewerApp {
             }
             None => {}
         }
+    }
+
+    /// A password field for the encrypted zip entries in the tree, which
+    /// unpacks again with it.
+    fn show_unpack_password(&mut self, ui: &mut Ui) {
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("Encrypted entries · password").small().color(theme::TEXT_DIM));
+            let field = ui.add(egui::TextEdit::singleline(&mut self.bench.unpack_password).password(true).desired_width(160.0));
+            let entered = field.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
+            let can_decrypt = !self.bench.unpack_password.is_empty() && !self.bench.busy(|p| matches!(p, Pending::Unpack(_)));
+            let clicked = ui.add_enabled(can_decrypt, egui::Button::new("Decrypt")).on_hover_text("Unpack again, decrypting ZipCrypto entries with this password").clicked();
+            if can_decrypt && (clicked || entered) {
+                let _ = self.perform("unpack.run", serde_json::json!({ "password": self.bench.unpack_password }));
+            }
+        });
     }
 
     // -----------------------------------------------------------------------
@@ -1320,6 +1341,12 @@ impl ViewerApp {
 }
 
 /// What a click in the unpacked tree asks for.
+/// Whether any node in the tree is an encrypted entry a password could open.
+fn has_encrypted_entries(node: &Node) -> bool {
+    let encrypted = node.note.as_deref().is_some_and(|note| note.contains("(ZipCrypto)"));
+    encrypted || node.children.iter().any(has_encrypted_entries)
+}
+
 enum NodeAction {
     Open(Vec<usize>),
     Jump(usize),
