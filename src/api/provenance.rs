@@ -164,4 +164,4 @@ pub fn recipe(workspace: &mut dyn Workspace, params: RecipeParams) -> Result<Rec
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

@@ -133,3 +133,44 @@ fn a_client_may_anchor_its_own_steps_after_the_call() {
     assert_eq!(made["anchor"], json!({"find": {"text": "PK"}, "nth": 1}));
     assert_eq!(derived_from(&workspace, 2)["selection.range[0]"], Anchor::Find { find: Needle::Text("PK".into()), nth: 1, part: None });
 }
+
+/// Records of 8 bytes after "SYNC" at `at`, in 160 bytes.
+pub(crate) fn capture_with_sync_at(at: usize) -> Vec<u8> {
+    let mut bytes = vec![0u8; 160];
+    bytes[at..at + 4].copy_from_slice(b"SYNC");
+    for (index, byte) in bytes[at + 4..at + 68].iter_mut().enumerate() {
+        *byte = (index % 8) as u8 + 1;
+    }
+    bytes
+}
+
+/// The offsets of set `set`'s packets.
+pub(crate) fn packet_offsets(workspace: &mut dyn Workspace, set: &Value) -> Vec<u64> {
+    let listed = call(workspace, "packets.list", json!({"set": set})).unwrap();
+    listed["packets"].as_array().unwrap().iter().map(|packet| packet["offset"].as_u64().unwrap()).collect()
+}
+
+#[test]
+fn a_recipe_recorded_on_one_file_splits_another_where_its_match_is_elsewhere() {
+    // Recorded on the first file: find the sync word, split from it, decode the set.
+    let mut recorded = workspace_with("first.bin", &capture_with_sync_at(30));
+    assert_eq!(call(&mut recorded, "search.find", json!({"query": "SYNC"})).unwrap()["at"], 30);
+    let from_the_match = DerivedFrom::from([("start".to_string(), Anchor::Find { find: Needle::Text("SYNC".into()), nth: 0, part: None })]);
+    let split = api::call_derived(&mut recorded, &Caller::Panel, "packets.sets.create", json!({"from": "split_fixed", "start": 30, "len": 64, "record_len": 8}), from_the_match).unwrap();
+    let split_step = recorded.journal().last_step().unwrap();
+    let that_set = DerivedFrom::from([("set".to_string(), Anchor::Step { step: split_step, path: "result.set".into() })]);
+    api::call_derived(&mut recorded, &Caller::Panel, "packets.decode_as", json!({"set": split["set"], "detect": false}), that_set).unwrap();
+    let recipe: crate::journal::Recipe = serde_json::from_value(call(&mut recorded, "history.recipe", json!({"name": "Frames from the sync word"})).unwrap()).unwrap();
+    assert_eq!(recipe.steps.len(), 2, "the search's match is found again by the anchor, so the search is not a step");
+
+    // Run on a second file, whose sync word is further in.
+    let mut other = workspace_with("second.bin", &capture_with_sync_at(77));
+    let options = crate::journal::replay::ReplayOptions::new(Caller::Recipe(recipe.name.clone()));
+    let report = crate::journal::replay::run_recipe(&mut other, &recipe, &options);
+    assert!(report.completed(), "{}", report.summary());
+    assert_eq!(report.steps[0].anchors[0].value, json!(77), "the match is found where it is in this file");
+    let set = report.steps[0].result.as_ref().expect("a set")["set"].clone();
+    assert_eq!(report.steps[1].anchors[0].value, set, "the decoding is of the set this run made");
+    let offsets = packet_offsets(&mut other, &set);
+    assert_eq!(offsets, (0..8).map(|record| 77 + record * 8).collect::<Vec<u64>>());
+}

@@ -162,6 +162,27 @@ fn a_width_set_from_a_scanned_period_cites_the_scan_s_job() {
 }
 
 #[test]
+fn what_the_person_found_and_made_a_packet_of_is_found_again_in_another_file() {
+    use crate::api::provenance::tests::{capture_with_sync_at, packet_offsets};
+    let mut app = app_with(&capture_with_sync_at(30));
+    app.search_mode = SearchMode::Text;
+    app.search_text = "SYNC".to_string();
+    app.find_next();
+    crate::panel_packets::add_selection_as_packet(&mut app);
+    let recipe = crate::journal::Recipe::from_journal_with_anchors("Sync packet", &app.journal, None);
+    let methods: Vec<&str> = recipe.steps.iter().map(|step| step.method.as_str()).collect();
+    assert_eq!(methods, ["selection.set", "packets.sets.create"]);
+    assert_eq!(recipe.steps[0].params, json!({"selection": {"range": [{"$anchor": {"find": {"text": "SYNC"}, "nth": 0}}, {"$anchor": {"find": {"text": "SYNC"}, "nth": 0, "part": "len"}}]}}));
+
+    let mut other = crate::api::test_support::workspace_with("second.bin", &capture_with_sync_at(77));
+    let options = crate::journal::replay::ReplayOptions::new(crate::api::Caller::Recipe(recipe.name.clone()));
+    let report = crate::journal::replay::run_recipe(&mut other, &recipe, &options);
+    assert!(report.completed(), "{}", report.summary());
+    let set = report.steps[1].result.as_ref().expect("a set")["set"].clone();
+    assert_eq!(packet_offsets(&mut other, &set), [77]);
+}
+
+#[test]
 fn an_action_that_calls_nothing_leaves_no_provenance_for_the_next_call() {
     let mut app = app_with(&[0u8; 16]);
     let anchors = DerivedFrom::from([("start".into(), selection(Part::Offset))]);
