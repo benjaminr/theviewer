@@ -6,7 +6,7 @@
 --   api:cursor()              cursor offset
 --   api:selection()           start, len  (or nil when nothing is selected)
 --   api:read(start, len)      bytes as a string
---   api:replace(start, len, s) replace a range (undoable in the viewer)
+--   api:replace(start, len, s) replace a range (a bytes.replace call: journalled, undoable)
 --   api:select(start, len)    set the selection
 --   api:status(text)          show a message in the status bar
 -- The handle stops working when the action returns.

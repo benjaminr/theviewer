@@ -250,7 +250,7 @@ on the window:
 | `host:cursor()` | The cursor's offset. |
 | `host:selection()` | `start, len`, or `nil` when nothing is selected. |
 | `host:read(start, len)` | Bytes, as a string. |
-| `host:replace(start, len, s)` | Replace a range with the string `s`, as one undoable edit. |
+| `host:replace(start, len, s)` | Replace a range with the string `s`: a `bytes.replace` call through [the data API](#calling-the-data-api), as one undoable edit. |
 | `host:select(start, len)` | Set the selection. |
 | `host:status(text)` | Show a message in the status bar. |
 
@@ -261,9 +261,9 @@ An action may also call [the data API](#calling-the-data-api). You ran the
 action, so its calls are allowed without asking, and its edits are labelled
 with the plugin ("Overwrite 5 bytes by plugin:shout.lua"). The example uses
 `encoding = "text"` because it edits text; for binary data use hex, the
-default. Prefer the API for edits: a call through `theviewer.api` is recorded in the History tab
-and can be part of a recipe, while `host:replace` changes the bytes
-directly, as an undoable edit that the journal does not see.
+default. `host:replace` is such a call too, to `bytes.replace`: like any
+call through `theviewer.api` it is labelled with the plugin, recorded in
+the History tab and can be part of a recipe.
 
 ## Naming the plugin: theviewer.plugin
 

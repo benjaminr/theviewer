@@ -4088,8 +4088,8 @@ fn failed_reports(reports: &[LoadReport]) -> String {
         .join("; ")
 }
 
-/// What a plugin action may do to the open document. Edits go through the
-/// normal undoable document operations.
+/// What a plugin action may do to the open document. Its edits go through
+/// the data API, as the plugin's, so they are journalled.
 impl ActionHost for ViewerApp {
     fn document_len(&self) -> usize {
         self.document.len()
@@ -4105,10 +4105,6 @@ impl ActionHost for ViewerApp {
 
     fn read(&mut self, start: usize, len: usize) -> Vec<u8> {
         self.document.read_range(start, len)
-    }
-
-    fn replace(&mut self, start: usize, len: usize, bytes: &[u8]) {
-        self.document.replace(start, len, bytes);
     }
 
     fn select(&mut self, start: usize, len: usize) {

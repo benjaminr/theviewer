@@ -57,7 +57,6 @@ pub trait ActionHost {
     fn cursor(&self) -> usize;
     fn selection(&self) -> Option<(usize, usize)>;
     fn read(&mut self, start: usize, len: usize) -> Vec<u8>;
-    fn replace(&mut self, start: usize, len: usize, bytes: &[u8]);
     fn select(&mut self, start: usize, len: usize);
     fn set_status(&mut self, text: &str);
     /// The workspace `theviewer.api` calls into during an action; none
@@ -537,8 +536,13 @@ impl UserData for ActionApi {
             let bytes = this.with_host(|h| h.read(start, len))?;
             lua.create_string(bytes)
         });
-        methods.add_method("replace", |_, this, (start, len, bytes): (usize, usize, mlua::LuaString)| {
-            this.with_host(|h| h.replace(start, len, &bytes.as_bytes()))
+        // Through the data API, as `theviewer.api.bytes.replace` would be,
+        // so the edit is journalled, labelled with the plugin and can be
+        // part of a recipe.
+        methods.add_method("replace", |lua, this, (start, len, bytes): (usize, usize, mlua::LuaString)| {
+            this.with_host(|_| ())?;
+            let params = serde_json::json!({ "start": start, "len": len, "data": crate::ops::to_compact_hex(&bytes.as_bytes()) });
+            lua_api::call_bound(lua, "bytes.replace", params).map(|_| ()).map_err(mlua::Error::RuntimeError)
         });
         methods.add_method("select", |_, this, (start, len): (usize, usize)| this.with_host(|h| h.select(start, len)));
         methods.add_method("status", |_, this, text: String| this.with_host(|h| h.set_status(&text)));
@@ -1053,9 +1057,6 @@ mod tests {
         fn read(&mut self, start: usize, len: usize) -> Vec<u8> {
             self.bytes[start..(start + len).min(self.bytes.len())].to_vec()
         }
-        fn replace(&mut self, start: usize, len: usize, bytes: &[u8]) {
-            self.bytes.splice(start..start + len, bytes.iter().copied());
-        }
         fn select(&mut self, start: usize, len: usize) {
             self.selection = Some((start, len));
         }
@@ -1141,12 +1142,15 @@ mod tests {
     }
 
     #[test]
-    fn uppercase_action_edits_the_selection_through_the_host() {
+    fn an_action_reaches_the_window_through_its_host_and_edits_only_through_the_api() {
         let host = host_with_examples();
-        let mut fake = FakeHost { bytes: b"hello world".to_vec(), cursor: 0, selection: Some((6, 5)), status: String::new() };
+        let mut fake = FakeHost { bytes: b"hello world".to_vec(), cursor: 0, selection: None, status: String::new() };
         host.run_action("uppercase-selection", &mut fake).unwrap();
-        assert_eq!(fake.bytes, b"hello WORLD");
-        assert!(fake.status.contains("5"), "{}", fake.status);
+        assert_eq!(fake.status, "Select some text first");
+        fake.selection = Some((6, 5));
+        let without_api = host.run_action("uppercase-selection", &mut fake).unwrap_err();
+        assert!(without_api.contains("theviewer.api is not available"), "{without_api}");
+        assert_eq!(fake.bytes, b"hello world", "a host without the data API cannot be edited");
         assert!(host.run_action("no-such-action", &mut fake).is_err());
     }
 

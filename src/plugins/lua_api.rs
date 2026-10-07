@@ -165,6 +165,12 @@ fn current(lua: &Lua) -> Result<Binding, String> {
         .ok_or_else(|| "theviewer.api and theviewer.publish work only while an action, a subscription handler or a registered method runs".to_string())
 }
 
+/// Call `method` as the callback running in `lua` may, as `theviewer.api`
+/// would: journalled, labelled with the plugin and within its access.
+pub(super) fn call_bound(lua: &Lua, method: &str, params: Value) -> Result<Value, String> {
+    current(lua)?.call(method, params)
+}
+
 /// A Lua function that runs `body` and raises its error as a plain string,
 /// `"<code>: <message>"`, which `pcall` returns as it is.
 fn raising<A: mlua::FromLuaMulti + 'static>(lua: &Lua, body: impl Fn(&Lua, A) -> Result<LuaValue, String> + Send + 'static) -> mlua::Result<Function> {
@@ -670,6 +676,20 @@ mod tests {
         assert!(app.confirmations.is_empty(), "the person ran the action, so nothing is asked");
         assert_eq!(app.document.read_range(0, 11), b"HELLO world");
         assert_eq!(app.document.undo_label(), Some("Overwrite 5 bytes by plugin:shout.lua"));
+    }
+
+    #[test]
+    fn an_actions_host_replace_is_journalled_as_the_plugins_edit() {
+        let mut app = app_with(b"hello world");
+        load(&mut app, "uppercase_selection.lua", include_str!("../../plugins/uppercase_selection.lua"));
+        crate::plugins::ActionHost::select(&mut app, 6, 5);
+        app.run_plugin_action("uppercase-selection");
+        assert_eq!(app.document.read_range(0, 11), b"hello WORLD");
+        assert_eq!(app.status, "Uppercased 5 bytes");
+        assert_eq!(app.document.undo_label(), Some("Replace 5 bytes by plugin:uppercase_selection.lua"));
+        let step = app.journal.entries().rev().find(|entry| entry.method == "bytes.replace").expect("the edit is in the journal");
+        assert_eq!(step.caller, "plugin:uppercase_selection.lua");
+        assert_eq!(step.params, json!({"start": 6, "len": 5, "data": "574f524c44"}));
     }
 
     #[test]
