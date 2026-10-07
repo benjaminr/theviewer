@@ -542,7 +542,7 @@ pub fn rank_field(workspace: &mut dyn Workspace, params: RankFieldParams) -> Res
     if !FIELD_WIDTHS.contains(&params.width) {
         return Err(ApiError::invalid_params(format!("a field of {} bytes is not one of 1, 2, 4 or 8", params.width)));
     }
-    if params.stride == 0 || params.offset + params.width > params.stride {
+    if params.stride == 0 || params.offset.checked_add(params.width).is_none_or(|end| end > params.stride) {
         return Err(ApiError::invalid_params(format!("a {}-byte field at +{} does not fit in records of {} bytes", params.width, params.offset, params.stride)));
     }
     let (_, document) = workspace::document(workspace, params.doc.as_deref())?;
@@ -582,6 +582,13 @@ mod tests {
     use super::super::tool_jobs::test_support::run_job;
     use crate::api::ErrorCode;
     use crate::api::test_support::{call, workspace_with};
+
+    #[test]
+    fn a_field_offset_near_the_largest_number_is_refused_rather_than_overflowing() {
+        let mut workspace = workspace_with("a.bin", &[0u8; 256]);
+        let refused = call(&mut workspace, "bits.rank_field", json!({"origin": 0, "stride": 16, "offset": usize::MAX - 6, "width": 8})).unwrap_err();
+        assert_eq!(refused.code, ErrorCode::InvalidParams);
+    }
 
     /// Frames of 37 bits, each starting with the sync word 1011001.
     fn frames_of_37_bits() -> Vec<u8> {
