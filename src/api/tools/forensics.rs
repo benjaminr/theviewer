@@ -15,7 +15,7 @@ use crate::panel_forensics::{self, BlockScan, FilesystemScan};
 /// their namespace. A new method is added here, and only here.
 pub(super) const METHODS: &[crate::api::Method] = &[
     method!("forensics.find_filesystems", Job, caller find_filesystems, FilesystemsParams, JobStartedResult, "Start a search of the document (its first 256 MiB) for SquashFS, CramFS, JFFS2 and UBI images as a job: each image found, with its files, is job.finished's result, and in the window they fill Forensics."),
-    method!("forensics.open_entry", View, open_entry, OpenEntryParams, DocumentInfo, "Open one file (or volume) of the filesystem image at an offset of the document as a derived document, by its path in the image."),
+    method!("forensics.open_entry", View, open_entry, OpenEntryParams, DocumentInfo, "Open one file (or volume) of the filesystem image at an offset of the document as a derived document, by its path in the image.").opens_document(true),
     method!("forensics.classify_blocks", Job, caller classify_blocks, ClassifyBlocksParams, JobStartedResult, "Start labelling every block of the document (its first 256 MiB) as padding, text, markup, machine code, compressed, random, raw image, PCM audio or table data as a job: the runs of one class, with the reason for each, are job.finished's result, and in the window they fill Forensics."),
 ];
 

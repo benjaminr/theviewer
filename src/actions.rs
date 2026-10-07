@@ -41,13 +41,7 @@ impl ViewerApp {
     /// by parameter path, so the journal entry carries them as
     /// `derived_from` and a recipe made from it is portable.
     pub fn perform_derived(&mut self, method: &str, params: Value, derived_from: crate::journal::DerivedFrom) -> Result<Value, ApiError> {
-        if !derived_from.is_empty() {
-            self.journal.set_pending_provenance(derived_from);
-        }
-        let result = self.perform(method, params);
-        // A call that never ran (no such method) leaves nothing for the next.
-        self.journal.take_pending_provenance();
-        result
+        self.with_provenance(derived_from, |app| app.perform(method, params))
     }
 
     /// [`ViewerApp::perform`] once the frame's drawing is over: for a panel

@@ -773,7 +773,7 @@ One step of the journal, or one recent read, in full.
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `at` | string | yes | When the call was made, UTC, such as "2026-10-06T14:02:11Z". |
-| `before` | any | no | What the step replaced, for its inverse (see [`timeline::state_before`]): the view shape, bookmarks or selection as they were before it ran, when the timeline models the method. |
+| `before` | any | no | What the step replaced, for its inverse (see [`undo::state_before`]): the view shape, bookmarks or selection as they were before it ran (before the first call it merged), when its method reverses a change. |
 | `caller` | string | yes | Who called: `panel`, `plugin:sync.lua`, `ask`, `mcp:claude-code`, `cli` or `recipe:Telemetry frames`. |
 | `derived_from` | object | no | Where parameters' values came from, by parameter path: the anchors a recipe made from this step uses in place of the literals. |
 | `description` | string | yes | What the call did in plain words, the same text the confirmation window shows: "XOR 128 selected bytes with 5A". Empty for a read not promoted into the journal. |

@@ -23,12 +23,12 @@ pub const MAX_WIDTH: usize = crate::app::MAX_WIDTH;
 /// their namespace. A new method is added here, and only here.
 pub(super) const METHODS: &[super::Method] = &[
     method!("view.get_shape", Read, get_shape, ShapeParams, ShapeResult, "The shape a document's bytes are drawn in: the pixel format, pixels per row, the offset of the first pixel, a bit shift and the bytes skipped after each row."),
-    method!("view.set_shape", View, set_shape, SetShapeParams, ShapeResult, "Change the shape a document's bytes are drawn in (the pixel format, pixels per row, the first pixel's offset and bit, the padding after each row); what is not given stays as it is."),
-    method!("view.fold", View, fold, FoldParams, FoldsResult, "Skip ranges of a document in its views (the raster and the hex dump) without deleting them; a marker shows where each was."),
-    method!("view.unfold", View, unfold, UnfoldParams, FoldsResult, "Show skipped bytes again: the skipped range starting at an offset, or all of them."),
+    method!("view.set_shape", View, set_shape, SetShapeParams, ShapeResult, "Change the shape a document's bytes are drawn in (the pixel format, pixels per row, the first pixel's offset and bit, the padding after each row); what is not given stays as it is.").reverses(crate::api::Reverse::Shape).merges_repeats(),
+    method!("view.fold", View, fold, FoldParams, FoldsResult, "Skip ranges of a document in its views (the raster and the hex dump) without deleting them; a marker shows where each was.").reverses(crate::api::Reverse::Folds),
+    method!("view.unfold", View, unfold, UnfoldParams, FoldsResult, "Show skipped bytes again: the skipped range starting at an offset, or all of them.").reverses(crate::api::Reverse::Folds),
     method!("bookmarks.list", Read, list_bookmarks, BookmarksParams, BookmarksResult, "A document's bookmarks, in offset order."),
-    method!("bookmarks.add", View, add_bookmark, AddBookmarkParams, BookmarksResult, "Bookmark a byte or a span of a document with a name, replacing a bookmark at the same offset; the window keeps them beside the file."),
-    method!("bookmarks.remove", View, remove_bookmark, RemoveBookmarkParams, BookmarksResult, "Remove the bookmark at an offset."),
+    method!("bookmarks.add", View, add_bookmark, AddBookmarkParams, BookmarksResult, "Bookmark a byte or a span of a document with a name, replacing a bookmark at the same offset; the window keeps them beside the file.").reverses(crate::api::Reverse::AddBookmark),
+    method!("bookmarks.remove", View, remove_bookmark, RemoveBookmarkParams, BookmarksResult, "Remove the bookmark at an offset.").reverses(crate::api::Reverse::RemoveBookmark),
 ];
 
 /// An example call of each of [`METHODS`], run in order on a fresh

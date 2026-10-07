@@ -34,30 +34,44 @@
 /// One row of the method table: name, effect, typed function, its params
 /// and result types, and the summary. Methods that act for their caller
 /// (edits are labelled with it, facts published as it) are written
-/// `caller fn`, and take the caller after the workspace. Defined before the
-/// namespace modules, which each declare their own rows with it.
+/// `caller fn`, and take the caller after the workspace; one that needs to
+/// know whether its call was already allowed is written `consent fn`, and
+/// takes the caller and the [`Consent`] too. Defined before the namespace
+/// modules, which each declare their own rows with it.
+///
+/// A row says how the history treats the method's calls as its effect
+/// does ([`Method::with_effect`]); the builders on [`Method`] say
+/// otherwise (`method!(…).merges_repeats()`).
 macro_rules! method {
+    ($name:literal, $effect:ident, consent $function:path, $params:ty, $result:ty, $summary:literal) => {
+        $crate::api::Method::with_effect(
+            $name,
+            $summary,
+            $crate::api::Effect::$effect,
+            $crate::api::schema_of::<$params>,
+            $crate::api::schema_of::<$result>,
+            |workspace, caller, consent, params| $crate::api::run_typed(|workspace, typed| $function(workspace, caller, consent, typed), workspace, params),
+        )
+    };
     ($name:literal, $effect:ident, caller $function:path, $params:ty, $result:ty, $summary:literal) => {
-        $crate::api::Method {
-            name: $name,
-            summary: $summary,
-            effect: $crate::api::Effect::$effect,
-            stability: $crate::api::Stability::Stable,
-            params: $crate::api::schema_of::<$params>,
-            result: $crate::api::schema_of::<$result>,
-            run: |workspace, caller, params| $crate::api::run_typed(|workspace, typed| $function(workspace, caller, typed), workspace, params),
-        }
+        $crate::api::Method::with_effect(
+            $name,
+            $summary,
+            $crate::api::Effect::$effect,
+            $crate::api::schema_of::<$params>,
+            $crate::api::schema_of::<$result>,
+            |workspace, caller, _consent, params| $crate::api::run_typed(|workspace, typed| $function(workspace, caller, typed), workspace, params),
+        )
     };
     ($name:literal, $effect:ident, $function:path, $params:ty, $result:ty, $summary:literal) => {
-        $crate::api::Method {
-            name: $name,
-            summary: $summary,
-            effect: $crate::api::Effect::$effect,
-            stability: $crate::api::Stability::Stable,
-            params: $crate::api::schema_of::<$params>,
-            result: $crate::api::schema_of::<$result>,
-            run: |workspace, _caller, params| $crate::api::run_typed($function, workspace, params),
-        }
+        $crate::api::Method::with_effect(
+            $name,
+            $summary,
+            $crate::api::Effect::$effect,
+            $crate::api::schema_of::<$params>,
+            $crate::api::schema_of::<$result>,
+            |workspace, _caller, _consent, params| $crate::api::run_typed($function, workspace, params),
+        )
     };
 }
 
@@ -86,6 +100,7 @@ pub mod values;
 pub mod view;
 pub mod workspace;
 
+use std::collections::HashMap;
 use std::fmt;
 use std::sync::{Arc, LazyLock};
 
@@ -94,8 +109,10 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::journal;
-pub use permissions::{Caller, Decision, HeldCall, Policy};
+pub use crate::journal::timeline::{Move, Replay};
+pub use crate::journal::undo::{Resource, Reverse, Undo};
+use crate::journal::{self, Journalled, undo};
+pub use permissions::{Caller, Consent, Decision, HeldCall, Policy};
 pub use workspace::{HeadlessWorkspace, Workspace};
 
 /// The API version, which `api.version` returns. Within a major version
@@ -121,9 +138,22 @@ pub enum Effect {
     /// packet sets and how they decode, published findings, pinned
     /// templates, jobs cancelled, files written from analysis results. It is
     /// journalled and replayed like an edit, and allowed without asking like
-    /// a read (a method that also writes a file checks for leave to edit
-    /// itself).
+    /// a read (one that writes a file needs leave to edit for that; see
+    /// [`WritesFile`]).
     Analysis,
+}
+
+/// Whether a method writes a file, which needs leave to edit whatever its
+/// effect.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WritesFile {
+    /// It writes none.
+    No,
+    /// Every call writes one.
+    Always,
+    /// A call writes one when it names it with this parameter, and returns
+    /// what it would write otherwise.
+    WhenGiven(&'static str),
 }
 
 /// Whether a method's name, parameters and results are settled.
@@ -136,7 +166,13 @@ pub enum Stability {
     Experimental,
 }
 
-/// One method of the API, declared once.
+/// Check a method's JSON parameters, run it for the caller (once allowed as
+/// the consent says) and return its JSON result.
+pub type RunMethod = fn(&mut dyn Workspace, &Caller, Consent<'_>, Value) -> Result<Value, ApiError>;
+
+/// One method of the API, declared once: what it does, and how the
+/// journal, undo, going back, playback, recipes and permissions treat its
+/// calls.
 #[derive(Clone, Copy)]
 pub struct Method {
     /// Dotted name, such as `bytes.read`.
@@ -149,15 +185,118 @@ pub struct Method {
     pub params: fn() -> Schema,
     /// JSON Schema of the result.
     pub result: fn() -> Schema,
-    /// Check the JSON parameters, run the method for the caller and return
-    /// its JSON result.
-    pub run: fn(&mut dyn Workspace, &Caller, Value) -> Result<Value, ApiError>,
+    pub run: RunMethod,
+    /// How the journal keeps its calls.
+    pub journal: Journalled,
+    /// How going back, playback and recipes treat a step of it.
+    pub replay: Replay,
+    /// How a step of it that changed no bytes is undone.
+    pub undo: Undo,
+    /// Whether a call replaces the last entry when that was a call of the
+    /// same method by the same caller on the same document, so dragging a
+    /// selection is one step.
+    pub merge: bool,
+    /// Whether it writes a file, which needs leave to edit.
+    pub writes_file: WritesFile,
+    /// Whether it takes a `doc` parameter; filled in from the params
+    /// schema when the table is built ([`METHODS`]).
+    pub takes_doc: bool,
+    /// Says in plain words what a call would do; its module's, filled in
+    /// when the table is built ([`METHODS`]).
+    describe_call: DescribeCall,
 }
 
 impl Method {
+    /// A method whose calls the journal, undo and replay treat as its
+    /// effect says: see [`Journalled::for_effect`] and
+    /// [`Undo::for_effect`]. Its steps are repeated by going back, playback
+    /// and recipes.
+    pub const fn with_effect(name: &'static str, summary: &'static str, effect: Effect, params: fn() -> Schema, result: fn() -> Schema, run: RunMethod) -> Method {
+        Method {
+            name,
+            summary,
+            effect,
+            stability: Stability::Stable,
+            params,
+            result,
+            run,
+            journal: Journalled::for_effect(effect),
+            replay: Replay::Step,
+            undo: Undo::for_effect(effect),
+            merge: false,
+            writes_file: WritesFile::No,
+            takes_doc: false,
+            describe_call: describe_nothing,
+        }
+    }
+
     /// The namespace, such as `bytes` for `bytes.read`.
     pub fn namespace(&self) -> &'static str {
         namespace_of(self.name)
+    }
+
+    /// Its steps change one thing a later call can change back, as
+    /// `reverse` says.
+    pub const fn reverses(mut self, reverse: Reverse) -> Self {
+        self.undo = Undo::Reverses(reverse);
+        self
+    }
+
+    /// Its steps make what `resource` says, which undoing removes.
+    pub const fn creates(mut self, resource: Resource) -> Self {
+        self.undo = Undo::Creates(resource);
+        self
+    }
+
+    /// Its steps leave nothing to undo, because `why`.
+    pub const fn leaves_nothing_to_undo(mut self, why: &'static str) -> Self {
+        self.undo = Undo::Nothing(why);
+        self
+    }
+
+    /// It opens a document and makes it current (one that `derives` opens
+    /// one derived from the current document): undone by opening the one
+    /// current before, and not repeated.
+    pub const fn opens_document(mut self, derives: bool) -> Self {
+        self.replay = Replay::OpensDocument { derives };
+        self.undo = Undo::Reverses(Reverse::OpenDocument { derives });
+        self
+    }
+
+    /// It writes a file, as `writes` says: that needs leave to edit, the
+    /// file stays as written, and it is not repeated.
+    pub const fn writes_file(mut self, writes: WritesFile) -> Self {
+        self.writes_file = writes;
+        self.replay = Replay::WritesFile;
+        self.undo = Undo::Nothing(undo::WROTE_A_FILE);
+        self
+    }
+
+    /// It moves along the timeline rather than taking a step of the
+    /// analysis.
+    pub const fn moves_along_the_timeline(mut self, kind: Move) -> Self {
+        self.replay = Replay::Move(kind);
+        self
+    }
+
+    /// Its steps are never repeated: it reloads plugins, or starts or stops
+    /// a live source.
+    pub const fn not_replayed(mut self) -> Self {
+        self.replay = Replay::Never;
+        self
+    }
+
+    /// Its repeated calls merge into one step.
+    pub const fn merges_repeats(mut self) -> Self {
+        self.merge = true;
+        self
+    }
+
+    /// Its calls are not journalled: it reads the journal, or edits its
+    /// provenance.
+    pub const fn not_journalled(mut self) -> Self {
+        self.journal = Journalled::Skip;
+        self
     }
 }
 
@@ -251,9 +390,76 @@ impl MethodRef {
         }
     }
 
-    fn run(&self, workspace: &mut dyn Workspace, caller: &Caller, params: Value) -> Result<Value, ApiError> {
+    /// How the journal keeps its calls; a plugin's as its effect says.
+    pub fn journalled(&self) -> Journalled {
         match self {
-            MethodRef::Builtin(method) => (method.run)(workspace, caller, params),
+            MethodRef::Builtin(method) => method.journal,
+            MethodRef::Registered(method) => Journalled::for_effect(method.effect),
+        }
+    }
+
+    /// How going back, playback and recipes treat a step of it; a
+    /// plugin's steps are repeated.
+    pub fn replay(&self) -> Replay {
+        match self {
+            MethodRef::Builtin(method) => method.replay,
+            MethodRef::Registered(_) => Replay::Step,
+        }
+    }
+
+    /// How a step of it that changed no bytes is undone; a plugin's leave
+    /// nothing kept to undo them by.
+    pub fn undo(&self) -> Undo {
+        match self {
+            MethodRef::Builtin(method) => method.undo,
+            MethodRef::Registered(method) => Undo::registered(method.effect),
+        }
+    }
+
+    /// Whether its repeated calls merge into one step.
+    pub fn merges_repeats(&self) -> bool {
+        matches!(self, MethodRef::Builtin(method) if method.merge)
+    }
+
+    /// Whether a call with `params` writes a file.
+    pub fn writes_file(&self, params: &Value) -> bool {
+        match self {
+            MethodRef::Builtin(method) => match method.writes_file {
+                WritesFile::No => false,
+                WritesFile::Always => true,
+                WritesFile::WhenGiven(param) => params.get(param).is_some_and(|path| !path.is_null()),
+            },
+            MethodRef::Registered(_) => false,
+        }
+    }
+
+    /// Whether it takes a `doc` parameter.
+    pub fn takes_doc(&self) -> bool {
+        match self {
+            MethodRef::Builtin(method) => method.takes_doc,
+            MethodRef::Registered(method) => method.params["properties"].get("doc").is_some(),
+        }
+    }
+
+    /// What a call with `params` would do, in plain words: see
+    /// [`describe_call`].
+    pub fn describe_call(&self, workspace: &mut dyn Workspace, params: &Value) -> String {
+        let described = match self {
+            MethodRef::Builtin(method) => (method.describe_call)(workspace, method.name, params),
+            MethodRef::Registered(_) => None,
+        };
+        described.unwrap_or_else(|| described_generally(self.name(), params))
+    }
+
+    /// The effect whose leave a call with `params` needs: an edit's when it
+    /// writes a file, otherwise its own.
+    pub fn needs_leave_for(&self, params: &Value) -> Effect {
+        if self.writes_file(params) { Effect::Edit } else { self.effect() }
+    }
+
+    fn run(&self, workspace: &mut dyn Workspace, caller: &Caller, consent: Consent<'_>, params: Value) -> Result<Value, ApiError> {
+        match self {
+            MethodRef::Builtin(method) => (method.run)(workspace, caller, consent, params),
             MethodRef::Registered(method) => (method.run)(workspace, caller, params),
         }
     }
@@ -442,8 +648,20 @@ fn api_examples() -> Vec<(&'static str, Value)> {
 /// Every method, grouped by namespace. The namespaces come in the order
 /// their first method appears in [`PARTS`], and within a namespace the
 /// methods keep their modules' order, so the table, `api.describe` and
-/// `docs/api.md` list them the same way every time.
-pub static METHODS: LazyLock<Vec<Method>> = LazyLock::new(|| grouped_by_namespace(PARTS.iter().flat_map(|part| part.methods.iter().copied()).collect()));
+/// `docs/api.md` list them the same way every time. Each method carries
+/// its module's describer, and whether it takes a `doc` parameter.
+pub static METHODS: LazyLock<Vec<Method>> = LazyLock::new(|| {
+    let declared = PARTS.iter().flat_map(|part| part.methods.iter().map(|method| Method { takes_doc: params_name_doc(method), describe_call: part.describe_call, ..*method }));
+    grouped_by_namespace(declared.collect())
+});
+
+/// Where each method of [`METHODS`] is, by name.
+static INDEX: LazyLock<HashMap<&'static str, usize>> = LazyLock::new(|| METHODS.iter().enumerate().map(|(index, method)| (method.name, index)).collect());
+
+/// Whether `method`'s parameters include `doc`.
+fn params_name_doc(method: &Method) -> bool {
+    (method.params)().as_value()["properties"].get("doc").is_some()
+}
 
 /// `methods` grouped by namespace, the namespaces in the order they first
 /// appear; a stable sort keeps each namespace's methods in order.
@@ -460,7 +678,7 @@ fn grouped_by_namespace(mut methods: Vec<Method>) -> Vec<Method> {
 
 /// The method called `name` in the table.
 pub fn method(name: &str) -> Option<&'static Method> {
-    METHODS.iter().find(|method| method.name == name)
+    INDEX.get(name).map(|index| &METHODS[*index])
 }
 
 /// The method called `name`: the table's, or one a plugin registered in
@@ -483,22 +701,18 @@ pub fn all_methods(workspace: &dyn Workspace) -> Vec<MethodRef> {
 }
 
 /// Run the method called `name` with JSON parameters for `caller`, once the
-/// workspace allows it: a method that edits or changes the view, called by
-/// anyone but the person at the keyboard, is checked against the caller's
-/// policy. A call that must be confirmed fails here with a `read_only`
-/// error for which [`ApiError::needs_confirmation`] holds; callers that can
-/// wait for the person hold it instead (see [`Workspace::hold_for_confirmation`]).
+/// workspace allows it: a method that edits, changes the view or writes a
+/// file, called by anyone but the person at the keyboard, is checked
+/// against the caller's policy. A call that must be confirmed fails here
+/// with a `read_only` error for which [`ApiError::needs_confirmation`]
+/// holds; callers that can wait for the person hold it instead (see
+/// [`call_or_hold`]).
 ///
 /// Every call is journalled (see [`crate::journal`]): an edit, view change
 /// or job as a step, whether it succeeded, failed or was denied; a read in
 /// the ring of recent reads.
 pub fn call(workspace: &mut dyn Workspace, caller: &Caller, name: &str, params: Value) -> Result<Value, ApiError> {
-    let method = find(workspace, name)?;
-    match workspace.permission(caller, method.effect()) {
-        Decision::Allowed => run_journalled(workspace, &method, caller, params),
-        Decision::Denied => journal::record_refusal(workspace, caller, name, method.effect(), &params, permissions::denied(caller, name)),
-        Decision::NeedsConfirmation => Err(permissions::needs_confirmation(caller, name)),
-    }
+    call_as(workspace, caller, name, params, Consent::CheckedAs(caller))
 }
 
 /// [`call`], noting where the values of some parameters came from (by
@@ -506,60 +720,84 @@ pub fn call(workspace: &mut dyn Workspace, caller: &Caller, name: &str, params: 
 /// journal entry carries them as `derived_from` and a recipe made from it
 /// uses the anchors in place of the literals.
 pub fn call_derived(workspace: &mut dyn Workspace, caller: &Caller, name: &str, params: Value, derived_from: journal::DerivedFrom) -> Result<Value, ApiError> {
-    if !derived_from.is_empty() {
-        workspace.journal_mut().set_pending_provenance(derived_from);
-    }
-    let result = call(workspace, caller, name, params);
-    // A call that never ran (no such method, or held for confirmation)
-    // leaves nothing for the next.
-    workspace.journal_mut().take_pending_provenance();
-    result
+    journal::with_provenance(workspace, derived_from, |workspace| call(workspace, caller, name, params))
 }
 
-/// Run the method called `name` without checking the caller's permission:
-/// for calls the person has just allowed, calls inside a call already
-/// allowed (a transaction's), and plugin actions the person ran. Journalled
-/// as [`call`] is; a call inside another is part of that one's step.
+/// Run the method called `name` without checking anyone's policy: for
+/// calls the person has just allowed (in the confirmation window), calls
+/// inside a call already allowed (a transaction's, an undo's), and plugin
+/// actions the person ran. Journalled as [`call`] is; a call inside another
+/// is part of that one's step.
 pub fn call_permitted(workspace: &mut dyn Workspace, caller: &Caller, name: &str, params: Value) -> Result<Value, ApiError> {
+    call_as(workspace, caller, name, params, Consent::Given)
+}
+
+/// Run the method called `name` for `caller` once `consent` allows it:
+/// given, or the policy of the caller it names allows the call's effect (an
+/// edit's, when the call writes a file). A call that policy denies is
+/// recorded as refused; one it would ask about fails with a `read_only`
+/// error for which [`ApiError::needs_confirmation`] holds. Every way a call
+/// runs comes here, but for [`call_or_hold`]'s holding.
+pub fn call_as(workspace: &mut dyn Workspace, caller: &Caller, name: &str, params: Value, consent: Consent<'_>) -> Result<Value, ApiError> {
     let method = find(workspace, name)?;
-    run_journalled(workspace, &method, caller, params)
+    match leave(workspace, &method, &params, consent) {
+        Leave::Granted => run_journalled(workspace, &method, caller, consent, params),
+        Leave::Denied(subject) => journal::record_refusal(workspace, caller, &method, &params, permissions::denied(subject, name)),
+        Leave::MustAsk(subject) => Err(permissions::needs_confirmation(subject, name)),
+    }
+}
+
+/// Whether a call may run now.
+enum Leave<'a> {
+    Granted,
+    /// This caller's policy never allows it.
+    Denied(&'a Caller),
+    /// The person must be asked, for this caller.
+    MustAsk(&'a Caller),
+}
+
+/// Whether a call of `method` with `params` may run, as `consent` says.
+fn leave<'a>(workspace: &dyn Workspace, method: &MethodRef, params: &Value, consent: Consent<'a>) -> Leave<'a> {
+    let Consent::CheckedAs(subject) = consent else { return Leave::Granted };
+    match workspace.permission(subject, method.needs_leave_for(params)) {
+        Decision::Allowed => Leave::Granted,
+        Decision::Denied => Leave::Denied(subject),
+        Decision::NeedsConfirmation => Leave::MustAsk(subject),
+    }
 }
 
 /// Run `method` for `caller` and record the call in the journal.
-fn run_journalled(workspace: &mut dyn Workspace, method: &MethodRef, caller: &Caller, params: Value) -> Result<Value, ApiError> {
-    let record = journal::begin(workspace, caller, method.name(), method.effect(), &params);
-    let result = method.run(workspace, caller, params);
+fn run_journalled(workspace: &mut dyn Workspace, method: &MethodRef, caller: &Caller, consent: Consent<'_>, params: Value) -> Result<Value, ApiError> {
+    let record = journal::begin(workspace, caller, method, &params);
+    let result = method.run(workspace, caller, consent, params);
     journal::finish(workspace, record, &result);
     result
 }
 
 /// Run `name` for `caller` if allowed, refuse it if denied, and otherwise
 /// hold it for the person to decide on; `reply` gets the result in every
-/// case, at once or once the person has decided. This is how callers that
+/// case, at once or once the person has decided (the confirmation window
+/// then runs it through [`call_permitted`]). This is how callers that
 /// cannot block (Ask's tool calls, plugins' handlers, MCP requests) ask.
 pub fn call_or_hold(workspace: &mut dyn Workspace, caller: Caller, name: &str, params: Value, reply: permissions::ReplyTo) {
     let method = match find(workspace, name) {
         Ok(method) => method,
         Err(error) => return reply(workspace, Err(error)),
     };
-    match workspace.permission(&caller, method.effect()) {
-        Decision::Allowed => {
-            let result = run_journalled(workspace, &method, &caller, params);
-            reply(workspace, result);
-        }
-        Decision::Denied => {
-            let refused = journal::record_refusal(workspace, &caller, name, method.effect(), &params, permissions::denied(&caller, name));
-            reply(workspace, refused);
-        }
-        Decision::NeedsConfirmation => {
-            let description = describe_call(workspace, name, &params);
+    let result = match leave(workspace, &method, &params, Consent::CheckedAs(&caller)) {
+        Leave::Granted => run_journalled(workspace, &method, &caller, Consent::CheckedAs(&caller), params),
+        Leave::Denied(_) => journal::record_refusal(workspace, &caller, &method, &params, permissions::denied(&caller, name)),
+        Leave::MustAsk(_) => {
+            let description = method.describe_call(workspace, &params);
             let held = HeldCall { caller, method: name.to_string(), params, description, reply };
             if let Some(held) = workspace.hold_for_confirmation(held) {
                 let error = permissions::needs_confirmation(&held.caller, name);
                 (held.reply)(workspace, Err(error));
             }
+            return;
         }
-    }
+    };
+    reply(workspace, result);
 }
 
 /// What a call to `method` with `params` would do, in plain words, for the
@@ -567,11 +805,16 @@ pub fn call_or_hold(workspace: &mut dyn Workspace, caller: Caller, name: &str, p
 /// EF", "XOR 128 selected bytes with 5A". The method's module describes
 /// it; a call no module describes is shown as "Call method with params".
 pub fn describe_call(workspace: &mut dyn Workspace, method: &str, params: &Value) -> String {
-    let described = PARTS.iter().find(|part| part.methods.iter().any(|known| known.name == method)).and_then(|part| (part.describe_call)(workspace, method, params));
-    described.unwrap_or_else(|| {
-        let shown = if params.as_object().is_some_and(|object| !object.is_empty()) { format!(" with {params}") } else { String::new() };
-        format!("Call {method}{shown}")
-    })
+    match find(workspace, method) {
+        Ok(found) => found.describe_call(workspace, params),
+        Err(_) => described_generally(method, params),
+    }
+}
+
+/// A call no module describes: "Call method with params".
+fn described_generally(method: &str, params: &Value) -> String {
+    let shown = if params.as_object().is_some_and(|object| !object.is_empty()) { format!(" with {params}") } else { String::new() };
+    format!("Call {method}{shown}")
 }
 
 /// The result of `api.version`.
@@ -1020,6 +1263,25 @@ mod tests {
         assert_eq!(error.code, ErrorCode::InvalidParams);
         let error = call(&mut workspace, "bytes.read", json!({"start": 0, "len": 1, "colour": "red"})).unwrap_err();
         assert_eq!(error.code, ErrorCode::InvalidParams, "unknown parameters are rejected");
+    }
+
+    #[test]
+    fn writing_a_file_needs_leave_to_edit_whatever_the_method_s_effect() {
+        let mut app = crate::app::ViewerApp::new(crate::app::Launch::default());
+        app.open_bytes(vec![0u8; 128], "a.bin".to_string());
+        app.run_bus();
+        call(&mut app, "packets.sets.create", json!({"from": "split_fixed", "record_len": 8, "len": 64})).unwrap();
+        app.preferences.permissions.insert("mcp:claude-code".into(), Policy::Deny);
+        let client = Caller::Mcp("claude-code".into());
+        let returned = super::call(&mut app, &client, "packets.extract", json!({"set": "set-1", "indices": [0]})).unwrap();
+        assert_eq!(returned["len"], 8, "an analysis is allowed without asking");
+        let path = std::env::temp_dir().join(format!("theviewer-api-leave-to-write-{}.bin", std::process::id()));
+        let refused = super::call(&mut app, &client, "packets.extract", json!({"set": "set-1", "indices": [0], "path": path.display().to_string()})).unwrap_err();
+        assert_eq!(refused.code, ErrorCode::ReadOnly);
+        assert!(!path.exists(), "nothing was written");
+        app.preferences.permissions.insert("mcp:claude-code".into(), Policy::Ask);
+        let asked = super::call(&mut app, &client, "packets.export_pcap", json!({"set": "set-1", "path": path.display().to_string()})).unwrap_err();
+        assert!(asked.needs_confirmation(), "the person can be asked: {}", asked.message);
     }
 
     #[test]

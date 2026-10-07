@@ -238,7 +238,7 @@ impl Journal {
     /// Set (or, with `None`, clear) the anchor at `path` of step `step`'s
     /// `derived_from`. Returns the anchor it replaced.
     pub fn set_anchor(&mut self, step: u64, path: &str, anchor: Option<Anchor>) -> Result<Option<Anchor>, ApiError> {
-        let entry = self.entries.iter_mut().find(|entry| entry.step == step).ok_or_else(|| not_a_step(step))?;
+        let entry = self.entry_mut(step).ok_or_else(|| not_a_step(step))?;
         let replaced = match anchor {
             Some(anchor) => entry.derived_from.insert(path.to_string(), anchor),
             None => entry.derived_from.remove(path),

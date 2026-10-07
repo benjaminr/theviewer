@@ -4,7 +4,7 @@ use super::*;
 use crate::api::test_support::{call, workspace_with};
 use crate::api::{HeadlessWorkspace, Workspace};
 use crate::journal::Outcome;
-use crate::journal::replay::Stopped;
+use crate::journal::replay::{StepReport, Stopped};
 
 /// The bytes of document `doc`.
 fn bytes_of(workspace: &mut HeadlessWorkspace, doc: &str) -> Vec<u8> {
@@ -268,7 +268,7 @@ fn going_back_past_a_step_with_no_inverse_replays_from_the_document_as_first_see
     call(&mut workspace, "packets.sets.create", json!({"from": "split_fixed", "record_len": 8, "len": 64})).unwrap();
     call(&mut workspace, "bytes.write", json!({"start": 2, "data": "43"})).unwrap();
     call(&mut workspace, "packets.sets.remove", json!({"set": "set-1"})).unwrap();
-    let went = go_back_with(&mut workspace, &Caller::Panel, target, run_literally).unwrap();
+    let went = with_runner(run_literally, || go_back(&mut workspace, &Caller::Panel, target)).unwrap();
     assert_eq!(went.way, Way::Replayed);
     let kept: Vec<&str> = went.kept.iter().map(|kept| kept.method.as_str()).collect();
     assert_eq!(kept, ["packets.sets.remove", "packets.sets.create"], "the set removed for good cannot be removed again");
@@ -287,7 +287,7 @@ fn going_back_by_replaying_stops_with_why_when_a_step_cannot_run_again() {
         stopped: Some(Stopped { step: steps[0].step, error: ApiError::new(ErrorCode::Unavailable, "not built") }),
         warnings: Vec::new(),
     };
-    let error = go_back_with(&mut workspace, &Caller::Panel, 1, stopped).unwrap_err();
+    let error = with_runner(stopped, || go_back(&mut workspace, &Caller::Panel, 1)).unwrap_err();
     assert!(error.message.contains("running step 1 again failed: not built"), "{}", error.message);
     assert!(error.data.is_some(), "the run's report comes with it");
 }
@@ -309,12 +309,12 @@ fn playback_runs_one_step_at_a_time_each_recorded_as_a_step_of_its_own() {
     let steps = steps_to_play(workspace.journal(), 1, last);
     call(&mut workspace, GO_BACK, json!({"step": 0})).unwrap();
     assert_eq!(bytes_of(&mut workspace, "doc-1")[..2], [0, 0]);
-    let mut playback = Playback::with_runner(steps, Caller::Panel, None, run_literally);
+    let mut playback = Playback::new(steps, Caller::Panel, None);
     assert_eq!(playback.progress(), (0, 3));
-    assert_eq!(playback.play_next(&mut workspace), Some(1));
+    assert_eq!(with_runner(run_literally, || playback.play_next(&mut workspace)), Some(1));
     assert_eq!(bytes_of(&mut workspace, "doc-1")[..2], [0x41, 0], "the view updates after each step");
     assert_eq!(playback.upcoming().map(|step| step.method.as_str()), Some("view.set_shape"));
-    while playback.play_next(&mut workspace).is_some() {}
+    while with_runner(run_literally, || playback.play_next(&mut workspace)).is_some() {}
     assert!(playback.is_finished() && playback.stopped().is_none());
     assert_eq!(bytes_of(&mut workspace, "doc-1")[..2], [0x41, 0x42]);
     let replayed: Vec<&str> = workspace.journal().since(last + 1).map(|entry| entry.method.as_str()).collect();
@@ -325,8 +325,8 @@ fn playback_runs_one_step_at_a_time_each_recorded_as_a_step_of_its_own() {
 fn playback_stops_at_a_step_that_fails() {
     let mut workspace = workspace_with("a.bin", &[0u8; 8]);
     let steps = vec![RecipeStep { step: 1, method: "bytes.write".into(), params: json!({"start": 7, "data": "0000"}), note: None }, RecipeStep { step: 2, method: "cursor.set".into(), params: json!({"offset": 1}), note: None }];
-    let mut playback = Playback::with_runner(steps, Caller::Panel, None, run_literally);
-    assert_eq!(playback.play_next(&mut workspace), Some(1));
+    let mut playback = Playback::new(steps, Caller::Panel, None);
+    assert_eq!(with_runner(run_literally, || playback.play_next(&mut workspace)), Some(1));
     assert_eq!(playback.stopped().map(|error| error.code), Some(ErrorCode::OutOfRange));
     assert!(playback.is_finished() && playback.play_next(&mut workspace).is_none());
 }
@@ -386,8 +386,75 @@ fn playback_through_the_recipe_runner_shows_each_step_as_it_runs() {
     let mut playback = Playback::new(steps, Caller::Panel, None);
     playback.play_next(&mut workspace);
     assert_eq!(bytes_of(&mut workspace, "doc-1")[..2], [0x41, 0]);
-    assert!(playback.last_report().is_some_and(|report| report.outcome.is_ok()));
+    assert!(playback.stopped().is_none());
     playback.play_next(&mut workspace);
     assert_eq!(bytes_of(&mut workspace, "doc-1")[..2], [0x41, 0x42]);
     assert!(playback.is_finished() && playback.stopped().is_none());
+}
+
+#[test]
+fn recipes_and_playback_leave_out_the_same_steps_that_open_documents_write_files_or_reload_plugins() {
+    let mut workspace = workspace_with("flight.bin", &[0u8; 64]);
+    let saved = std::env::temp_dir().join(format!("theviewer-timeline-agree-{}.bin", std::process::id()));
+    call(&mut workspace, "bytes.write", json!({"start": 0, "data": "41"})).unwrap();
+    call(&mut workspace, "documents.save", json!({"path": saved.display().to_string()})).unwrap();
+    call(&mut workspace, "plugins.reload", json!({})).unwrap();
+    call(&mut workspace, "view.set_shape", json!({"width": 32})).unwrap();
+    call(&mut workspace, "documents.derive", json!({"start": 0, "len": 8})).unwrap();
+    std::fs::remove_file(&saved).ok();
+    let last = last_step(&workspace);
+    let in_recipe: Vec<u64> = entries_for_recipe(workspace.journal(), None).iter().map(|entry| entry.step).collect();
+    let played: Vec<u64> = steps_to_play(workspace.journal(), 1, last).iter().map(|step| step.step).collect();
+    assert_eq!(in_recipe, played, "a recipe of the history takes the steps playback repeats");
+    let methods: Vec<String> = in_recipe.iter().map(|step| workspace.journal().entry(*step).unwrap().method.clone()).collect();
+    assert_eq!(methods, ["bytes.write", "view.set_shape"]);
+}
+
+#[test]
+fn undoing_a_dragged_selection_restores_what_was_selected_before_the_drag() {
+    let mut workspace = workspace_with("a.bin", &[0u8; 64]);
+    call(&mut workspace, "selection.set", json!({"selection": {"range": [40, 2]}})).unwrap();
+    call(&mut workspace, "bytes.write", json!({"start": 63, "data": "41"})).unwrap();
+    for len in [1, 2, 3, 4] {
+        call(&mut workspace, "selection.set", json!({"selection": {"range": [2, len]}})).unwrap();
+    }
+    let dragged = last_step(&workspace);
+    assert_eq!(workspace.journal().entry(dragged).unwrap().merged, 3, "the drag is one step");
+    undo(&mut workspace, dragged).unwrap();
+    let selected = call(&mut workspace, "selection.get", json!({})).unwrap();
+    assert_eq!(selected["ranges"], json!([[40, 2]]), "not the drag's next to last selection");
+}
+
+#[test]
+fn a_plugin_s_method_is_repeated_and_leaves_nothing_kept_to_undo_it_by() {
+    let mut workspace = workspace_with("a.bin", &[0u8; 16]);
+    workspace.set_registered_methods(vec![std::sync::Arc::new(crate::api::RegisteredMethod {
+        name: "acme.mark".to_string(),
+        summary: "Mark something.".to_string(),
+        effect: Effect::Analysis,
+        params: json!({"type": "object"}),
+        result: json!({"type": "object"}),
+        owner: "plugin:acme.lua".to_string(),
+        run: Box::new(|_, _, _| Ok(json!({}))),
+    })]);
+    let method = api::find(&workspace, "acme.mark").unwrap();
+    assert_eq!((method.undo(), method.replay()), (Undo::registered(Effect::Analysis), Replay::Step));
+    assert!(matches!(method.undo(), Undo::Nothing(_)));
+    call(&mut workspace, "acme.mark", json!({})).unwrap();
+    let marked = last_step(&workspace);
+    assert_eq!(call(&mut workspace, "history.inverse", json!({"step": marked})).unwrap()["inverse"]["kind"], "nothing");
+    assert_eq!(steps_to_play(workspace.journal(), 1, marked).len(), 1, "played back like any step");
+}
+
+#[test]
+fn a_method_s_declarations_say_how_its_steps_are_journalled_undone_and_repeated() {
+    let declared = |name: &str| api::method(name).unwrap();
+    assert_eq!(declared("documents.derive").replay, Replay::OpensDocument { derives: true });
+    assert_eq!(declared("documents.derive").undo, Undo::Reverses(crate::api::Reverse::OpenDocument { derives: true }));
+    assert_eq!(declared("history.go_back").replay, Replay::Move(Move::GoBack));
+    assert_eq!((declared("recipes.save").replay, declared("history.save_recipe").replay), (Replay::WritesFile, Replay::WritesFile), "both write files");
+    assert!(declared("selection.set").merge && !declared("bytes.write").merge);
+    assert_eq!(declared("history.list").journal, crate::journal::Journalled::Skip);
+    assert_eq!(declared("bytes.read").journal, crate::journal::Journalled::Read);
+    assert!(declared("bytes.write").takes_doc && !declared("history.list").takes_doc, "filled in from the params");
 }

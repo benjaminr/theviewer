@@ -32,10 +32,10 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::permissions::{Caller, Decision};
+use super::permissions::{Caller, Consent};
 use super::values::NoParams;
 use super::workspace::Workspace;
-use super::{ApiError, Effect};
+use super::ApiError;
 use crate::journal::Recipe;
 use crate::journal::provenance;
 use crate::journal::replay::{self, ReplayOptions, RunReport};
@@ -46,9 +46,9 @@ use crate::recipes::{self, RecipeSummary};
 pub(super) const METHODS: &[super::Method] = &[
     method!("recipes.list", Read, list, NoParams, ListResult, "The recipes saved in ~/.config/theviewer/recipes/: each one's name, description, steps and the parameters it asks for."),
     method!("recipes.describe", Read, describe, DescribeParams, DescribeResult, "One recipe in full, by name or path, with what to know before running it here: another API version, a plugin missing or changed, a method this build lacks, or mistakes in its anchors."),
-    method!("recipes.save", Read, save, SaveParams, SaveResult, "Save a recipe in ~/.config/theviewer/recipes/, given whole or made from steps of this session's journal, to run later on other files."),
+    method!("recipes.save", Read, save, SaveParams, SaveResult, "Save a recipe in ~/.config/theviewer/recipes/, given whole or made from steps of this session's journal, to run later on other files.").writes_file(crate::api::WritesFile::Always),
     method!("recipes.preview", Read, preview, RunParams, RunReport, "What a recipe would do to a document, without changing anything: each step described with its anchors resolved on this file, and where the run would stop."),
-    method!("recipes.run", Edit, caller run, RunParams, RunReport, "Run a recipe on a document, each step called as recipe:NAME with its anchors resolved on this file, waiting for the jobs steps start; its edits undo as one step, and the first failure stops it with which step and why."),
+    method!("recipes.run", Edit, consent run, RunParams, RunReport, "Run a recipe on a document, each step called as recipe:NAME with its anchors resolved on this file, waiting for the jobs steps start; its edits undo as one step, and the first failure stops it with which step and why."),
 ];
 
 /// An example call of each of [`METHODS`], run in order on a fresh
@@ -249,17 +249,16 @@ pub fn preview(workspace: &mut dyn Workspace, params: RunParams) -> Result<RunRe
 /// otherwise each checked against the policy of the caller that started
 /// it. A run that stops fails with the stopped step's error code, and its
 /// report as `data.report`.
-pub fn run(workspace: &mut dyn Workspace, caller: &Caller, params: RunParams) -> Result<RunReport, ApiError> {
+pub fn run(workspace: &mut dyn Workspace, _caller: &Caller, consent: Consent<'_>, params: RunParams) -> Result<RunReport, ApiError> {
     let (recipe, _) = chosen(params.name, params.path, params.recipe)?;
     let mut options = ReplayOptions { parameters: params.parameters, doc: params.doc, through_step: params.through_step, ..ReplayOptions::new(Caller::Recipe(recipe.name.clone())) };
-    // This call is running, so it was allowed: by the person's own action,
-    // by the caller's policy, or by the person answering the confirmation
-    // window (the only way a call whose caller must ask gets to run).
-    match workspace.permission(caller, Effect::Edit) {
-        _ if *caller == Caller::Panel => options.consented = true,
-        Decision::NeedsConfirmation => options.consented = true,
-        Decision::Allowed | Decision::Denied => options.checked_as = Some(caller.clone()),
-    }
+    // Started by the person, or allowed by them when asked, the run is
+    // consented to; allowed by a client's policy, each step is checked
+    // against that policy too.
+    options.checked_as = match consent {
+        Consent::CheckedAs(subject) if subject.client().is_some() => Some(subject.clone()),
+        _ => None,
+    };
     let report = replay::run_recipe(workspace, &recipe, &options);
     match &report.stopped {
         None => Ok(report),

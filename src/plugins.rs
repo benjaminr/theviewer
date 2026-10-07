@@ -855,7 +855,7 @@ impl LuaHost {
             .map(|(topic, handler)| Arc::new(Subscription { state: state.clone(), topic, plugin: name.to_string(), namespace: namespace.clone(), edits, handler }))
             .collect();
         let script = Script {
-            sha256: crate::journal::sha256_hex(source.as_bytes()),
+            sha256: crate::corpus::sha256_hex(source.as_bytes()),
             namespace,
             edits,
             subscriptions,

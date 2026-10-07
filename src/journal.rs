@@ -6,13 +6,13 @@
 //! gives the History tab, undo across analysis steps, playback and recipes
 //! from one mechanism (`docs/design/shared-knowledge-and-api.md` §4).
 //!
-//! What is recorded:
+//! What is recorded, as each method declares it ([`Journalled`]):
 //!
-//! * **Every call whose effect is edit, view or job**, by every caller, as a
-//!   [`JournalEntry`] with a step number. A call that fails is recorded too,
-//!   with its error, so the History tab can show what was tried; a call
-//!   refused because it must first be confirmed is not, because it is
-//!   recorded when the person allows it.
+//! * **Every call whose effect is edit, view, job or analysis**, by every
+//!   caller, as a [`JournalEntry`] with a step number. A call that fails is
+//!   recorded too, with its error, so the History tab can show what was
+//!   tried; a call refused because it must first be confirmed is not,
+//!   because it is recorded when the person allows it.
 //! * **Reads** go into a bounded ring of recent reads, numbered from the same
 //!   sequence as the steps. A later step that used a value a read returned
 //!   cites it as provenance, and [`promote`] moves the read into the journal
@@ -20,10 +20,12 @@
 //! * **Not** calls made inside another call (a transaction's, or those a
 //!   plugin method makes while it runs): the outer call is the step.
 //!   Not the app's own work either, which does not go through the API.
-//!   Not reads of the journal itself (`history.*` reads).
-//! * Consecutive calls of one setter (`selection.set`, `cursor.set`,
-//!   `view.set_shape`) by the same caller on the same document are merged
-//!   into the last, so dragging a selection is one step, not fifty.
+//!   Not the methods that read the journal itself or edit its provenance
+//!   (`history.list`, `history.make_anchor`…), which say so.
+//! * Consecutive calls of a setter that merges its repeats (`selection.set`,
+//!   `cursor.set`, `view.set_shape`) by the same caller on the same document
+//!   are merged into the last, so dragging a selection is one step, not
+//!   fifty, which undoes to what was there before the drag.
 //!
 //! Each new entry is published on the bus as `journal.recorded`.
 //!
@@ -34,28 +36,36 @@
 //!
 //! Submodules hold the types the three phase 7 areas share: [`anchors`]
 //! (portable values), [`recipe`] (the recipe file) and [`replay`] (running
-//! steps again). `docs/design/history-recipes.md` says who owns what.
+//! steps again); [`timeline`] and [`undo`] say which steps are in effect
+//! and how each is undone. `docs/design/history-recipes.md` says who owns
+//! what.
 
 pub mod anchors;
 pub mod provenance;
 pub mod recipe;
 pub mod replay;
 pub mod timeline;
+pub mod undo;
 
 use std::collections::{BTreeMap, VecDeque};
+use std::fmt;
+use std::sync::{Arc, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
+use serde::ser::SerializeStruct;
+use serde::{Deserialize, Serialize, Serializer};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-use crate::api::{self, ApiError, Caller, Effect, Workspace};
+use crate::api::{self, ApiError, Caller, Effect, MethodRef, Workspace};
 use crate::bus::topics::JournalRecorded;
 use crate::bus::{Draft, Payload};
+use crate::document::{Backing, Document};
 
 pub use anchors::Anchor;
 pub use recipe::Recipe;
+use timeline::Timeline;
 
 /// Where the values of a step's parameters came from: each parameter's
 /// path (`start`, `length_field.offset`, `ranges[0][0]`) and its anchor.
@@ -64,45 +74,65 @@ pub type DerivedFrom = BTreeMap<String, Anchor>;
 /// The producer `journal.recorded` is published as.
 pub const JOURNAL_PRODUCER: &str = "journal";
 
-/// Setters whose next call by the same caller on the same document
-/// replaces the last, when nothing came between.
-const MERGED_SETTERS: &[&str] = &["selection.set", "cursor.set", "view.set_shape"];
-
-/// The namespace whose reads are not recorded: reading the journal is
-/// not a step of the analysis.
-const UNRECORDED_READ_NAMESPACE: &str = "history";
-
 /// Longest description kept, in characters.
 const DESCRIPTION_LIMIT: usize = 240;
 /// Longest string kept in a summarised value, in characters.
 const SUMMARY_STRING_LIMIT: usize = 1024;
 /// Most items of an array kept in a summarised value.
 const SUMMARY_ARRAY_LIMIT: usize = 32;
-/// Largest document hashed for the session header.
-const HASH_LIMIT: usize = 256 * 1024 * 1024;
-/// Bytes read at a time while hashing.
+/// Largest document hashed, for the session header and to tell whether a
+/// document is one seen before.
+pub const HASH_LIMIT: usize = 256 * 1024 * 1024;
+/// Bytes read at a time while hashing a document.
 const HASH_CHUNK: usize = 16 * 1024 * 1024;
+
+/// How a method's calls are kept in the journal.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Journalled {
+    /// As a step, whether it succeeded, failed or was refused.
+    Step,
+    /// In the ring of recent reads when it succeeds, for a later step to
+    /// cite.
+    Read,
+    /// Not at all: it reads the journal itself, or edits its provenance.
+    Skip,
+}
+
+impl Journalled {
+    /// How a method of `effect` is kept unless it says otherwise: a read in
+    /// the ring of reads, anything else as a step.
+    pub const fn for_effect(effect: Effect) -> Journalled {
+        match effect {
+            Effect::Read => Journalled::Read,
+            _ => Journalled::Step,
+        }
+    }
+}
 
 /// How much the journal keeps.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct JournalLimits {
     /// Most entries kept; the oldest are dropped beyond it.
     pub max_entries: usize,
-    /// Most bytes of parameters and results kept, roughly; the oldest
-    /// entries are dropped beyond it.
+    /// Most bytes of entries kept, roughly; the oldest entries are dropped
+    /// beyond it.
     pub max_bytes: usize,
     /// Parameters larger than this are kept as a summary, and the step
     /// cannot be repeated exactly.
     pub max_params_bytes: usize,
-    /// Results larger than this are kept as a summary.
+    /// Results larger than this are kept as a summary; what a step replaced
+    /// larger than this is not kept, and the step has no inverse.
     pub max_result_bytes: usize,
     /// Most recent reads kept for provenance.
     pub max_reads: usize,
+    /// Most bytes of recent reads kept, roughly; the oldest are dropped
+    /// beyond it.
+    pub max_reads_bytes: usize,
 }
 
 impl Default for JournalLimits {
     fn default() -> Self {
-        JournalLimits { max_entries: 10_000, max_bytes: 64 * 1024 * 1024, max_params_bytes: 1024 * 1024, max_result_bytes: 64 * 1024, max_reads: 256 }
+        JournalLimits { max_entries: 10_000, max_bytes: 64 * 1024 * 1024, max_params_bytes: 1024 * 1024, max_result_bytes: 64 * 1024, max_reads: 256, max_reads_bytes: 4 * 1024 * 1024 }
     }
 }
 
@@ -168,8 +198,9 @@ pub struct JournalEntry {
     #[serde(default, skip_serializing_if = "is_zero")]
     pub merged: u32,
     /// What the step replaced, for its inverse (see
-    /// [`timeline::state_before`]): the view shape, bookmarks or selection
-    /// as they were before it ran, when the timeline models the method.
+    /// [`undo::state_before`]): the view shape, bookmarks or selection as
+    /// they were before it ran (before the first call it merged), when its
+    /// method reverses a change.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub before: Option<Value>,
 }
@@ -187,10 +218,19 @@ impl JournalEntry {
     pub fn changed_document(&self) -> bool {
         matches!((self.version_before, self.version_after), (Some(before), Some(after)) if before != after)
     }
+}
 
-    /// The caller, as the API knows it, to call the method again as.
-    pub fn caller(&self) -> Caller {
-        Caller::from_producer(&self.caller)
+/// An entry held, with the bytes it takes, worked out once.
+#[derive(Clone, Debug)]
+struct Held {
+    entry: JournalEntry,
+    size: usize,
+}
+
+impl Held {
+    fn new(entry: JournalEntry) -> Self {
+        let size = entry_size(&entry);
+        Held { entry, size }
     }
 }
 
@@ -216,14 +256,97 @@ pub struct FileIdentity {
     pub sha256: Option<String>,
 }
 
+/// The SHA-256 of a document as first seen, worked out on a thread of its
+/// own so the call that first saw it does not wait; asking for it waits
+/// until it is known. Empty for a document too large to hash.
+#[derive(Clone, Default)]
+struct PendingDigest(Option<Arc<OnceLock<String>>>);
+
+impl PendingDigest {
+    /// Start working out the hash of `document`'s bytes as they are now: of
+    /// the file's own bytes when it is unedited, otherwise of a copy.
+    fn start(document: &mut Document) -> Self {
+        let len = document.len();
+        if len > HASH_LIMIT {
+            return PendingDigest(None);
+        }
+        let bytes = if document.version() == 0 { document.original() } else { Backing::Owned(Arc::new(document.read_range(0, len))) };
+        let digest: Arc<OnceLock<String>> = Arc::new(OnceLock::new());
+        let hash = {
+            let (digest, bytes) = (Arc::clone(&digest), bytes.clone());
+            move || {
+                digest.get_or_init(|| crate::corpus::sha256_hex(bytes.as_slice()));
+            }
+        };
+        if std::thread::Builder::new().name("journal-hash".into()).spawn(hash).is_err() {
+            // Without a thread to spare, it is worked out here after all.
+            digest.get_or_init(|| crate::corpus::sha256_hex(bytes.as_slice()));
+        }
+        PendingDigest(Some(digest))
+    }
+
+    /// The hash, once worked out.
+    fn wait(&self) -> Option<String> {
+        self.0.as_ref().map(|digest| digest.wait().clone())
+    }
+}
+
+impl fmt::Debug for PendingDigest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.0 {
+            None => formatter.write_str("none"),
+            Some(digest) => formatter.write_str(if digest.get().is_some() { "known" } else { "working" }),
+        }
+    }
+}
+
 /// A document as the session first saw it.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, Deserialize, JsonSchema)]
 pub struct RecordedDocument {
     /// Its id in this session, such as "doc-1".
     pub id: String,
     /// The version it was at.
     pub version: u64,
-    pub file: FileIdentity,
+    /// Its name and size, and its hash once known: read it whole through
+    /// [`RecordedDocument::file`].
+    #[serde(rename = "file")]
+    identity: FileIdentity,
+    #[serde(skip)]
+    digest: PendingDigest,
+}
+
+impl RecordedDocument {
+    /// Document `id` first seen at `version` as `file`, hash and all.
+    pub fn new(id: impl Into<String>, version: u64, file: FileIdentity) -> Self {
+        RecordedDocument { id: id.into(), version, identity: file, digest: PendingDigest::default() }
+    }
+
+    /// The file as first seen, waiting for its hash to be worked out.
+    pub fn file(&self) -> FileIdentity {
+        let mut file = self.identity.clone();
+        if file.sha256.is_none() {
+            file.sha256 = self.digest.wait();
+        }
+        file
+    }
+}
+
+impl PartialEq for RecordedDocument {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id && self.version == other.version && self.file() == other.file()
+    }
+}
+
+impl Eq for RecordedDocument {}
+
+impl Serialize for RecordedDocument {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut fields = serializer.serialize_struct("RecordedDocument", 3)?;
+        fields.serialize_field("id", &self.id)?;
+        fields.serialize_field("version", &self.version)?;
+        fields.serialize_field("file", &self.file())?;
+        fields.end()
+    }
 }
 
 /// A plugin script loaded in the session, which a step may have used.
@@ -267,9 +390,9 @@ pub struct Journal {
     limits: JournalLimits,
     session: JournalSession,
     /// Recorded steps, in step order.
-    entries: VecDeque<JournalEntry>,
+    entries: VecDeque<Held>,
     /// Recent successful reads, in step order, the oldest dropped first.
-    reads: VecDeque<JournalEntry>,
+    reads: VecDeque<Held>,
     next_step: u64,
     /// Changes whenever anything recorded changes, for followers.
     revision: u64,
@@ -280,6 +403,11 @@ pub struct Journal {
     dropped: Dropped,
     /// Rough bytes held by `entries`.
     bytes: usize,
+    /// Rough bytes held by `reads`.
+    reads_bytes: usize,
+    /// Where each step held stands, kept up to date as entries are
+    /// recorded.
+    timeline: Timeline,
     /// Parameters the person named while making steps portable, with their
     /// descriptions and types, kept until a recipe is built (see
     /// [`provenance`]).
@@ -315,12 +443,10 @@ impl Journal {
             pending_provenance: None,
             dropped: Dropped::default(),
             bytes: 0,
+            reads_bytes: 0,
+            timeline: Timeline::default(),
             parameters: BTreeMap::new(),
         }
-    }
-
-    pub fn limits(&self) -> JournalLimits {
-        self.limits
     }
 
     /// The session header: API version, plugins and documents.
@@ -330,7 +456,7 @@ impl Journal {
 
     /// Every entry held, in step order.
     pub fn entries(&self) -> impl DoubleEndedIterator<Item = &JournalEntry> + ExactSizeIterator {
-        self.entries.iter()
+        self.entries.iter().map(|held| &held.entry)
     }
 
     /// The entries after `step`, in step order: what a follower that has
@@ -338,8 +464,8 @@ impl Journal {
     /// step number, so a follower also watches [`Journal::revision`] or
     /// `journal.recorded` to notice one.
     pub fn since(&self, step: u64) -> impl DoubleEndedIterator<Item = &JournalEntry> {
-        let from = self.entries.partition_point(|entry| entry.step <= step);
-        self.entries.range(from..)
+        let from = self.entries.partition_point(|held| held.entry.step <= step);
+        self.entries.range(from..).map(|held| &held.entry)
     }
 
     /// The entry recorded as `step`.
@@ -347,14 +473,25 @@ impl Journal {
         find_step(&self.entries, step)
     }
 
+    /// The entry recorded as `step`, to change in place (its provenance).
+    fn entry_mut(&mut self, step: u64) -> Option<&mut JournalEntry> {
+        let index = self.entries.partition_point(|held| held.entry.step < step);
+        self.entries.get_mut(index).map(|held| &mut held.entry).filter(|entry| entry.step == step)
+    }
+
     /// The recent reads, oldest first.
     pub fn reads(&self) -> impl DoubleEndedIterator<Item = &JournalEntry> + ExactSizeIterator {
-        self.reads.iter()
+        self.reads.iter().map(|held| &held.entry)
     }
 
     /// The recent read numbered `step`.
     pub fn read(&self, step: u64) -> Option<&JournalEntry> {
         find_step(&self.reads, step)
+    }
+
+    /// Where each step held stands: in effect, undone, failed or a move.
+    pub fn timeline(&self) -> &Timeline {
+        &self.timeline
     }
 
     /// The last step recorded or read, if any.
@@ -391,18 +528,34 @@ impl Journal {
         self.pending_provenance.take()
     }
 
+    /// Whether a call of a setter that merges its repeats, `method` by
+    /// `caller` about `doc`, would replace the last entry: see
+    /// [`merges_into`].
+    fn would_merge(&self, method: &str, caller: &str, doc: Option<&str>) -> bool {
+        self.entries.back().is_some_and(|last| {
+            let last = &last.entry;
+            last.method == method && last.caller == caller && last.doc.as_deref() == doc && last.outcome.is_ok() && last.derived_from.is_empty()
+        })
+    }
+
     /// Record `entry` under the next step number (merging it into the last
-    /// entry when both set the same thing) and keep within the limits.
-    /// Returns its step.
+    /// entry when its method merges repeats and both set the same thing)
+    /// and keep within the limits. Returns its step.
     fn record(&mut self, mut entry: JournalEntry) -> u64 {
         entry.step = self.take_step();
-        if let Some(replaced) = self.entries.pop_back_if(|last| merges_into(last, &entry)) {
-            entry.merged = replaced.merged + 1;
-            self.bytes = self.bytes.saturating_sub(entry_size(&replaced));
+        let merges = api::method(&entry.method).is_some_and(|method| method.merge);
+        if merges && let Some(replaced) = self.entries.pop_back_if(|last| merges_into(&last.entry, &entry)) {
+            entry.merged = replaced.entry.merged + 1;
+            // Undone, the merged calls leave what was there before the first.
+            entry.before = replaced.entry.before;
+            self.bytes = self.bytes.saturating_sub(replaced.size);
+            self.timeline.forget(replaced.entry.step);
         }
-        self.bytes += entry_size(&entry);
         let step = entry.step;
-        self.entries.push_back(entry);
+        self.timeline.follow(&entry);
+        let held = Held::new(entry);
+        self.bytes += held.size;
+        self.entries.push_back(held);
         self.trim();
         self.revision += 1;
         step
@@ -412,9 +565,12 @@ impl Journal {
     fn keep_read(&mut self, mut entry: JournalEntry) -> u64 {
         entry.step = self.take_step();
         let step = entry.step;
-        self.reads.push_back(entry);
-        while self.reads.len() > self.limits.max_reads {
-            self.reads.pop_front();
+        let held = Held::new(entry);
+        self.reads_bytes += held.size;
+        self.reads.push_back(held);
+        while self.reads.len() > self.limits.max_reads || (self.reads_bytes > self.limits.max_reads_bytes && self.reads.len() > 1) {
+            let Some(oldest) = self.reads.pop_front() else { break };
+            self.reads_bytes = self.reads_bytes.saturating_sub(oldest.size);
         }
         step
     }
@@ -423,12 +579,17 @@ impl Journal {
     /// `description`, keeping its number. Returns the entry, or `None` when
     /// no such read is held.
     fn promote_read(&mut self, step: u64, description: String) -> Option<&JournalEntry> {
-        let index = self.reads.iter().position(|read| read.step == step)?;
-        let mut entry = self.reads.remove(index)?;
+        let index = self.reads.iter().position(|read| read.entry.step == step)?;
+        let read = self.reads.remove(index)?;
+        self.reads_bytes = self.reads_bytes.saturating_sub(read.size);
+        let mut entry = read.entry;
         entry.description = description;
-        self.bytes += entry_size(&entry);
-        let at = self.entries.partition_point(|held| held.step < step);
-        self.entries.insert(at, entry);
+        let held = Held::new(entry);
+        self.bytes += held.size;
+        let at = self.entries.partition_point(|entry| entry.entry.step < step);
+        self.entries.insert(at, held);
+        // Taken in among later steps, it is followed in its place.
+        self.timeline = Timeline::following(self.entries());
         self.trim();
         self.revision += 1;
         self.entry(step)
@@ -444,9 +605,10 @@ impl Journal {
     fn trim(&mut self) {
         while self.entries.len() > self.limits.max_entries || (self.bytes > self.limits.max_bytes && self.entries.len() > 1) {
             let Some(oldest) = self.entries.pop_front() else { break };
-            self.bytes = self.bytes.saturating_sub(entry_size(&oldest));
+            self.bytes = self.bytes.saturating_sub(oldest.size);
+            self.timeline.forget(oldest.entry.step);
             self.dropped.entries += 1;
-            self.dropped.through_step = self.dropped.through_step.max(oldest.step);
+            self.dropped.through_step = self.dropped.through_step.max(oldest.entry.step);
         }
     }
 
@@ -457,28 +619,24 @@ impl Journal {
 }
 
 /// The entry numbered `step` in `entries`, which are in step order.
-fn find_step(entries: &VecDeque<JournalEntry>, step: u64) -> Option<&JournalEntry> {
-    let index = entries.partition_point(|entry| entry.step < step);
-    entries.get(index).filter(|entry| entry.step == step)
+fn find_step(entries: &VecDeque<Held>, step: u64) -> Option<&JournalEntry> {
+    let index = entries.partition_point(|held| held.entry.step < step);
+    entries.get(index).map(|held| &held.entry).filter(|entry| entry.step == step)
 }
 
-/// Whether `next` replaces `last`, the entry recorded just before it: the
-/// same setter, caller and document, both successful, and the last has no
-/// provenance that merging would lose.
+/// Whether `next`, a call of a setter that merges its repeats, replaces
+/// `last`, the entry recorded just before it: the same setter, caller and
+/// document, both successful, and the last has no provenance that merging
+/// would lose.
 fn merges_into(last: &JournalEntry, next: &JournalEntry) -> bool {
-    MERGED_SETTERS.contains(&next.method.as_str())
-        && last.method == next.method
-        && last.caller == next.caller
-        && last.doc == next.doc
-        && last.outcome.is_ok()
-        && next.outcome.is_ok()
-        && last.derived_from.is_empty()
+    last.method == next.method && last.caller == next.caller && last.doc == next.doc && last.outcome.is_ok() && next.outcome.is_ok() && last.derived_from.is_empty()
 }
 
 /// Rough bytes an entry holds.
 fn entry_size(entry: &JournalEntry) -> usize {
     const OVERHEAD: usize = 256;
-    OVERHEAD + approximate_size(&entry.params) + entry.result.as_ref().map_or(0, approximate_size) + entry.description.len()
+    let held = [Some(&entry.params), entry.result.as_ref(), entry.before.as_ref()];
+    OVERHEAD + held.into_iter().flatten().map(approximate_size).sum::<usize>() + entry.description.len()
 }
 
 /// Rough bytes `value` takes as JSON, without writing it.
@@ -528,9 +686,18 @@ pub fn timestamp(time: SystemTime) -> String {
     format!("{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z", in_day / 3600, (in_day % 3600) / 60, in_day % 60)
 }
 
-/// SHA-256 of `bytes` as lower-case hex.
-pub fn sha256_hex(bytes: &[u8]) -> String {
-    Sha256::digest(bytes).iter().map(|byte| format!("{byte:02x}")).collect()
+/// SHA-256 of `document`'s bytes as they are now, lower-case hex, read a
+/// chunk at a time; none over [`HASH_LIMIT`].
+pub fn document_sha256(document: &mut Document) -> Option<String> {
+    let len = document.len();
+    if len > HASH_LIMIT {
+        return None;
+    }
+    let mut hasher = Sha256::new();
+    for start in (0..len).step_by(HASH_CHUNK) {
+        hasher.update(document.read_range(start, HASH_CHUNK.min(len - start)));
+    }
+    Some(crate::ops::to_compact_hex(&hasher.finalize()))
 }
 
 // ---------------------------------------------------------------------------
@@ -539,115 +706,128 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
 
 /// A call being recorded, from [`begin`] to [`finish`].
 pub(crate) enum CallRecord {
-    /// A call inside another: not recorded.
-    Nested,
-    /// The outermost call, with what was known before it ran.
-    Outermost(Box<Begun>),
-}
-
-pub(crate) struct Begun {
-    at: String,
-    caller: String,
-    method: String,
-    effect: Effect,
-    description: String,
-    params: Value,
-    params_summarised: bool,
-    doc: Option<String>,
-    version_before: Option<u64>,
-    derived_from: DerivedFrom,
-    before: Option<Value>,
+    /// Not recorded: a call inside another, or one its method keeps out of
+    /// the journal.
+    Unrecorded,
+    /// The outermost call, as known before it ran.
+    Outermost {
+        entry: Box<JournalEntry>,
+        kept: Journalled,
+        /// Whether its method takes a `doc` parameter.
+        takes_doc: bool,
+    },
 }
 
 /// Start recording a call to `method` by `caller`, before it runs.
-pub(crate) fn begin(workspace: &mut dyn Workspace, caller: &Caller, method: &str, effect: Effect, params: &Value) -> CallRecord {
+pub(crate) fn begin(workspace: &mut dyn Workspace, caller: &Caller, method: &MethodRef, params: &Value) -> CallRecord {
     let journal = workspace.journal_mut();
     journal.depth += 1;
     if journal.depth > 1 {
-        return CallRecord::Nested;
+        return CallRecord::Unrecorded;
     }
+    // Provenance given for this call is this call's, kept or not.
     let derived_from = journal.pending_provenance.take().unwrap_or_default();
-    let limits = journal.limits;
-    let doc = document_of_call(workspace, params);
-    let version_before = doc.as_deref().and_then(|id| version_of(workspace, id));
-    if let Some(id) = doc.as_deref() {
-        note_document(workspace, id);
+    let kept = method.journalled();
+    if kept == Journalled::Skip {
+        return CallRecord::Unrecorded;
     }
-    // Reads are described only if they are promoted: most never are, and
-    // only steps can be undone, so only they keep what they replaced.
-    let description = if effect == Effect::Read { String::new() } else { describe(workspace, method, params) };
-    let before = if effect == Effect::Read { None } else { timeline::state_before(workspace, method, params) };
-    let (params, params_summarised) = bounded(params, limits.max_params_bytes);
-    CallRecord::Outermost(Box::new(Begun {
+    let (kept_params, params_summarised) = bounded(params, journal.limits.max_params_bytes);
+    let mut entry = Box::new(JournalEntry {
+        step: 0,
         at: timestamp(SystemTime::now()),
         caller: caller.producer(),
-        method: method.to_string(),
-        effect,
-        description,
-        params,
+        method: method.name().to_string(),
+        effect: method.effect(),
+        description: String::new(),
+        params: kept_params,
         params_summarised,
-        doc,
-        version_before,
+        doc: None,
+        version_before: None,
+        version_after: None,
+        outcome: Outcome::Ok,
+        result: None,
+        result_summarised: false,
         derived_from,
-        before,
-    }))
+        merged: 0,
+        before: None,
+    });
+    // A read is about its document once it has succeeded, and is described
+    // only if promoted: most never are, and only steps can be undone, so
+    // only they keep what they replaced.
+    if kept == Journalled::Step {
+        let doc = document_of_call(workspace, method.takes_doc(), params);
+        if let Some(id) = doc.as_deref() {
+            entry.version_before = workspace.version(id);
+            note_document(workspace, id);
+        }
+        entry.description = describe(workspace, method, params);
+        // A call merged into the last keeps what the last replaced.
+        if !(method.merges_repeats() && workspace.journal().would_merge(&entry.method, &entry.caller, doc.as_deref())) {
+            let limit = workspace.journal().limits.max_result_bytes;
+            entry.before = undo::state_before(workspace, method.undo(), doc.as_deref(), params).filter(|before| approximate_size(before) <= limit);
+        }
+        entry.doc = doc;
+    }
+    CallRecord::Outermost { entry, kept, takes_doc: method.takes_doc() }
 }
 
-/// Finish recording a call with its result: an edit, view change or job
-/// goes into the journal (failed or not) and is published; a successful
-/// read goes into the ring of recent reads.
+/// Finish recording a call with its result: a step goes into the journal
+/// (failed or not) and is published; a successful read goes into the ring
+/// of recent reads.
 pub(crate) fn finish(workspace: &mut dyn Workspace, record: CallRecord, result: &Result<Value, ApiError>) {
     let journal = workspace.journal_mut();
     journal.depth = journal.depth.saturating_sub(1);
-    let CallRecord::Outermost(begun) = record else { return };
-    let begun = *begun;
-    let is_read = begun.effect == Effect::Read;
-    if is_read && (result.is_err() || api::namespace_of(&begun.method) == UNRECORDED_READ_NAMESPACE) {
-        return;
-    }
-    let version_after = begun.doc.as_deref().and_then(|id| version_of(workspace, id));
-    let limits = workspace.journal().limits;
-    let (outcome, result, result_summarised) = match result {
-        Ok(value) => {
-            let (kept, summarised) = bounded(value, limits.max_result_bytes);
-            (Outcome::Ok, Some(kept), summarised)
+    let CallRecord::Outermost { mut entry, kept, takes_doc } = record else { return };
+    if kept == Journalled::Read {
+        let Ok(value) = result else { return };
+        entry.doc = document_of_call(workspace, takes_doc, &entry.params);
+        if let Some(id) = entry.doc.as_deref() {
+            entry.version_before = workspace.version(id);
+            note_document(workspace, id);
         }
-        Err(error) => (Outcome::Error(error.clone()), None, false),
-    };
-    let entry = JournalEntry {
-        step: 0,
-        at: begun.at,
-        caller: begun.caller,
-        method: begun.method,
-        effect: begun.effect,
-        description: begun.description,
-        params: begun.params,
-        params_summarised: begun.params_summarised,
-        doc: begun.doc,
-        version_before: begun.version_before,
-        version_after,
-        outcome,
-        result,
-        result_summarised,
-        derived_from: begun.derived_from,
-        merged: 0,
-        before: begun.before,
-    };
-    if is_read {
-        workspace.journal_mut().keep_read(entry);
+        entry.version_after = entry.version_before;
+        (entry.result, entry.result_summarised) = kept_result(workspace, value);
+        workspace.journal_mut().keep_read(*entry);
         return;
     }
-    let step = workspace.journal_mut().record(entry);
+    entry.version_after = entry.doc.as_deref().and_then(|id| workspace.version(id));
+    match result {
+        Ok(value) => (entry.result, entry.result_summarised) = kept_result(workspace, value),
+        Err(error) => entry.outcome = Outcome::Error(error.clone()),
+    }
+    let step = workspace.journal_mut().record(*entry);
     publish(workspace, step);
+}
+
+/// A call's result as the journal keeps it, and whether it is a summary.
+fn kept_result(workspace: &dyn Workspace, value: &Value) -> (Option<Value>, bool) {
+    let (kept, summarised) = bounded(value, workspace.journal().limits.max_result_bytes);
+    (Some(kept), summarised)
 }
 
 /// Record a call that was refused before it ran (its caller may never
 /// make it), and return the refusal.
-pub(crate) fn record_refusal(workspace: &mut dyn Workspace, caller: &Caller, method: &str, effect: Effect, params: &Value, refusal: ApiError) -> Result<Value, ApiError> {
-    let record = begin(workspace, caller, method, effect, params);
+pub(crate) fn record_refusal(workspace: &mut dyn Workspace, caller: &Caller, method: &MethodRef, params: &Value, refusal: ApiError) -> Result<Value, ApiError> {
+    let record = begin(workspace, caller, method, params);
     let result = Err(refusal);
     finish(workspace, record, &result);
     result
+}
+
+/// Run `action`, which makes one call through the API, so that call's
+/// journal entry carries `derived_from`: where the values of some of its
+/// parameters came from, by parameter path. The one way provenance goes in,
+/// for [`crate::api::call_derived`] and the window's actions alike.
+pub fn with_provenance<W: Workspace + ?Sized, T>(workspace: &mut W, derived_from: DerivedFrom, action: impl FnOnce(&mut W) -> T) -> T {
+    if derived_from.is_empty() {
+        return action(workspace);
+    }
+    workspace.journal_mut().set_pending_provenance(derived_from);
+    let done = action(workspace);
+    // An action that called nothing (no such method, or a call held for
+    // confirmation) leaves nothing for the next call.
+    workspace.journal_mut().take_pending_provenance();
+    done
 }
 
 /// Move the recent read numbered `step` into the journal, because a later
@@ -659,7 +839,7 @@ pub fn promote(workspace: &mut dyn Workspace, step: u64) -> bool {
     }
     let Some(read) = workspace.journal().read(step) else { return false };
     let (method, params) = (read.method.clone(), read.params.clone());
-    let description = describe(workspace, &method, &params);
+    let description = cut_to_a_line(api::describe_call(workspace, &method, &params));
     if workspace.journal_mut().promote_read(step, description).is_none() {
         return false;
     }
@@ -679,9 +859,13 @@ fn publish(workspace: &mut dyn Workspace, step: u64) {
     workspace.bus().publish(draft);
 }
 
-/// The call described in plain words, cut to a line.
-fn describe(workspace: &mut dyn Workspace, method: &str, params: &Value) -> String {
-    let description = api::describe_call(workspace, method, params);
+/// The call to `method` described in plain words, cut to a line.
+fn describe(workspace: &mut dyn Workspace, method: &MethodRef, params: &Value) -> String {
+    cut_to_a_line(method.describe_call(workspace, params))
+}
+
+/// `description` cut to [`DESCRIPTION_LIMIT`] characters.
+fn cut_to_a_line(description: String) -> String {
     if description.chars().count() <= DESCRIPTION_LIMIT {
         return description;
     }
@@ -690,35 +874,24 @@ fn describe(workspace: &mut dyn Workspace, method: &str, params: &Value) -> Stri
     cut
 }
 
-/// The document a call is about: the one its `doc` parameter names, or the
-/// current one.
-fn document_of_call(workspace: &dyn Workspace, params: &Value) -> Option<String> {
-    let named = params.get("doc").and_then(Value::as_str);
+/// The document a call is about: the one its `doc` parameter names, when
+/// its method takes one, or the current one.
+fn document_of_call(workspace: &dyn Workspace, takes_doc: bool, params: &Value) -> Option<String> {
+    let named = if takes_doc { params.get("doc").and_then(Value::as_str) } else { None };
     api::workspace::resolve(workspace, named).ok()
 }
 
-fn version_of(workspace: &dyn Workspace, id: &str) -> Option<u64> {
-    workspace.documents().into_iter().find(|info| info.id == id).map(|info| info.version)
-}
-
 /// Note document `id` in the session header the first time a call is about
-/// it, with its name, size and hash.
+/// it, with its name and size; its hash is worked out meanwhile, away from
+/// the call (see [`RecordedDocument::file`]).
 fn note_document(workspace: &mut dyn Workspace, id: &str) {
     if workspace.journal().knows_document(id) {
         return;
     }
-    let Some(info) = workspace.documents().into_iter().find(|info| info.id == id) else { return };
-    let sha256 = workspace.document_mut(id).and_then(|document| {
-        let len = document.len();
-        (len <= HASH_LIMIT).then(|| {
-            let mut hasher = Sha256::new();
-            for start in (0..len).step_by(HASH_CHUNK) {
-                hasher.update(document.read_range(start, HASH_CHUNK.min(len - start)));
-            }
-            hasher.finalize().iter().map(|byte| format!("{byte:02x}")).collect()
-        })
-    });
-    let recorded = RecordedDocument { id: id.to_string(), version: info.version, file: FileIdentity { name: info.name, size: info.len, sha256 } };
+    let Ok(info) = api::workspace::info(workspace, id) else { return };
+    let Some(document) = workspace.document_mut(id) else { return };
+    let digest = PendingDigest::start(document);
+    let recorded = RecordedDocument { id: id.to_string(), version: info.version, identity: FileIdentity { name: info.name, size: info.len, sha256: None }, digest };
     workspace.journal_mut().session.documents.push(recorded);
 }
 

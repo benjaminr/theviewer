@@ -21,7 +21,7 @@ use crate::panel_learn::{ComparedFile, LoadedFile, read_file};
 /// their namespace.
 pub(super) const METHODS: &[crate::api::Method] = &[
     method!("learn.format", Job, caller format, FormatParams, JobStartedResult, "Start learning what the document and sample files of the same format share (a magic number, header fields) as a background job; a signature for the catalogue and a template draft are job.finished's result, and in the window the Learn tool shows them."),
-    method!("learn.save_catalogue", Edit, caller save_catalogue, SaveCatalogueParams, SaveCatalogueResult, "Write a learned signature to a new file in the user's catalogue folder, never over another, and load it."),
+    method!("learn.save_catalogue", Edit, caller save_catalogue, SaveCatalogueParams, SaveCatalogueResult, "Write a learned signature to a new file in the user's catalogue folder, never over another, and load it.").writes_file(crate::api::WritesFile::Always),
     method!("learn.fuzzy_compare", Job, caller fuzzy_compare, FuzzyCompareParams, JobStartedResult, "Start hashing files with ssdeep and scoring how like the document each is, 0 to 100, as a background job; the scores are job.finished's result, and in the window the Learn tool lists them."),
     method!("learn.fragments", Job, caller fragments, FragmentsParams, JobStartedResult, "Start finding the blocks of the document that also occur in a file, as a background job; the shared fragments are job.finished's result, and in the window the Learn tool lists them."),
 ];

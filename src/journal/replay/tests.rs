@@ -310,7 +310,7 @@ fn in_the_window_a_run_the_person_allowed_needs_no_confirmation_for_each_step() 
     assert!(refused.error.needs_confirmation(), "{}", refused.error.message);
     assert_eq!(app.document.read_range(0, 6), b"abcdef");
 
-    let allowed = run(&mut app, &steps, &ReplayOptions { consented: true, ..ReplayOptions::new(recipe_caller()) });
+    let allowed = run(&mut app, &steps, &ReplayOptions { checked_as: None, ..ReplayOptions::new(recipe_caller()) });
     assert!(allowed.completed(), "{allowed:?}");
     assert!(app.confirmations.is_empty(), "nothing waits for the person");
     assert_eq!(app.document.read_range(0, 6), b"Abcdef");

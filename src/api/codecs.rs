@@ -17,7 +17,7 @@ pub(super) const METHODS: &[super::Method] = &[
     method!("codecs.detect", Read, detect, DetectParams, CodecList, "The codecs whose header starts at an offset."),
     method!("codecs.decode", Read, decode, DecodeParams, DecodeResult, "Decode (decompress) a span with a codec and return the output."),
     method!("codecs.probe", Read, probe, ProbeParams, ProbeResult, "Try every built-in decompressor at the start of a span, headerless ones included, and list those that decode."),
-    method!("codecs.open_decoded", View, open_decoded, OpenDecodedParams, OpenDecodedResult, "Decompress the stream starting at an offset, with the first codec that decodes there or the one named, and open what it holds as a document derived from this one; in the window, Back (or opening the parent by id) returns."),
+    method!("codecs.open_decoded", View, open_decoded, OpenDecodedParams, OpenDecodedResult, "Decompress the stream starting at an offset, with the first codec that decodes there or the one named, and open what it holds as a document derived from this one; in the window, Back (or opening the parent by id) returns.").opens_document(true),
 ];
 
 /// An example call of each of [`METHODS`], run in order on a fresh

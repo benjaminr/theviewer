@@ -19,18 +19,17 @@
 //!    against the step's document, in the order [`super::anchors::anchors_in`]
 //!    lists them, and each is reported in [`StepReport::anchors`].
 //! 3. **The call** is made as `options.caller`, so its edits are labelled
-//!    "… by recipe:NAME". With `options.consented` the person allowed the
-//!    whole run (they pressed Run after the preview, or allowed the held
-//!    `recipes.run` whose description lists the steps), so each step runs
-//!    without asking again ([`crate::api::call_permitted`]). Otherwise, with
-//!    `options.checked_as`, each step is checked against the policy of
-//!    whoever started the run (Ask, an MCP client, a plugin), and a step it
-//!    denies or would ask about is refused and stops the run; without it,
-//!    each is checked as [`crate::api::call`] checks it, under
-//!    `options.caller`'s own policy.
-//! 4. **Jobs** a step starts are waited for when `options.await_jobs`
-//!    is set, and the finished job's result is kept beside the step's
-//!    params and result, for later step anchors (`job.candidates[0].period`).
+//!    "… by recipe:NAME", through [`crate::api::call_as`]. Each step is
+//!    checked against the policy of `options.checked_as`: whoever started
+//!    the run (Ask, an MCP client, a plugin), or by default the run's own
+//!    caller; a step it denies or would ask about is refused and stops the
+//!    run. With no one to check against, the person allowed the whole run
+//!    (they pressed Run after the preview, went back to a step, or allowed
+//!    the held `recipes.run` whose description lists the steps), so each
+//!    step runs without asking again.
+//! 4. **Jobs** a step starts are waited for, and the finished job's result
+//!    is kept beside the step's params and result, for later step anchors
+//!    (`job.candidates[0].period`).
 //! 5. **The first failure stops the run**: a step whose anchor does not
 //!    resolve or whose call fails, with [`RunReport::stopped`] saying which
 //!    and why.
@@ -54,16 +53,13 @@ use serde_json::Value;
 use super::anchors::{Anchor, ResolveContext, anchors_in, replace_at};
 use super::recipe::{Recipe, RecipeStep};
 use super::{FileIdentity, Outcome};
-use crate::api::{self, ApiError, Caller, Decision, Effect, ErrorCode, Workspace, permissions, workspace};
+use crate::api::{self, ApiError, Caller, Consent, Effect, ErrorCode, MethodRef, Workspace, workspace};
 use crate::bus::{JobState, JobStatus};
 
 /// Longest a run waits for one step's job before giving up on it.
 const JOB_WAIT_LIMIT: Duration = Duration::from_secs(10 * 60);
 /// How often a run looks at a job it waits for.
 const JOB_POLL_INTERVAL: Duration = Duration::from_millis(10);
-/// Largest document hashed to tell whether it is the one a recipe was
-/// recorded on, as the journal's session header hashes them.
-const IDENTITY_HASH_LIMIT: usize = 256 * 1024 * 1024;
 
 /// How to run steps.
 #[derive(Clone, Debug, PartialEq)]
@@ -80,18 +76,12 @@ pub struct ReplayOptions {
     /// Resolve anchors and describe each step without calling anything:
     /// the preview shown before a recipe changes a file.
     pub preview: bool,
-    /// Wait for the jobs steps start before running the next step.
-    pub await_jobs: bool,
-    /// Whether the whole run is already allowed, so its steps are not each
-    /// checked against `caller`'s policy: the person pressed Run after the
-    /// preview, or a `recipes.run` call that passed its own caller's check
-    /// started it. Off by default: each step is checked.
-    pub consented: bool,
-    /// Who started the run, when not the person: each step is checked
-    /// against this caller's policy rather than `caller`'s, so a recipe
-    /// run by Ask, an MCP client or a plugin may do only what that caller
-    /// may. A step its policy denies, or would ask about, is refused and
-    /// stops the run. Ignored when `consented`.
+    /// Whose policy each step is checked against: `caller`'s by default,
+    /// or whoever started the run (Ask, an MCP client, a plugin), so a
+    /// recipe run by them may do only what they may. A step the policy
+    /// denies, or would ask about, is refused and stops the run. `None`
+    /// when the whole run is allowed already: the person pressed Run after
+    /// the preview, went back to a step, or allowed the run when asked.
     pub checked_as: Option<Caller>,
 }
 
@@ -99,7 +89,12 @@ impl ReplayOptions {
     /// Options to run every step as `caller` on the current document,
     /// waiting for jobs, each step checked against `caller`'s policy.
     pub fn new(caller: Caller) -> Self {
-        ReplayOptions { caller, parameters: BTreeMap::new(), doc: None, through_step: None, preview: false, await_jobs: true, consented: false, checked_as: None }
+        ReplayOptions { checked_as: Some(caller.clone()), caller, parameters: BTreeMap::new(), doc: None, through_step: None, preview: false }
+    }
+
+    /// Whether each step needs leave to run, and whose.
+    pub fn consent(&self) -> Consent<'_> {
+        self.checked_as.as_ref().map_or(Consent::Given, Consent::CheckedAs)
     }
 }
 
@@ -259,21 +254,26 @@ pub fn run_recipe(workspace: &mut dyn Workspace, recipe: &Recipe, options: &Repl
 /// The document the recipe's steps were recorded on, as its first step
 /// that names one names it.
 fn recorded_document(steps: &[RecipeStep]) -> Option<String> {
-    steps.iter().find_map(|step| step.params.get("doc").and_then(Value::as_str).filter(|doc| *doc != "current").map(str::to_string))
+    steps.iter().find_map(|step| step.params.get("doc").and_then(Value::as_str).filter(|doc| *doc != workspace::CURRENT).map(str::to_string))
 }
 
 /// Whether document `doc` is the file `identity` describes: the same size
-/// and, when both were hashed, the same SHA-256.
+/// and, when both were hashed, the same SHA-256. A document still as the
+/// session first saw it is not hashed again.
 fn is_same_file(workspace: &mut dyn Workspace, doc: &str, identity: &FileIdentity) -> bool {
+    let Some(version) = workspace.version(doc) else { return false };
+    let first_seen = workspace.journal().session().document(doc).filter(|first_seen| first_seen.version == version).map(|first_seen| first_seen.file());
     let Some(document) = workspace.document_mut(doc) else { return false };
-    let len = document.len();
-    if len as u64 != identity.size {
+    if document.len() as u64 != identity.size {
         return false;
     }
-    match &identity.sha256 {
-        Some(recorded) if len <= IDENTITY_HASH_LIMIT => super::sha256_hex(&document.read_range(0, len)) == *recorded,
-        _ => true,
-    }
+    let Some(recorded) = &identity.sha256 else { return true };
+    let sha256 = match first_seen {
+        Some(file) => file.sha256,
+        None => super::document_sha256(document),
+    };
+    // Too large to hash: the size has to do.
+    sha256.is_none_or(|sha256| sha256 == *recorded)
 }
 
 /// A run in progress: its options, its document, and what each step done
@@ -302,7 +302,11 @@ impl Run<'_> {
             journal_step: None,
             job: None,
         };
-        let prepared = self.prepare(workspace, step, &mut report);
+        let method = api::find(workspace, &step.method);
+        let prepared = match &method {
+            Ok(method) => self.prepare(workspace, method, &mut report),
+            Err(error) => Err(error.clone()),
+        };
         report.description = api::describe_call(workspace, &step.method, &report.params);
         if let Some(waiting) = report.anchors.iter().find_map(|anchor| anchor.pending.clone()) {
             report.description = format!("{} ({waiting})", report.description);
@@ -316,10 +320,11 @@ impl Run<'_> {
         }
         let before = workspace.journal().last_step();
         let outermost = workspace.journal().depth == 0;
-        let called = self.call(workspace, step, report.params.clone());
+        let called = api::call_as(workspace, &self.options.caller, &step.method, report.params.clone(), self.options.consent());
         let after = workspace.journal().last_step();
         report.journal_step = after.filter(|_| outermost && after != before);
-        let result = match called.and_then(|result| self.await_job(workspace, step, result, &mut report)) {
+        let starts_jobs = method.is_ok_and(|method| method.effect() == Effect::Job);
+        let result = match called.and_then(|result| if starts_jobs { self.await_job(workspace, step, result, &mut report) } else { Ok(result) }) {
             Ok(result) => result,
             Err(error) => {
                 report.outcome = Outcome::Error(error);
@@ -335,27 +340,14 @@ impl Run<'_> {
         report
     }
 
-    /// Call `step` with `params` as the run's caller, once allowed: at once
-    /// when the run is consented to, else checked against the policy of
-    /// whoever started it (`checked_as`) or of the run's caller.
-    fn call(&self, workspace: &mut dyn Workspace, step: &RecipeStep, params: Value) -> Result<Value, ApiError> {
-        let caller = &self.options.caller;
-        if self.options.consented {
-            return api::call_permitted(workspace, caller, &step.method, params);
-        }
-        let Some(starter) = &self.options.checked_as else { return api::call(workspace, caller, &step.method, params) };
-        let effect = api::find(workspace, &step.method)?.effect();
-        match workspace.permission(starter, effect) {
-            Decision::Allowed => api::call_permitted(workspace, caller, &step.method, params),
-            Decision::Denied => super::record_refusal(workspace, caller, &step.method, effect, &params, permissions::denied(starter, &step.method)),
-            Decision::NeedsConfirmation => Err(permissions::needs_confirmation(starter, &step.method)),
-        }
-    }
-
     /// Put the run's document in the step's params and resolve its anchors
     /// into `report.params`, noting each in `report.anchors`.
-    fn prepare(&self, workspace: &mut dyn Workspace, step: &RecipeStep, report: &mut StepReport) -> Result<(), ApiError> {
-        let method = api::find(workspace, &step.method)?;
+    ///
+    /// A step's `doc` that names the recorded document means the run's: a
+    /// step with none (when its method takes one), with "current", or with
+    /// the id the recipe's first step named. This is the one place that
+    /// rule is kept.
+    fn prepare(&self, workspace: &mut dyn Workspace, method: &MethodRef, report: &mut StepReport) -> Result<(), ApiError> {
         if report.params.is_null() {
             report.params = Value::Object(Default::default());
         }
@@ -363,12 +355,12 @@ impl Run<'_> {
         if let Some(anchor) = report.params.get("doc").and_then(super::anchors::as_anchor) {
             self.resolve_into(workspace, report, "doc", &anchor, &self.run_doc.clone())?;
         }
-        let takes_doc = method.params_schema()["properties"].get("doc").is_some();
+        let takes_doc = method.takes_doc();
         if let Some(object) = report.params.as_object_mut() {
             let named = object.get("doc").and_then(Value::as_str);
             let means_run_doc = match named {
                 None => takes_doc && !object.contains_key("doc"),
-                Some(doc) => doc == "current" || self.recorded_doc.as_deref() == Some(doc),
+                Some(doc) => doc == workspace::CURRENT || self.recorded_doc.as_deref() == Some(doc),
             };
             if means_run_doc {
                 object.insert("doc".to_string(), Value::String(self.run_doc.clone()));
@@ -400,15 +392,11 @@ impl Run<'_> {
         Ok(())
     }
 
-    /// When `step` started a job and the run waits for jobs, wait for it to
-    /// finish and keep its status in `report`; a job that failed or was
+    /// When `step`, of a method that starts jobs, started one, wait for it
+    /// to finish and keep its status in `report`; a job that failed or was
     /// cancelled fails the step.
     fn await_job(&self, workspace: &mut dyn Workspace, step: &RecipeStep, result: Value, report: &mut StepReport) -> Result<Value, ApiError> {
-        if !self.options.await_jobs {
-            return Ok(result);
-        }
-        let effect = api::find(workspace, &step.method).map(|method| method.effect()).ok();
-        let Some(job) = result.get("job").and_then(Value::as_str).filter(|_| effect == Some(Effect::Job)) else { return Ok(result) };
+        let Some(job) = result.get("job").and_then(Value::as_str) else { return Ok(result) };
         let finished = wait_for_job(workspace, job)?;
         let ended_well = finished.state == JobState::Finished;
         let outcome = finished.outcome.clone().unwrap_or_default();

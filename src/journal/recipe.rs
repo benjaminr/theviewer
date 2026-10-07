@@ -128,7 +128,7 @@ impl Recipe {
         let mut steps = Vec::new();
         for entry in entries.into_iter().filter(|entry| entry.outcome.is_ok()) {
             if recorded_on.is_none() {
-                recorded_on = entry.doc.as_deref().and_then(|doc| session.document(doc)).map(|document| document.file.clone());
+                recorded_on = entry.doc.as_deref().and_then(|doc| session.document(doc)).map(|document| document.file());
             }
             steps.push(RecipeStep { step: entry.step, method: entry.method.clone(), params: entry.params.clone(), note: None });
         }
@@ -355,7 +355,7 @@ mod tests {
         JournalSession {
             started_at: "2026-10-06T14:00:00Z".into(),
             api_version: "1.0".into(),
-            documents: vec![RecordedDocument { id: "doc-1".into(), version: 0, file: FileIdentity { name: "flight-03.bin".into(), size: 1_048_576, sha256: Some("ab".repeat(32)) } }],
+            documents: vec![RecordedDocument::new("doc-1", 0, FileIdentity { name: "flight-03.bin".into(), size: 1_048_576, sha256: Some("ab".repeat(32)) })],
             plugins: vec![RecordedPlugin { name: "acme_telemetry.lua".into(), sha256: "cd".repeat(32) }],
         }
     }

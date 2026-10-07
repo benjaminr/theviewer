@@ -1,6 +1,7 @@
 use serde_json::{Value, json};
 
 use super::*;
+use crate::corpus::sha256_hex;
 use crate::api::test_support::workspace_with;
 use crate::api::{Caller, HeadlessWorkspace, call};
 use crate::bus::Topic;
@@ -42,7 +43,7 @@ fn every_edit_view_change_and_job_is_a_step_by_whoever_called() {
     let cursor = workspace.journal().entry(2).unwrap();
     assert!(!cursor.changed_document(), "a view change leaves the bytes");
     assert_eq!(workspace.journal().entry(3).unwrap().result.as_ref().unwrap()["job"].as_str().map(|job| job.starts_with("overview")), Some(true), "the job's id is kept for later steps");
-    assert_eq!(workspace.journal().entry(6).unwrap().caller(), Caller::Recipe("Patch".into()));
+    assert_eq!(Caller::from_producer(&workspace.journal().entry(6).unwrap().caller), Caller::Recipe("Patch".into()), "the caller is found again from the id kept");
 }
 
 #[test]
@@ -188,7 +189,7 @@ fn the_session_header_hashes_each_document_once_and_names_the_plugins() {
     call(&mut workspace, &Caller::Panel, "bytes.write", json!({"start": 0, "data": "41"})).unwrap();
     let session = workspace.journal().session();
     assert_eq!(session.documents.len(), 1, "noted the first time only");
-    assert_eq!(session.documents[0].file, FileIdentity { name: "a.bin".into(), size: 3, sha256: Some(sha256_hex(b"abc")) });
+    assert_eq!(session.documents[0].file(), FileIdentity { name: "a.bin".into(), size: 3, sha256: Some(sha256_hex(b"abc")) });
     assert_eq!(session.api_version, crate::api::API_VERSION);
     assert!(session.started_at.ends_with('Z') && session.started_at.len() == 20, "{}", session.started_at);
 
@@ -237,6 +238,38 @@ fn a_journal_entry_is_written_as_the_design_shows_and_reads_back() {
 fn timestamps_are_rfc_3339_in_utc() {
     let moment = UNIX_EPOCH + std::time::Duration::from_secs(1_791_295_331);
     assert_eq!(timestamp(moment), "2026-10-06T14:02:11Z");
+}
+
+#[test]
+fn the_first_call_about_a_document_leaves_its_hash_to_be_worked_out_away_from_the_call() {
+    let mut workspace = workspace_with("a.bin", b"abc");
+    call(&mut workspace, &Caller::Panel, "bytes.write", json!({"start": 0, "data": "41"})).unwrap();
+    let first_seen = &workspace.journal().session().documents[0];
+    assert_eq!(first_seen.identity.sha256, None, "not hashed while the call ran");
+    assert_eq!(first_seen.file().sha256, Some(sha256_hex(b"abc")), "the bytes as first seen, not as edited");
+    let recipe = timeline::recipe_of_history(workspace.journal(), "Patch", None);
+    assert_eq!(recipe.recorded_on.and_then(|file| file.sha256), Some(sha256_hex(b"abc")), "a recipe names the file by its hash");
+}
+
+#[test]
+fn a_document_edited_before_the_first_call_about_it_is_hashed_as_it_was_then() {
+    let mut workspace = workspace_with("a.bin", b"abc");
+    workspace.document_mut("doc-1").unwrap().overwrite(0, b"Z");
+    call(&mut workspace, &Caller::Panel, "bytes.write", json!({"start": 1, "data": "41"})).unwrap();
+    let session = call(&mut workspace, &Caller::Panel, "history.session", json!({})).unwrap();
+    assert_eq!(session["documents"][0]["file"]["sha256"], sha256_hex(b"Zbc"));
+    assert_eq!(session["documents"][0]["version"], 1);
+}
+
+#[test]
+fn the_recent_reads_keep_within_their_bytes_too() {
+    let mut workspace = workspace_with("a.bin", &[0u8; 4096]);
+    *workspace.journal_mut() = Journal::with_limits(JournalLimits { max_reads_bytes: 6000, ..JournalLimits::default() });
+    for start in 0..4 {
+        call(&mut workspace, &Caller::Panel, "bytes.read", json!({"start": start, "len": 1024})).unwrap();
+    }
+    let kept: Vec<u64> = workspace.journal().reads().map(|read| read.step).collect();
+    assert_eq!(kept, [3, 4], "each read of 1 KiB is kept as some 2 KiB of hex");
 }
 
 mod window {

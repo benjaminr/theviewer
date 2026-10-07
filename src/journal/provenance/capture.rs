@@ -37,14 +37,7 @@ impl ViewerApp {
     /// journal entry carries `derived_from`; what `perform_derived` does for
     /// a call made directly.
     pub fn with_provenance<T>(&mut self, derived_from: DerivedFrom, action: impl FnOnce(&mut ViewerApp) -> T) -> T {
-        if derived_from.is_empty() {
-            return action(self);
-        }
-        self.journal.set_pending_provenance(derived_from);
-        let done = action(self);
-        // An action that called nothing leaves nothing for the next call.
-        self.journal.take_pending_provenance();
-        done
+        journal::with_provenance(self, derived_from, action)
     }
 
     /// Where a selected match of the Find box's query at `at` came from: the

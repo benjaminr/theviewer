@@ -17,8 +17,8 @@ use crate::plugin::{Category, Finding, ScanContext};
 /// their namespace. A new method is added here, and only here.
 pub(super) const METHODS: &[super::Method] = &[
     method!("findings.query", Read, query, QueryParams, QueryResult, "Run the detectors over a span and list what they recognise (signatures, compressed streams, counters, timestamps, text, structures), filtered by category, confidence and producer."),
-    method!("findings.publish", Analysis, caller publish, PublishParams, PublishResult, "Publish findings about a document on the bus as the caller's, for the views, Findings and every other tool to show; they replace the caller's earlier ones under the same key."),
-    method!("findings.retract", Analysis, caller retract, RetractParams, PublishResult, "Withdraw the findings the caller published under a key."),
+    method!("findings.publish", Analysis, caller publish, PublishParams, PublishResult, "Publish findings about a document on the bus as the caller's, for the views, Findings and every other tool to show; they replace the caller's earlier ones under the same key.").reverses(crate::api::Reverse::PublishFindings),
+    method!("findings.retract", Analysis, caller retract, RetractParams, PublishResult, "Withdraw the findings the caller published under a key.").reverses(crate::api::Reverse::RetractFindings),
 ];
 
 /// An example call of each of [`METHODS`], run in order on a fresh

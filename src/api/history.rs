@@ -23,13 +23,13 @@ use crate::journal::{Dropped, JournalEntry, JournalSession};
 /// This module's methods, in the order `api.describe` lists them within
 /// their namespace. A new method is added here, and only here.
 pub(super) const METHODS: &[super::Method] = &[
-    method!("history.list", Read, list, ListParams, HistoryList, "The session's journal: each edit, view change and job made through the API, by any caller, in order, with its parameters, result, outcome and a description; optionally the recent reads too. Pass back next as since to follow it."),
-    method!("history.entry", Read, entry, EntryParams, crate::journal::JournalEntry, "One step of the journal, or one recent read, in full."),
-    method!("history.session", Read, session, super::values::NoParams, crate::journal::JournalSession, "What the journal's session ran with: when it started, the API version, the plugins loaded with their hashes, and each document as first seen, with its size and SHA-256."),
-    method!("history.inverse", Read, inverse, EntryParams, StepInverse, "How a step of the journal would be undone now: the calls that undo it (the document's undo for its last edit, or the inverse of a view change, fold, bookmark, selection or document opened), nothing to undo (a job, a read, a file written), or why it cannot be."),
-    method!("history.undo_step", Edit, caller undo_step, EntryParams, timeline::UndoneStep, "Undo one step of the journal through its inverse (see history.inverse), whoever made it, as a step of its own; the step is then shown as undone and left out of recipes and playback."),
-    method!("history.go_back", Edit, caller go_back, GoBackParams, timeline::WentBack, "Go back to a step of the journal (0 for before the first): undo every later step in effect, latest first, or, where one has no inverse, bring the document back to how the session first saw it and run the steps up to it again. The later steps stay in the journal, shown as undone."),
-    method!("history.save_recipe", Edit, save_recipe, SaveRecipeParams, SavedRecipe, "Write the steps in effect (all, or up to a step) to a recipe file, *.theviewer-recipe.json, each with its parameters as recorded, to run on other files."),
+    method!("history.list", Read, list, ListParams, HistoryList, "The session's journal: each edit, view change and job made through the API, by any caller, in order, with its parameters, result, outcome and a description; optionally the recent reads too. Pass back next as since to follow it.").not_journalled(),
+    method!("history.entry", Read, entry, EntryParams, crate::journal::JournalEntry, "One step of the journal, or one recent read, in full.").not_journalled(),
+    method!("history.session", Read, session, super::values::NoParams, crate::journal::JournalSession, "What the journal's session ran with: when it started, the API version, the plugins loaded with their hashes, and each document as first seen, with its size and SHA-256.").not_journalled(),
+    method!("history.inverse", Read, inverse, EntryParams, StepInverse, "How a step of the journal would be undone now: the calls that undo it (the document's undo for its last edit, or the inverse of a view change, fold, bookmark, selection or document opened), nothing to undo (a job, a read, a file written), or why it cannot be.").not_journalled(),
+    method!("history.undo_step", Edit, caller undo_step, EntryParams, timeline::UndoneStep, "Undo one step of the journal through its inverse (see history.inverse), whoever made it, as a step of its own; the step is then shown as undone and left out of recipes and playback.").moves_along_the_timeline(crate::api::Move::UndoStep),
+    method!("history.go_back", Edit, caller go_back, GoBackParams, timeline::WentBack, "Go back to a step of the journal (0 for before the first): undo every later step in effect, latest first, or, where one has no inverse, bring the document back to how the session first saw it and run the steps up to it again. The later steps stay in the journal, shown as undone.").moves_along_the_timeline(crate::api::Move::GoBack),
+    method!("history.save_recipe", Edit, save_recipe, SaveRecipeParams, SavedRecipe, "Write the steps in effect (all, or up to a step) to a recipe file, *.theviewer-recipe.json, each with its parameters as recorded, to run on other files.").writes_file(crate::api::WritesFile::Always),
 ];
 
 /// An example call of each of [`METHODS`], run in order on a fresh
@@ -357,7 +357,7 @@ mod tests {
         call(&mut workspace, "bytes.write", json!({"start": 0, "data": "41"})).unwrap();
         let session = crate::api::call(&mut workspace, &Caller::Mcp("claude-code".into()), "history.session", json!({})).unwrap();
         assert_eq!(session["api_version"], crate::api::API_VERSION);
-        assert_eq!(session["documents"][0]["file"], json!({"name": "flight.bin", "size": 3, "sha256": crate::journal::sha256_hex(b"abc")}), "hashed before the edit");
+        assert_eq!(session["documents"][0]["file"], json!({"name": "flight.bin", "size": 3, "sha256": crate::corpus::sha256_hex(b"abc")}), "hashed before the edit");
         assert_eq!(session["documents"][0]["version"], 0);
     }
 }

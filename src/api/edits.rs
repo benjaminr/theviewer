@@ -38,8 +38,8 @@ pub(super) const METHODS: &[super::Method] = &[
     method!("bits.write", Edit, caller write_bits, BitsWriteParams, EditResult, "Overwrite bits from any bit offset, most or least significant bit of each byte first, as one undoable step; the bits around them are kept."),
     method!("transform.apply", Edit, caller apply_transform, TransformParams, EditResult, "Apply an operation (XOR, invert, shift bits, swap byte order, number, compress, decompress and more) to every range of a selection, as one undoable step, and select what it produced."),
     method!("transform.preview", Read, preview_transform, PreviewParams, PreviewResult, "What transform.apply would write into each range of a selection, without changing anything."),
-    method!("history.undo", Edit, caller undo, HistoryParams, HistoryResult, "Undo the document's last step, whoever made it, and put the cursor where it was."),
-    method!("history.redo", Edit, caller redo, HistoryParams, HistoryResult, "Redo the last step undone, and put the cursor where it was."),
+    method!("history.undo", Edit, caller undo, HistoryParams, HistoryResult, "Undo the document's last step, whoever made it, and put the cursor where it was.").moves_along_the_timeline(crate::api::Move::Undo),
+    method!("history.redo", Edit, caller redo, HistoryParams, HistoryResult, "Redo the last step undone, and put the cursor where it was.").moves_along_the_timeline(crate::api::Move::Redo),
     method!("history.transaction", Edit, caller transaction, TransactionParams, TransactionResult, "Run several calls on one document as one undoable step; when one fails, every change the others made is reversed."),
 ];
 

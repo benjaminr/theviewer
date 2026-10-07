@@ -18,7 +18,7 @@ use crate::bus::JobStatus;
 pub(super) const METHODS: &[super::Method] = &[
     method!("jobs.list", Read, list, super::values::NoParams, JobList, "The background jobs tools and callers started (the last 100): what each does, who started it, whether it is running, how far it has got and how it ended."),
     method!("jobs.status", Read, status, JobParams, crate::bus::JobStatus, "One job's state, progress and outcome, and once it has finished, the result of a job a method started."),
-    method!("jobs.cancel", Analysis, cancel, JobParams, crate::bus::JobStatus, "Ask a running job to stop; it ends as cancelled, without a result, as soon as it notices."),
+    method!("jobs.cancel", Analysis, cancel, JobParams, crate::bus::JobStatus, "Ask a running job to stop; it ends as cancelled, without a result, as soon as it notices.").leaves_nothing_to_undo("a job cancelled stays cancelled; run it again instead"),
 ];
 
 /// An example call of each of [`METHODS`], run in order on a fresh

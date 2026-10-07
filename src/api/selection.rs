@@ -15,8 +15,8 @@ use crate::selection::{self, Selection};
 pub(super) const METHODS: &[super::Method] = &[
     method!("selection.get", Read, get_selection, DocParams, SelectionResult, "What is selected in a document: one range, several ranges or a column of every record."),
     method!("cursor.get", Read, get_cursor, DocParams, CursorResult, "The cursor's offset in a document."),
-    method!("selection.set", View, caller set_selection, SetSelectionParams, SelectionResult, "Select one range, several ranges or a column of every record in a document, or nothing."),
-    method!("cursor.set", View, caller set_cursor, SetCursorParams, CursorResult, "Move the cursor to an offset, selecting nothing."),
+    method!("selection.set", View, caller set_selection, SetSelectionParams, SelectionResult, "Select one range, several ranges or a column of every record in a document, or nothing.").reverses(crate::api::Reverse::Select).merges_repeats(),
+    method!("cursor.set", View, caller set_cursor, SetCursorParams, CursorResult, "Move the cursor to an offset, selecting nothing.").reverses(crate::api::Reverse::MoveCursor).merges_repeats(),
 ];
 
 /// An example call of each of [`METHODS`], run in order on a fresh

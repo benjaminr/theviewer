@@ -20,11 +20,11 @@ use super::{ApiError, ErrorCode};
 /// This module's methods, in the order `api.describe` lists them within
 /// their namespace. A new method is added here, and only here.
 pub(super) const METHODS: &[super::Method] = &[
-    method!("plugins.reload", View, reload_plugins, super::values::NoParams, ReloadResult, "Load the Lua plugins again from disk, so the detectors, parsers, codecs and methods they register are the ones in their files now; the command line and MCP load them once, when they start."),
-    method!("sources.watch", View, watch, SwitchParams, SourcesResult, "Watch the window's file for changes on disk, reloading it and marking what changed, or stop watching it."),
-    method!("sources.record", View, record, SwitchParams, SourcesResult, "Keep every version of a document as it changes (the window's file or capture as it changes on disk, or after each edit), or stop keeping them."),
-    method!("sources.stop", View, stop, super::values::NoParams, SourcesResult, "Stop the window's serial capture."),
-    method!("sources.view_version", View, view_version, VersionParams, super::workspace::DocumentInfo, "Open a recorded version of a document as a document derived from it; the window marks what changed from the version before."),
+    method!("plugins.reload", View, reload_plugins, super::values::NoParams, ReloadResult, "Load the Lua plugins again from disk, so the detectors, parsers, codecs and methods they register are the ones in their files now; the command line and MCP load them once, when they start.").not_replayed(),
+    method!("sources.watch", View, watch, SwitchParams, SourcesResult, "Watch the window's file for changes on disk, reloading it and marking what changed, or stop watching it.").not_replayed(),
+    method!("sources.record", View, record, SwitchParams, SourcesResult, "Keep every version of a document as it changes (the window's file or capture as it changes on disk, or after each edit), or stop keeping them.").not_replayed(),
+    method!("sources.stop", View, stop, super::values::NoParams, SourcesResult, "Stop the window's serial capture.").not_replayed(),
+    method!("sources.view_version", View, view_version, VersionParams, super::workspace::DocumentInfo, "Open a recorded version of a document as a document derived from it; the window marks what changed from the version before.").opens_document(true),
 ];
 
 /// An example call of each of [`METHODS`], run in order on a fresh

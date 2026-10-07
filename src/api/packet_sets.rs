@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
 use super::packets::DissectionResult;
 use super::values::{self, ByteEncoding, NoParams};
 use super::workspace::{self, Workspace};
-use super::{ApiError, Caller, Effect, ErrorCode};
+use super::{ApiError, Caller, ErrorCode};
 use crate::bus::topics::{FieldsGuessed, FramesDefined};
 use crate::bus::{Draft, Payload};
 use crate::document::Document;
@@ -34,13 +34,13 @@ use crate::templates::Template;
 /// This module's methods, in the order `api.describe` lists them within
 /// their namespace. A new method is added here, and only here.
 pub(super) const METHODS: &[super::Method] = &[
-    method!("packets.sets.create", Analysis, caller create, CreateParams, SetInfo, "Take a set of packets from a document: a capture in it, a range cut into fixed records, by a length field, at a pattern or with the protocol framing, or the selection's ranges, with how to decode frames of unknown format; returns the set's id and what was worked out (the capture found, the framing), so the call can be made again exactly."),
+    method!("packets.sets.create", Analysis, caller create, CreateParams, SetInfo, "Take a set of packets from a document: a capture in it, a range cut into fixed records, by a length field, at a pattern or with the protocol framing, or the selection's ranges, with how to decode frames of unknown format; returns the set's id and what was worked out (the capture found, the framing), so the call can be made again exactly.").creates(crate::api::Resource { result_field: "set", param: "set", remover: "packets.sets.remove" }),
     method!("packets.sets.remove", Analysis, remove_set, SetParams, RemovedSet, "Forget a packet set: its id stops working and it leaves packets.sets.list. Its document is not changed."),
     method!("packets.sets.list", Read, list_sets, super::values::NoParams, SetList, "The packet sets made, with their ids, documents, sources, packet counts and decoding."),
     method!("packets.list", Read, list, ListParams, PacketList, "A set's packets the display filter keeps, a page at a time: each one's index, offset, length, summary columns, protocols and addresses."),
     method!("packets.dissect", Read, dissect, PacketParams, PacketDissection, "Dissect one packet of a set into protocol layers and fields, as the set decodes frames of unknown format."),
-    method!("packets.decode_as", Analysis, caller decode_as, DecodeAsParams, SetInfo, "Choose the protocol a set's frames of unknown format are decoded as, or detection, and a template for frames no protocol reads."),
-    method!("packets.export_pcap", Analysis, caller export_pcap, ExportParams, ExportResult, "A set's packets (those a filter keeps) as a pcap file, returned or written to a path given (which needs leave to edit)."),
+    method!("packets.decode_as", Analysis, caller decode_as, DecodeAsParams, SetInfo, "Choose the protocol a set's frames of unknown format are decoded as, or detection, and a template for frames no protocol reads.").reverses(crate::api::Reverse::Decoding),
+    method!("packets.export_pcap", Analysis, export_pcap, ExportParams, ExportResult, "A set's packets (those a filter keeps) as a pcap file, returned or written to a path given (which needs leave to edit).").writes_file(crate::api::WritesFile::WhenGiven("path")),
     method!("packets.conversations", Read, conversations, ConversationsParams, ConversationList, "The conversations in a set (the packets a filter keeps): each pair of endpoints with its transport, packets and bytes each way, and a filter for it."),
     method!("packets.follow_stream", Read, follow_stream, PacketParams, StreamResult, "The payloads of a packet's conversation in order, each with its direction, and the stream as text."),
     method!("packets.find_captures", Read, find_captures, FindCapturesParams, CaptureList, "The captures inside a span of a document (pcap, pcapng, snoop, Network Monitor or ERF, or one of these compressed with gzip), each with its offset, format, link type and packets, for packets.sets.create."),
@@ -48,7 +48,7 @@ pub(super) const METHODS: &[super::Method] = &[
     method!("packets.sets.refresh", View, caller refresh, RefreshParams, SetInfo, "Find a set's packets again, the way they were found, in another document (the current one by default), which the set then belongs to."),
     method!("packets.detect_length_field", Read, detect_length_field, SpanParams, LengthFieldFound, "Look for a length field that cuts a span into frames, with the protocol analysis's framing detection; returns it as packets.sets.create's length_field, or the best framing found instead."),
     method!("packets.endpoints", Read, endpoints, ConversationsParams, EndpointList, "The addresses in a set (the packets a filter keeps), busiest first, with the packets and bytes each sent and received."),
-    method!("packets.extract", Analysis, caller editing::extract, ExtractParams, ExtractResult, "Some of a set's packets' bytes one after another, returned or written to a path given (which needs leave to edit)."),
+    method!("packets.extract", Analysis, editing::extract, ExtractParams, ExtractResult, "Some of a set's packets' bytes one after another, returned or written to a path given (which needs leave to edit).").writes_file(crate::api::WritesFile::WhenGiven("path")),
     method!("packets.delete", Edit, caller editing::delete, IndicesParams, PacketEditResult, "Remove packets from the document (their whole capture records, so a capture stays readable), as one undoable step."),
     method!("packets.fix_checksums", Edit, caller editing::fix_checksums, IndicesParams, PacketEditResult, "Recompute the IPv4 header, TCP and UDP checksums of some of a set's packets, as one undoable step."),
     method!("packets.apply", Edit, caller editing::apply, ApplyParams, PacketEditResult, "Invert, fill or XOR some of a set's packets, or the same field of each, as one undoable step."),
@@ -1225,10 +1225,7 @@ pub fn decode_as(workspace: &mut dyn Workspace, caller: &Caller, params: DecodeA
     Ok(info)
 }
 
-pub fn export_pcap(workspace: &mut dyn Workspace, caller: &Caller, params: ExportParams) -> Result<ExportResult, ApiError> {
-    if params.path.is_some() && workspace.permission(caller, Effect::Edit) != super::Decision::Allowed {
-        return Err(ApiError::new(ErrorCode::ReadOnly, "writing a file needs leave to edit; leave out path to have the pcap file returned instead"));
-    }
+pub fn export_pcap(workspace: &mut dyn Workspace, params: ExportParams) -> Result<ExportResult, ApiError> {
     let file = with_set(workspace, &params.set, |stored, document| {
         decode(stored, document);
         let decoded = stored.decoded.as_ref().expect("decoded");

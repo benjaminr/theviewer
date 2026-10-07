@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 
 use super::super::values::{self, ByteEncoding};
 use super::super::workspace::{DOCUMENT_PRODUCER, Workspace};
-use super::super::{ApiError, Caller, Effect, ErrorCode};
+use super::super::{ApiError, Caller, ErrorCode};
 use super::{PACKET_READ_LIMIT, StoredSet, decode, packet_index, packet_indices, unknown_set, with_set};
 use crate::document::Document;
 use crate::packets::edit::{self, ByteOperation};
@@ -570,10 +570,7 @@ pub fn read_columns(workspace: &mut dyn Workspace, params: ColumnsReadParams) ->
     })
 }
 
-pub fn extract(workspace: &mut dyn Workspace, caller: &Caller, params: ExtractParams) -> Result<ExtractResult, ApiError> {
-    if params.path.is_some() && workspace.permission(caller, Effect::Edit) != super::super::Decision::Allowed {
-        return Err(ApiError::new(ErrorCode::ReadOnly, "writing a file needs leave to edit; leave out path to have the bytes returned instead"));
-    }
+pub fn extract(workspace: &mut dyn Workspace, params: ExtractParams) -> Result<ExtractResult, ApiError> {
     let (count, bytes) = with_set(workspace, &params.set, |stored, document| {
         let chosen = packet_indices(stored, &params.indices)?;
         let mut bytes = Vec::new();

@@ -17,9 +17,9 @@ use crate::unpack::{Limits, Node};
 /// their namespace. A new method is added here, and only here.
 pub(super) const METHODS: &[crate::api::Method] = &[
     method!("unpack.run", Job, caller run, UnpackParams, JobStartedResult, "Start extracting the archives and compressed streams in the document (its first 256 MiB) recursively, like binwalk -e, as a job: the tree of what was found, each node with its kind, size and where its bytes came from, is job.finished's result, and in the window it fills the Unpacked tab and the Size map."),
-    method!("unpack.open", View, open, NodeParams, DocumentInfo, "Open one node of the unpacked tree (by its path of child indices, as unpack.run gave it) as a derived document."),
+    method!("unpack.open", View, open, NodeParams, DocumentInfo, "Open one node of the unpacked tree (by its path of child indices, as unpack.run gave it) as a derived document.").opens_document(true),
     method!("unpack.read", Read, read, ReadNodeParams, NodeBytes, "Read the bytes of one node of the unpacked tree, by its path of child indices, as hex by default, or as base64 or text."),
-    method!("unpack.save", Edit, caller save, SaveNodeParams, SavedNode, "Write the bytes of one node of the unpacked tree (by its path of child indices, as node) to a file; the document is left as it is."),
+    method!("unpack.save", Edit, caller save, SaveNodeParams, SavedNode, "Write the bytes of one node of the unpacked tree (by its path of child indices, as node) to a file; the document is left as it is.").writes_file(crate::api::WritesFile::Always),
 ];
 
 /// What a call to one of this module's methods would do, in plain words.

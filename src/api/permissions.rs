@@ -142,6 +142,18 @@ pub enum Decision {
     Denied,
 }
 
+/// Whether a call still needs someone's leave to run.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Consent<'a> {
+    /// It is allowed already: the person allowed it (in the confirmation
+    /// window, or by starting what makes it), or it runs inside a call that
+    /// was allowed.
+    Given,
+    /// It is checked against this caller's policy: its own caller's, or
+    /// that of whoever started the run it is part of.
+    CheckedAs(&'a Caller),
+}
+
 /// Whether a method with `effect` may run for `caller` under `policies`:
 /// reads always may, and the person at the keyboard may do anything.
 pub fn decide(caller: &Caller, effect: Effect, policies: &Policies) -> Decision {

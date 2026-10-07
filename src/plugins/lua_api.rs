@@ -119,10 +119,10 @@ impl Binding {
             Access::Granted => api::call_permitted(workspace, &self.caller, method, params),
             Access::ReadOnly => {
                 let found = api::find(workspace, method)?;
-                if permissions::needs_permission(found.effect()) {
+                if permissions::needs_permission(found.needs_leave_for(&params)) {
                     return Err(ApiError::new(
                         api::ErrorCode::ReadOnly,
-                        format!("{method} changes the document or the view, which a handler may do only when its plugin declares theviewer.plugin{{ edits = true }}"),
+                        format!("{method} changes the document or the view, or writes a file, which a handler may do only when its plugin declares theviewer.plugin{{ edits = true }}"),
                     ));
                 }
                 api::call_permitted(workspace, &self.caller, method, params)

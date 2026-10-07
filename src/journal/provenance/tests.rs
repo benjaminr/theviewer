@@ -33,7 +33,7 @@ fn session() -> JournalSession {
     JournalSession {
         started_at: "2026-10-06T14:00:00Z".into(),
         api_version: "1.0".into(),
-        documents: vec![RecordedDocument { id: "doc-1".into(), version: 0, file: FileIdentity { name: "flight-03.bin".into(), size: 4096, sha256: None } }],
+        documents: vec![RecordedDocument::new("doc-1", 0, FileIdentity { name: "flight-03.bin".into(), size: 4096, sha256: None })],
         plugins: Vec::new(),
     }
 }

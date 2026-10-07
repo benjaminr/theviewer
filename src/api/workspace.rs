@@ -71,6 +71,11 @@ pub trait Workspace {
     fn documents(&self) -> Vec<DocumentInfo>;
     /// The id of the current document, if one is open.
     fn current_document(&self) -> Option<String>;
+    /// The version of the document with this id, without describing every
+    /// open document.
+    fn version(&self, id: &str) -> Option<u64> {
+        self.documents().into_iter().find(|info| info.id == id).map(|info| info.version)
+    }
     /// The document with this id.
     fn document_mut(&mut self, id: &str) -> Option<&mut Document>;
     /// The cursor, selection and layout of the document with this id.
@@ -345,6 +350,10 @@ impl Workspace for HeadlessWorkspace {
         self.current.map(|index| self.documents[index].id.clone())
     }
 
+    fn version(&self, id: &str) -> Option<u64> {
+        self.documents.iter().find(|open| open.id == id).map(|open| open.document.version())
+    }
+
     fn document_mut(&mut self, id: &str) -> Option<&mut Document> {
         self.documents.iter_mut().find(|open| open.id == id).map(|open| &mut open.document)
     }
@@ -549,6 +558,13 @@ impl Workspace for ViewerApp {
 
     fn current_document(&self) -> Option<String> {
         Some(self.document_id())
+    }
+
+    fn version(&self, id: &str) -> Option<u64> {
+        if id == self.document_id {
+            return Some(self.document.version());
+        }
+        self.parents.iter().find(|parent| parent.id == id).map(|parent| parent.document.version())
     }
 
     fn document_mut(&mut self, id: &str) -> Option<&mut Document> {
