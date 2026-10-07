@@ -193,8 +193,9 @@ or `offset` is `counter_2`, `offset_2` and so on. Text is looked for first;
 then numbers are tried at widths 4, 8, 2 and 1 bytes on their natural
 alignment within the record, each little endian then big endian
 (big-endian fields are written `u32be`). With fewer than two whole records
-there is nothing to compare, and the result is one `unknown_0` field. Each line carries a
-comment with the evidence, and the result is a normal template you can edit:
+there is nothing to compare, and the result is one `unknown_0` field. Each
+line carries a comment with the evidence, and the result is a normal
+template you can edit:
 
 ```
 // Inferred from 200 records of 24 bytes. Rename fields as you learn what they mean.

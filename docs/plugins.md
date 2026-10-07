@@ -127,7 +127,7 @@ It returns a list of finding tables, or `nil`. Offsets in a finding are
 | `category` | One of the categories below; `Custom` when omitted or not recognised. |
 | `title` | A short label, such as `"NTP timestamps"`. |
 | `detail` | A longer description, for tooltips and the findings list. |
-| `confidence` | 0 to 1, 1 when omitted. Below 0.5 the finding is drawn dimmed, and the Findings list and finding anchors leave it out. |
+| `confidence` | 0 to 1, 1 when omitted. Below 0.5 the finding is drawn dimmed, and `findings.query` (unless given a lower `min_confidence`) and recipes' finding anchors leave it out. |
 | `id` | The finding's id; the detector's id when omitted. |
 | `fields` | A list of field tables, for the structure inspector (see [Parsers](#parsers)). |
 
@@ -239,7 +239,8 @@ theviewer.register_action{
 ```
 
 An action is listed in the command palette by its `title` (its `id` when
-omitted) and runs on the UI thread when you choose it. `run` gets a handle
+omitted), followed by the script's file name, and runs on the UI thread
+when you choose it. `run` gets a handle
 on the window:
 
 | Method | Meaning |
@@ -257,8 +258,9 @@ an error if it uses it later.
 
 An action may also call [the data API](#calling-the-data-api). You ran the
 action, so its calls are allowed without asking, and its edits are labelled
-with the plugin ("Overwrite 5 bytes by plugin:shout.lua"). (`encoding = "text"` suits text; for binary data use hex, the default.). Prefer the API
-for edits: a call through `theviewer.api` is recorded in the History tab
+with the plugin ("Overwrite 5 bytes by plugin:shout.lua"). The example uses
+`encoding = "text"` because it edits text; for binary data use hex, the
+default. Prefer the API for edits: a call through `theviewer.api` is recorded in the History tab
 and can be part of a recipe, while `host:replace` changes the bytes
 directly, as an undoable edit that the journal does not see.
 
@@ -447,7 +449,7 @@ Call it while the script loads. The method joins the API's table at once:
 | Lua | `theviewer.api.acme.decode_frame{ start = 0 }`, from any plugin but its own |
 | The command line | `theviewer api acme.decode_frame '{"start": 0}' capture.bin` |
 | MCP | The tool `acme_decode_frame`, listed by default, its description ending "(From plugin:acme_telemetry.lua; experimental.)"; clients are told when the tool list changes |
-| Ask | A tool, when its effect is `read`, `analysis` or `edit` |
+| Ask | A tool, as the built-in methods are; an `edit` method asks first unless Ask is allowed to edit |
 | Recipes | A step like any other; a recipe records the plugins loaded (name and source hash), and warns when one is missing or has changed |
 
 | Field | Meaning |
@@ -566,14 +568,14 @@ What happens:
    the document is passed over quietly.
 3. When three in four of them start with the sync word, it publishes
    `protocol.identified`, whose payload must fit that topic's schema. The
-   packet viewer and the Reference tab take it like a built-in
-   identification, and the Workspace tab shows it as a fact from
-   `plugin:acme_telemetry.lua`, with the `frames.defined` message that
-   caused it. On files without the sync word it publishes nothing.
+   Workspace tab shows it as a fact from `plugin:acme_telemetry.lua`, with
+   the `frames.defined` message that caused it, and every client can read
+   it with `events.facts`. On files without the sync word it publishes
+   nothing.
 4. `acme.decode_frame` is a read: try it with
-   `theviewer api acme.decode_frame '{"start": 8}' capture.bin`, which
-   prints `{"sync": true, "type": 1, "length": 4}` on such a frame; through
-   MCP it is the tool `acme_decode_frame`.
+   `theviewer api acme.decode_frame '{"start": 8}' capture.bin`, which on
+   such a frame prints `"sync": true`, `"type": 1` and `"length": 4`;
+   through MCP it is the tool `acme_decode_frame`.
 
 ## Debugging
 
@@ -586,8 +588,8 @@ What happens:
 - **The Workspace tab** lists the bus's recent messages: choose `plugin.log`
   in its topic menu to see only plugins' lines (errors in red), or another
   topic to see what your handler hears and what it published. Its facts
-  list shows what your plugin publishes, and *why* the messages that led
-  to it.
+  list shows what your plugin has published; *why* beside a fact lists the
+  messages that led to it.
 - **`theviewer mcp`** writes every plugin's log line, and each script that
   fails to load, to standard error, and sends the lines to the client as
   log messages.
