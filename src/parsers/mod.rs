@@ -1,6 +1,6 @@
 //! Structure parsers built on existing crates and small hand-written walkers:
-//! executables, images, archives, captures and protocols, ASN.1, disks and
-//! filesystems, and schemaless serialisation formats.
+//! executables, images, archives, PDF documents, captures and protocols,
+//! ASN.1, disks and filesystems, and schemaless serialisation formats.
 //!
 //! Every parser implements [`plugin::Parser`] and reports a [`Finding`] whose
 //! field offsets are document offsets. [`builtin_detectors`] wraps the parsers
@@ -12,6 +12,7 @@ pub mod captures;
 pub mod disk;
 pub mod executable;
 pub mod image;
+pub mod pdf;
 pub mod protocol;
 pub mod serial;
 
@@ -41,6 +42,7 @@ pub fn builtin_parsers() -> Vec<Arc<dyn Parser>> {
         Arc::new(archive::TarParser),
         Arc::new(archive::ArParser),
         Arc::new(archive::CpioParser),
+        Arc::new(pdf::PdfParser),
         Arc::new(protocol::PcapParser),
         Arc::new(protocol::PcapNgParser),
         Arc::new(captures::SnoopParser),
