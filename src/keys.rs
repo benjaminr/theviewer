@@ -51,6 +51,13 @@ const RAW_KEY_CONTEXT: usize = 32;
 const MIN_RAW_KEY_CONTEXT: usize = 8;
 /// Raw key lengths tried, longest first.
 const RAW_KEY_LENGTHS: [usize; 3] = [32, 24, 16];
+/// Confidence of a raw key candidate, and of another alignment of one.
+const RAW_KEY_CONFIDENCE: f32 = 0.25;
+const ALTERNATIVE_ALIGNMENT_CONFIDENCE: f32 = 0.2;
+/// Other alignments of one raw key candidate reported at most.
+const MAX_ALTERNATIVE_ALIGNMENTS: usize = 2;
+/// Offsets aligned to 2^this or more count as equally aligned.
+const MAX_ALIGNMENT_BITS: u32 = 4;
 
 const PEM_BEGIN: &[u8] = b"-----BEGIN ";
 const PEM_DASHES: &[u8] = b"-----";
@@ -680,31 +687,55 @@ fn raw_candidate_at(bytes: &[u8], start: usize) -> Option<RawCandidate> {
 
 /// Random-looking 16/24/32-byte windows surrounded by structured bytes.
 /// Neighbouring positions of one key all qualify; the best-scoring one of
-/// each overlapping cluster is kept.
+/// each overlapping cluster is kept. A key with a zero byte at its edge,
+/// next to zero padding, scores the same one byte along, so windows tied
+/// for best are all reported: the most aligned first, the others as
+/// alternative alignments.
 fn find_raw_key_candidates(bytes: &[u8], base: usize) -> Vec<KeyFinding> {
     let mut findings = Vec::new();
-    let mut cluster: Option<RawCandidate> = None;
+    // The windows of the current cluster tied for the best score.
+    let mut tied_best: Vec<RawCandidate> = Vec::new();
     let mut cluster_end = 0;
     for start in 0..bytes.len() {
         if findings.len() >= MAX_RAW_CANDIDATES {
             break;
         }
-        if let Some(best) = &cluster
-            && start >= cluster_end
-        {
-            findings.push(raw_finding(bytes, base, best));
-            cluster = None;
+        if !tied_best.is_empty() && start >= cluster_end {
+            findings.extend(cluster_findings(bytes, base, std::mem::take(&mut tied_best)));
         }
         let Some(candidate) = raw_candidate_at(bytes, start) else { continue };
         cluster_end = cluster_end.max(candidate.start + candidate.len);
-        if cluster.as_ref().is_none_or(|best| candidate.score > best.score) {
-            cluster = Some(candidate);
+        match tied_best.first() {
+            None => tied_best.push(candidate),
+            Some(best) if candidate.score > best.score => tied_best = vec![candidate],
+            Some(best) if candidate.score == best.score && candidate.len == best.len => tied_best.push(candidate),
+            Some(_) => {}
         }
     }
-    if let Some(best) = &cluster
-        && findings.len() < MAX_RAW_CANDIDATES
-    {
-        findings.push(raw_finding(bytes, base, best));
+    if !tied_best.is_empty() && findings.len() < MAX_RAW_CANDIDATES {
+        findings.extend(cluster_findings(bytes, base, tied_best));
+    }
+    findings.truncate(MAX_RAW_CANDIDATES);
+    findings
+}
+
+/// The findings for one cluster's windows tied for best: the one at the
+/// most aligned offset (compilers align key arrays), then the earliest, as
+/// the candidate, and at most [`MAX_ALTERNATIVE_ALIGNMENTS`] others, with
+/// lower confidence.
+fn cluster_findings(bytes: &[u8], base: usize, mut tied: Vec<RawCandidate>) -> Vec<KeyFinding> {
+    let alignment = |candidate: &RawCandidate| (base + candidate.start).trailing_zeros().min(MAX_ALIGNMENT_BITS);
+    tied.sort_by(|a, b| alignment(b).cmp(&alignment(a)).then(a.start.cmp(&b.start)));
+    tied.truncate(1 + MAX_ALTERNATIVE_ALIGNMENTS);
+    let mut findings: Vec<KeyFinding> = tied.iter().map(|candidate| raw_finding(bytes, base, candidate)).collect();
+    let chosen = findings[0].offset;
+    let others: Vec<String> = findings[1..].iter().map(|finding| format!("{:#x}", finding.offset)).collect();
+    if !others.is_empty() {
+        findings[0].detail.push_str(&format!("; its edge bytes match the padding beside them, so it may start at {} instead", others.join(" or ")));
+    }
+    for alternative in &mut findings[1..] {
+        alternative.detail.push_str(&format!("; another alignment of the candidate at {chosen:#x}, whose edge bytes match the padding beside them"));
+        alternative.confidence = ALTERNATIVE_ALIGNMENT_CONFIDENCE;
     }
     findings
 }
@@ -726,7 +757,7 @@ fn raw_finding(bytes: &[u8], base: usize, candidate: &RawCandidate) -> KeyFindin
             candidate.len,
             short_hex(window, PREFIX_BYTES)
         ),
-        confidence: 0.25,
+        confidence: RAW_KEY_CONFIDENCE,
     }
 }
 
@@ -939,13 +970,30 @@ mod tests {
         data.extend(&key);
         data.extend(structured_padding(200));
         let findings = find_keys(&data, 0);
-        assert_eq!(findings.len(), 1, "{findings:?}");
+        // The key starts with 0x01, as the padding after it does, so it
+        // could equally start one byte later: that is offered as well.
+        let offsets: Vec<(usize, f32)> = findings.iter().map(|finding| (finding.offset, finding.confidence)).collect();
+        assert_eq!(offsets, [(200, RAW_KEY_CONFIDENCE), (201, ALTERNATIVE_ALIGNMENT_CONFIDENCE)], "{findings:?}");
         let candidate = &findings[0];
         assert_eq!(candidate.kind, KeyKind::RawKeyCandidate);
         assert_eq!((candidate.offset, candidate.len), (200, 32));
         assert!(candidate.confidence < 0.5);
         let full_hex: String = key.iter().map(|byte| format!("{byte:02x}")).collect();
         assert!(!candidate.detail.contains(&full_hex), "key material must not be shown in full");
+    }
+
+    #[test]
+    fn a_key_ending_in_zero_beside_zero_padding_is_reported_at_its_aligned_offset_and_one_byte_earlier() {
+        let mut key = noise(15, 777);
+        key.push(0x00);
+        let mut data = vec![0u8; 0x358];
+        data.extend(&key);
+        data.extend(vec![0u8; 64]);
+        let findings = find_keys(&data, 0);
+        let candidates: Vec<(usize, f32)> = findings.iter().map(|finding| (finding.offset, finding.confidence)).collect();
+        assert_eq!(candidates, [(0x357, ALTERNATIVE_ALIGNMENT_CONFIDENCE), (0x358, RAW_KEY_CONFIDENCE)], "{findings:?}");
+        assert!(findings[1].detail.contains("may start at 0x357"), "{}", findings[1].detail);
+        assert!(findings[0].detail.contains("another alignment of the candidate at 0x358"), "{}", findings[0].detail);
     }
 
     #[test]

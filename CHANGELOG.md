@@ -85,6 +85,9 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `xor.recover_keys` and the XOR tab fold a long key that nearly repeats a
   shorter one (one column solved wrongly) to that shorter key, offer both,
   and rank the shorter first when they score alike.
+- `crypto.find_keys` reports a raw key with a zero at its edge, beside
+  zero padding, at its aligned offset, and the alignment one byte along as
+  an alternative, rather than only the earlier one.
 
 ## [0.3.1] - 2026-10-07
 
