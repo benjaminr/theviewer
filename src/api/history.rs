@@ -453,6 +453,45 @@ mod tests {
     }
 
     #[test]
+    fn a_recipe_saved_from_the_history_carries_each_note_on_the_steps_it_links() {
+        let mut workspace = workspace_with("flight.bin", b"0123456789");
+        call(&mut workspace, "bytes.write", json!({"start": 0, "data": "41"})).unwrap();
+        call(&mut workspace, "bytes.write", json!({"start": 1, "data": "42"})).unwrap();
+        call(&mut workspace, "history.undo_step", json!({"step": 2})).unwrap();
+        call(&mut workspace, "view.set_shape", json!({"width": 8})).unwrap();
+        call(&mut workspace, "history.note", json!({"text": "#1 fixes the magic; #2 was a dead end"})).unwrap();
+        call(&mut workspace, "history.note", json!({"text": "Narrower rows show the records", "steps": [4]})).unwrap();
+        call(&mut workspace, "history.note", json!({"text": "And #4 lines up the length fields"})).unwrap();
+        call(&mut workspace, "history.note", json!({"text": "A thought about nothing in particular"})).unwrap();
+        let path = std::env::temp_dir().join(format!("theviewer-history-notes-{}.theviewer-recipe.json", std::process::id()));
+        let saved = call(&mut workspace, "history.save_recipe", json!({"path": path.display().to_string(), "name": "Patch"})).unwrap();
+        let recipe: crate::journal::Recipe = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        std::fs::remove_file(&path).ok();
+        assert_eq!(saved["steps"], json!([1, 2]), "notes are not steps of a recipe");
+        let notes: Vec<Option<&str>> = recipe.steps.iter().map(|step| step.note.as_deref()).collect();
+        assert_eq!(
+            notes,
+            [Some("#1 fixes the magic; session step 2 was a dead end"), Some("Narrower rows show the records\n\nAnd #2 lines up the length fields")],
+            "renumbered as the recipe numbers its steps; the unlinked note is left out"
+        );
+    }
+
+    #[test]
+    fn a_note_chosen_among_the_journal_steps_of_a_recipe_is_not_one_of_its_steps() {
+        let dir = std::env::temp_dir().join(format!("theviewer-history-notes-chosen-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        crate::recipes::use_dir_for_this_thread(dir.clone());
+        let mut workspace = workspace_with("flight.bin", b"0123456789");
+        call(&mut workspace, "bytes.write", json!({"start": 0, "data": "41"})).unwrap();
+        call(&mut workspace, "history.note", json!({"text": "Why #1"})).unwrap();
+        let saved = call(&mut workspace, "recipes.save", json!({"name": "Patch", "journal_steps": [1, 2]})).unwrap();
+        let (recipe, _) = crate::recipes::find(&dir.clone(), "Patch").unwrap();
+        std::fs::remove_dir_all(&dir).ok();
+        assert_eq!(saved["steps"], 1);
+        assert_eq!((recipe.steps[0].method.as_str(), recipe.steps[0].note.as_deref()), ("bytes.write", Some("Why #1")));
+    }
+
+    #[test]
     fn a_recipe_saved_from_the_history_is_written_as_recipes_save_writes_it() {
         let dir = std::env::temp_dir().join(format!("theviewer-history-writer-{}", std::process::id()));
         std::fs::remove_dir_all(&dir).ok();

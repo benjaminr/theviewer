@@ -67,6 +67,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::anchors::{self, Anchor, FindingMatch, Needle, Part, SelectionWhich};
+use super::notes;
 use super::recipe::{ParameterType, Recipe, RecipeParameter};
 use super::{DerivedFrom, Journal, JournalEntry, JournalSession};
 use crate::api::search::{FindAllParams, FindParams};
@@ -411,14 +412,20 @@ impl Recipe {
 
     /// [`Recipe::with_anchors`] of `journal`'s steps numbered `steps` (all
     /// of them when `None`) and the earlier steps they cite, with the
-    /// parameters declared in the journal.
+    /// parameters declared in the journal. Notes are not steps of a recipe:
+    /// each one linked to a step the recipe holds becomes that step's
+    /// `note` instead (see [`notes::attach_to_recipe`]).
     pub fn from_journal_with_anchors(name: &str, journal: &Journal, steps: Option<&[u64]>) -> Recipe {
         let chosen: Vec<u64> = match steps {
             Some(steps) => steps.to_vec(),
             None => journal.entries().map(|entry| entry.step).collect(),
         };
-        let entries = with_cited_steps(journal, &chosen);
-        Recipe::with_anchors(name, journal.session(), entries, journal.parameters())
+        let entries: Vec<&JournalEntry> = with_cited_steps(journal, &chosen).into_iter().filter(|entry| !entry.is_note()).collect();
+        // The recipe's steps are the successful entries, in step order.
+        let recorded: Vec<u64> = entries.iter().filter(|entry| entry.outcome.is_ok()).map(|entry| entry.step).collect();
+        let mut recipe = Recipe::with_anchors(name, journal.session(), entries, journal.parameters());
+        notes::attach_to_recipe(&mut recipe, journal, &recorded);
+        recipe
     }
 }
 

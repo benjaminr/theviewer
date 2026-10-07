@@ -16,7 +16,9 @@
 //! changed in place, or taken out of the journal, and an edited note says
 //! when and by whom.
 //!
-//! [`markdown`] writes the analysis out as Markdown.
+//! Recipes made from the journal carry each note into the `note` of the
+//! recipe steps it links ([`attach_to_recipe`]), and [`markdown`] writes
+//! the analysis out as Markdown.
 
 use std::collections::BTreeMap;
 use std::time::SystemTime;
@@ -25,6 +27,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use super::recipe::Recipe;
 use super::timeline::{Replay, StepStatus, replay_of};
 use super::{Held, Journal, JournalEntry, timestamp};
 use crate::api::{ApiError, Caller, Workspace};
@@ -287,6 +290,48 @@ impl Journal {
 }
 
 // ---------------------------------------------------------------------------
+// Notes in recipes
+// ---------------------------------------------------------------------------
+
+/// Carry `journal`'s notes into `recipe`, made of the journal's steps
+/// `recorded` (the journal step of each recipe step, in the recipe's
+/// order): each note linked to one of those steps becomes (part of) the
+/// `note` of the recipe step it became, several joined by a blank line.
+/// The steps a note cites are renumbered as the recipe numbers them; a
+/// step the recipe does not hold is cited as "session step N". A note
+/// linked to none of the recipe's steps is left out.
+pub fn attach_to_recipe(recipe: &mut Recipe, journal: &Journal, recorded: &[u64]) {
+    let numbers: BTreeMap<u64, u64> = recorded.iter().zip(&recipe.steps).map(|(journal_step, step)| (*journal_step, step.step)).collect();
+    let mut notes: BTreeMap<u64, Vec<String>> = BTreeMap::new();
+    for note in journal.notes().filter_map(|entry| entry.note.as_ref()) {
+        let renumbered = renumber(&note.text, &numbers);
+        for step in note.steps.iter().filter_map(|step| numbers.get(step)) {
+            notes.entry(*step).or_default().push(renumbered.clone());
+        }
+    }
+    for step in &mut recipe.steps {
+        if let Some(texts) = notes.remove(&step.step) {
+            step.note = Some(texts.join("\n\n"));
+        }
+    }
+}
+
+/// `text` with each step it cites numbered as `numbers` say, or as
+/// "session step N" when they do not hold it.
+fn renumber(text: &str, numbers: &BTreeMap<u64, u64>) -> String {
+    segments(text)
+        .into_iter()
+        .map(|segment| match segment {
+            Segment::Text(words) => words.to_string(),
+            Segment::Step(step) => match numbers.get(&step) {
+                Some(number) => format!("#{number}"),
+                None => format!("session step {step}"),
+            },
+        })
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
 // The notes as Markdown
 // ---------------------------------------------------------------------------
 
@@ -374,6 +419,12 @@ mod tests {
     #[test]
     fn a_note_s_description_is_its_text_on_one_line() {
         assert_eq!(describe("The header\nends at #3"), "Note: The header ends at #3");
+    }
+
+    #[test]
+    fn a_note_in_a_recipe_cites_the_recipe_s_numbers() {
+        let numbers = BTreeMap::from([(4, 1), (9, 2)]);
+        assert_eq!(renumber("After #4, #9 decodes; #6 was a dead end", &numbers), "After #1, #2 decodes; session step 6 was a dead end");
     }
 
     #[test]
