@@ -125,15 +125,10 @@ fn show_log(state: &mut WorkspaceState, app: &ViewerApp, ui: &mut Ui, select: &m
     });
 }
 
-/// Select `len` bytes at `start`, or put the cursor there.
+/// Select `len` bytes at `start`, or put the cursor there, as the person's
+/// step.
 fn select_span(app: &mut ViewerApp, start: usize, len: usize) {
-    if len == 0 {
-        app.set_cursor(start, false);
-    } else {
-        app.select_ranges(vec![(start, len)], None);
-    }
-    app.reveal_cursor_centred();
-    app.reveal_cursor_in_hex(true);
+    app.select_from_tool(start, len);
 }
 
 /// Characters of a plugin's own payload shown in the log.
@@ -179,5 +174,29 @@ fn summary(payload: &Payload, document_len: usize) -> String {
             let text = custom.payload.to_string();
             if text.chars().count() > CUSTOM_SUMMARY_CHARS { format!("{}…", text.chars().take(CUSTOM_SUMMARY_CHARS).collect::<String>()) } else { text }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+    use crate::actions::take_performed;
+    use crate::app::Launch;
+
+    #[test]
+    fn a_fact_s_span_clicked_selects_its_bytes_or_moves_the_cursor_through_the_api() {
+        let mut app = ViewerApp::new(Launch::default());
+        app.open_bytes(vec![0; 64], "test.bin".to_string());
+        app.run_bus();
+        take_performed();
+        select_span(&mut app, 8, 4);
+        select_span(&mut app, 32, 0);
+        assert_eq!(take_performed(), [("selection.set".to_string(), json!({"selection": {"range": [8, 4]}})), ("cursor.set".to_string(), json!({"offset": 32}))]);
+        assert_eq!((app.cursor, app.selection()), (32, None));
+        app.run_bus();
+        let moved = app.bus.recent().rfind(|message| message.topic() == Topic::CursorMoved).expect("published");
+        assert_eq!(moved.producer(), "panel");
     }
 }

@@ -32,8 +32,6 @@ use crate::theme;
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
 /// How sure a format guessed from a port or number is.
 const GUESS_CONFIDENCE: f32 = 0.5;
-/// Largest RFC text downloaded.
-const RFC_DOWNLOAD_LIMIT: usize = 4 * 1024 * 1024;
 const RFC_TEXT_HEIGHT: f32 = 320.0;
 /// Bytes in one row of the header diagram: 32 bits, as RFCs draw them.
 const DIAGRAM_BYTES_PER_ROW: usize = 4;
@@ -656,12 +654,7 @@ fn publish_guesses(stack: &[StackEntry], app: &ViewerApp) {
 fn request_rfc(state: &mut ReferenceState, reference_id: &str, number: u32, section: Option<String>) {
     let (sender, receiver) = mpsc::channel();
     thread::spawn(move || {
-        let cache = reference::rfc_cache_dir();
-        let result = reference::load_rfc_text(cache.as_deref(), number, |url| {
-            let bytes = crate::sources::fetch_url(url, RFC_DOWNLOAD_LIMIT)?;
-            Ok(String::from_utf8_lossy(&bytes).into_owned())
-        });
-        let _ = sender.send(result);
+        let _ = sender.send(crate::api::reference::fetch_rfc(number));
     });
     state.rfc = Some(RfcView { reference_id: reference_id.to_string(), number, section, text: RfcText::Loading(receiver) });
 }
@@ -670,13 +663,10 @@ fn poll_rfc(state: &mut ReferenceState, ctx: &egui::Context) {
     let Some(view) = &mut state.rfc else { return };
     let RfcText::Loading(receiver) = &view.text else { return };
     view.text = match receiver.try_recv() {
-        Ok(Ok(text)) => match view.section.as_deref() {
-            None => RfcText::Ready { shown: text, note: None },
-            Some(section) => match reference::rfc_section(&text, section) {
-                Some(shown) => RfcText::Ready { shown, note: None },
-                None => RfcText::Ready { shown: text, note: Some(format!("§{section} was not found, so the whole RFC is shown.")) },
-            },
-        },
+        Ok(Ok(text)) => {
+            let (shown, note) = crate::api::reference::rfc_part(text, view.section.as_deref());
+            RfcText::Ready { shown, note }
+        }
         Ok(Err(error)) => RfcText::Failed(error),
         Err(TryRecvError::Empty) => {
             ctx.request_repaint_after(POLL_INTERVAL);
@@ -684,6 +674,24 @@ fn poll_rfc(state: &mut ReferenceState, ctx: &egui::Context) {
         }
         Err(TryRecvError::Disconnected) => RfcText::Failed("The download stopped unexpectedly.".to_string()),
     };
+}
+
+/// Look again at the stack once the user's notes were read again: what
+/// `reference.reload` does in the window.
+pub(crate) fn notes_reloaded(app: &mut ViewerApp) {
+    app.bench.panels.reference.stack_key = None;
+}
+
+/// Take reference entry `id` in place of the format guessed for the payload
+/// at `at`, when the panel shows such a guess: what
+/// `reference.pick_alternative` does in the window. Returns whether it did.
+pub(crate) fn pick_alternative_at(app: &mut ViewerApp, at: usize, id: &str) -> bool {
+    let state = &mut app.bench.panels.reference;
+    let Some(entry) = state.stack.iter_mut().find(|entry| entry.start == at && entry.guess.as_ref().is_some_and(|guess| guess.alternatives.iter().any(|(alternative, _)| alternative == id))) else {
+        return false;
+    };
+    entry.pick_alternative(reference::library(), id);
+    true
 }
 
 // ---------------------------------------------------------------------------

@@ -109,6 +109,9 @@ Errors are `{code, message, data}`, with these codes:
 | [`analysis.period_scan`](#analysisperiod_scan) | job | Start a scan of a window of bytes for repeating periods (record widths) as a background job; the periods found, best first, are job.finished's result, and in the window they fill the structure chart and are published on record_width.estimated. |
 | [`reference.lookup`](#referencelookup) | read | The reference notes on a format or protocol, by id, finding id, layer name, port (udp/67) or number (port, IP protocol or EtherType): layout, field meanings and specifications. |
 | [`reference.search`](#referencesearch) | read | Reference entries whose notes mention every word of a query, or that a port or number names. |
+| [`reference.rfc`](#referencerfc) | read | The plain text of an RFC, or of one of its sections, fetched from the RFC Editor once and then kept in ~/.cache/theviewer/rfc. |
+| [`reference.reload`](#referencereload) | view | Read the user's own reference notes again, and say which files could not be read. |
+| [`reference.pick_alternative`](#referencepick_alternative) | view | Take another entry in place of a format guessed from a port, EtherType or IP protocol number, for the payload at an offset; the Reference panel shows it, and the entry's notes are returned. |
 | [`events.facts`](#eventsfacts) | read | What the tools have learnt about a document and keep: the latest fact per topic, producer and key, by topic, producer or the bytes they cover, each marked stale when the document changed under it. |
 | [`events.poll`](#eventspoll) | read | The messages (facts and events) published after a cursor, oldest first, optionally of some topics only; pass back next to keep up. |
 | [`jobs.list`](#jobslist) | read | The background jobs tools and callers started (the last 100): what each does, who started it, whether it is running, how far it has got and how it ended. |
@@ -1689,6 +1692,46 @@ Reference entries whose notes mention every word of a query, or that a port or n
 | --- | --- | --- | --- |
 | `entries` | array of EntrySummary | yes |  |
 | `next` | string | no | Pass back as `next` for more entries; absent after the last. |
+
+### reference.rfc
+
+The plain text of an RFC, or of one of its sections, fetched from the RFC Editor once and then kept in ~/.cache/theviewer/rfc.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `number` | integer | yes | The RFC's number, such as 768. |
+| `section` | string | no | A section, such as "3.1"; the whole RFC when omitted. |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `note` | string | no | Said when the section asked for was not found, so the whole RFC is given. |
+| `number` | integer | yes |  |
+| `text` | string | yes | The section's text, or the whole RFC's. |
+
+### reference.reload
+
+Read the user's own reference notes again, and say which files could not be read.
+
+Parameters: None.
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `problems` | array of string | yes | Those that could not be, as "path: error". |
+| `user_files` | integer | yes | The user's reference files that were read. |
+
+### reference.pick_alternative
+
+Take another entry in place of a format guessed from a port, EtherType or IP protocol number, for the payload at an offset; the Reference panel shows it, and the entry's notes are returned.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `at` | integer | yes | Where the guessed payload starts. |
+| `id` | string | yes | The entry to take instead, one of the guess's alternatives. |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `entry` | FormatReference | yes | The notes on the entry taken. |
+| `shown` | boolean | yes | Whether the Reference panel showed a guess there and took the entry in its place. |
 
 ### events.facts
 
