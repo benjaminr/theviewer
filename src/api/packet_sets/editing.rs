@@ -15,7 +15,7 @@ use super::super::output::{self, Delivered, Output, Produced};
 use super::super::values::ByteEncoding;
 use super::super::workspace::{self, DOCUMENT_PRODUCER, Workspace};
 use super::super::{ApiError, Caller};
-use super::{PACKET_READ_LIMIT, StoredSet, decode, packet_index, packet_indices, unknown_set, with_set};
+use super::{PACKET_READ_LIMIT, StoredSet, decode, filtered, ordered, packet_index, packet_indices, unknown_set, with_set};
 use crate::document::Document;
 use crate::packets::edit::{self, ByteOperation};
 use crate::packets::grid::{self, ColumnOperation, ColumnSlice, ColumnText, RowPlacement};
@@ -249,8 +249,23 @@ pub struct ColumnsText {
 #[serde(deny_unknown_fields)]
 pub struct ExtractParams {
     pub set: String,
-    /// The packets, by their index in the set, in the order wanted.
-    pub indices: Vec<u64>,
+    /// The packets, by their index in the set, in the order wanted; when
+    /// omitted, those packets.list lists with `filter`, `sort` and `dedupe`,
+    /// in its order, which finds them again in another capture.
+    #[serde(default)]
+    pub indices: Option<Vec<u64>>,
+    /// Without indices: a display filter, as packets.list takes.
+    #[serde(default)]
+    pub filter: Option<String>,
+    /// Without indices: the field to put the packets in the order of, as packets.list takes.
+    #[serde(default)]
+    pub sort: Option<String>,
+    /// With `sort`, highest first.
+    #[serde(default)]
+    pub descending: bool,
+    /// Without indices: keep the first packet of each value of this field, as packets.list does.
+    #[serde(default)]
+    pub dedupe: Option<String>,
     /// Only this field of each packet (a transfer's data blocks without
     /// their headers, say), cut short where a packet ends; packets that end
     /// before it starts give nothing.
@@ -641,8 +656,19 @@ pub fn extract(workspace: &mut dyn Workspace, caller: &Caller, params: ExtractPa
     if params.label.is_some() && params.field_name.is_none() {
         return Err(ApiError::invalid_params("label picks a label of the DNS name field_name names; give field_name too"));
     }
+    if params.indices.is_some() && (params.filter.is_some() || params.sort.is_some() || params.dedupe.is_some()) {
+        return Err(ApiError::invalid_params("give the packets one way: indices, or a filter, sort and dedupe as packets.list takes them"));
+    }
     let (doc, count, bytes) = with_set(workspace, &params.set, |stored, document| {
-        let chosen = packet_indices(stored, &params.indices)?;
+        let chosen = match &params.indices {
+            Some(indices) => packet_indices(stored, indices)?,
+            None => {
+                decode(stored, document);
+                let decoded = stored.decoded.as_ref().expect("decoded");
+                let kept = filtered(stored, decoded, params.filter.as_deref())?;
+                ordered(stored, decoded, kept, params.sort.as_deref(), params.descending, params.dedupe.as_deref())?
+            }
+        };
         let field_name = match &params.field_name {
             Some(name) => {
                 super::decode(stored, document);

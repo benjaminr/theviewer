@@ -1365,14 +1365,14 @@ fn order_by(decoded: &Decoded, name: &str, what: &str) -> Result<OrderBy, ApiErr
 }
 
 /// `kept` put in the order `params` ask for, and de-duplicated.
-fn ordered(stored: &StoredSet, decoded: &Decoded, mut kept: Vec<usize>, params: &ListParams) -> Result<Vec<usize>, ApiError> {
-    if let Some(name) = &params.sort {
+fn ordered(stored: &StoredSet, decoded: &Decoded, mut kept: Vec<usize>, sort: Option<&str>, descending: bool, dedupe: Option<&str>) -> Result<Vec<usize>, ApiError> {
+    if let Some(name) = sort {
         let by = order_by(decoded, name, "sort")?;
         let mut keyed: Vec<(packets::filter::SortKey, usize)> = kept.iter().map(|&index| (order_key(stored, decoded, index, &by), index)).collect();
-        keyed.sort_by(|a, b| if params.descending { b.0.cmp(&a.0) } else { a.0.cmp(&b.0) });
+        keyed.sort_by(|a, b| if descending { b.0.cmp(&a.0) } else { a.0.cmp(&b.0) });
         kept = keyed.into_iter().map(|(_, index)| index).collect();
     }
-    if let Some(name) = &params.dedupe {
+    if let Some(name) = dedupe {
         let by = order_by(decoded, name, "de-duplicate")?;
         let mut seen = std::collections::HashSet::new();
         kept.retain(|&index| match order_key(stored, decoded, index, &by) {
@@ -1388,7 +1388,7 @@ pub fn list(workspace: &mut dyn Workspace, params: ListParams) -> Result<PacketL
         decode(stored, document);
         let decoded = stored.decoded.as_ref().expect("decoded");
         let kept = filtered(stored, decoded, params.filter.as_deref())?;
-        let kept = ordered(stored, decoded, kept, &params)?;
+        let kept = ordered(stored, decoded, kept, params.sort.as_deref(), params.descending, params.dedupe.as_deref())?;
         let total = kept.len() as u64;
         let limit = Some(params.limit.unwrap_or(DEFAULT_LIST_LIMIT));
         let (page, next) = values::page(kept, params.next.as_deref(), limit)?;
@@ -2129,6 +2129,19 @@ mod tests {
         assert_eq!(stream["parts"][0]["data"].as_str().unwrap_or(""), "", "the bytes are in the sheet, not the result");
         let sheet = stream["output"]["doc"].as_str().unwrap().to_string();
         assert_eq!(call(&mut workspace, "bytes.read", json!({"doc": sheet, "start": 0})).unwrap()["data"], expected);
+    }
+
+    #[test]
+    fn packets_to_extract_are_found_by_filter_sort_and_dedupe_as_packets_list_finds_them() {
+        let mut workspace = workspace_with("traffic.bin", &dns_capture(3));
+        call(&mut workspace, "packets.sets.create", json!({"from": "capture"})).unwrap();
+        let listed = call(&mut workspace, "packets.list", json!({"set": "set-1", "filter": "udp.srcport>4000", "sort": "udp.srcport", "descending": true})).unwrap();
+        let indices: Vec<u64> = listed["packets"].as_array().unwrap().iter().map(|packet| packet["index"].as_u64().unwrap()).collect();
+        let by_index = call(&mut workspace, "packets.extract", json!({"set": "set-1", "indices": indices, "encoding": "hex"})).unwrap();
+        let by_filter = call(&mut workspace, "packets.extract", json!({"set": "set-1", "filter": "udp.srcport>4000", "sort": "udp.srcport", "descending": true, "encoding": "hex"})).unwrap();
+        assert_eq!((by_filter["count"].as_u64(), &by_filter["data"]), (Some(2), &by_index["data"]));
+        let both = call(&mut workspace, "packets.extract", json!({"set": "set-1", "indices": [0], "filter": "dns"})).unwrap_err();
+        assert_eq!(both.code, ErrorCode::InvalidParams);
     }
 
     #[test]

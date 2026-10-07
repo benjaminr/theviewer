@@ -2272,14 +2272,18 @@ Some of a set's packets' bytes one after another, in the order given: whole, the
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
+| `dedupe` | string | no | Without indices: keep the first packet of each value of this field, as packets.list does. |
+| `descending` | boolean | no | With `sort`, highest first. |
 | `encoding` | `"hex"` \| `"base64"` \| `"text"` | no | How the returned bytes are written: base64 (the default) or hex. |
 | `field` | FieldSpan | no | Only this field of each packet (a transfer's data blocks without their headers, say), cut short where a packet ends; packets that end before it starts give nothing. |
 | `field_name` | string | no | Only this field of each packet, by the name a filter uses (`dns.qry.name`, `template.payload`), at each packet's own offset and length; packets without it give nothing. |
-| `indices` | array of integer | yes | The packets, by their index in the set, in the order wanted. |
+| `filter` | string | no | Without indices: a display filter, as packets.list takes. |
+| `indices` | array of integer | no | The packets, by their index in the set, in the order wanted; when omitted, those packets.list lists with `filter`, `sort` and `dedupe`, in its order, which finds them again in another capture. |
 | `label` | integer | no | With `field_name`, only this label (from 0) of a DNS name, without its length byte: label 1 of `0001.MFRGG.t.example.com` is `MFRGG`. |
 | `output` | Output | no | Where the bytes go: "return" (the default), "new" (a sheet derived from the set's document; {"new": {"label": …}} labels it) or {"file": path}, which needs leave to edit. |
 | `path` | string | no | Write the bytes here instead of returning them; needs leave to edit, as writing a file does. The same as output {"file": path}. |
 | `set` | string | yes |  |
+| `sort` | string | no | Without indices: the field to put the packets in the order of, as packets.list takes. |
 
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
