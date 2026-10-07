@@ -33,7 +33,7 @@ pub(super) const METHODS: &[crate::api::Method] = &[
     method!("crypto.attack", Job, caller attack, AttackParams, JobStartedResult, "Start attacks on simple ciphers over a span (at most 1 MiB): rolling XOR, XOR with the previous byte, ADD/SUB with a constant or repeating key, bit rotation, XOR combined with ADD and, with a crib, crib dragging, as a job: the decodes that look most like text or structured data, each with the operation that transform.apply or documents.derive takes to apply it, and with a crib the key bytes it reveals, are job.finished's result, and in the window they fill the Crypto panel."),
     method!("crypto.decrypt", Read, caller decrypt, DecryptParams, DecryptResult, "Decrypt a span with AES-128, AES-192 or AES-256 in ECB, CBC or CTR mode, with a key (and IV) given as hex, removing PKCS#7 padding, and return the plaintext; or, as output says, open it as a new sheet, put it in place of the ciphertext, or write it to a file (which needs leave to edit).").outputs(&[OutputKind::Return, OutputKind::New, OutputKind::InPlace, OutputKind::File], OutputKind::Return),
     method!("crypto.open_decrypted", View, caller open_decrypted, OpenDecryptedParams, OpenDecryptedResult, "Decrypt a span as crypto.decrypt does and open the plaintext as a document derived from this one; in the window, Back (or opening the parent by id) returns. A shorthand for crypto.decrypt with output \"new\".").makes_sheet(),
-    method!("crypto.apply", View, caller apply, ApplyParams, Made, "Undo a simple cipher over a span: a candidate crypto.attack proposed (by its job and index, over the span it attacked), or an operation such as {\"op\": \"rolling_xor\", \"start\": 81, \"step\": 5}; open what it makes as a new sheet by default, or, as output says, put it in place, return it or write it to a file (which needs leave to edit).").outputs(&[OutputKind::New, OutputKind::InPlace, OutputKind::Return, OutputKind::File], OutputKind::New),
+    method!("crypto.apply", View, caller apply, ApplyParams, Made, "Undo a simple cipher over a span: a candidate crypto.attack proposed (by its job and index, over the span it attacked), or an operation such as {\"op\": \"rolling_xor\", \"start\": 81, \"step\": 5}; open what it makes as a new sheet by default, or, as output says, put it in place, return it or write it to a file (which needs leave to edit).").outputs(&[OutputKind::New, OutputKind::InPlace, OutputKind::Return, OutputKind::File], OutputKind::New).doc_defaults_to(attacked_document),
 ];
 
 /// An example call of each of [`METHODS`], run in order on a fresh
@@ -554,6 +554,14 @@ fn applied(workspace: &mut dyn Workspace, params: &ApplyParams) -> Result<(Opera
     Ok((operation, id, start, len))
 }
 
+/// What an omitted `doc` means for `crypto.apply` given a candidate: the
+/// document the attack ran on, not the caller's focus, which making the
+/// attacked sheet did not move.
+fn attacked_document(workspace: &mut dyn Workspace, _: &Caller, params: &serde_json::Value) -> Option<String> {
+    let job = params.get("candidate")?.get("job")?.as_str()?;
+    workspace.bus().jobs().status(job)?.document
+}
+
 /// `crypto.apply`: undo a cipher over a span, as a candidate of
 /// `crypto.attack` or an operation says, and send what it makes where
 /// `output` says: a new sheet by default.
@@ -751,6 +759,26 @@ mod tests {
         call(&mut workspace, "transform.apply", json!({"selection": {"range": [4, hidden.len()]}, "operation": operation})).unwrap();
         let read = call(&mut workspace, "bytes.read", json!({"start": 4, "len": 14, "encoding": "text"})).unwrap();
         assert_eq!(read["data"], "Attack at dawn");
+    }
+
+    #[test]
+    fn a_client_applying_a_candidate_gets_the_sheet_attacked_not_its_focus() {
+        let plain = b"Attack at dawn, the quick brown fox jumps over the lazy dog. ".repeat(20);
+        let hidden: Vec<u8> = plain.iter().enumerate().map(|(index, byte)| byte ^ (0x51u8.wrapping_add((index as u8).wrapping_mul(5)))).collect();
+        let mut workspace = workspace_with("loader.bin", &[b"head".as_slice(), &hidden].concat());
+        let client = crate::api::Caller::Mcp("solver".into());
+        let as_client = |workspace: &mut crate::api::HeadlessWorkspace, method: &str, params: serde_json::Value| crate::api::call(workspace, &client, method, params).unwrap();
+        // The scrambled stage is a sheet of its own; making it leaves the
+        // client's focus on the loader.
+        let stage = as_client(&mut workspace, "documents.derive", json!({"start": 4, "output": {"new": {"label": "scrambled"}}}));
+        let stage = stage["output"]["doc"].as_str().unwrap().to_string();
+        let started = as_client(&mut workspace, "crypto.attack", json!({"doc": stage}));
+        let job = started["job"].as_str().unwrap().to_string();
+        crate::journal::replay::wait_for_job(&mut workspace, &job).unwrap();
+        let applied = as_client(&mut workspace, "crypto.apply", json!({"candidate": {"job": job}}));
+        assert_eq!(applied["parent"], json!(stage), "derived from the sheet the attack ran on");
+        let doc = applied["output"]["doc"].as_str().unwrap().to_string();
+        assert_eq!(as_client(&mut workspace, "bytes.read", json!({"doc": doc, "start": 0, "len": 14, "encoding": "text"}))["data"], "Attack at dawn");
     }
 
     #[test]

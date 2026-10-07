@@ -435,7 +435,7 @@ pub fn open_source(workspace: &mut dyn Workspace, caller: &Caller, params: OpenS
 /// What an omitted `doc` means for `documents.derive`: with `sources`, the
 /// first source's document, which is the new sheet's parent; otherwise the
 /// caller's focus.
-fn first_source(_: &dyn Workspace, _: &Caller, params: &serde_json::Value) -> Option<String> {
+fn first_source(_: &mut dyn Workspace, _: &Caller, params: &serde_json::Value) -> Option<String> {
     params.get("sources")?.get(0)?.get("doc")?.as_str().map(str::to_string)
 }
 

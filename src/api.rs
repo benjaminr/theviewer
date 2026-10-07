@@ -509,7 +509,7 @@ impl Method {
 
 /// Chooses the document an omitted `doc` means for a caller, from the
 /// call's params, or `None` to leave it to the caller's focus.
-pub type ChooseDoc = fn(&dyn Workspace, &Caller, &Value) -> Option<String>;
+pub type ChooseDoc = fn(&mut dyn Workspace, &Caller, &Value) -> Option<String>;
 
 /// What an omitted `doc` means, for a method that takes one.
 #[derive(Clone, Copy)]
@@ -1094,7 +1094,7 @@ fn prepare_call(workspace: &mut dyn Workspace, caller: &Caller, method: &MethodR
     if takes_doc && params.get("doc").is_none_or(Value::is_null) {
         let filled = match method.doc_default() {
             DocDefault::LeftOut => None,
-            DocDefault::Chosen(choose) => choose(&*workspace, caller, &params).or(focus),
+            DocDefault::Chosen(choose) => choose(workspace, caller, &params).or(focus),
             DocDefault::Focus => focus,
         };
         if let (Some(doc), Some(fields)) = (filled, params.as_object_mut()) {

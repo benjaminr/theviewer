@@ -260,7 +260,7 @@ fn tree_of(workspace: &mut dyn Workspace, doc: Option<&str>, password: Option<&s
 /// else the document `unpack.run` last ran on, while it is open. The
 /// person at the window opens nodes of the tree the Unpacked tab shows, the
 /// document shown's.
-fn tree_unpacked_last(workspace: &dyn Workspace, caller: &Caller, params: &serde_json::Value) -> Option<String> {
+fn tree_unpacked_last(workspace: &mut dyn Workspace, caller: &Caller, params: &serde_json::Value) -> Option<String> {
     if let Some(tree_doc) = params.get("tree_doc").and_then(serde_json::Value::as_str) {
         return Some(tree_doc.to_string());
     }
