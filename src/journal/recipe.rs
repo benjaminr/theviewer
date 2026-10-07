@@ -350,6 +350,7 @@ mod tests {
             before: None,
             note: None,
             notes: Vec::new(),
+            made: Vec::new(),
         }
     }
 

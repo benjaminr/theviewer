@@ -373,6 +373,7 @@ fn reversed(reverse: Reverse) -> &'static str {
 fn replay_phrase(replay: Replay) -> &'static str {
     match replay {
         Replay::Step => "repeated by going back, playback and recipes",
+        Replay::MakesSheet => "kept by recipes, which make the sheet again and name it by this step; not repeated by going back or playback, as the sheet is open already",
         Replay::OpensDocument { .. } => "not repeated: what it opened is open already",
         Replay::WritesFile => "not repeated: the file stays as written",
         Replay::Never | Replay::Move(_) | Replay::Note => "never repeated",

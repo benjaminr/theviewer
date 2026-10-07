@@ -222,6 +222,7 @@ fn a_journal_entry_is_written_as_the_design_shows_and_reads_back() {
         before: None,
         note: None,
         notes: Vec::new(),
+        made: Vec::new(),
     };
     let written = serde_json::to_value(&entry).unwrap();
     assert_eq!(written["derived_from"], json!({"start": {"step": 12, "path": "result.matches[0].offset"}}));

@@ -159,6 +159,46 @@ pub enum WritesFile {
     WhenGiven(&'static str),
 }
 
+/// Where what a method produces can go.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum OutputKind {
+    /// An undoable edit of the document it read.
+    InPlace,
+    /// A new sheet: a document derived from the one it read.
+    New,
+    /// Bytes in the result.
+    Return,
+    /// A file, which needs leave to edit.
+    File,
+}
+
+/// The outputs a method offers, and the one it gives when none is asked
+/// for. A method whose default is [`OutputKind::New`] makes a sheet.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Outputs {
+    pub allowed: &'static [OutputKind],
+    pub default: OutputKind,
+}
+
+impl Outputs {
+    /// A method that makes a new sheet, and nothing else.
+    pub const NEW_SHEET: Outputs = Outputs { allowed: &[OutputKind::New], default: OutputKind::New };
+}
+
+/// A method's outputs as `api.describe` lists them.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct OutputsDescription {
+    pub allowed: Vec<OutputKind>,
+    pub default: OutputKind,
+}
+
+impl From<Outputs> for OutputsDescription {
+    fn from(outputs: Outputs) -> Self {
+        OutputsDescription { allowed: outputs.allowed.to_vec(), default: outputs.default }
+    }
+}
+
 /// Whether a method's name, parameters and results are settled.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -204,6 +244,8 @@ pub struct Method {
     /// Whether it takes a `doc` parameter; filled in from the params
     /// schema when the table is built ([`METHODS`]).
     pub takes_doc: bool,
+    /// Where what it produces can go, for a method that produces bytes.
+    pub outputs: Option<Outputs>,
     /// Says in plain words what a call would do; its module's, filled in
     /// when the table is built ([`METHODS`]).
     describe_call: DescribeCall,
@@ -229,6 +271,7 @@ impl Method {
             merge: false,
             writes_file: WritesFile::No,
             takes_doc: false,
+            outputs: None,
             describe_call: describe_nothing,
         }
     }
@@ -263,6 +306,18 @@ impl Method {
     pub const fn opens_document(mut self, derives: bool) -> Self {
         self.replay = Replay::OpensDocument { derives };
         self.undo = Undo::Reverses(Reverse::OpenDocument { derives });
+        self
+    }
+
+    /// It makes a new sheet, a document derived from the one it reads, and
+    /// makes it current: kept by recipes, which make the sheet again and
+    /// name it by this step, but not repeated by going back or playback,
+    /// as the sheet is open already; undone by opening the document current
+    /// before.
+    pub const fn makes_sheet(mut self) -> Self {
+        self.replay = Replay::MakesSheet;
+        self.undo = Undo::Reverses(Reverse::OpenDocument { derives: true });
+        self.outputs = Some(Outputs::NEW_SHEET);
         self
     }
 
@@ -390,6 +445,7 @@ impl MethodRef {
                 stability: method.stability,
                 params: (method.params)().to_value(),
                 result: (method.result)().to_value(),
+                outputs: method.outputs.map(OutputsDescription::from),
             },
             MethodRef::Registered(method) => MethodDescription {
                 name: method.name.clone(),
@@ -398,6 +454,7 @@ impl MethodRef {
                 stability: Stability::Experimental,
                 params: method.params.clone(),
                 result: method.result.clone(),
+                outputs: None,
             },
         }
     }
@@ -851,6 +908,10 @@ pub struct MethodDescription {
     pub params: Value,
     /// JSON Schema of the result.
     pub result: Value,
+    /// Where what it produces can go, for a method that produces bytes: a
+    /// method whose default is `new` makes a sheet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outputs: Option<OutputsDescription>,
 }
 
 /// One topic of the workspace bus as `api.describe` lists it.

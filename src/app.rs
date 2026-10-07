@@ -415,6 +415,9 @@ pub struct ViewerApp {
     /// The session's journal: every call made through the API that changed
     /// something, for the History tab, undo across steps and recipes.
     pub journal: crate::journal::Journal,
+    /// Where each document derived through the API came from, by id: its
+    /// parent and the step that made it.
+    pub lineages: std::collections::HashMap<String, crate::api::workspace::Lineage>,
 }
 
 /// Matches of the Find box within a window of the document, for highlighting.
@@ -678,6 +681,7 @@ impl ViewerApp {
             confirmations: Default::default(),
             recipe_window: Default::default(),
             journal: crate::journal::Journal::new(),
+            lineages: std::collections::HashMap::new(),
         };
         if launch.restore_layout {
             app.persist_layout = true;

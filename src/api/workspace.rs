@@ -53,6 +53,61 @@ pub struct DocumentInfo {
     pub modified: bool,
     /// Whether this is the current document.
     pub current: bool,
+    /// The document it was derived from, for a sheet made from another;
+    /// none for one opened from a file, a source or new.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<String>,
+    /// The step that made it, for a sheet made from another.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub made_by: Option<MadeBy>,
+    /// A short name its maker gave it, such as "payload", which a recipe
+    /// names it by.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+}
+
+/// Where a document came from: the document it was derived from and the
+/// step that made it. A root, opened from a file, a source or new, has
+/// neither.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct Lineage {
+    /// The document it was derived from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<String>,
+    /// The call that made it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub made_by: Option<MadeBy>,
+}
+
+/// The call that made a sheet.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct MadeBy {
+    /// The journal step it was recorded as, when it was the outermost call.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step: Option<u64>,
+    /// The method called, such as `documents.derive`.
+    pub method: String,
+    /// Its parameters, as called.
+    #[serde(default)]
+    pub params: serde_json::Value,
+    /// The ranges of the parent it came from, as [start, len], where known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub span: Option<Vec<(u64, u64)>>,
+    /// A short name for it, such as "payload".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+}
+
+impl Lineage {
+    /// The lineage of a sheet derived from `parent`, its maker not yet known.
+    pub fn derived_from(parent: &str) -> Self {
+        Lineage { parent: Some(parent.to_string()), made_by: None }
+    }
+
+    /// The label its maker gave it.
+    pub fn label(&self) -> Option<String> {
+        self.made_by.as_ref().and_then(|made_by| made_by.label.clone())
+    }
 }
 
 /// Where the cursor and selection are in a document, and what the view
@@ -180,6 +235,12 @@ pub trait Workspace {
     /// The session's journal of calls (see [`crate::journal`]).
     fn journal(&self) -> &Journal;
     fn journal_mut(&mut self) -> &mut Journal;
+    /// Where the open document `id` came from: the document it was derived
+    /// from and the step that made it; `None` for a document not open.
+    fn lineage(&self, id: &str) -> Option<Lineage>;
+    /// Say which call made the open document `id` (the journal does, once
+    /// the call that made it has finished).
+    fn note_made_by(&mut self, id: &str, made_by: MadeBy);
 }
 
 /// `document.edited` with the changes `document` made since `published`,
@@ -253,6 +314,8 @@ struct OpenDocument {
     recording: Option<Recording>,
     /// The version `document.edited` has been published up to.
     published_version: u64,
+    /// Where it came from: its parent and the step that made it.
+    lineage: Lineage,
 }
 
 /// Documents opened without a window, for the command line, scripts and
@@ -316,7 +379,8 @@ impl HeadlessWorkspace {
         let opened = DocumentOpened { name: name.clone(), path: document.path().map(|path| path.display().to_string()), len: document.len() };
         self.bus.publish(Draft::new("workspace", Payload::DocumentOpened(opened)).about(id.clone(), document.version()));
         let published_version = document.version();
-        self.documents.push(OpenDocument { id: id.clone(), name, document, view: ViewState::default(), shape: ViewShape::default(), folds: Folds::default(), bookmarks: Vec::new(), recording: None, published_version });
+        let lineage = Lineage::default();
+        self.documents.push(OpenDocument { id: id.clone(), name, document, view: ViewState::default(), shape: ViewShape::default(), folds: Folds::default(), bookmarks: Vec::new(), recording: None, published_version, lineage });
         self.current = Some(self.documents.len() - 1);
         id
     }
@@ -342,6 +406,9 @@ impl Workspace for HeadlessWorkspace {
                 version: open.document.version(),
                 modified: open.document.is_modified(),
                 current: self.current == Some(index),
+                parent: open.lineage.parent.clone(),
+                made_by: open.lineage.made_by.clone(),
+                label: open.lineage.label(),
             })
             .collect()
     }
@@ -488,11 +555,16 @@ impl Workspace for HeadlessWorkspace {
         Ok(self.add_document(name, Document::default()))
     }
 
+    /// The derived document is recorded as its parent's child.
     fn open_derived(&mut self, parent: &str, bytes: Vec<u8>, name: &str) -> Result<String, ApiError> {
         if self.open_document(parent).is_none() {
             return Err(ApiError::not_found(format!("document '{parent}' has closed")));
         }
-        Ok(self.add_document(name, Document::from_bytes(bytes)))
+        let id = self.add_document(name, Document::from_bytes(bytes));
+        if let Some(open) = self.open_document(&id) {
+            open.lineage = Lineage::derived_from(parent);
+        }
+        Ok(id)
     }
 
     fn pin_template(&mut self, id: &str, applied: TemplateApplied) {
@@ -528,6 +600,16 @@ impl Workspace for HeadlessWorkspace {
     fn journal_mut(&mut self) -> &mut Journal {
         &mut self.journal
     }
+
+    fn lineage(&self, id: &str) -> Option<Lineage> {
+        self.documents.iter().find(|open| open.id == id).map(|open| open.lineage.clone())
+    }
+
+    fn note_made_by(&mut self, id: &str, made_by: MadeBy) {
+        if let Some(open) = self.open_document(id) {
+            open.lineage.made_by = Some(made_by);
+        }
+    }
 }
 
 /// The window shows one document at a time; the documents it was derived
@@ -543,6 +625,9 @@ impl Workspace for ViewerApp {
             version: parent.document.version(),
             modified: parent.document.is_modified(),
             current: false,
+            parent: None,
+            made_by: None,
+            label: None,
         });
         let shown = DocumentInfo {
             id: self.document_id(),
@@ -552,8 +637,19 @@ impl Workspace for ViewerApp {
             version: self.document.version(),
             modified: self.document.is_modified(),
             current: true,
+            parent: None,
+            made_by: None,
+            label: None,
         };
-        parents.chain(std::iter::once(shown)).collect()
+        parents
+            .chain(std::iter::once(shown))
+            .map(|mut info| {
+                let lineage = self.lineages.get(&info.id).cloned().unwrap_or_default();
+                info.label = lineage.label();
+                (info.parent, info.made_by) = (lineage.parent, lineage.made_by);
+                info
+            })
+            .collect()
     }
 
     fn current_document(&self) -> Option<String> {
@@ -793,7 +889,9 @@ impl Workspace for ViewerApp {
             return Err(ApiError::invalid_params(format!("{parent} waits behind the document shown; go back to it (documents.open with its id) to open part of it")));
         }
         ViewerApp::open_derived(self, bytes, name.to_string());
-        Ok(self.document_id())
+        let id = self.document_id();
+        self.lineages.insert(id.clone(), Lineage::derived_from(parent));
+        Ok(id)
     }
 
     fn pin_template(&mut self, id: &str, applied: TemplateApplied) {
@@ -840,6 +938,18 @@ impl Workspace for ViewerApp {
     fn journal_mut(&mut self) -> &mut Journal {
         &mut self.journal
     }
+
+    /// The window keeps each document's lineage beside it, by id.
+    fn lineage(&self, id: &str) -> Option<Lineage> {
+        let open = id == self.document_id || self.parents.iter().any(|parent| parent.id == id);
+        open.then(|| self.lineages.get(id).cloned().unwrap_or_default())
+    }
+
+    fn note_made_by(&mut self, id: &str, made_by: MadeBy) {
+        if self.lineage(id).is_some() {
+            self.lineages.entry(id.to_string()).or_default().made_by = Some(made_by);
+        }
+    }
 }
 
 /// Refuse to replace the window's documents while one has unsaved edits.
@@ -881,6 +991,18 @@ mod tests {
         assert_eq!(resolve(&workspace, Some("doc-9")).unwrap_err().code, ErrorCode::NotFound);
         let (_, document) = document(&mut workspace, Some("doc-1")).unwrap();
         assert_eq!(document.read_range(0, 3), b"one");
+    }
+
+    #[test]
+    fn a_derived_document_is_listed_with_the_document_it_came_from() {
+        let mut workspace = workspace_with("container.bin", b"outer stream");
+        let inner = workspace.open_derived("doc-1", b"stream".to_vec(), "inner").unwrap();
+        let listed = workspace.documents();
+        assert_eq!((listed[0].parent.as_deref(), listed[1].parent.as_deref()), (None, Some("doc-1")), "a file is a root; the derived document names its parent");
+        assert_eq!(workspace.lineage(&inner), Some(Lineage::derived_from("doc-1")));
+        assert_eq!(workspace.lineage("doc-9"), None, "a document not open has no lineage");
+        let as_json = serde_json::to_value(&listed[0]).unwrap();
+        assert!(as_json.get("parent").is_none() && as_json.get("made_by").is_none(), "a root's listing is as it was: {as_json}");
     }
 
     #[test]

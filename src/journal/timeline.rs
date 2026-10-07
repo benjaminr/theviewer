@@ -81,6 +81,10 @@ pub enum Replay {
     /// document derived from the current one. Not repeated: what it opened
     /// is open already.
     OpensDocument { derives: bool },
+    /// It makes a new sheet from a document. Kept by recipes, which make
+    /// the sheet again and name it by the step that made it; not repeated
+    /// by going back or playback, as the sheet is open already.
+    MakesSheet,
     /// It writes a file and leaves the document as it is. Not repeated.
     WritesFile,
     /// Not repeated, for its own reasons: it reloads plugins, or starts or
@@ -110,9 +114,15 @@ pub fn replay_of(method: &str) -> Replay {
     api::method(method).map_or(Replay::Step, |method| method.replay)
 }
 
-/// Whether going back, playback and recipes repeat a step of `method`.
+/// Whether going back and playback repeat a step of `method`.
 fn is_replayed(method: &str) -> bool {
     replay_of(method) == Replay::Step
+}
+
+/// Whether recipes keep a step of `method`: the steps going back and
+/// playback repeat, and those that make sheets.
+pub fn is_kept_by_recipes(method: &str) -> bool {
+    matches!(replay_of(method), Replay::Step | Replay::MakesSheet)
 }
 
 /// Where a step stands on the timeline.

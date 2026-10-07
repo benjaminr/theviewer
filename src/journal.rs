@@ -217,6 +217,11 @@ pub struct JournalEntry {
     /// `history.entry` give it: the reasoning beside the action.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notes: Vec<NoteOn>,
+    /// The sheets the call made (documents derived from `doc`), by id, in
+    /// the order made, as its result's `output` (or `outputs`) names them:
+    /// a recipe names them by this step.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub made: Vec<String>,
 }
 
 fn is_false(value: &bool) -> bool {
@@ -781,6 +786,7 @@ pub(crate) fn begin(workspace: &mut dyn Workspace, caller: &Caller, method: &Met
         before: None,
         note: None,
         notes: Vec::new(),
+        made: Vec::new(),
     });
     // A read is about its document once it has succeeded, and is described
     // only if promoted: most never are, and only steps can be undone, so

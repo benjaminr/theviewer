@@ -408,9 +408,12 @@ One document's id, name, path, length, version and whether it has unsaved edits.
 | --- | --- | --- | --- |
 | `current` | boolean | yes | Whether this is the current document. |
 | `id` | string | yes | Stable id, such as "doc-1". |
+| `label` | string | no | A short name its maker gave it, such as "payload", which a recipe names it by. |
 | `len` | integer | yes | Length in bytes. |
+| `made_by` | MadeBy | no | The step that made it, for a sheet made from another. |
 | `modified` | boolean | yes | Whether there are edits not saved. |
 | `name` | string | yes | File name, or the name of a derived document. |
+| `parent` | string | no | The document it was derived from, for a sheet made from another; none for one opened from a file, a source or new. |
 | `path` | string | no | Path on disk, for documents opened from a file. |
 | `version` | integer | yes | Incremented on every edit. |
 
@@ -432,9 +435,12 @@ Open a file by path, or an open document by id, and make it current; a file alre
 | --- | --- | --- | --- |
 | `current` | boolean | yes | Whether this is the current document. |
 | `id` | string | yes | Stable id, such as "doc-1". |
+| `label` | string | no | A short name its maker gave it, such as "payload", which a recipe names it by. |
 | `len` | integer | yes | Length in bytes. |
+| `made_by` | MadeBy | no | The step that made it, for a sheet made from another. |
 | `modified` | boolean | yes | Whether there are edits not saved. |
 | `name` | string | yes | File name, or the name of a derived document. |
+| `parent` | string | no | The document it was derived from, for a sheet made from another; none for one opened from a file, a source or new. |
 | `path` | string | no | Path on disk, for documents opened from a file. |
 | `version` | integer | yes | Incremented on every edit. |
 
@@ -455,9 +461,12 @@ Open a new, empty document and make it current; the window refuses while its doc
 | --- | --- | --- | --- |
 | `current` | boolean | yes | Whether this is the current document. |
 | `id` | string | yes | Stable id, such as "doc-1". |
+| `label` | string | no | A short name its maker gave it, such as "payload", which a recipe names it by. |
 | `len` | integer | yes | Length in bytes. |
+| `made_by` | MadeBy | no | The step that made it, for a sheet made from another. |
 | `modified` | boolean | yes | Whether there are edits not saved. |
 | `name` | string | yes | File name, or the name of a derived document. |
+| `parent` | string | no | The document it was derived from, for a sheet made from another; none for one opened from a file, a source or new. |
 | `path` | string | no | Path on disk, for documents opened from a file. |
 | `version` | integer | yes | Incremented on every edit. |
 
@@ -478,9 +487,12 @@ Save a document over its file, or to a path, with every edit made so far.
 | --- | --- | --- | --- |
 | `current` | boolean | yes | Whether this is the current document. |
 | `id` | string | yes | Stable id, such as "doc-1". |
+| `label` | string | no | A short name its maker gave it, such as "payload", which a recipe names it by. |
 | `len` | integer | yes | Length in bytes. |
+| `made_by` | MadeBy | no | The step that made it, for a sheet made from another. |
 | `modified` | boolean | yes | Whether there are edits not saved. |
 | `name` | string | yes | File name, or the name of a derived document. |
+| `parent` | string | no | The document it was derived from, for a sheet made from another; none for one opened from a file, a source or new. |
 | `path` | string | no | Path on disk, for documents opened from a file. |
 | `version` | integer | yes | Incremented on every edit. |
 
@@ -507,9 +519,12 @@ Open bytes of a document (a span, several ranges one after another, or bytes giv
 | --- | --- | --- | --- |
 | `current` | boolean | yes | Whether this is the current document. |
 | `id` | string | yes | Stable id, such as "doc-1". |
+| `label` | string | no | A short name its maker gave it, such as "payload", which a recipe names it by. |
 | `len` | integer | yes | Length in bytes. |
+| `made_by` | MadeBy | no | The step that made it, for a sheet made from another. |
 | `modified` | boolean | yes | Whether there are edits not saved. |
 | `name` | string | yes | File name, or the name of a derived document. |
+| `parent` | string | no | The document it was derived from, for a sheet made from another; none for one opened from a file, a source or new. |
 | `path` | string | no | Path on disk, for documents opened from a file. |
 | `version` | integer | yes | Incremented on every edit. |
 
@@ -825,9 +840,12 @@ Open one bit plane of a span (at most 1 MiB) as a derived document: bit k of eve
 | --- | --- | --- | --- |
 | `current` | boolean | yes | Whether this is the current document. |
 | `id` | string | yes | Stable id, such as "doc-1". |
+| `label` | string | no | A short name its maker gave it, such as "payload", which a recipe names it by. |
 | `len` | integer | yes | Length in bytes. |
+| `made_by` | MadeBy | no | The step that made it, for a sheet made from another. |
 | `modified` | boolean | yes | Whether there are edits not saved. |
 | `name` | string | yes | File name, or the name of a derived document. |
+| `parent` | string | no | The document it was derived from, for a sheet made from another; none for one opened from a file, a source or new. |
 | `path` | string | no | Path on disk, for documents opened from a file. |
 | `version` | integer | yes | Incremented on every edit. |
 
@@ -1065,6 +1083,7 @@ One step of the journal, or one recent read, in full.
 | `description` | string | yes | What the call did in plain words, the same text the confirmation window shows: "XOR 128 selected bytes with 5A". Empty for a read not promoted into the journal. |
 | `doc` | string | no | The document the call was about: the one its `doc` named, or the current one. |
 | `effect` | `"read"` \| `"edit"` \| `"view"` \| `"job"` \| `"analysis"` | yes | What calling a method does. |
+| `made` | array of string | no | The sheets the call made (documents derived from `doc`), by id, in the order made, as its result's `output` (or `outputs`) names them: a recipe names them by this step. |
 | `merged` | integer | no | How many earlier calls of the same setter this one replaced. |
 | `method` | string | yes | The method called, such as `packets.sets.create`. |
 | `note` | Note | no | For a note (`history.note`): its text, the steps it links and when it was last edited. |
@@ -3297,9 +3316,12 @@ Open one file (or volume) of the filesystem image at an offset of the document a
 | --- | --- | --- | --- |
 | `current` | boolean | yes | Whether this is the current document. |
 | `id` | string | yes | Stable id, such as "doc-1". |
+| `label` | string | no | A short name its maker gave it, such as "payload", which a recipe names it by. |
 | `len` | integer | yes | Length in bytes. |
+| `made_by` | MadeBy | no | The step that made it, for a sheet made from another. |
 | `modified` | boolean | yes | Whether there are edits not saved. |
 | `name` | string | yes | File name, or the name of a derived document. |
+| `parent` | string | no | The document it was derived from, for a sheet made from another; none for one opened from a file, a source or new. |
 | `path` | string | no | Path on disk, for documents opened from a file. |
 | `version` | integer | yes | Incremented on every edit. |
 
@@ -3355,9 +3377,12 @@ Open one node of the unpacked tree (by its path of child indices, as unpack.run 
 | --- | --- | --- | --- |
 | `current` | boolean | yes | Whether this is the current document. |
 | `id` | string | yes | Stable id, such as "doc-1". |
+| `label` | string | no | A short name its maker gave it, such as "payload", which a recipe names it by. |
 | `len` | integer | yes | Length in bytes. |
+| `made_by` | MadeBy | no | The step that made it, for a sheet made from another. |
 | `modified` | boolean | yes | Whether there are edits not saved. |
 | `name` | string | yes | File name, or the name of a derived document. |
+| `parent` | string | no | The document it was derived from, for a sheet made from another; none for one opened from a file, a source or new. |
 | `path` | string | no | Path on disk, for documents opened from a file. |
 | `version` | integer | yes | Incremented on every edit. |
 
@@ -3907,9 +3932,12 @@ Open a recorded version of a document as a document derived from it; the window 
 | --- | --- | --- | --- |
 | `current` | boolean | yes | Whether this is the current document. |
 | `id` | string | yes | Stable id, such as "doc-1". |
+| `label` | string | no | A short name its maker gave it, such as "payload", which a recipe names it by. |
 | `len` | integer | yes | Length in bytes. |
+| `made_by` | MadeBy | no | The step that made it, for a sheet made from another. |
 | `modified` | boolean | yes | Whether there are edits not saved. |
 | `name` | string | yes | File name, or the name of a derived document. |
+| `parent` | string | no | The document it was derived from, for a sheet made from another; none for one opened from a file, a source or new. |
 | `path` | string | no | Path on disk, for documents opened from a file. |
 | `version` | integer | yes | Incremented on every edit. |
 
