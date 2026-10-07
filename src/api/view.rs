@@ -18,6 +18,9 @@ use crate::raster::PixelFormat;
 
 /// Most pixels per row.
 pub const MAX_WIDTH: usize = crate::app::MAX_WIDTH;
+/// Most padding bytes after each row, as the toolbar allows; far more
+/// would overflow a row's length in bits.
+pub const MAX_ROW_PADDING: usize = MAX_WIDTH * 4;
 
 /// This module's methods, in the order `api.describe` lists them within
 /// their namespace. A new method is added here, and only here.
@@ -183,6 +186,9 @@ pub fn set_shape(workspace: &mut dyn Workspace, params: SetShapeParams) -> Resul
         shape.bit_offset = bit_offset;
     }
     if let Some(row_padding) = params.row_padding {
+        if row_padding > MAX_ROW_PADDING {
+            return Err(ApiError::invalid_params(format!("{row_padding} bytes of row padding is more than {MAX_ROW_PADDING}")));
+        }
         shape.row_padding = row_padding;
     }
     workspace.set_shape(&id, shape)?;
@@ -405,6 +411,14 @@ mod tests {
 
     use crate::api::test_support::{call, workspace_with};
     use crate::api::{ErrorCode, Workspace};
+
+    #[test]
+    fn row_padding_too_large_to_draw_is_refused() {
+        let mut workspace = workspace_with("a.bin", &[0u8; 256]);
+        let refused = call(&mut workspace, "view.set_shape", json!({"row_padding": (1u64 << 61) - 1})).unwrap_err();
+        assert_eq!(refused.code, ErrorCode::InvalidParams);
+        assert!(call(&mut workspace, "view.set_shape", json!({"row_padding": super::MAX_ROW_PADDING})).is_ok(), "the toolbar's largest padding is allowed");
+    }
 
     #[test]
     fn a_shape_change_keeps_what_it_does_not_mention_and_sets_the_record_stride() {

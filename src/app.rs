@@ -3523,7 +3523,7 @@ impl ViewerApp {
             ui.label(RichText::new("pad").color(theme::TEXT_DIM));
             let mut row_padding = self.shape.row_padding;
             let padding = ui
-                .add(egui::DragValue::new(&mut row_padding).range(0..=MAX_WIDTH * 4).suffix(" B"))
+                .add(egui::DragValue::new(&mut row_padding).range(0..=crate::api::view::MAX_ROW_PADDING).suffix(" B"))
                 .on_hover_text("Bytes skipped after each row (for row headers or stride padding)");
             if padding.changed() {
                 self.change_row_padding(row_padding);
