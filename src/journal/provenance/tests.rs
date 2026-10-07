@@ -145,11 +145,48 @@ fn a_finding_is_counted_among_those_whose_id_starts_like_its_own() {
     assert_eq!(finding_anchor(&findings, &found("zlib", 61)), None);
 }
 
+/// What `anchor` resolves to in `workspace`'s current document.
+fn resolved(workspace: &mut dyn Workspace, anchor: &Anchor) -> Value {
+    let (steps, parameters) = (BTreeMap::new(), BTreeMap::new());
+    let mut context = anchors::ResolveContext { workspace, doc: None, steps: &steps, parameters: &parameters };
+    anchor.resolve(&mut context).unwrap()
+}
+
+#[test]
+fn the_match_recorded_is_the_match_its_anchor_finds_again_however_it_was_counted() {
+    let bytes = b"aaa.aaaa..aa.aaaaa";
+    let mut workspace = crate::api::test_support::workspace_with("a.bin", bytes);
+    let mut document = Document::from_bytes(bytes.to_vec());
+    let starts: Vec<usize> = crate::search::matches_from(&mut document, b"aa", 0).collect();
+    for (index, &at) in starts.iter().enumerate() {
+        let fresh = nth_match(&mut document, b"aa", at, None).unwrap();
+        let after_first = nth_match(&mut document, b"aa", at, Some(KnownMatch { at: starts[0], nth: 0 })).unwrap();
+        let before_last = nth_match(&mut document, b"aa", at, Some(KnownMatch { at: starts[starts.len() - 1], nth: starts.len() - 1 })).unwrap();
+        assert_eq!((fresh, after_first, before_last), (index, index, index), "the match at {at}, counted from the start, forwards and back");
+        let anchor = Anchor::Find { find: Needle::Text("aa".into()), nth: fresh, part: None };
+        assert_eq!(resolved(&mut workspace, &anchor), json!(at), "the anchor recorded for {at} finds it again");
+    }
+    assert_eq!(nth_match(&mut document, b"aa", 3, Some(KnownMatch { at: 9, nth: 5 })), None, "no match starts at 3");
+}
+
+#[test]
+fn the_finding_recorded_is_the_finding_its_anchor_finds_again() {
+    let mut bytes = crate::api::test_support::example_bytes();
+    bytes.extend(crate::api::test_support::example_bytes());
+    let mut workspace = crate::api::test_support::workspace_with("a.bin", &bytes);
+    let findings = anchors::findings_in(&mut workspace, "doc-1", bytes.len() as u64, None).unwrap();
+    assert!(!findings.is_empty());
+    for finding in &findings {
+        let anchor = finding_anchor(&findings, finding).expect("each finding listed has an anchor");
+        assert_eq!(resolved(&mut workspace, &anchor), json!(finding.start), "{anchor:?} finds {} again", finding.id);
+    }
+}
+
 #[test]
 fn which_match_counts_overlapping_matches_from_the_start() {
     let mut document = Document::from_bytes(b"aaaa".to_vec());
-    assert_eq!(nth_match(&mut document, b"aa", 2), Some(2));
-    assert_eq!(nth_match(&mut document, b"aa", 3), None);
+    assert_eq!(nth_match(&mut document, b"aa", 2, None), Some(2));
+    assert_eq!(nth_match(&mut document, b"aa", 3, None), None);
 }
 
 #[test]

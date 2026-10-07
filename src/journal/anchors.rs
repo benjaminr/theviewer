@@ -44,9 +44,10 @@ use serde_json::Value;
 
 use crate::api::findings::{self, QueryParams};
 use crate::api::selection::DocParams;
+use crate::api::structure::{self, ParseParams};
 use crate::api::values::MAX_PAGE;
 use crate::api::{ApiError, MAX_CALL_BYTES, Workspace, workspace};
-use crate::plugin::{Category, Field, Finding, Registry};
+use crate::plugin::{Category, Field, Finding};
 use crate::search::SearchMode;
 
 /// The key that marks an anchor among a step's literal parameters.
@@ -152,33 +153,6 @@ pub enum SelectionWhich {
     Current,
 }
 
-/// One parameter value of a recipe step: a literal or an anchor.
-#[derive(Clone, Debug, PartialEq)]
-pub enum ParamValue {
-    Literal(Value),
-    Anchor(Anchor),
-}
-
-impl ParamValue {
-    /// The value as written in a recipe: a literal as it is, an anchor as
-    /// `{"$anchor": …}`.
-    pub fn to_json(&self) -> Value {
-        match self {
-            ParamValue::Literal(value) => value.clone(),
-            ParamValue::Anchor(anchor) => marked(anchor),
-        }
-    }
-
-    /// `value` as written in a recipe: `{"$anchor": …}` with a valid anchor
-    /// is an anchor, anything else a literal.
-    pub fn from_json(value: &Value) -> ParamValue {
-        match as_anchor(value) {
-            Some(anchor) => ParamValue::Anchor(anchor),
-            None => ParamValue::Literal(value.clone()),
-        }
-    }
-}
-
 /// `anchor` marked for a step's parameters: `{"$anchor": …}`.
 pub fn marked(anchor: &Anchor) -> Value {
     let mut object = serde_json::Map::new();
@@ -196,25 +170,35 @@ pub fn as_anchor(value: &Value) -> Option<Anchor> {
 /// `length_field.offset`), in the order they appear.
 pub fn anchors_in(params: &Value) -> Vec<(String, Anchor)> {
     let mut found = Vec::new();
-    collect_anchors(params, String::new(), &mut found);
+    visit_paths(params, "", &mut |path, value| match as_anchor(value) {
+        Some(anchor) => {
+            found.push((path.to_string(), anchor));
+            false
+        }
+        None => true,
+    });
     found
 }
 
-fn collect_anchors(value: &Value, path: String, found: &mut Vec<(String, Anchor)>) {
-    if let Some(anchor) = as_anchor(value) {
-        found.push((path, anchor));
+/// Visit `value` and every value inside it, depth first and in key order,
+/// each with its path written as [`value_at`] reads it: below `root` (`root`
+/// itself for `value`, then `root.key` and `root[0]`; a key alone when
+/// `root` is empty). `visit` says whether to look inside the value it is
+/// given.
+pub(crate) fn visit_paths<'a>(value: &'a Value, root: &str, visit: &mut impl FnMut(&str, &'a Value) -> bool) {
+    if !visit(root, value) {
         return;
     }
     match value {
         Value::Object(fields) => {
             for (key, item) in fields {
-                let inner = if path.is_empty() { key.clone() } else { format!("{path}.{key}") };
-                collect_anchors(item, inner, found);
+                let path = if root.is_empty() { key.clone() } else { format!("{root}.{key}") };
+                visit_paths(item, &path, visit);
             }
         }
         Value::Array(items) => {
             for (index, item) in items.iter().enumerate() {
-                collect_anchors(item, format!("{path}[{index}]"), found);
+                visit_paths(item, &format!("{root}[{index}]"), visit);
             }
         }
         _ => {}
@@ -223,14 +207,14 @@ fn collect_anchors(value: &Value, path: String, found: &mut Vec<(String, Anchor)
 
 /// One step of a path: a key or an index.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum PathStep {
+enum PathStep {
     Key(String),
     Index(usize),
 }
 
 /// `path` split into keys and indices: `matches[0].offset` is
 /// `matches`, `0`, `offset`.
-pub fn parse_path(path: &str) -> Result<Vec<PathStep>, ApiError> {
+fn parse_path(path: &str) -> Result<Vec<PathStep>, ApiError> {
     let invalid = || ApiError::invalid_params(format!("'{path}' is not a path; write keys with dots and indices in brackets, such as result.matches[0].offset"));
     let mut steps = Vec::new();
     for part in path.split('.') {
@@ -342,12 +326,6 @@ impl Anchor {
         })
     }
 
-    /// Whether the anchor stands for what an earlier step of the run gave
-    /// or returned, which a preview cannot know.
-    pub fn needs_earlier_steps(&self) -> bool {
-        matches!(self, Anchor::Step { .. })
-    }
-
     /// The anchor in a few words, for reports and errors: "the 2nd match of
     /// hex 7EA5", "the value at result.matches[0] of step 3".
     pub fn describe(&self) -> String {
@@ -371,13 +349,13 @@ impl Needle {
         }
     }
 
-    /// The bytes to look for.
+    /// The bytes to look for, read as `search.find` reads its query.
     pub fn bytes(&self) -> Result<Vec<u8>, ApiError> {
         let (mode, query) = match self {
             Needle::Hex(hex) => (SearchMode::Hex, hex),
             Needle::Text(text) => (SearchMode::Text, text),
         };
-        crate::search::needle_for(mode, query, true).map_err(|message| ApiError::invalid_params(format!("{} is not something to search for: {message}", self.describe())))
+        crate::api::search::needle(mode, query, true)
     }
 }
 
@@ -387,6 +365,19 @@ impl FindingMatch {
         let category = self.category.as_deref().map_or(String::new(), |category| format!("{category} "));
         let id = self.id.as_deref().map_or(String::new(), |id| format!(" whose id starts with {id}"));
         format!("{} {category}finding{id}", ordinal(self.nth))
+    }
+
+    /// Those of `findings` (as [`findings_in`] lists them) that this names
+    /// with any `nth`, in their order: the one it names is the `nth` of
+    /// them. Recording a finding anchor counts with this too.
+    pub fn matching<'a>(&self, findings: &'a [Finding]) -> Result<Vec<&'a Finding>, ApiError> {
+        let mut matching = Vec::new();
+        for finding in findings {
+            if self.matches(finding)? {
+                matching.push(finding);
+            }
+        }
+        Ok(matching)
     }
 
     /// Whether `finding` is one of those this names.
@@ -405,8 +396,8 @@ impl FindingMatch {
     }
 }
 
-/// "1st", "2nd", "3rd", "4th" for 0, 1, 2, 3.
-fn ordinal(index: usize) -> String {
+/// "1st", "2nd", "3rd", "4th" for 0, 1, 2, 3: which one, counting from 0.
+pub(crate) fn ordinal(index: usize) -> String {
     let number = index + 1;
     let suffix = match (number % 10, number % 100) {
         (_, 11..=13) => "th",
@@ -463,36 +454,33 @@ fn document_of<'w>(context: &'w mut ResolveContext<'_>) -> Result<(String, &'w m
 fn resolve_find(needle: &Needle, nth: usize, part: Option<Part>, context: &mut ResolveContext<'_>) -> Result<Value, ApiError> {
     let bytes = needle.bytes()?;
     let (doc, document) = document_of(context)?;
-    let mut from = 0;
     let mut found = 0;
-    loop {
-        let Some(at) = crate::search::find_next(document, &bytes, from) else {
-            let times = match found {
-                0 => "it does not occur".to_string(),
-                1 => "it occurs once".to_string(),
-                found => format!("it occurs {found} times"),
-            };
-            return Err(ApiError::not_found(format!("{doc} has no {} match of {}: {times}", ordinal(nth), needle.describe())));
-        };
+    for at in crate::search::matches_from(document, &bytes, 0) {
         if found == nth {
             return Ok(span_part(at, bytes.len(), part));
         }
         found += 1;
-        from = at + 1;
     }
+    let times = match found {
+        0 => "it does not occur".to_string(),
+        1 => "it occurs once".to_string(),
+        found => format!("it occurs {found} times"),
+    };
+    Err(ApiError::not_found(format!("{doc} has no {} match of {}: {times}", ordinal(nth), needle.describe())))
 }
 
-/// The findings in the first 16 MiB of the step's document, in offset
-/// order, as the Findings list shows them (at least `min_confidence`
-/// confident, 0.5 by default).
-fn findings_of(context: &mut ResolveContext<'_>, min_confidence: Option<f32>) -> Result<Vec<Finding>, ApiError> {
-    let doc = workspace::resolve(&*context.workspace, context.doc.as_deref())?;
-    let len = workspace::info(&*context.workspace, &doc)?.len.min(MAX_CALL_BYTES as u64);
+/// The findings `findings.query` lists in the first `len` bytes of document
+/// `doc` (at most a call's worth, the first 16 MiB), in offset order, at
+/// least `min_confidence` confident (as the Findings list shows them, 0.5,
+/// when `None`), without recording a read. A finding anchor counts among
+/// these, both when it is recorded and when it resolves.
+pub(crate) fn findings_in(workspace: &mut dyn Workspace, doc: &str, len: u64, min_confidence: Option<f32>) -> Result<Vec<Finding>, ApiError> {
+    let len = len.min(MAX_CALL_BYTES as u64);
     let mut found = Vec::new();
     let mut next = None;
     loop {
-        let params = QueryParams { doc: Some(doc.clone()), start: 0, len: Some(len), categories: None, min_confidence, producers: None, limit: Some(MAX_PAGE), next };
-        let page = findings::query(&mut *context.workspace, params)?;
+        let params = QueryParams { doc: Some(doc.to_string()), start: 0, len: Some(len), categories: None, min_confidence, producers: None, limit: Some(MAX_PAGE), next };
+        let page = findings::query(workspace, params)?;
         found.extend(page.findings);
         match page.next {
             Some(cursor) => next = Some(cursor),
@@ -501,13 +489,16 @@ fn findings_of(context: &mut ResolveContext<'_>, min_confidence: Option<f32>) ->
     }
 }
 
+/// [`findings_in`] the whole of the step's document.
+fn findings_of(context: &mut ResolveContext<'_>, min_confidence: Option<f32>) -> Result<Vec<Finding>, ApiError> {
+    let doc = workspace::resolve(&*context.workspace, context.doc.as_deref())?;
+    let len = workspace::info(&*context.workspace, &doc)?.len;
+    findings_in(&mut *context.workspace, &doc, len, min_confidence)
+}
+
 fn resolve_finding(wanted: &FindingMatch, part: Option<Part>, context: &mut ResolveContext<'_>) -> Result<Value, ApiError> {
-    let mut matching = Vec::new();
-    for finding in findings_of(context, None)? {
-        if wanted.matches(&finding)? {
-            matching.push(finding);
-        }
-    }
+    let found = findings_of(context, None)?;
+    let matching = wanted.matching(&found)?;
     match matching.get(wanted.nth) {
         Some(finding) => Ok(span_part(finding.start, finding.len, part)),
         None => Err(ApiError::not_found(format!("the document has {} such finding{} in its first 16 MiB", matching.len(), if matching.len() == 1 { "" } else { "s" }))),
@@ -515,12 +506,11 @@ fn resolve_finding(wanted: &FindingMatch, part: Option<Part>, context: &mut Reso
 }
 
 fn resolve_structure(parser: &str, field: &str, part: Option<Part>, context: &mut ResolveContext<'_>) -> Result<Value, ApiError> {
-    let registry = context.workspace.registry();
-    let is_parser = registry.parsers().iter().any(|known| known.id() == parser);
-    let made_at_start = if is_parser { parse_at(context, &registry, parser, 0)? } else { None };
+    let is_parser = context.workspace.registry().has_parser(parser);
+    let made_at_start = if is_parser { parse_at(context, parser, 0)? } else { None };
     let structure = match made_at_start {
         Some(structure) => structure,
-        None => find_structure(context, &registry, parser, is_parser)?.ok_or_else(|| {
+        None => find_structure(context, parser, is_parser)?.ok_or_else(|| {
             let message = if is_parser {
                 format!("the {parser} parser recognises nothing at offset 0 or at any finding in the first 16 MiB")
             } else {
@@ -540,19 +530,16 @@ fn resolve_structure(parser: &str, field: &str, part: Option<Part>, context: &mu
     })
 }
 
-/// The structure `parser` makes of the step's document from `at`, if any.
-fn parse_at(context: &mut ResolveContext<'_>, registry: &Registry, parser: &str, at: usize) -> Result<Option<Finding>, ApiError> {
-    let (_, document) = document_of(context)?;
-    if at >= document.len() {
-        return Ok(None);
-    }
-    let bytes = document.read_range(at, (document.len() - at).min(MAX_CALL_BYTES));
-    Ok(registry.parse_with(parser, &bytes, at))
+/// The structure `parser` makes of the step's document from `at`, if any,
+/// as `structure.parse` makes it.
+fn parse_at(context: &mut ResolveContext<'_>, parser: &str, at: usize) -> Result<Option<Finding>, ApiError> {
+    let params = ParseParams { doc: context.doc.clone(), at: at as u64, parser: Some(parser.to_string()) };
+    Ok(structure::parse(&mut *context.workspace, params)?.structures.into_iter().next())
 }
 
 /// The first structure of `parser` among the findings: one a detector
 /// made with its fields, or else one the parser makes at a finding's start.
-fn find_structure(context: &mut ResolveContext<'_>, registry: &Registry, parser: &str, is_parser: bool) -> Result<Option<Finding>, ApiError> {
+fn find_structure(context: &mut ResolveContext<'_>, parser: &str, is_parser: bool) -> Result<Option<Finding>, ApiError> {
     let found = findings_of(context, Some(0.0))?;
     if let Some(made) = found.iter().find(|finding| finding.id == parser && !finding.fields.is_empty()) {
         return Ok(Some(made.clone()));
@@ -563,7 +550,7 @@ fn find_structure(context: &mut ResolveContext<'_>, registry: &Registry, parser:
     let mut starts: Vec<usize> = found.iter().map(|finding| finding.start).filter(|start| *start > 0).collect();
     starts.dedup();
     for start in starts {
-        if let Some(structure) = parse_at(context, registry, parser, start)? {
+        if let Some(structure) = parse_at(context, parser, start)? {
             return Ok(Some(structure));
         }
     }
@@ -615,20 +602,24 @@ fn field_path(path: &str) -> Result<Vec<(String, usize)>, ApiError> {
         .collect()
 }
 
-/// A field's value as JSON: a number when the parser's text reads as a
-/// decimal or 0x hex integer, else the text.
+/// A field's value as JSON: a number when the parser's text reads as an
+/// integer ([`parse_integer`]), else the text.
 fn field_value(text: &str) -> Value {
-    let trimmed = text.trim();
-    if let Ok(number) = trimmed.parse::<u64>() {
-        return Value::from(number);
+    parse_integer(text).map_or_else(|| Value::String(text.to_string()), Value::Number)
+}
+
+/// `text` as an integer, surrounding space aside: decimal (negative too) or
+/// hex after `0x` or `0X`. How a field's shown value, a recipe parameter
+/// given as text and a literal compared with a field are all read.
+pub(crate) fn parse_integer(text: &str) -> Option<serde_json::Number> {
+    let text = text.trim();
+    if let Some(hex) = text.strip_prefix("0x").or_else(|| text.strip_prefix("0X")) {
+        return u64::from_str_radix(hex, 16).ok().map(serde_json::Number::from);
     }
-    if let Ok(number) = trimmed.parse::<i64>() {
-        return Value::from(number);
+    match text.parse::<u64>() {
+        Ok(number) => Some(number.into()),
+        Err(_) => text.parse::<i64>().ok().map(serde_json::Number::from),
     }
-    if let Some(number) = trimmed.strip_prefix("0x").and_then(|hex| u64::from_str_radix(hex, 16).ok()) {
-        return Value::from(number);
-    }
-    Value::String(text.to_string())
 }
 
 fn resolve_selection(part: Option<Part>, context: &mut ResolveContext<'_>) -> Result<Value, ApiError> {
@@ -697,11 +688,9 @@ mod tests {
     fn a_marked_anchor_is_told_apart_from_a_literal_that_looks_like_one() {
         let anchor = Anchor::Param { param: "key".into() };
         assert_eq!(marked(&anchor), json!({"$anchor": {"param": "key"}}));
-        assert_eq!(ParamValue::from_json(&json!({"$anchor": {"param": "key"}})), ParamValue::Anchor(anchor.clone()));
-        let literal = json!({"selection": "current"});
-        assert_eq!(ParamValue::from_json(&literal), ParamValue::Literal(literal.clone()), "only the marker makes an anchor");
-        assert_eq!(ParamValue::from_json(&json!({"$anchor": {"param": "key"}, "other": 1})), ParamValue::Literal(json!({"$anchor": {"param": "key"}, "other": 1})));
-        assert_eq!(ParamValue::Anchor(anchor).to_json(), json!({"$anchor": {"param": "key"}}));
+        assert_eq!(as_anchor(&json!({"$anchor": {"param": "key"}})), Some(anchor));
+        assert_eq!(as_anchor(&json!({"selection": "current"})), None, "only the marker makes an anchor");
+        assert_eq!(as_anchor(&json!({"$anchor": {"param": "key"}, "other": 1})), None);
     }
 
     #[test]

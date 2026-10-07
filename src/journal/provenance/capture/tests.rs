@@ -42,6 +42,27 @@ fn a_match_found_with_find_next_is_selected_as_the_nth_match_of_the_needle() {
 }
 
 #[test]
+fn pressing_find_next_again_and_again_does_not_count_every_match_from_the_start_each_time() {
+    const MATCHES: usize = 2_000;
+    let mut app = app_with(&b"PK..".repeat(MATCHES));
+    app.search_mode = SearchMode::Text;
+    app.search_text = "PK".to_string();
+    app.set_cursor(0, false);
+    app.find_next();
+    let made_before = crate::search::SEARCHES_MADE.with(std::cell::Cell::get);
+    for _ in 1..MATCHES {
+        app.find_next();
+    }
+    let made = crate::search::SEARCHES_MADE.with(std::cell::Cell::get) - made_before;
+    assert!(made < 10 * MATCHES, "{made} searches for {MATCHES} presses: counting from the start each time would make millions");
+    let last = &last_entry(&app, "selection.set").derived_from["selection.range[0]"];
+    assert_eq!(last, &find(Needle::Text("PK".into()), MATCHES - 1, None), "the last press still names the last match");
+    app.find_previous();
+    let previous = &last_entry(&app, "selection.set").derived_from["selection.range[0]"];
+    assert_eq!(previous, &find(Needle::Text("PK".into()), MATCHES - 2, None), "stepping back counts back");
+}
+
+#[test]
 fn a_hex_search_s_match_names_its_bytes_as_hex() {
     let mut app = app_with(&[0, 0x7E, 0xA5, 0, 0x7E, 0xA5]);
     app.search_mode = SearchMode::Hex;
@@ -79,7 +100,7 @@ fn selecting_a_finding_names_the_finding_by_its_id_and_place_among_its_kind() {
     bytes.extend(crate::api::test_support::example_bytes());
     let mut app = app_with(&bytes);
     let doc = app.document_id();
-    let findings = super::findings_up_to(&mut app, &doc, bytes.len());
+    let findings = crate::journal::anchors::findings_in(&mut app, &doc, bytes.len() as u64, None).unwrap();
     let twice = |finding: &&Finding| findings.iter().filter(|other| other.id == finding.id).count() > 1;
     let first = findings.iter().find(twice).cloned().expect("a kind of finding the example bytes hold twice");
     let second = findings.iter().filter(|finding| finding.id == first.id).nth(1).cloned().unwrap();

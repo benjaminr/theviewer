@@ -54,7 +54,7 @@ use crate::api::{self, ApiError, Caller, Effect, Workspace};
 use crate::bus::topics::JournalRecorded;
 use crate::bus::{Draft, Payload};
 
-pub use anchors::{Anchor, ParamValue};
+pub use anchors::Anchor;
 pub use recipe::Recipe;
 
 /// Where the values of a step's parameters came from: each parameter's

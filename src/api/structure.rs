@@ -173,7 +173,7 @@ pub struct ApplyResult {
 pub fn parse(workspace: &mut dyn Workspace, params: ParseParams) -> Result<ParseResult, ApiError> {
     let registry = workspace.registry();
     if let Some(id) = &params.parser
-        && !registry.parsers().iter().any(|parser| parser.id() == id)
+        && !registry.has_parser(id)
     {
         return Err(ApiError::not_found(format!("there is no parser '{id}'; structure.parsers lists them")));
     }

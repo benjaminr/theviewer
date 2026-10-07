@@ -335,6 +335,9 @@ pub struct ViewerApp {
     pub overlays_drawn: std::collections::BTreeMap<LayerKind, usize>,
     /// Matches of the Find box in and around the visible bytes.
     search_highlight: Option<SearchHighlight>,
+    /// The match of the Find box last selected and which match it is, so
+    /// the next Find next or previous counts on from it.
+    pub(crate) counted_match: Option<crate::journal::provenance::capture::CountedMatch>,
 
     texture: Option<TextureHandle>,
     raster_key: Option<RasterKey>,
@@ -633,6 +636,7 @@ impl ViewerApp {
             pointed_next: None,
             overlays_drawn: std::collections::BTreeMap::new(),
             search_highlight: None,
+            counted_match: None,
             texture: None,
             raster_key: None,
             byte_buffer: Vec::new(),

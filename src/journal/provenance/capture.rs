@@ -9,9 +9,9 @@
 
 use serde_json::Value;
 
-use super::{finding_anchor, findings_up_to, needle_of, nth_match, pair_anchors, selection_anchors, structure_anchor, with_part};
+use super::{KnownMatch, finding_anchor, needle_of, nth_match, pair_anchors, selection_anchors, structure_anchor, with_part};
 use crate::app::ViewerApp;
-use crate::journal::anchors::{Anchor, Part};
+use crate::journal::anchors::{Anchor, Part, findings_in};
 use crate::journal::{self, DerivedFrom};
 use crate::plugin::Finding;
 use crate::selection::Selection;
@@ -21,6 +21,16 @@ const MOST_MATCHES_ANCHORED: usize = 256;
 
 /// Where `selection.set` takes the range it selects.
 const SELECTED_RANGE: &str = "selection.range";
+
+/// A match of the Find box's needle already counted: which match it is, in
+/// which document and at which version of it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CountedMatch {
+    doc: String,
+    version: u64,
+    needle: Vec<u8>,
+    known: KnownMatch,
+}
 
 impl ViewerApp {
     /// Run `action`, which makes one call through the API, so that call's
@@ -41,9 +51,18 @@ impl ViewerApp {
     /// nth match of the needle, or, past [`super::MOST_MATCHES_COUNTED`]
     /// matches, the `search.find` read that found it (moved into the
     /// journal).
+    ///
+    /// Which match it is is counted on from the match counted last time,
+    /// when that was of the same needle in the document as it is now, so
+    /// pressing Find next or previous again and again counts only the
+    /// matches stepped over, never every match from the start each time.
     pub fn match_provenance(&mut self, at: usize) -> DerivedFrom {
         let Ok(bytes) = crate::search::needle_for(self.search_mode, &self.search_text, self.search_little_endian) else { return DerivedFrom::new() };
-        if let Some(nth) = nth_match(&mut self.document, &bytes, at) {
+        let (doc, version) = (self.document_id(), self.document.version());
+        let known = self.counted_match.as_ref().filter(|counted| counted.doc == doc && counted.version == version && counted.needle == bytes).map(|counted| counted.known);
+        let nth = nth_match(&mut self.document, &bytes, at, known);
+        self.counted_match = nth.map(|nth| CountedMatch { doc, version, needle: bytes.clone(), known: KnownMatch { at, nth } });
+        if let Some(nth) = nth {
             let found = Anchor::Find { find: needle_of(self.search_mode, &self.search_text, &bytes), nth, part: None };
             return pair_anchors(SELECTED_RANGE, found.clone(), Some(with_part(&found, Part::Len)));
         }
@@ -82,7 +101,7 @@ impl ViewerApp {
             return DerivedFrom::new();
         }
         let doc = self.document_id();
-        let findings = findings_up_to(self, &doc, finding.end());
+        let findings = findings_in(self, &doc, finding.end() as u64, None).unwrap_or_default();
         let Some(anchor) = finding_anchor(&findings, finding) else { return DerivedFrom::new() };
         let len_anchor = (len == finding.len).then(|| with_part(&anchor, Part::Len));
         pair_anchors(SELECTED_RANGE, anchor, len_anchor)
@@ -92,7 +111,7 @@ impl ViewerApp {
     /// `start` and `len`, came from: the field, when a parser recognised
     /// the structure.
     pub fn field_provenance(&self, structure: &Finding, start: usize, len: usize) -> DerivedFrom {
-        let by_a_parser = self.registry.parsers().iter().any(|parser| parser.id() == structure.id);
+        let by_a_parser = self.registry.has_parser(&structure.id);
         let Some(anchor) = structure_anchor(structure, start, len).filter(|_| by_a_parser) else { return DerivedFrom::new() };
         let len_anchor = (len > 0).then(|| with_part(&anchor, Part::Len));
         pair_anchors(SELECTED_RANGE, anchor, len_anchor)

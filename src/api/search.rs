@@ -140,7 +140,8 @@ fn little_endian() -> bool {
     true
 }
 
-fn needle(mode: SearchMode, query: &str, little_endian: bool) -> Result<Vec<u8>, ApiError> {
+/// The bytes `query` reads as in `mode`, or why it does not read.
+pub(crate) fn needle(mode: SearchMode, query: &str, little_endian: bool) -> Result<Vec<u8>, ApiError> {
     search::needle_for(mode, query, little_endian).map_err(|message| ApiError::invalid_params(format!("the query '{query}' does not read as {}: {message}", mode.label())))
 }
 

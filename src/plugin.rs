@@ -419,6 +419,11 @@ impl Registry {
             .collect()
     }
 
+    /// Whether a parser is called `parser_id`.
+    pub fn has_parser(&self, parser_id: &str) -> bool {
+        self.parsers.iter().any(|parser| parser.id() == parser_id)
+    }
+
     /// Parse `bytes` with the parser called `parser_id` alone. `None` when
     /// there is no such parser or it does not recognise the bytes.
     pub fn parse_with(&self, parser_id: &str, bytes: &[u8], base: usize) -> Option<Finding> {

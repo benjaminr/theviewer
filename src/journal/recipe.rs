@@ -44,7 +44,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::anchors::{Anchor, anchors_in};
+use super::anchors::{Anchor, anchors_in, parse_integer};
 use super::{FileIdentity, JournalEntry, JournalSession, RecordedPlugin};
 use crate::api::ApiError;
 
@@ -267,16 +267,20 @@ impl ParameterType {
         }
     }
 
-    /// `value` as this type: as it is when it already is one, read from
-    /// text when it is text; otherwise why not, as "is not an integer".
-    pub fn read(self, value: &Value) -> Result<Value, String> {
-        let fits = match self {
+    /// Whether `value` is already of this type.
+    pub fn fits(self, value: &Value) -> bool {
+        match self {
             ParameterType::String => value.is_string(),
             ParameterType::Integer => value.is_i64() || value.is_u64(),
             ParameterType::Number => value.is_number(),
             ParameterType::Boolean => value.is_boolean(),
-        };
-        if fits {
+        }
+    }
+
+    /// `value` as this type: as it is when it already is one, read from
+    /// text when it is text; otherwise why not, as "is not an integer".
+    pub fn read(self, value: &Value) -> Result<Value, String> {
+        if self.fits(value) {
             return Ok(value.clone());
         }
         match value.as_str() {
@@ -291,10 +295,7 @@ impl ParameterType {
         let trimmed = text.trim();
         let parsed = match self {
             ParameterType::String => Some(Value::String(text.to_string())),
-            ParameterType::Integer => match trimmed.strip_prefix("0x").or_else(|| trimmed.strip_prefix("0X")) {
-                Some(hex) => u64::from_str_radix(hex, 16).ok().map(Value::from),
-                None => trimmed.parse::<i64>().ok().map(Value::from).or_else(|| trimmed.parse::<u64>().ok().map(Value::from)),
-            },
+            ParameterType::Integer => parse_integer(trimmed).map(Value::Number),
             ParameterType::Number => trimmed.parse::<f64>().ok().and_then(serde_json::Number::from_f64).map(Value::Number),
             ParameterType::Boolean => match trimmed {
                 "true" | "yes" | "1" => Some(Value::Bool(true)),

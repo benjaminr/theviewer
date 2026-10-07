@@ -69,9 +69,18 @@ pub fn needle_for(mode: SearchMode, query: &str, little_endian: bool) -> Result<
 
 const CHUNK: usize = 4 * 1024 * 1024;
 
+#[cfg(test)]
+thread_local! {
+    /// How many searches [`find_next`] has made on this test thread, so a
+    /// test can tell how much a feature searches.
+    pub static SEARCHES_MADE: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// Offset of the first occurrence of `needle` at or after `from`, searching
 /// the document in chunks that overlap by the needle length.
 pub fn find_next(document: &mut Document, needle: &[u8], from: usize) -> Option<usize> {
+    #[cfg(test)]
+    SEARCHES_MADE.with(|made| made.set(made.get() + 1));
     if needle.is_empty() || document.len() < needle.len() {
         return None;
     }
@@ -115,18 +124,21 @@ pub fn find_previous(document: &mut Document, needle: &[u8], before: usize) -> O
     None
 }
 
+/// Every match of `needle` at or after `from`, in document order,
+/// overlapping matches included: how `search.find_all` lists them and how a
+/// find anchor counts them, both while recording and when it resolves.
+pub fn matches_from<'a>(document: &'a mut Document, needle: &'a [u8], from: usize) -> impl Iterator<Item = usize> + 'a {
+    let mut from = Some(from);
+    std::iter::from_fn(move || {
+        let found = find_next(document, needle, from?);
+        from = found.map(|at| at + 1);
+        found
+    })
+}
+
 /// Count occurrences in the whole document (capped so huge files stay quick).
 pub fn count_matches(document: &mut Document, needle: &[u8], cap: usize) -> usize {
-    let mut count = 0;
-    let mut from = 0;
-    while let Some(at) = find_next(document, needle, from) {
-        count += 1;
-        if count >= cap {
-            break;
-        }
-        from = at + 1;
-    }
-    count
+    matches_from(document, needle, 0).take(cap.max(1)).count()
 }
 
 /// Every offset in `haystack` where `needle` starts, overlapping matches
