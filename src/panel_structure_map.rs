@@ -181,7 +181,7 @@ fn apply(state: &StructureMapState, app: &mut ViewerApp, action: Action) {
             let finding = Finding::new("structure-map:selection", FINDING_SOURCE, Category::Custom, start, len.max(1)).title(title);
             app.select_pattern(&finding);
         }
-        Action::Jump(offset) => app.jump_from_tool(offset),
+        Action::Jump(offset) => app.go_to_offset(offset),
         Action::SetWidth(width) => app.change_width(width),
         Action::PinSegments => {
             let findings = state.segments.as_ref().map(|job| segment_findings(&job.result)).unwrap_or_default();

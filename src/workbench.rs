@@ -1606,7 +1606,7 @@ mod tests {
         app.select_from_tool(4, 2);
         assert_eq!(take_performed(), [("selection.set".to_string(), json!({"selection": {"range": [4, 2]}}))]);
         assert_eq!(app.selection(), Some((4, 2)));
-        app.jump_from_tool(100);
+        app.go_to_offset(100);
         assert_eq!(take_performed(), [("cursor.set".to_string(), json!({"offset": 16}))], "a jump past the end goes to the end");
     }
 }

@@ -207,7 +207,7 @@ pub fn linked_text(app: &mut ViewerApp, ui: &mut Ui, text: &str) {
                 Segment::Offset(offset, label) => {
                     let link = ui.add(egui::Label::new(RichText::new(label).color(theme::ACCENT).underline()).sense(Sense::click()));
                     if link.on_hover_text("Jump here").clicked() {
-                        app.jump_from_tool(offset);
+                        app.go_to_offset(offset);
                     }
                 }
                 Segment::Template(source) => {

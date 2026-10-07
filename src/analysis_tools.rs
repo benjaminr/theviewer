@@ -40,17 +40,6 @@ impl ViewerApp {
             self.reveal_cursor_in_hex(true);
         }
     }
-
-    /// Put the cursor at `offset` because the person clicked it in a tool
-    /// (a link, a point on a chart, a cell), through `cursor.set`, and
-    /// bring it into view.
-    pub fn jump_from_tool(&mut self, offset: usize) {
-        let offset = offset.min(self.document.len());
-        if self.perform("cursor.set", serde_json::json!({ "offset": offset })).is_ok() {
-            self.reveal_cursor_centred();
-            self.reveal_cursor_in_hex(true);
-        }
-    }
 }
 
 /// State for this module's tabs.

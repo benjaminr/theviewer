@@ -163,7 +163,7 @@ pub fn show_learn(state: &mut LearnState, app: &mut ViewerApp, ui: &mut Ui) {
             .show(ui, |ui| jump = show_fuzzy(state, app, ui));
     });
     if let Some(offset) = jump {
-        app.jump_from_tool(offset);
+        app.go_to_offset(offset);
     }
 }
 

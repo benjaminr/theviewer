@@ -99,7 +99,7 @@ pub fn show_alignment(state: &mut AlignmentState, app: &mut ViewerApp, ui: &mut 
     let mut jump = None;
     show_job(job, &mut state.selected_cluster, &mut jump, ui);
     if let Some(offset) = jump {
-        app.jump_from_tool(offset);
+        app.go_to_offset(offset);
     }
 }
 
