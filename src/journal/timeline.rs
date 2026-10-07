@@ -1032,18 +1032,19 @@ impl Playback {
 }
 
 /// The steps a recipe made from the history takes: those in effect up to
-/// `through` (every one when `None`) that playback and going back repeat.
-/// A recipe with anchors (area C's) is made from these same entries.
+/// `through` (every one when `None`) that playback and going back repeat,
+/// and those that made sheets.
 pub fn entries_for_recipe(journal: &Journal, through: Option<u64>) -> Vec<&JournalEntry> {
-    replayable_entries(journal, 0..=through.unwrap_or(u64::MAX)).collect()
+    let timeline = journal.timeline();
+    let through = through.unwrap_or(u64::MAX);
+    journal.entries().filter(|entry| entry.step <= through && timeline.is_active(entry.step) && is_kept_by_recipes(&entry.method)).collect()
 }
 
-/// A recipe called `name` of the history in effect up to `through`, with
-/// the anchors and parameters recorded for its steps (and the earlier
-/// steps they cite), numbered from 1.
-pub fn recipe_of_history(journal: &Journal, name: &str, through: Option<u64>) -> Recipe {
-    let steps: Vec<u64> = entries_for_recipe(journal, through).iter().map(|entry| entry.step).collect();
-    Recipe::from_journal_with_anchors(name, journal, Some(&steps))
+/// A recipe called `name` of the history in effect up to `through`, made
+/// by the one builder every way of saving one shares
+/// ([`super::provenance::build_recipe`]).
+pub fn recipe_of_history(journal: &Journal, name: &str, through: Option<u64>) -> Result<Recipe, ApiError> {
+    super::provenance::build_recipe(journal, name, super::provenance::RecipeSteps::InEffect { through })
 }
 
 #[cfg(test)]

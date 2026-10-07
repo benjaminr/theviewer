@@ -250,7 +250,7 @@ fn the_first_call_about_a_document_leaves_its_hash_to_be_worked_out_away_from_th
     let first_seen = &workspace.journal().session().documents[0];
     assert_eq!(first_seen.identity.sha256, None, "not hashed while the call ran");
     assert_eq!(first_seen.file().sha256, Some(sha256_hex(b"abc")), "the bytes as first seen, not as edited");
-    let recipe = timeline::recipe_of_history(workspace.journal(), "Patch", None);
+    let recipe = timeline::recipe_of_history(workspace.journal(), "Patch", None).unwrap();
     assert_eq!(recipe.recorded_on.and_then(|file| file.sha256), Some(sha256_hex(b"abc")), "a recipe names the file by its hash");
 }
 

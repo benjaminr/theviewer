@@ -363,7 +363,7 @@ pub fn save_recipe(workspace: &mut dyn Workspace, params: SaveRecipeParams) -> R
     if params.name.trim().is_empty() {
         return Err(ApiError::invalid_params("give the recipe a name"));
     }
-    let mut recipe = timeline::recipe_of_history(workspace.journal(), &params.name, params.through);
+    let mut recipe = timeline::recipe_of_history(workspace.journal(), &params.name, params.through)?;
     if recipe.steps.is_empty() {
         return Err(ApiError::invalid_params("there are no steps in effect to save as a recipe"));
     }
@@ -505,6 +505,102 @@ mod tests {
         let saved = std::fs::read_to_string(by_recipes["path"].as_str().unwrap()).unwrap();
         std::fs::remove_dir_all(&dir).ok();
         assert_eq!(written, saved, "one writer for every recipe file");
+    }
+
+    fn temporary_recipe(test: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("theviewer-history-{test}-{}.theviewer-recipe.json", std::process::id()))
+    }
+
+    fn saved_recipe(workspace: &mut crate::api::HeadlessWorkspace, test: &str) -> crate::journal::Recipe {
+        let path = temporary_recipe(test);
+        call(workspace, "history.save_recipe", json!({"path": path.display().to_string(), "name": "Peel"})).unwrap();
+        let recipe = crate::recipes::load(&path).unwrap();
+        std::fs::remove_file(&path).ok();
+        recipe
+    }
+
+    #[test]
+    fn a_recipe_keeps_the_derive_and_names_the_sheet_by_the_step_that_made_it() {
+        let mut workspace = workspace_with("container.bin", b"HEADpayload");
+        call(&mut workspace, "documents.derive", json!({"start": 4, "len": 7})).unwrap();
+        // As MCP clients often do: no doc, so the current document, which
+        // is the sheet just made.
+        call(&mut workspace, "bytes.write", json!({"start": 0, "data": "50"})).unwrap();
+        let recipe = saved_recipe(&mut workspace, "derive");
+        assert_eq!(recipe.recipe, 2, "sheet anchors need format 2");
+        assert_eq!(recipe.steps[0].method, "documents.derive");
+        assert_eq!(recipe.steps[0].params, json!({"start": 4, "len": 7}), "the input is the run's document");
+        assert_eq!(recipe.steps[1].params["doc"], json!({"$anchor": {"sheet": {"step": 1}}}), "the write ran on the sheet, not the input");
+        assert_eq!(recipe.input_recorded_on().map(|file| file.name.as_str()), Some("container.bin"));
+
+        let mut other = workspace_with("other.bin", b"HEADERcargo");
+        let options = crate::journal::replay::ReplayOptions::new(Caller::Recipe("Peel".into()));
+        let report = crate::journal::replay::run_recipe(&mut other, &recipe, &options);
+        assert!(report.completed(), "{report:?}");
+        use crate::api::Workspace;
+        assert_eq!(other.document_mut("doc-1").unwrap().read_range(0, 11), b"HEADERcargo", "the input is not edited");
+        assert_eq!(other.document_mut("doc-2").unwrap().read_range(0, 7), b"PRcargo");
+    }
+
+    #[test]
+    fn the_recorded_file_is_the_one_the_sheets_came_from_not_the_first_document_named() {
+        let mut workspace = workspace_with("capture.pcapng", b"0123456789");
+        call(&mut workspace, "documents.derive", json!({"data": "00112233", "name": "a"})).unwrap();
+        call(&mut workspace, "bytes.insert", json!({"doc": "doc-2", "at": 0, "data": "aabb"})).unwrap();
+        let recipe = saved_recipe(&mut workspace, "root");
+        assert_eq!(recipe.input_recorded_on().map(|file| file.name.as_str()), Some("capture.pcapng"));
+        assert_eq!(recipe.steps[1].params["doc"], json!({"$anchor": {"sheet": {"step": 1}}}));
+    }
+
+    #[test]
+    fn every_way_of_making_a_recipe_from_the_journal_keeps_the_same_steps() {
+        let mut workspace = workspace_with("container.bin", b"HEADpayload");
+        call(&mut workspace, "view.set_shape", json!({"width": 8})).unwrap();
+        call(&mut workspace, "documents.derive", json!({"start": 4})).unwrap();
+        call(&mut workspace, "bytes.write", json!({"start": 0, "data": "50"})).unwrap();
+        call(&mut workspace, "documents.open", json!({"doc": "doc-1"})).unwrap();
+        let steps = |recipe: &crate::journal::Recipe| recipe.steps.iter().map(|step| (step.method.clone(), step.params.clone())).collect::<Vec<_>>();
+        let saved = saved_recipe(&mut workspace, "same");
+        let made = call(&mut workspace, "history.recipe", json!({"name": "Peel"})).unwrap();
+        let made: crate::journal::Recipe = serde_json::from_value(made).unwrap();
+        assert_eq!(steps(&saved), steps(&made), "history.recipe and history.save_recipe agree");
+        let methods: Vec<String> = saved.steps.iter().map(|step| step.method.clone()).collect();
+        assert_eq!(methods, ["view.set_shape", "documents.derive", "bytes.write"], "going back to the file is an input, not a step");
+
+        let dir = std::env::temp_dir().join(format!("theviewer-history-same-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        crate::recipes::use_dir_for_this_thread(dir.clone());
+        call(&mut workspace, "recipes.save", json!({"name": "Peel", "journal_steps": [3]})).unwrap();
+        let (chosen, _) = crate::recipes::find(&dir, "Peel").unwrap();
+        std::fs::remove_dir_all(&dir).ok();
+        let methods: Vec<String> = chosen.steps.iter().map(|step| step.method.clone()).collect();
+        assert_eq!(methods, ["documents.derive", "bytes.write"], "a step chosen brings the step that made its sheet");
+    }
+
+    #[test]
+    fn a_recipe_that_would_not_replay_is_refused_naming_the_step_and_why() {
+        let path = std::env::temp_dir().join(format!("theviewer-history-second-file-{}.bin", std::process::id()));
+        std::fs::write(&path, b"second file").unwrap();
+        let mut workspace = workspace_with("first.bin", b"0123456789");
+        call(&mut workspace, "documents.derive", json!({"start": 2})).unwrap();
+        call(&mut workspace, "history.undo_step", json!({"step": 1})).unwrap();
+        call(&mut workspace, "bytes.write", json!({"doc": "doc-2", "start": 0, "data": "41"})).unwrap();
+        let refused = call(&mut workspace, "history.recipe", json!({"name": "Peel"})).unwrap_err();
+        assert_eq!(refused.code, ErrorCode::InvalidParams);
+        assert!(refused.message.contains("step 3 (bytes.write) names doc-2 at doc: it was made by step 1 (documents.derive), which the recipe does not hold"), "{}", refused.message);
+        assert_eq!(refused.data.unwrap()["problems"][0]["step"], 3);
+        let target = temporary_recipe("refused");
+        let unsaved = call(&mut workspace, "history.save_recipe", json!({"path": target.display().to_string(), "name": "Peel"})).unwrap_err();
+        assert!(unsaved.message.contains("would not replay"), "{}", unsaved.message);
+        assert!(!target.exists(), "nothing was written");
+
+        let mut two_files = workspace_with("first.bin", b"0123456789");
+        call(&mut two_files, "bytes.write", json!({"start": 0, "data": "41"})).unwrap();
+        call(&mut two_files, "documents.open", json!({"path": path.display().to_string()})).unwrap();
+        call(&mut two_files, "bytes.write", json!({"start": 0, "data": "53"})).unwrap();
+        let refused = call(&mut two_files, "history.recipe", json!({"name": "Both"})).unwrap_err();
+        assert!(refused.message.contains("its steps run on two files"), "{}", refused.message);
+        std::fs::remove_file(&path).ok();
     }
 
     #[test]

@@ -24,8 +24,11 @@
 //! tab calls them directly, clients through the `history.*` methods in
 //! `src/api/provenance.rs`.
 //!
-//! **The recipe with anchors** ([`Recipe::with_anchors`]) is
-//! [`Recipe::from_journal`] with these rules:
+//! **The recipe with anchors** ([`build_recipe`], the one builder that
+//! `history.recipe`, `history.save_recipe`, `recipes.save` and the History
+//! tab share) is [`Recipe::from_journal`] of the steps recipes keep (those
+//! that make sheets among them, with the steps they cite and the steps that
+//! made the sheets they run on), with these rules:
 //!
 //! * each literal at a `derived_from` path becomes `{"$anchor": …}`; a path
 //!   the params no longer hold (summarised, say) stays literal;
@@ -35,8 +38,17 @@
 //! * each [`Anchor::Param`] declares its parameter: the type and default
 //!   from the literal (or as `history.make_parameter` gave them), its
 //!   description as given;
-//! * a `doc` that names the recorded document is dropped, so the step runs
-//!   on whichever document the recipe runs on.
+//! * a step's document is the one the journal recorded it ran on, not what
+//!   its params said (often nothing);
+//! * the recorded document is the file the steps' documents all descend
+//!   from, by the sheets' lineage, not the first one named; it is left out
+//!   of a step's `doc`, so the step runs on the run's document, and named
+//!   `{"sheet": "input"}` anywhere else;
+//! * every other document id, at any path, is a sheet an earlier step of
+//!   the recipe made, named by a sheet anchor on that step
+//!   (`{"sheet": {"step": 2}}`, or its label); one that is not (opened from
+//!   a second file, made by a step left out) fails the recipe, naming the
+//!   step and why.
 //!
 //! The window's own `selection.set` leaves out a cursor at the end of the
 //! last range, where an omitted cursor goes, so a recipe whose selection is
@@ -66,7 +78,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::anchors::{self, Anchor, FindingMatch, Needle, Part, SelectionWhich};
+use super::anchors::{self, Anchor, FindingMatch, Needle, Part, SelectionWhich, SheetRef};
 use super::notes;
 use super::recipe::{ParameterType, Recipe, RecipeParameter};
 use super::{DerivedFrom, Journal, JournalEntry, JournalSession};
@@ -382,16 +394,196 @@ pub fn parameter_type_of(value: &Value) -> Option<ParameterType> {
 // The recipe with anchors
 // ---------------------------------------------------------------------------
 
+/// Which steps of the journal a recipe is made of.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RecipeSteps<'a> {
+    /// The steps in effect that recipes keep, up to `through` (all of them
+    /// when `None`): what `history.save_recipe` and the History tab save.
+    InEffect { through: Option<u64> },
+    /// The steps chosen, as `recipes.save {journal_steps}` and
+    /// `history.recipe {steps}` take them.
+    Chosen(&'a [u64]),
+}
+
+/// The one way a recipe is made from the journal, for `history.recipe`,
+/// `history.save_recipe`, `recipes.save` and the History tab alike: the
+/// steps recipes keep (those that make sheets among them), with the earlier
+/// steps they cite and the steps that made the sheets they run on, each
+/// recorded provenance as an anchor and each document as the recipe names
+/// it (see [`Recipe::with_anchors`]). Notes linked to its steps become their
+/// `note`s. It is written in format 2 only when it needs to be.
+///
+/// Fails, naming the step and why, when a step names a document the recipe
+/// could not find again: a step of the journal not held, a second file, or
+/// a sheet no step it holds made.
+pub fn build_recipe(journal: &Journal, name: &str, steps: RecipeSteps<'_>) -> Result<Recipe, ApiError> {
+    let chosen: Vec<u64> = match steps {
+        RecipeSteps::InEffect { through } => super::timeline::entries_for_recipe(journal, through).iter().map(|entry| entry.step).collect(),
+        RecipeSteps::Chosen(steps) => {
+            if let Some(missing) = steps.iter().find(|step| journal.entry(**step).is_none()) {
+                return Err(not_a_step(*missing));
+            }
+            steps.iter().copied().filter(|step| journal.entry(*step).is_some_and(|entry| super::timeline::is_kept_by_recipes(&entry.method))).collect()
+        }
+    };
+    let lineage = SheetLineage::of(journal);
+    let entries: Vec<&JournalEntry> = with_cited_steps_and_sheets(journal, &chosen, &lineage).into_iter().filter(|entry| !entry.is_note()).collect();
+    // The recipe's steps are the successful entries, in step order.
+    let recorded: Vec<u64> = entries.iter().filter(|entry| entry.outcome.is_ok()).map(|entry| entry.step).collect();
+    let mut recipe = Recipe::with_anchors(name, journal.session(), entries, journal.parameters(), &lineage)?;
+    notes::attach_to_recipe(&mut recipe, journal, &recorded);
+    recipe.settle_format();
+    Ok(recipe)
+}
+
+/// Where each sheet of the session came from, as the journal recorded it:
+/// the step that made it, from which document, and which of the sheets it
+/// made it was; and the documents opened by steps recipes do not repeat.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SheetLineage {
+    made: BTreeMap<String, Maker>,
+    /// The documents steps opened (a file, a source, a new document), and
+    /// by which step and method.
+    opened: BTreeMap<String, (u64, String)>,
+    /// The parent of each document the session saw that was derived from
+    /// another, as the workspace said: a sheet no step made has one too.
+    derived: BTreeMap<String, String>,
+}
+
+/// The step that made a sheet.
+#[derive(Clone, Debug, PartialEq)]
+struct Maker {
+    step: u64,
+    method: String,
+    /// The document it was made from.
+    parent: Option<String>,
+    /// Which of the sheets the step made, from 0.
+    nth: usize,
+    /// The label the step gave it, if any.
+    label: Option<String>,
+}
+
+impl SheetLineage {
+    /// The lineage of every sheet `journal`'s successful steps made.
+    pub fn of(journal: &Journal) -> Self {
+        let mut lineage = SheetLineage::default();
+        for document in &journal.session().documents {
+            if let Some(parent) = &document.parent {
+                lineage.derived.insert(document.id.clone(), parent.clone());
+            }
+        }
+        for entry in journal.entries().filter(|entry| entry.outcome.is_ok()) {
+            let labels: Vec<Option<String>> = entry.result.as_ref().map(super::sheets_made).unwrap_or_default().into_iter().map(|sheet| sheet.label).collect();
+            for (nth, doc) in entry.made.iter().enumerate() {
+                let label = labels.get(nth).cloned().flatten();
+                lineage.made.insert(doc.clone(), Maker { step: entry.step, method: entry.method.clone(), parent: entry.doc.clone(), nth, label });
+            }
+            if matches!(super::timeline::replay_of(&entry.method), super::timeline::Replay::OpensDocument { .. })
+                && let Some(opened) = entry.result.as_ref().and_then(opened_id)
+            {
+                lineage.opened.entry(opened).or_insert((entry.step, entry.method.clone()));
+            }
+        }
+        lineage
+    }
+
+    /// The document `doc` descends from that no step made: the file (or
+    /// source, or new document) it all came from.
+    pub fn root_of(&self, doc: &str) -> String {
+        let mut current = doc.to_string();
+        let mut seen = BTreeSet::new();
+        while let Some(parent) = self.made.get(&current).and_then(|maker| maker.parent.clone()).or_else(|| self.derived.get(&current).cloned()) {
+            if !seen.insert(current.clone()) {
+                break;
+            }
+            current = parent;
+        }
+        current
+    }
+
+    /// The step that made sheet `doc`, if a step did.
+    pub fn maker_of(&self, doc: &str) -> Option<u64> {
+        self.made.get(doc).map(|maker| maker.step)
+    }
+}
+
+/// The id of the document a step that opens one opened, as its result
+/// gives it: `id`, or `document.id`.
+fn opened_id(result: &Value) -> Option<String> {
+    let id = result.get("id").or_else(|| result.get("document").and_then(|document| document.get("id")));
+    id.and_then(Value::as_str).map(str::to_string)
+}
+
+/// Whether a step of `method` called with `params` takes a `doc`: as the
+/// method table says, or, for a plugin's method, as its params show.
+fn takes_doc(method: &str, params: &Value) -> bool {
+    api::method(method).map_or_else(|| params.get("doc").is_some(), |method| method.takes_doc)
+}
+
+/// The documents `entry` is about, each with where it names it: its `doc`
+/// (from the entry, as the call resolved it, for a method that takes one),
+/// and every other document id in its params outside the paths its
+/// provenance anchors.
+fn documents_named(entry: &JournalEntry) -> Vec<(String, String)> {
+    let mut named = Vec::new();
+    if takes_doc(&entry.method, &entry.params)
+        && let Some(doc) = &entry.doc
+    {
+        named.push(("doc".to_string(), doc.clone()));
+    }
+    anchors::visit_paths(&entry.params, "", &mut |path, value| {
+        if path == "doc" || entry.derived_from.contains_key(path) || anchors::as_anchor(value).is_some() {
+            return false;
+        }
+        if let Some(id) = value.as_str().filter(|text| anchors::is_document_id(text)) {
+            named.push((path.to_string(), id.to_string()));
+        }
+        true
+    });
+    named
+}
+
+/// Why a step's document could not be named in a recipe.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct DocumentProblem {
+    /// The session's step.
+    pub step: u64,
+    pub method: String,
+    /// Where in its params it names the document.
+    pub path: String,
+    pub doc: String,
+    /// Why it would not replay.
+    pub reason: String,
+}
+
+impl DocumentProblem {
+    fn describe(&self) -> String {
+        format!("step {} ({}) names {} at {}: {}", self.step, self.method, self.doc, self.path, self.reason)
+    }
+}
+
 impl Recipe {
     /// A recipe called `name` of the successful calls in `entries`, with
-    /// each recorded provenance as an anchor (see the module's rules), and
-    /// `declared` describing the parameters named.
-    pub fn with_anchors<'a>(name: &str, session: &JournalSession, entries: impl IntoIterator<Item = &'a JournalEntry>, declared: &BTreeMap<String, RecipeParameter>) -> Recipe {
+    /// each recorded provenance as an anchor and each document named as a
+    /// recipe can find it again (see the module's rules), `declared`
+    /// describing the parameters named and `lineage` saying where each
+    /// sheet came from.
+    pub fn with_anchors<'a>(
+        name: &str,
+        session: &JournalSession,
+        entries: impl IntoIterator<Item = &'a JournalEntry>,
+        declared: &BTreeMap<String, RecipeParameter>,
+        lineage: &SheetLineage,
+    ) -> Result<Recipe, ApiError> {
         let mut entries: Vec<&JournalEntry> = entries.into_iter().filter(|entry| entry.outcome.is_ok()).collect();
         entries.sort_by_key(|entry| entry.step);
+        let root = recorded_root(&entries, lineage, session)?;
         let mut recipe = Recipe::from_journal(name, session, entries.iter().copied());
-        let recorded_doc = entries.iter().find_map(|entry| entry.doc.clone());
+        if let Some(root) = &root {
+            recipe.recorded_on = session.document(root).map(|document| document.file());
+        }
         let numbers: BTreeMap<u64, u64> = entries.iter().zip(1..).map(|(entry, number)| (entry.step, number)).collect();
+        let mut problems = Vec::new();
         for (step, entry) in recipe.steps.iter_mut().zip(&entries) {
             step.step = numbers[&entry.step];
             for (path, anchor) in &entry.derived_from {
@@ -405,43 +597,121 @@ impl Recipe {
                 }
                 let _ = anchors::replace_at(&mut step.params, path, anchors::marked(&anchor));
             }
-            drop_recorded_doc(&mut step.params, entry, recorded_doc.as_deref());
+            step.makes = entry.made.iter().find_map(|doc| lineage.made.get(doc).and_then(|maker| maker.label.clone()));
+            name_documents(step, entry, root.as_deref(), lineage, &numbers, &mut problems);
         }
-        recipe
-    }
-
-    /// [`Recipe::with_anchors`] of `journal`'s steps numbered `steps` (all
-    /// of them when `None`) and the earlier steps they cite, with the
-    /// parameters declared in the journal. Notes are not steps of a recipe:
-    /// each one linked to a step the recipe holds becomes that step's
-    /// `note` instead (see [`notes::attach_to_recipe`]).
-    pub fn from_journal_with_anchors(name: &str, journal: &Journal, steps: Option<&[u64]>) -> Recipe {
-        let chosen: Vec<u64> = match steps {
-            Some(steps) => steps.to_vec(),
-            None => journal.entries().map(|entry| entry.step).collect(),
-        };
-        let entries: Vec<&JournalEntry> = with_cited_steps(journal, &chosen).into_iter().filter(|entry| !entry.is_note()).collect();
-        // The recipe's steps are the successful entries, in step order.
-        let recorded: Vec<u64> = entries.iter().filter(|entry| entry.outcome.is_ok()).map(|entry| entry.step).collect();
-        let mut recipe = Recipe::with_anchors(name, journal.session(), entries, journal.parameters());
-        notes::attach_to_recipe(&mut recipe, journal, &recorded);
-        recipe
+        if !problems.is_empty() {
+            let listed: Vec<String> = problems.iter().map(DocumentProblem::describe).collect();
+            let message = format!("the recipe would not replay: {}", listed.join("; "));
+            return Err(ApiError::invalid_params(message).with_data(serde_json::json!({ "problems": problems })));
+        }
+        Ok(recipe)
     }
 }
 
-/// [`Recipe::from_journal_with_anchors`], refusing steps the journal does
-/// not hold: how `recipes.save` and `history.recipe` make a recipe of
-/// chosen steps.
-pub fn checked_recipe(journal: &Journal, name: &str, steps: Option<&[u64]>) -> Result<Recipe, ApiError> {
-    if let Some(missing) = steps.into_iter().flatten().find(|step| journal.entry(**step).is_none()) {
-        return Err(not_a_step(*missing));
+/// The file the recipe's steps all descend from, by the lineage of the
+/// documents they name: the run's input. `None` when they name none.
+/// Steps that descend from two files cannot make one recipe.
+fn recorded_root(entries: &[&JournalEntry], lineage: &SheetLineage, session: &JournalSession) -> Result<Option<String>, ApiError> {
+    let mut roots: Vec<(String, &JournalEntry)> = Vec::new();
+    for entry in entries {
+        for (_, doc) in documents_named(entry) {
+            let root = lineage.root_of(&doc);
+            if !roots.iter().any(|(known, _)| *known == root) {
+                roots.push((root, entry));
+            }
+        }
     }
-    Ok(Recipe::from_journal_with_anchors(name, journal, steps))
+    match roots.as_slice() {
+        [] => Ok(None),
+        [(root, _)] => Ok(Some(root.clone())),
+        [(first, _), (second, by), ..] => {
+            let named = |doc: &str| session.document(doc).map_or_else(|| doc.to_string(), |document| format!("{} ({doc})", document.file().name));
+            let message = format!(
+                "the recipe would not replay: its steps run on two files, {} and {} (from step {}, {}); a recipe runs on one, so save the steps about one of them (recipes.save and history.recipe take the steps to keep)",
+                named(first),
+                named(second),
+                by.step,
+                by.method
+            );
+            Err(ApiError::invalid_params(message))
+        }
+    }
+}
+
+/// Name each document `entry` is about in its recipe `step`'s params as a
+/// recipe finds it again: the step's own `doc` from the entry, not its
+/// params; the input left out of `doc` (the run's document) or a
+/// `{"sheet": "input"}` anchor elsewhere; a sheet a step of the recipe made
+/// as a sheet anchor on that step (by its label, when it has one). Any
+/// other document is a problem, said in `problems`.
+fn name_documents(step: &mut super::recipe::RecipeStep, entry: &JournalEntry, root: Option<&str>, lineage: &SheetLineage, numbers: &BTreeMap<u64, u64>, problems: &mut Vec<DocumentProblem>) {
+    for (path, doc) in documents_named(entry) {
+        let replacement = if Some(doc.as_str()) == root {
+            None
+        } else {
+            match sheet_anchor(&doc, entry, lineage, numbers) {
+                Ok(anchor) => Some(anchor),
+                Err(reason) => {
+                    problems.push(DocumentProblem { step: entry.step, method: entry.method.clone(), path, doc, reason });
+                    continue;
+                }
+            }
+        };
+        match (replacement, path.as_str()) {
+            (None, "doc") => {
+                if let Some(fields) = step.params.as_object_mut() {
+                    fields.remove("doc");
+                }
+            }
+            (None, _) => {
+                let _ = anchors::replace_at(&mut step.params, &path, anchors::marked(&Anchor::Sheet { sheet: SheetRef::Named(anchors::INPUT.to_string()) }));
+            }
+            (Some(anchor), "doc") => {
+                if let Some(fields) = step.params.as_object_mut() {
+                    fields.insert("doc".to_string(), anchors::marked(&anchor));
+                }
+            }
+            (Some(anchor), _) => {
+                let _ = anchors::replace_at(&mut step.params, &path, anchors::marked(&anchor));
+            }
+        }
+    }
+}
+
+/// The sheet anchor that names `doc`, a sheet an earlier step of the recipe
+/// made, in `entry`'s step; or why there is none.
+fn sheet_anchor(doc: &str, entry: &JournalEntry, lineage: &SheetLineage, numbers: &BTreeMap<u64, u64>) -> Result<Anchor, String> {
+    let Some(maker) = lineage.made.get(doc) else {
+        return Err(match (lineage.opened.get(doc), lineage.derived.get(doc)) {
+            (Some((step, method)), _) => format!("step {step} ({method}) opened it, and a recipe does not open files: it runs on the one it is given"),
+            (None, Some(parent)) => format!("it was derived from {parent} outside the history, not by a step, so a recipe cannot make it again"),
+            (None, None) => "no step of this session made it, so a recipe cannot make it again".to_string(),
+        });
+    };
+    if maker.step >= entry.step {
+        return Err(format!("it was made by step {} ({}), after this one", maker.step, maker.method));
+    }
+    let Some(number) = numbers.get(&maker.step) else {
+        return Err(format!("it was made by step {} ({}), which the recipe does not hold: it was undone, failed or is not among the steps saved", maker.step, maker.method));
+    };
+    let sheet = match &maker.label {
+        Some(label) => SheetRef::Named(label.clone()),
+        None => SheetRef::Step { step: *number, nth: maker.nth },
+    };
+    Ok(Anchor::Sheet { sheet })
 }
 
 /// The entries numbered `steps`, and every earlier entry their step anchors
 /// cite (and those cite), in step order.
 pub fn with_cited_steps<'a>(journal: &'a Journal, steps: &[u64]) -> Vec<&'a JournalEntry> {
+    with_cited_steps_and_sheets(journal, steps, &SheetLineage::default())
+}
+
+/// [`with_cited_steps`], and the steps in effect that made the sheets they
+/// name (and those sheets' parents), so a recipe makes them again.
+fn with_cited_steps_and_sheets<'a>(journal: &'a Journal, steps: &[u64], lineage: &SheetLineage) -> Vec<&'a JournalEntry> {
+    let timeline = journal.timeline();
     let mut wanted: BTreeSet<u64> = BTreeSet::new();
     let mut pending: Vec<u64> = steps.to_vec();
     while let Some(step) = pending.pop() {
@@ -454,6 +724,11 @@ pub fn with_cited_steps<'a>(journal: &'a Journal, steps: &[u64]) -> Vec<&'a Jour
                 pending.push(*cited);
             }
         }
+        for (_, doc) in documents_named(entry) {
+            if let Some(maker) = lineage.maker_of(&doc).filter(|maker| *maker < step && timeline.is_active(*maker)) {
+                pending.push(maker);
+            }
+        }
     }
     wanted.into_iter().filter_map(|step| journal.entry(step)).collect()
 }
@@ -463,17 +738,8 @@ pub fn with_cited_steps<'a>(journal: &'a Journal, steps: &[u64]) -> Vec<&'a Jour
 fn renumbered(anchor: &Anchor, numbers: &BTreeMap<u64, u64>) -> Option<Anchor> {
     match anchor {
         Anchor::Step { step, path } => numbers.get(step).map(|number| Anchor::Step { step: *number, path: path.clone() }),
+        Anchor::Sheet { sheet: SheetRef::Step { step, nth } } => numbers.get(step).map(|number| Anchor::Sheet { sheet: SheetRef::Step { step: *number, nth: *nth } }),
         other => Some(other.clone()),
-    }
-}
-
-/// Drop `doc` from `params` when it names the recorded document.
-fn drop_recorded_doc(params: &mut Value, entry: &JournalEntry, recorded_doc: Option<&str>) {
-    let names_recorded = entry.doc.is_some() && entry.doc.as_deref() == recorded_doc;
-    if let Some(fields) = params.as_object_mut()
-        && names_recorded
-    {
-        fields.remove("doc");
     }
 }
 

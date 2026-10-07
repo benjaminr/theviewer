@@ -55,7 +55,7 @@ fn a_recipe_with_anchors_puts_each_recorded_provenance_in_place_of_its_literal()
         ])),
         entry(12, "selection.set", json!({"selection": {"range": [512, 2]}}), DerivedFrom::from([("selection.range[0]".into(), find_7ea5(1))])),
     ];
-    let recipe = Recipe::with_anchors("Frames", &session(), &entries, &BTreeMap::new());
+    let recipe = Recipe::with_anchors("Frames", &session(), &entries, &BTreeMap::new(), &SheetLineage::default()).unwrap();
     let numbers: Vec<u64> = recipe.steps.iter().map(|step| step.step).collect();
     assert_eq!(numbers, [1, 2, 3], "steps are numbered from 1");
     assert_eq!(recipe.steps[1].params["start"], json!({"$anchor": {"step": 1, "path": "result.matches[0]"}}), "the step anchor names the recipe's own step");
@@ -71,7 +71,7 @@ fn a_recipe_with_anchors_puts_each_recorded_provenance_in_place_of_its_literal()
 fn a_parameter_declared_for_the_session_keeps_its_description_and_type() {
     let entries = [entry(2, "transform.apply", json!({"selection": {"range": [0, 4]}, "operation": {"op": "xor", "key": "5A"}}), DerivedFrom::from([("operation.key".into(), Anchor::Param { param: "key".into() })]))];
     let declared = BTreeMap::from([("key".to_string(), RecipeParameter { kind: ParameterType::String, description: "XOR key, hex".into(), default: Some(json!("5A")) })]);
-    let recipe = Recipe::with_anchors("Unmask", &session(), &entries, &declared);
+    let recipe = Recipe::with_anchors("Unmask", &session(), &entries, &declared, &SheetLineage::default()).unwrap();
     assert_eq!(recipe.parameters, declared);
 }
 
@@ -80,7 +80,7 @@ fn a_step_anchor_citing_a_step_the_recipe_leaves_out_stays_literal() {
     let mut failed = entry(3, "search.find", json!({"query": "PK"}), DerivedFrom::new());
     failed.outcome = Outcome::Error(ApiError::not_found("gone"));
     let entries = [failed, entry(5, "cursor.set", json!({"offset": 40}), DerivedFrom::from([("offset".into(), Anchor::Step { step: 3, path: "result.at".into() })]))];
-    let recipe = Recipe::with_anchors("Jump", &session(), &entries, &BTreeMap::new());
+    let recipe = Recipe::with_anchors("Jump", &session(), &entries, &BTreeMap::new(), &SheetLineage::default()).unwrap();
     assert_eq!(recipe.steps.len(), 1);
     assert_eq!(recipe.steps[0].params, json!({"offset": 40}));
 }
@@ -92,18 +92,18 @@ fn a_selection_found_again_keeps_the_cursor_as_the_person_placed_it() {
         entry(1, "selection.set", json!({"selection": {"range": [96, 2]}}), anchored.clone()),
         entry(2, "selection.set", json!({"selection": {"range": [96, 2]}, "cursor": 96}), anchored),
     ];
-    let recipe = Recipe::with_anchors("Select", &session(), &entries, &BTreeMap::new());
+    let recipe = Recipe::with_anchors("Select", &session(), &entries, &BTreeMap::new(), &SheetLineage::default()).unwrap();
     assert!(recipe.steps[0].params.get("cursor").is_none(), "the cursor goes to the end of the range found");
     assert_eq!(recipe.steps[1].params["cursor"], 96, "a cursor at the start is the person's choice");
 }
 
 #[test]
-fn a_document_other_than_the_recorded_one_is_kept() {
+fn steps_on_a_second_file_cannot_make_one_recipe() {
     let mut other = entry(2, "bytes.write", json!({"doc": "doc-2", "start": 0, "data": "00"}), DerivedFrom::new());
     other.doc = Some("doc-2".into());
     let entries = [entry(1, "cursor.set", json!({"doc": "doc-1", "offset": 0}), DerivedFrom::new()), other];
-    let recipe = Recipe::with_anchors("Two", &session(), &entries, &BTreeMap::new());
-    assert_eq!(recipe.steps[1].params["doc"], "doc-2");
+    let refused = Recipe::with_anchors("Two", &session(), &entries, &BTreeMap::new(), &SheetLineage::default()).unwrap_err();
+    assert!(refused.message.contains("its steps run on two files, flight-03.bin (doc-1) and doc-2 (from step 2, bytes.write); a recipe runs on one"), "{}", refused.message);
 }
 
 #[test]

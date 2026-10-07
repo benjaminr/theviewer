@@ -448,11 +448,11 @@ fn a_recipe_of_the_history_leaves_out_undone_steps_and_moves_along_it() {
     let shaped = last_step(&workspace);
     call(&mut workspace, "bytes.write", json!({"start": 1, "data": "42"})).unwrap();
     undo(&mut workspace, shaped + 1).unwrap();
-    let recipe = recipe_of_history(workspace.journal(), "Header", None);
+    let recipe = recipe_of_history(workspace.journal(), "Header", None).unwrap();
     let steps: Vec<(u64, &str)> = recipe.steps.iter().map(|step| (step.step, step.method.as_str())).collect();
     assert_eq!(steps, [(1, "bytes.write"), (2, "view.set_shape")], "numbered from 1");
     assert_eq!(recipe.recorded_on.map(|file| file.name), Some("flight.bin".to_string()));
-    assert_eq!(recipe_of_history(workspace.journal(), "Header", Some(1)).steps.len(), 1);
+    assert_eq!(recipe_of_history(workspace.journal(), "Header", Some(1)).unwrap().steps.len(), 1);
 }
 
 #[test]
@@ -502,7 +502,7 @@ fn playback_through_the_recipe_runner_shows_each_step_as_it_runs() {
 }
 
 #[test]
-fn recipes_and_playback_leave_out_the_same_steps_that_open_documents_write_files_or_reload_plugins() {
+fn recipes_keep_the_steps_playback_repeats_and_the_steps_that_make_sheets() {
     let mut workspace = workspace_with("flight.bin", &[0u8; 64]);
     let saved = std::env::temp_dir().join(format!("theviewer-timeline-agree-{}.bin", std::process::id()));
     call(&mut workspace, "bytes.write", json!({"start": 0, "data": "41"})).unwrap();
@@ -514,9 +514,9 @@ fn recipes_and_playback_leave_out_the_same_steps_that_open_documents_write_files
     let last = last_step(&workspace);
     let in_recipe: Vec<u64> = entries_for_recipe(workspace.journal(), None).iter().map(|entry| entry.step).collect();
     let played: Vec<u64> = steps_to_play(workspace.journal(), 1, last).iter().map(|step| step.step).collect();
-    assert_eq!(in_recipe, played, "a recipe of the history takes the steps playback repeats");
+    assert_eq!(in_recipe, [played, vec![last]].concat(), "a recipe takes the steps playback repeats, and the derive, which playback leaves as the sheet is open");
     let methods: Vec<String> = in_recipe.iter().map(|step| workspace.journal().entry(*step).unwrap().method.clone()).collect();
-    assert_eq!(methods, ["bytes.write", "view.set_shape"]);
+    assert_eq!(methods, ["bytes.write", "view.set_shape", "documents.derive"]);
 }
 
 #[test]

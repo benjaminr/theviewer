@@ -336,6 +336,10 @@ pub struct RecordedDocument {
     /// [`RecordedDocument::file`].
     #[serde(rename = "file")]
     identity: FileIdentity,
+    /// The document it was derived from, when it was one, as the
+    /// workspace said when the session first saw it.
+    #[serde(default)]
+    pub parent: Option<String>,
     #[serde(skip)]
     digest: PendingDigest,
 }
@@ -343,7 +347,7 @@ pub struct RecordedDocument {
 impl RecordedDocument {
     /// Document `id` first seen at `version` as `file`, hash and all.
     pub fn new(id: impl Into<String>, version: u64, file: FileIdentity) -> Self {
-        RecordedDocument { id: id.into(), version, identity: file, digest: PendingDigest::default() }
+        RecordedDocument { id: id.into(), version, identity: file, parent: None, digest: PendingDigest::default() }
     }
 
     /// The file as first seen, waiting for its hash to be worked out.
@@ -358,7 +362,7 @@ impl RecordedDocument {
 
 impl PartialEq for RecordedDocument {
     fn eq(&self, other: &Self) -> bool {
-        self.id == other.id && self.version == other.version && self.file() == other.file()
+        self.id == other.id && self.version == other.version && self.parent == other.parent && self.file() == other.file()
     }
 }
 
@@ -366,10 +370,15 @@ impl Eq for RecordedDocument {}
 
 impl Serialize for RecordedDocument {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let mut fields = serializer.serialize_struct("RecordedDocument", 3)?;
+        let mut fields = serializer.serialize_struct("RecordedDocument", 4)?;
         fields.serialize_field("id", &self.id)?;
         fields.serialize_field("version", &self.version)?;
         fields.serialize_field("file", &self.file())?;
+        if let Some(parent) = &self.parent {
+            fields.serialize_field("parent", parent)?;
+        } else {
+            fields.skip_field("parent")?;
+        }
         fields.end()
     }
 }
@@ -954,7 +963,8 @@ fn note_document(workspace: &mut dyn Workspace, id: &str) {
     let Ok(info) = api::workspace::info(workspace, id) else { return };
     let Some(document) = workspace.document_mut(id) else { return };
     let digest = PendingDigest::start(document);
-    let recorded = RecordedDocument { id: id.to_string(), version: info.version, identity: FileIdentity { name: info.name, size: info.len, sha256: None }, digest };
+    let parent = workspace.lineage(id).and_then(|lineage| lineage.parent);
+    let recorded = RecordedDocument { id: id.to_string(), version: info.version, identity: FileIdentity { name: info.name, size: info.len, sha256: None }, parent, digest };
     workspace.journal_mut().session.documents.push(recorded);
 }
 

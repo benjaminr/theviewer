@@ -683,7 +683,7 @@ impl Workspace for ViewerApp {
         parents
             .chain(std::iter::once(shown))
             .map(|mut info| {
-                let lineage = self.lineages.get(&info.id).cloned().unwrap_or_default();
+                let lineage = self.lineage(&info.id).unwrap_or_default();
                 info.label = lineage.label();
                 (info.parent, info.made_by) = (lineage.parent, lineage.made_by);
                 info
@@ -978,10 +978,17 @@ impl Workspace for ViewerApp {
         &mut self.journal
     }
 
-    /// The window keeps each document's lineage beside it, by id.
+    /// The window keeps each document's lineage beside it, by id; a
+    /// document derived outside the API (by a panel of its own) has, for
+    /// its parent, the one waiting behind it.
     fn lineage(&self, id: &str) -> Option<Lineage> {
-        let open = id == self.document_id || self.parents.iter().any(|parent| parent.id == id);
-        open.then(|| self.lineages.get(id).cloned().unwrap_or_default())
+        let stack: Vec<&str> = self.parents.iter().map(|parent| parent.id.as_str()).chain(std::iter::once(self.document_id.as_str())).collect();
+        let depth = stack.iter().position(|open| *open == id)?;
+        let mut lineage = self.lineages.get(id).cloned().unwrap_or_default();
+        if lineage.parent.is_none() && depth > 0 {
+            lineage.parent = Some(stack[depth - 1].to_string());
+        }
+        Some(lineage)
     }
 
     fn note_made_by(&mut self, id: &str, made_by: MadeBy) {

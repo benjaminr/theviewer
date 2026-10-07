@@ -190,7 +190,7 @@ fn what_the_person_found_and_made_a_packet_of_is_found_again_in_another_file() {
     app.search_text = "SYNC".to_string();
     app.find_next();
     crate::panel_packets::add_selection_as_packet(&mut app);
-    let recipe = crate::journal::Recipe::from_journal_with_anchors("Sync packet", &app.journal, None);
+    let recipe = crate::journal::provenance::build_recipe(&app.journal, "Sync packet", crate::journal::provenance::RecipeSteps::InEffect { through: None }).unwrap();
     let methods: Vec<&str> = recipe.steps.iter().map(|step| step.method.as_str()).collect();
     assert_eq!(methods, ["selection.set", "packets.sets.create"]);
     assert_eq!(recipe.steps[0].params, json!({"selection": {"range": [{"$anchor": {"find": {"text": "SYNC"}, "nth": 0}}, {"$anchor": {"find": {"text": "SYNC"}, "nth": 0, "part": "len"}}]}}));

@@ -655,7 +655,7 @@ fn show_toolbar(state: &mut HistoryState, app: &mut ViewerApp, ui: &mut Ui) {
         ui.add(egui::TextEdit::singleline(&mut state.recipe_name).desired_width(140.0).hint_text("Recipe name"));
         let any = state.any_active;
         if ui.add_enabled(any, egui::Button::new("Save as recipe…")).on_hover_text("Save the steps in effect as a recipe file to run on other files").clicked() {
-            save_as_recipe(app, &state.recipe_name);
+            state.message = save_as_recipe(app, &state.recipe_name);
         }
         if ui.add_enabled(any, egui::Button::new("Save to my recipes")).on_hover_text("Keep the steps in effect among your recipes, to run from Run recipe…").clicked() {
             state.message = save_to_my_recipes(app, &state.recipe_name).err().map(|error| error.message);
@@ -681,21 +681,28 @@ fn recipe_name(typed: &str) -> &str {
 }
 
 /// Ask where to save the steps in effect as a recipe called `name`, then
-/// write it through `history.save_recipe`.
-pub fn save_as_recipe(app: &mut ViewerApp, name: &str) {
-    save_recipe_up_to(app, name, None);
+/// write it through `history.save_recipe`; or, when a step would not
+/// replay, say why instead of asking.
+pub fn save_as_recipe(app: &mut ViewerApp, name: &str) -> Option<String> {
+    save_recipe_up_to(app, name, None)
 }
 
 /// Ask where to save the steps in effect, up to step `through` when given,
 /// as a recipe called `name` (or the default name), then write it through
-/// `history.save_recipe`.
-fn save_recipe_up_to(app: &mut ViewerApp, name: &str, through: Option<u64>) {
+/// `history.save_recipe`. When the recipe would not replay (a step names a
+/// document it could not find again), nothing is asked: the warning the
+/// recipe builder gives is returned for the tab to show.
+fn save_recipe_up_to(app: &mut ViewerApp, name: &str, through: Option<u64>) -> Option<String> {
     let name = recipe_name(name);
+    if let Err(error) = timeline::recipe_of_history(&app.journal, name, through) {
+        return Some(format!("Not saved: {}", error.message));
+    }
     let mut params = json!({"name": name});
     if let Some(through) = through {
         params["through"] = json!(through);
     }
     app.save_dialog_then_call("Save as recipe", &recipes::file_name_for(name), "history.save_recipe", params, "path");
+    None
 }
 
 /// The playback controls: the range, the speed, and play, pause, next and
@@ -855,7 +862,7 @@ fn step_menu(state: &mut HistoryState, app: &mut ViewerApp, ui: &mut Ui, row: &R
         ui.close();
     }
     if ui.button("Save up to here as recipe…").clicked() {
-        save_recipe_up_to(app, &state.recipe_name, Some(row.step));
+        state.message = save_recipe_up_to(app, &state.recipe_name, Some(row.step));
         ui.close();
     }
     if ui.button("Write a note about it").clicked() {
@@ -1201,6 +1208,30 @@ mod tests {
         std::fs::remove_file(&path).ok();
         assert_eq!(recipe.name, "Patch");
         assert_eq!(recipe.steps.iter().map(|step| step.method.as_str()).collect::<Vec<_>>(), ["bytes.write", "view.set_shape"]);
+    }
+
+    #[test]
+    fn a_recipe_that_would_not_replay_says_why_before_asking_where_to_save_it() {
+        let mut app = app_with(b"HEADpayload");
+        app.perform("bytes.write", json!({"start": 0, "data": "68"})).unwrap();
+        // Opened by a panel of its own, not through a step.
+        app.open_derived(b"payload".to_vec(), "payload".to_string());
+        app.perform("bytes.write", json!({"start": 0, "data": "50"})).unwrap();
+        take_performed();
+        let warning = save_as_recipe(&mut app, "Peel").expect("the second write names a sheet no step made");
+        assert!(warning.starts_with("Not saved: the recipe would not replay"), "{warning}");
+        assert!(warning.contains("outside the history, not by a step"), "{warning}");
+        assert!(take_performed().is_empty(), "nothing was saved");
+    }
+
+    #[test]
+    fn saving_as_a_recipe_keeps_the_derive_and_names_the_sheet() {
+        let mut app = app_with(b"HEADpayload");
+        app.perform("documents.derive", json!({"start": 4})).unwrap();
+        app.perform("bytes.write", json!({"start": 0, "data": "50"})).unwrap();
+        let recipe = timeline::recipe_of_history(&app.journal, "Peel", None).unwrap();
+        assert_eq!(recipe.steps.iter().map(|step| step.method.as_str()).collect::<Vec<_>>(), ["documents.derive", "bytes.write"]);
+        assert_eq!(recipe.steps[1].params["doc"], json!({"$anchor": {"sheet": {"step": 1}}}));
     }
 
     #[test]

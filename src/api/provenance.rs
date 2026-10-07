@@ -154,7 +154,11 @@ pub fn clear_anchor(workspace: &mut dyn Workspace, params: ClearAnchorParams) ->
 }
 
 pub fn recipe(workspace: &mut dyn Workspace, params: RecipeParams) -> Result<Recipe, ApiError> {
-    let mut recipe = provenance::checked_recipe(workspace.journal(), &params.name, params.steps.as_deref())?;
+    let steps = match params.steps.as_deref() {
+        Some(steps) => provenance::RecipeSteps::Chosen(steps),
+        None => provenance::RecipeSteps::InEffect { through: None },
+    };
+    let mut recipe = provenance::build_recipe(workspace.journal(), &params.name, steps)?;
     recipe.description = params.description.unwrap_or_default();
     Ok(recipe)
 }

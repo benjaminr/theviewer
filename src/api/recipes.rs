@@ -235,7 +235,7 @@ fn from_journal(workspace: &mut dyn Workspace, name: Option<&str>, steps: &[u64]
     }
     // With the anchors and parameters recorded for the steps, and the
     // earlier steps they cite, so the recipe ports to other files.
-    provenance::checked_recipe(workspace.journal(), name, Some(steps))
+    provenance::build_recipe(workspace.journal(), name, provenance::RecipeSteps::Chosen(steps))
 }
 
 pub fn preview(workspace: &mut dyn Workspace, params: RunParams) -> Result<RunReport, ApiError> {
