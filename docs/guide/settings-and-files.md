@@ -55,7 +55,7 @@ the workspace](layouts-and-workspace.md).
 | `~/.config/theviewer/plugins/` | Your Lua plugins |
 | `~/.cache/theviewer/rfc/` | RFC text fetched for the Reference tab |
 | `~/.cache/theviewer/wireshark/` | tshark's protocol and field names, kept by `check_reference` |
-| `name.theviewer.toml`, beside each file | Bookmarks and the view settings for that file |
+| `FILE.theviewer.toml` beside each file, such as `firmware.bin.theviewer.toml` | Bookmarks and the view settings for that file |
 
 Nothing in `~/.cache/theviewer/` is needed: delete it and it is fetched
 again when asked for.
@@ -78,8 +78,8 @@ built-in ones use the same interfaces as yours.
   register methods of their own that Ask, the command line and MCP clients
   can call. Put them in `~/.config/theviewer/plugins/` (or `plugins/` in the
   working directory); *View › Reload plugins* picks up changes. An error in
-  a plugin, even in a background scan, is shown in the status bar, and
-  every line a plugin logs is in the Workspace tab. See
+  a plugin, even in a background scan, is shown in the status bar, and the
+  lines a plugin logs appear in the Workspace tab's log of recent events. See
   [docs/plugins.md](../plugins.md) and the examples in `plugins/`.
 - **Rust:** implement `Detector`, `Parser` or `CodecPlugin` from
   `src/plugin.rs` and register it in the `Registry`.

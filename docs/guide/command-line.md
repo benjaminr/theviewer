@@ -44,13 +44,14 @@ theviewer dump.bin --tool packets      # load the first capture, else the messag
 | `--detect` | Look for the record width straight away |
 | `--open` | Open the image, audio or video at the cursor |
 | `--tool NAME` | Open a tool: `report` `reference` `structure-map` `size-map` `ask` `dot-plot` `trigrams` `images` `template` `columns` `protocol` `packets` `bits` `statistics` `characterise` `strings` `xor` `crypto` `checksums` `learn` `disassembly` `firmware` `unpacked` `forensics` `diff` `compare` `live` `workspace` `history` |
-| `--layout NAME` | Start with a layout for this session: `overview` `network` `structure` `firmware` `signals` `forensics` `compare` `focus`, or the name of one you saved. The last session's arrangement is left as it is. |
+| `--layout NAME` | Start with a layout for this session: `overview` `network` `structure` `firmware` `signals` `forensics` `compare` `focus` (`default` is another name for `overview`), or the name of one you saved. An unknown name opens the Overview and says so in the status bar. The last session's arrangement is left as it is. |
 
 Tools that need a run to show anything (Report, Unpacked, Statistics,
 Protocol, Packets and Trigrams) start it when opened with `--tool`.
 
-A file's own saved view (in `name.theviewer.toml`) and these options take
-precedence over the defaults in Settings.
+A file's own saved view (in `FILE.theviewer.toml` beside it, such as
+`firmware.bin.theviewer.toml`) and these options take precedence over the
+defaults in Settings.
 
 ## Printing a report
 
@@ -79,8 +80,16 @@ theviewer api --describe
 ```
 
 - The parameters are JSON; leave them out for a method that needs none.
-- `--save` saves the file after the call's edits, so one command edits and
-  saves. Use `history.transaction` for several edits in one call.
+  FILE can be left out too, for a method that needs no file, such as
+  `api.version`.
+- `--save` saves the file after the call, if the call changed it, so one
+  command edits and saves. Use `history.transaction` for several edits in
+  one call.
+- A job method, one whose effect is `job` such as `report.run`, prints only
+  its job id, as `{"job": "…"}`: the command exits without waiting for
+  the result. Call the method's read form where there is one, such as
+  `analysis.overview` rather than `analysis.overview_job`, or use
+  `--report` or `--json` for the report.
 - `--describe` lists every method with its parameters and result, plugins'
   methods included.
 - An error is printed as JSON on standard error, with exit code 1.
@@ -127,11 +136,15 @@ file.
 | Option | Effect |
 | --- | --- |
 | `--param KEY=VALUE` | Give a value for one of the recipe's parameters; repeat for several |
-| `--save` | Save each file the recipe ran to its end over itself |
-| `--out DIR` | Save each such file into DIR instead |
+| `--save` | Save each file the recipe ran to its end over itself, if the recipe changed it |
+| `--out DIR` | Save each file the recipe ran to its end into DIR, under its own name, changed or not |
 | `--json` | Print the reports as JSON |
 
+Give `--save` or `--out`, not both. Without either, nothing is written:
+the report is the point.
+
 A report is printed per file: what each step did, or where and why it
-stopped. A file the recipe stopped on is not saved, and the exit code is
-then 1. The report's JSON form and more examples are in
+stopped, and where the file was saved. A file the recipe stopped on is not
+saved. The exit code is 1 when the recipe stopped on any file, or a file
+could not be opened or saved. The report's JSON form and more examples are in
 [docs/recipes.md](../recipes.md).
