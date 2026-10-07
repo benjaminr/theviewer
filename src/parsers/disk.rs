@@ -4,6 +4,7 @@
 use std::io::Cursor;
 
 use super::{MAX_CHILDREN, fixed_string, guarded, u16le, u32le, u64le};
+use crate::embedfs::fat::{self, FatType, Geometry};
 use crate::plugin::{Category, Field, Finding, Parser};
 
 const SOURCE: &str = "parsers.disk";
@@ -264,6 +265,7 @@ fn has_boot_jump(bytes: &[u8]) -> bool {
     (bytes[0] == 0xEB && bytes[2] == 0x90) || bytes[0] == 0xE9
 }
 
+/// The informational type string at 54 (FAT12/16) or 82 (FAT32), and where.
 fn fat_type_string(bytes: &[u8]) -> Option<(&'static str, usize)> {
     if bytes.get(54..59) == Some(b"FAT12") {
         Some(("FAT12", 54))
@@ -276,6 +278,29 @@ fn fat_type_string(bytes: &[u8]) -> Option<(&'static str, usize)> {
     } else {
         None
     }
+}
+
+/// "0x100400 (volume + 0x400)": where a region is in the document and in
+/// the volume.
+fn volume_offset(base: usize, offset: usize) -> String {
+    format!("{:#x} (volume + {offset:#x})", base + offset)
+}
+
+/// Fields worked out from the BIOS parameter block: the FAT type by cluster
+/// count, and where the tables, root directory and data area start. Each
+/// is placed on the field it is chiefly computed from.
+fn derived_fat_fields(geometry: &Geometry, base: usize) -> Vec<Field> {
+    let mut fields = vec![
+        Field::new("FAT type (by cluster count)", base + if geometry.total_sectors > 0xFFFF { 32 } else { 19 }, if geometry.total_sectors > 0xFFFF { 4 } else { 2 }, format!("{}, {} clusters of {} bytes", geometry.fat_type.label(), geometry.clusters, geometry.cluster_bytes())),
+        Field::new("first FAT at", base + 14, 2, volume_offset(base, geometry.fat_offset)),
+    ];
+    if geometry.fat_type == FatType::Fat32 {
+        fields.push(Field::new("root directory at", base + 44, 4, format!("cluster {}, {}", geometry.root_cluster, volume_offset(base, geometry.cluster_offset(geometry.root_cluster)))));
+    } else {
+        fields.push(Field::new("root directory at", base + 17, 2, format!("{}, {} bytes", volume_offset(base, geometry.root_offset), geometry.root_len)));
+    }
+    fields.push(Field::new("data area at", base + 13, 1, format!("{} (cluster 2)", volume_offset(base, geometry.data_offset))));
+    fields
 }
 
 impl Parser for FatParser {
@@ -294,14 +319,22 @@ impl Parser for FatParser {
             && bytes[511] == 0xAA
             && u16le(bytes, 11).is_some_and(|bps| matches!(bps, 512 | 1024 | 2048 | 4096))
             && bytes[13].is_power_of_two()
-            && fat_type_string(bytes).is_some()
+            && (fat_type_string(bytes).is_some() || fat::geometry(bytes).is_ok())
     }
 
     fn parse(&self, bytes: &[u8], base: usize) -> Option<Finding> {
         if !self.looks_like(bytes) {
             return None;
         }
-        let (kind, type_at) = fat_type_string(bytes)?;
+        let type_string = fat_type_string(bytes);
+        let geometry = fat::geometry(bytes);
+        // The cluster count decides the type; the string is only a label.
+        let kind = match (&geometry, type_string) {
+            (Ok(geometry), _) => geometry.fat_type.label(),
+            (Err(_), Some((label, _))) => label,
+            (Err(_), None) => "FAT",
+        };
+        let is_fat32 = kind == "FAT32" || type_string.is_some_and(|(label, _)| label == "FAT32");
         let bytes_per_sector = u16le(bytes, 11)?;
         let sectors_per_cluster = bytes[13];
         let reserved = u16le(bytes, 14)?;
@@ -310,32 +343,50 @@ impl Parser for FatParser {
         let total_16 = u16le(bytes, 19)?;
         let total_32 = u32le(bytes, 32)?;
         let total = if total_16 != 0 { total_16 as u32 } else { total_32 };
+        let fat_16 = u16le(bytes, 22)?;
+        let (sectors_per_fat, sectors_per_fat_at, sectors_per_fat_len) = if fat_16 != 0 { (u32::from(fat_16), 22, 2) } else { (u32le(bytes, 36)?, 36, 4) };
         let oem = fixed_string(&bytes[3..11]);
-        let label_at = if kind == "FAT32" { 71 } else { 43 };
+        let label_at = if is_fat32 { 71 } else { 43 };
         let label = fixed_string(&bytes[label_at..label_at + 11]);
         let size = total as u64 * bytes_per_sector as u64;
+        let mut fields = vec![
+            Field::new("jump", base, 3, super::hex_preview(&bytes[..3], 3)),
+            Field::new("OEM name", base + 3, 8, oem),
+            Field::new("bytes per sector", base + 11, 2, bytes_per_sector.to_string()),
+            Field::new("sectors per cluster", base + 13, 1, sectors_per_cluster.to_string()),
+            Field::new("reserved sectors", base + 14, 2, reserved.to_string()),
+            Field::new("FAT count", base + 16, 1, fats.to_string()),
+            Field::new("root entries", base + 17, 2, root_entries.to_string()),
+            Field::new("total sectors", base + if total_16 != 0 { 19 } else { 32 }, if total_16 != 0 { 2 } else { 4 }, total.to_string()),
+            Field::new("media", base + 21, 1, format!("{:#04x}", bytes[21])),
+            Field::new("sectors per FAT", base + sectors_per_fat_at, sectors_per_fat_len, sectors_per_fat.to_string()),
+            Field::new("hidden sectors", base + 28, 4, u32le(bytes, 28)?.to_string()),
+        ];
+        let mut detail = format!(
+            "{kind}, {bytes_per_sector} per sector, {sectors_per_cluster} sectors per cluster, {fats} FATs of {sectors_per_fat} sectors, {total} sectors ({}), label \"{label}\"",
+            super::human_bytes(size)
+        );
+        match &geometry {
+            Ok(geometry) => {
+                if let Some(serial) = geometry.serial {
+                    fields.push(Field::new("volume serial", base + geometry.serial_at, 4, format!("{:04X}-{:04X}", serial >> 16, serial & 0xFFFF)));
+                }
+                fields.extend(derived_fat_fields(geometry, base));
+                detail.push_str(&format!(", data at volume + {:#x}", geometry.data_offset));
+            }
+            Err(problem) => detail.push_str(&format!("; the layout does not add up: {problem}")),
+        }
+        fields.push(Field::new("volume label", base + label_at, 11, label));
+        if let Some((label, type_at)) = type_string {
+            fields.push(Field::new("filesystem type (label)", base + type_at, 8, label));
+        }
+        fields.push(Field::new("signature", base + 510, 2, "55 AA"));
         Some(
             Finding::new("fat", SOURCE, Category::Filesystem, base, SECTOR)
                 .title(format!("{kind} boot sector"))
-                .detail(format!(
-                    "{kind}, {} per sector, {sectors_per_cluster} sectors per cluster, {fats} FATs, {} sectors ({}), label \"{label}\"",
-                    bytes_per_sector,
-                    total,
-                    super::human_bytes(size)
-                ))
-                .fields(vec![
-                    Field::new("jump", base, 3, super::hex_preview(&bytes[..3], 3)),
-                    Field::new("OEM name", base + 3, 8, oem),
-                    Field::new("bytes per sector", base + 11, 2, bytes_per_sector.to_string()),
-                    Field::new("sectors per cluster", base + 13, 1, sectors_per_cluster.to_string()),
-                    Field::new("reserved sectors", base + 14, 2, reserved.to_string()),
-                    Field::new("FAT count", base + 16, 1, fats.to_string()),
-                    Field::new("root entries", base + 17, 2, root_entries.to_string()),
-                    Field::new("total sectors", base + if total_16 != 0 { 19 } else { 32 }, if total_16 != 0 { 2 } else { 4 }, total.to_string()),
-                    Field::new("volume label", base + label_at, 11, label),
-                    Field::new("filesystem type", base + type_at, 8, kind),
-                    Field::new("signature", base + 510, 2, "55 AA"),
-                ]),
+                .detail(detail)
+                .confidence(if geometry.is_ok() { 1.0 } else { 0.6 })
+                .fields(fields),
         )
     }
 }
@@ -518,6 +569,34 @@ mod tests {
     }
 
     #[test]
+    fn a_fat_boot_sector_gives_the_geometry_every_later_offset_depends_on() {
+        let (disk, _) = crate::embedfs::test_support::fat_disk();
+        let base = 63 * SECTOR;
+        let finding = FatParser.parse(&disk[base..], base).expect("fat");
+        let field = |name: &str| finding.fields.iter().find(|field| field.name == name).unwrap_or_else(|| panic!("no {name}: {:#?}", finding.fields));
+        assert_eq!((field("sectors per FAT").offset, field("sectors per FAT").value.as_str()), (base + 22, "32"));
+        assert_eq!(field("hidden sectors").value, "2048");
+        assert_eq!(field("media").value, "0xf8");
+        assert_eq!(field("volume serial").value, "1234-ABCD");
+        assert_eq!(field("FAT type (by cluster count)").value, "FAT16, 8092 clusters of 512 bytes");
+        assert_eq!(field("first FAT at").value, format!("{:#x} (volume + 0x800)", base + 0x800));
+        let root = 0x800 + 2 * 32 * 512;
+        assert_eq!(field("root directory at").value, format!("{:#x} (volume + {root:#x}), 16384 bytes", base + root));
+        assert_eq!(field("data area at").value, format!("{:#x} (volume + {:#x}) (cluster 2)", base + root + 16384, root + 16384));
+        assert_eq!(finding.title, "FAT16 boot sector");
+    }
+
+    #[test]
+    fn the_fat_type_is_decided_by_cluster_count_whatever_the_label_says() {
+        let (mut disk, _) = crate::embedfs::test_support::fat_disk();
+        let base = 63 * SECTOR;
+        disk[base + 54..base + 62].copy_from_slice(b"FAT12   ");
+        let finding = FatParser.parse(&disk[base..], base).expect("fat");
+        assert_eq!(finding.title, "FAT16 boot sector");
+        assert!(finding.fields.iter().any(|field| field.name == "filesystem type (label)" && field.value == "FAT12"));
+    }
+
+    #[test]
     fn fat_ntfs_and_ext_superblocks_are_recognised() {
         let mut fat = vec![0u8; SECTOR];
         fat[0] = 0xEB;
@@ -534,6 +613,7 @@ mod tests {
         let finding = FatParser.parse(&fat, 0).expect("fat");
         assert!(finding.detail.starts_with("FAT32, 512 per sector"), "{}", finding.detail);
         assert!(finding.detail.contains("label \"DATA\""), "{}", finding.detail);
+        assert!(finding.detail.contains("the layout does not add up"), "no reserved sectors or FAT size: {}", finding.detail);
 
         let mut ntfs = vec![0u8; SECTOR];
         ntfs[3..11].copy_from_slice(b"NTFS    ");
