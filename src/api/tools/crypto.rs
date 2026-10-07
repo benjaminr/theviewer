@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use super::tool_jobs::{self, Summary, ToolSpan};
 use crate::api::jobs::JobStartedResult;
-use crate::api::output::{self, Delivered, NewSheet, Output, Produced};
+use crate::api::output::{self, Delivered, Made, NewSheet, Output, Produced};
 use crate::api::values::{self, ByteEncoding};
 use crate::api::workspace::{self, DocumentInfo, Workspace};
 use crate::api::{ApiError, Caller, OutputKind};
@@ -33,6 +33,7 @@ pub(super) const METHODS: &[crate::api::Method] = &[
     method!("crypto.attack", Job, caller attack, AttackParams, JobStartedResult, "Start attacks on simple ciphers over a span (at most 1 MiB): rolling XOR, XOR with the previous byte, ADD/SUB with a constant or repeating key, bit rotation, XOR combined with ADD and, with a crib, crib dragging, as a job: the decodes that look most like text or structured data, each with the operation that transform.apply or documents.derive takes to apply it, and with a crib the key bytes it reveals, are job.finished's result, and in the window they fill the Crypto panel."),
     method!("crypto.decrypt", Read, caller decrypt, DecryptParams, DecryptResult, "Decrypt a span with AES-128, AES-192 or AES-256 in ECB, CBC or CTR mode, with a key (and IV) given as hex, removing PKCS#7 padding, and return the plaintext; or, as output says, open it as a new sheet, put it in place of the ciphertext, or write it to a file (which needs leave to edit).").outputs(&[OutputKind::Return, OutputKind::New, OutputKind::InPlace, OutputKind::File], OutputKind::Return),
     method!("crypto.open_decrypted", View, caller open_decrypted, OpenDecryptedParams, OpenDecryptedResult, "Decrypt a span as crypto.decrypt does and open the plaintext as a document derived from this one; in the window, Back (or opening the parent by id) returns. A shorthand for crypto.decrypt with output \"new\".").makes_sheet(),
+    method!("crypto.apply", View, caller apply, ApplyParams, Made, "Undo a simple cipher over a span: a candidate crypto.attack proposed (by its job and index, over the span it attacked), or an operation such as {\"op\": \"rolling_xor\", \"start\": 81, \"step\": 5}; open what it makes as a new sheet by default, or, as output says, put it in place, return it or write it to a file (which needs leave to edit).").outputs(&[OutputKind::New, OutputKind::InPlace, OutputKind::Return, OutputKind::File], OutputKind::New),
 ];
 
 /// An example call of each of [`METHODS`], run in order on a fresh
@@ -47,6 +48,7 @@ pub(super) fn examples() -> Vec<(&'static str, serde_json::Value)> {
         ("crypto.attack", json!({"start": 0, "len": 256, "crib": "PK\\x03\\x04"})),
         ("crypto.decrypt", json!({"start": 0, "len": 32, "mode": "ecb", "key": "2b7e151628aed2a6abf7158809cf4f3c", "padding": "none"})),
         ("crypto.open_decrypted", json!({"start": 0, "len": 32, "mode": "ctr", "key": "2b7e151628aed2a6abf7158809cf4f3c", "iv": "00000000000000000000000000000000"})),
+        ("crypto.apply", json!({"doc": "doc-1", "start": 0, "len": 16, "operation": {"op": "rolling_xor", "start": 16, "step": 3}, "output": "return"})),
         // Back to the example document for the tools after these.
         ("documents.open", json!({"doc": "doc-1"})),
     ]
@@ -486,6 +488,90 @@ pub fn open_decrypted(workspace: &mut dyn Workspace, caller: &Caller, params: Op
     Ok(OpenDecryptedResult { document: workspace::info(workspace, &id)?, done: decrypted.done, output: workspace::SheetOutput::of(workspace, &id)? })
 }
 
+/// Parameters of `crypto.apply`: a span and what undoes its cipher, as a
+/// candidate `crypto.attack` proposed or an operation.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ApplyParams {
+    /// Document id, path or "current" (the default); with a candidate, the
+    /// document its attack read.
+    #[serde(default)]
+    pub doc: Option<String>,
+    /// First offset of the enciphered bytes (0 by default); with a
+    /// candidate, the start of the span its attack read.
+    #[serde(default)]
+    pub start: Option<u64>,
+    /// Bytes to decode; to the end of the document when omitted, or, with a
+    /// candidate, the span its attack read.
+    #[serde(default)]
+    pub len: Option<u64>,
+    /// A decode crypto.attack proposed: its job and the candidate's index
+    /// in the job's result (0, the most plausible, by default).
+    #[serde(default)]
+    pub candidate: Option<CandidateRef>,
+    /// The operation that undoes the cipher, as crypto.attack's candidates
+    /// give it, such as {"op": "rolling_xor", "start": 81, "step": 5}; in
+    /// place of a candidate.
+    #[serde(default)]
+    pub operation: Option<Operation>,
+    /// Where the decode goes: "new" (the default; {"new": {"label": …}}
+    /// labels the sheet), "in_place", "return" or {"file": path}.
+    #[serde(default)]
+    pub output: Option<Output>,
+    /// With output "return", how the bytes are written: hex (the default), base64 or text.
+    #[serde(default)]
+    pub encoding: ByteEncoding,
+}
+
+/// One of the decodes a `crypto.attack` job proposed.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CandidateRef {
+    /// The attack's job, as crypto.attack returned it.
+    pub job: String,
+    /// The candidate's index in the job's `candidates`, from 0.
+    #[serde(default)]
+    pub index: usize,
+}
+
+/// The operation, document and span a `crypto.apply` call names.
+fn applied(workspace: &mut dyn Workspace, params: &ApplyParams) -> Result<(Operation, String, usize, usize), ApiError> {
+    let (operation, doc, start, len) = match (&params.candidate, &params.operation) {
+        (Some(candidate), None) => {
+            let status = workspace.bus().jobs().status(&candidate.job).ok_or_else(|| ApiError::not_found(format!("there is no job '{}'; crypto.attack starts one", candidate.job)))?;
+            let result = status.result.ok_or_else(|| ApiError::invalid_params(format!("job {} has not finished; wait for it (jobs.status) before applying its candidates", candidate.job)))?;
+            let decodes: CipherDecodes = serde_json::from_value(result).map_err(|_| ApiError::invalid_params(format!("job {} is not a crypto.attack's", candidate.job)))?;
+            let found = decodes.candidates.get(candidate.index).ok_or_else(|| ApiError::not_found(format!("job {} proposed {} candidates, so there is no candidate {}", candidate.job, decodes.candidates.len(), candidate.index)))?;
+            let doc = params.doc.clone().or(status.document);
+            (found.operation.clone(), doc, params.start.unwrap_or(decodes.start), params.len.or(Some(decodes.len)))
+        }
+        (None, Some(operation)) => (operation.clone(), params.doc.clone(), params.start.unwrap_or(0), params.len),
+        _ => return Err(ApiError::invalid_params("give what undoes the cipher one way: a candidate {job, index} from crypto.attack, or an operation")),
+    };
+    let id = workspace::resolve(workspace, doc.as_deref())?;
+    let (_, document) = workspace::document(workspace, Some(&id))?;
+    let (start, len) = values::span_within(document.len(), start, len)?;
+    Ok((operation, id, start, len))
+}
+
+/// `crypto.apply`: undo a cipher over a span, as a candidate of
+/// `crypto.attack` or an operation says, and send what it makes where
+/// `output` says: a new sheet by default.
+pub fn apply(workspace: &mut dyn Workspace, caller: &Caller, params: ApplyParams) -> Result<Made, ApiError> {
+    let output = output::chosen("crypto.apply", params.output.clone())?;
+    let (operation, id, start, len) = applied(workspace, &params)?;
+    values::check_size(len, ATTACK_APPLY_LIMIT, "the span")?;
+    let (_, document) = workspace::document(workspace, Some(&id))?;
+    let decoded = crate::selection_ops::transform_range(&operation, &document.read_range(start, len), 0).map_err(|message| ApiError::invalid_params(format!("{} failed: {message}", operation.name())))?;
+    let name = format!("{} › {}@{start:#x}", workspace::info(workspace, &id)?.name, operation.name());
+    let produced = Produced::replacing(start, len, decoded, name, operation.name()).encoded(params.encoding);
+    let delivered = output::deliver(workspace, caller, &id, produced, &output)?;
+    Made::of(workspace, delivered)
+}
+
+/// Most bytes `crypto.apply` decodes: the window's whole-document limit.
+const ATTACK_APPLY_LIMIT: usize = 64 * 1024 * 1024;
+
 /// What a decryption gave, for the status bar: "AES-128-ECB: 304 bytes
 /// decrypted to 288", with a warning when the padding was not valid.
 pub fn describe_decrypted(done: &DecryptionDone) -> String {
@@ -665,6 +751,43 @@ mod tests {
         call(&mut workspace, "transform.apply", json!({"selection": {"range": [4, hidden.len()]}, "operation": operation})).unwrap();
         let read = call(&mut workspace, "bytes.read", json!({"start": 4, "len": 14, "encoding": "text"})).unwrap();
         assert_eq!(read["data"], "Attack at dawn");
+    }
+
+    #[test]
+    fn an_attack_s_candidate_is_applied_to_a_new_sheet_of_the_span_it_attacked() {
+        let plain = b"Attack at dawn, the quick brown fox jumps over the lazy dog. ".repeat(20);
+        let hidden: Vec<u8> = plain.iter().enumerate().map(|(index, byte)| byte ^ (0x51u8.wrapping_add((index as u8).wrapping_mul(5)))).collect();
+        let mut workspace = workspace_with("stage.bin", &[b"head".as_slice(), &hidden, b"tail"].concat());
+        let status = run_job(&mut workspace, "crypto.attack", json!({"start": 4, "len": hidden.len()}));
+        let job = status["job"].as_str().unwrap().to_string();
+        let applied = call(&mut workspace, "crypto.apply", json!({"candidate": {"job": job}, "output": {"new": {"label": "stage2"}}})).unwrap();
+        assert_eq!((applied["output"]["label"].as_str(), applied["len"].as_u64()), (Some("stage2"), Some(hidden.len() as u64)));
+        let doc = applied["id"].as_str().unwrap().to_string();
+        assert_eq!(call(&mut workspace, "bytes.read", json!({"doc": doc, "start": 0, "len": 14, "encoding": "text"})).unwrap()["data"], "Attack at dawn");
+        assert_eq!(call(&mut workspace, "documents.info", json!({"doc": doc})).unwrap()["parent"], "doc-1");
+        let in_place = call(&mut workspace, "crypto.apply", json!({"doc": "doc-1", "start": 4, "len": hidden.len(), "operation": {"op": "rolling_xor", "start": 0x51, "step": 5}, "output": "in_place"})).unwrap();
+        assert_eq!(in_place["output"]["ranges"], json!([[4, hidden.len()]]));
+        assert_eq!(call(&mut workspace, "bytes.read", json!({"doc": "doc-1", "start": 4, "len": 6, "encoding": "text"})).unwrap()["data"], "Attack");
+        let neither = call(&mut workspace, "crypto.apply", json!({"start": 0})).unwrap_err();
+        assert_eq!(neither.code, ErrorCode::InvalidParams);
+        assert_eq!(call(&mut workspace, "crypto.apply", json!({"candidate": {"job": "nope-1"}})).unwrap_err().code, ErrorCode::NotFound);
+        assert_eq!(call(&mut workspace, "crypto.apply", json!({"candidate": {"job": job, "index": 99}})).unwrap_err().code, ErrorCode::NotFound);
+    }
+
+    #[test]
+    fn a_recipe_applies_the_candidate_of_the_attack_it_ran_itself() {
+        let hide = |plain: &[u8], start: u8, step: u8| -> Vec<u8> { plain.iter().enumerate().map(|(index, byte)| byte ^ start.wrapping_add((index as u8).wrapping_mul(step))).collect() };
+        let plain = b"Attack at dawn, the quick brown fox jumps over the lazy dog. ".repeat(20);
+        let mut workspace = workspace_with("stage.bin", &hide(&plain, 0x51, 5));
+        let status = run_job(&mut workspace, "crypto.attack", json!({}));
+        call(&mut workspace, "crypto.apply", json!({"candidate": {"job": status["job"]}, "output": {"new": {"label": "plain"}}})).unwrap();
+        let recipe = call(&mut workspace, "history.recipe", json!({"name": "Peel"})).unwrap();
+        let apply = recipe["steps"].as_array().unwrap().iter().find(|step| step["method"] == "crypto.apply").unwrap().clone();
+        assert_eq!(apply["params"]["candidate"]["job"], json!({"$anchor": {"step": 1, "path": "result.job"}}), "{recipe}");
+        let mut other = workspace_with("other.bin", &hide(&plain, 0xD7, 11));
+        let report = call(&mut other, "recipes.run", json!({"recipe": recipe})).unwrap();
+        assert!(report["stopped"].is_null(), "{report}");
+        assert_eq!(call(&mut other, "bytes.read", json!({"doc": "doc-2", "start": 0, "len": 6, "encoding": "text"})).unwrap()["data"], "Attack");
     }
 
     #[test]

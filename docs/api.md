@@ -177,7 +177,7 @@ A recipe step that starts a job waits for it (up to 10 minutes), and later steps
 
 ## Methods
 
-175 methods in 45 namespaces. The MCP column says which are listed as tools of their own by `theviewer mcp` (every one is with `--all-tools`; the rest are reached with `api_call`).
+176 methods in 45 namespaces. The MCP column says which are listed as tools of their own by `theviewer mcp` (every one is with `--all-tools`; the rest are reached with `api_call`).
 
 | Method | Effect | MCP | Summary |
 | --- | --- | --- | --- |
@@ -308,6 +308,7 @@ A recipe step that starts a job waits for it (up to 10 minutes), and later steps
 | [`crypto.attack`](#cryptoattack) | job |  | Start attacks on simple ciphers over a span (at most 1 MiB): rolling XOR, XOR with the previous byte, ADD/SUB with a constant or repeating key, bit rotation, XOR combined with ADD and, with a crib, crib dragging, as a job: the decodes that look most like text or structured data, each with the operation that transform.apply or documents.derive takes to apply it, and with a crib the key bytes it reveals, are job.finished's result, and in the window they fill the Crypto panel. |
 | [`crypto.decrypt`](#cryptodecrypt) | read |  | Decrypt a span with AES-128, AES-192 or AES-256 in ECB, CBC or CTR mode, with a key (and IV) given as hex, removing PKCS#7 padding, and return the plaintext; or, as output says, open it as a new sheet, put it in place of the ciphertext, or write it to a file (which needs leave to edit). |
 | [`crypto.open_decrypted`](#cryptoopen_decrypted) | view |  | Decrypt a span as crypto.decrypt does and open the plaintext as a document derived from this one; in the window, Back (or opening the parent by id) returns. A shorthand for crypto.decrypt with output "new". |
+| [`crypto.apply`](#cryptoapply) | view |  | Undo a simple cipher over a span: a candidate crypto.attack proposed (by its job and index, over the span it attacked), or an operation such as {"op": "rolling_xor", "start": 81, "step": 5}; open what it makes as a new sheet by default, or, as output says, put it in place, return it or write it to a file (which needs leave to edit). |
 | [`compare.variation`](#comparevariation) | job |  | Start comparing a document with other files byte position by byte position, each from its own start offset, as a job: the regions that are constant, vary (and how many values) or move one way through the files like a counter are job.finished's result, and in the window they fill Compare. |
 | [`compare.correlate`](#comparecorrelate) | job |  | Start a search of a document and other files for fields whose values follow a number known for each file (a temperature, a setting), as a job: the fields, best fit first, with the fitted line, are job.finished's result, and in the window they fill Compare. |
 | [`compare.timeline`](#comparetimeline) | job |  | Start building the change timeline of the recording of a live source or watched file, as a job: where and how often it changed, snapshot by snapshot, is job.finished's result, and the window fills Compare with it; only the window records, so headless there is none. |
@@ -3169,6 +3170,40 @@ Decrypt a span as crypto.decrypt does and open the plaintext as a document deriv
 | `padding_invalid` | boolean | yes | Whether PKCS#7 padding was asked for and not found; the plaintext is then given whole, and the key, IV or mode is probably wrong. |
 | `padding_removed` | integer | yes | Padding bytes removed from the end. |
 | `start` | integer | yes | First offset and length of the ciphertext. |
+
+### crypto.apply
+
+Undo a simple cipher over a span: a candidate crypto.attack proposed (by its job and index, over the span it attacked), or an operation such as {"op": "rolling_xor", "start": 81, "step": 5}; open what it makes as a new sheet by default, or, as output says, put it in place, return it or write it to a file (which needs leave to edit).
+
+**Effect:** `view` · **MCP tool:** `crypto_apply`, through `api_call`, or with `--all-tools`
+
+**History:** Journalled as a step; undone by changing back which document is current; kept by recipes, which make the sheet again and name it by this step; not repeated by going back or playback, as the sheet is open already. With another output, a call is treated as that output says. Writes a file when `output.file` is given, which then needs leave to edit.
+
+**Output:** `new` (the default), `in_place`, `return` or `file`, as `output` asks; see [Outputs](#conventions)
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `candidate` | CandidateRef | no | A decode crypto.attack proposed: its job and the candidate's index in the job's result (0, the most plausible, by default). |
+| `doc` | string | no | Document id, path or "current" (the default); with a candidate, the document its attack read. |
+| `encoding` | `"hex"` \| `"base64"` \| `"text"` | no | With output "return", how the bytes are written: hex (the default), base64 or text. |
+| `len` | integer | no | Bytes to decode; to the end of the document when omitted, or, with a candidate, the span its attack read. |
+| `operation` | Operation | no | The operation that undoes the cipher, as crypto.attack's candidates give it, such as {"op": "rolling_xor", "start": 81, "step": 5}; in place of a candidate. |
+| `output` | Output | no | Where the decode goes: "new" (the default; {"new": {"label": …}} labels the sheet), "in_place", "return" or {"file": path}. |
+| `start` | integer | no | First offset of the enciphered bytes (0 by default); with a candidate, the start of the span its attack read. |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `current` | boolean | no | Whether this is the current document. |
+| `id` | string | no | Stable id, such as "doc-1". |
+| `label` | string | no | A short name its maker gave it, such as "payload", which a recipe names it by. |
+| `len` | integer | no | Length in bytes. |
+| `made_by` | MadeBy | no | The step that made it, for a sheet made from another. |
+| `modified` | boolean | no | Whether there are edits not saved. |
+| `name` | string | no | File name, or the name of a derived document. |
+| `output` | Delivered | yes | Where the output went: {doc, label, len} for a new sheet, {len, encoding, data} returned, {path, len} to a file. |
+| `parent` | string | no | The document it was derived from, for a sheet made from another; none for one opened from a file, a source or new. |
+| `path` | string | no | Path on disk, for documents opened from a file. |
+| `version` | integer | no | Incremented on every edit. |
 
 ### compare.variation
 

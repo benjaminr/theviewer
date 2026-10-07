@@ -632,6 +632,7 @@ impl Recipe {
             }
             step.makes = entry.made.iter().find_map(|doc| lineage.made.get(doc).and_then(|maker| maker.label.clone()));
             name_documents(step, entry, root.as_deref(), lineage, &numbers, &mut problems);
+            name_jobs(step, entry, &entries, &numbers);
         }
         if !problems.is_empty() {
             let listed: Vec<String> = problems.iter().map(DocumentProblem::describe).collect();
@@ -708,6 +709,31 @@ fn name_documents(step: &mut super::recipe::RecipeStep, entry: &JournalEntry, ro
             (Some(anchor), _) => {
                 let _ = anchors::replace_at(&mut step.params, &path, anchors::marked(&anchor));
             }
+        }
+    }
+}
+
+/// Name each job `entry`'s params give by its id (`candidate.job` of a
+/// `crypto.apply`, say) as a step anchor on the step of the recipe that
+/// started it, so a run uses the job its own step started. A job no step
+/// of the recipe started stays literal.
+fn name_jobs(step: &mut super::recipe::RecipeStep, entry: &JournalEntry, entries: &[&JournalEntry], numbers: &BTreeMap<u64, u64>) {
+    let mut jobs = Vec::new();
+    anchors::visit_paths(&step.params, "", &mut |path, value| {
+        if anchors::as_anchor(value).is_some() {
+            return false;
+        }
+        if (path == "job" || path.ends_with(".job"))
+            && let Some(job) = value.as_str()
+        {
+            jobs.push((path.to_string(), job.to_string()));
+        }
+        true
+    });
+    for (path, job) in jobs {
+        let started = entries.iter().filter(|earlier| earlier.step < entry.step).find(|earlier| earlier.result.as_ref().and_then(|result| result.get("job")).and_then(Value::as_str) == Some(job.as_str()));
+        if let Some(number) = started.and_then(|earlier| numbers.get(&earlier.step)) {
+            let _ = anchors::replace_at(&mut step.params, &path, anchors::marked(&Anchor::Step { step: *number, path: "result.job".to_string() }));
         }
     }
 }
