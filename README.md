@@ -102,8 +102,8 @@ file formats, firmware, bit streams, forensics and comparing files.
 ## What it can do
 
 **View and edit**
-- Twelve pixel formats from 1-bit to 32-bit colour, *Byte class*, numeric
-  heatmaps of 16- and 32-bit values, and six palettes.
+- Eleven pixel formats from 1-bit to 32-bit colour, *Byte class*, ten
+  numeric heatmaps of 16- and 32-bit values, and six palettes.
 - Any width, row padding and origin down to the bit; Hilbert and Morton
   curve layouts; a row difference that makes changing fields stand out.
 - Range, column (`Alt`+drag) and multi-range selections, shared by the

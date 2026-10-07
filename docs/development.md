@@ -12,14 +12,19 @@ cargo test                  # unit tests, plus headless UI tests
 cargo clippy --all-targets
 cargo run --bin render_logo -- assets/logo.png   # redraw the logo
 cargo run --bin api_docs                         # write docs/api.md from the method table
+cargo run --bin import_catalog -- tika-mimetypes.xml   # regenerate catalog/tika.toml from Apache Tika
 ```
 
-`tests/ui.rs` and `tests/tools.rs` drive the real application without a
-window, using `egui_kittest`. They click, drag and type through the view,
-the toolbar, every tool, the panel layouts and the settings, so a change
-that breaks an interaction fails a test. They use a temporary key store,
-never your Keychain. The tshark test is skipped when tshark is not
-installed. A unit test fails when `docs/api.md` differs from what the
+`tests/ui.rs`, `tests/tools.rs` and `tests/ui_recipes.rs` drive the real
+application without a window, using `egui_kittest`. They click, drag and
+type through the view, the toolbar, every tool, the panel layouts, the
+settings and *Run recipe…*, so a change that breaks an interaction fails a
+test. They use a temporary key store, never your Keychain. The tshark test
+is skipped when tshark is not installed. `tests/api_cli.rs`,
+`tests/replay_cli.rs` and `tests/mcp_stdio.rs` run `theviewer api`,
+`theviewer replay` and `theviewer mcp` as separate processes, and the
+`tests/reference_*.rs` files check that the reference notes cover what the
+dissectors, parsers and signature catalogue find. A unit test fails when `docs/api.md` differs from what the
 method table produces, so run `api_docs` after adding or changing a
 method.
 

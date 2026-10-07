@@ -113,7 +113,10 @@ now short, with a [user guide](docs/guide/README.md) for the detail.
 - Lua plugins can call the data API, subscribe to the bus, publish facts
   and register methods of their own.
 - `theviewer mcp`, an MCP server for Claude Code, Claude Desktop and other
-  clients, with tools, resources, subscriptions and prompts. See
+  clients, with tools, resources, subscriptions and prompts. It lists the
+  core methods and the plugins' as tools, with `api_search`,
+  `api_describe` and `api_call` to reach the rest; `--all-tools` lists
+  every method and `--output-schemas` adds result schemas. See
   [docs/mcp.md](docs/mcp.md).
 - Ask can use every method that reads or edits, plugins' included, and is
   sent the reference notes for the formats at the cursor.
@@ -136,7 +139,8 @@ now short, with a [user guide](docs/guide/README.md) for the detail.
 ### Changed
 
 - *View › Layout*'s presets are replaced by the *Layout* menu. `--layout
-  default` still opens the Overview.
+  default` still opens the Overview; `--layout right` and `--layout left`
+  are gone.
 - The toolbar's groups fill each row before starting the next, in the
   order you dragged them into.
 - Signature scans are much faster: a 35 MB fuzzed file that took minutes
@@ -164,11 +168,6 @@ now short, with a [user guide](docs/guide/README.md) for the detail.
 - Undoing a step, or going back, is all or nothing: a failure part-way puts
   back what was undone.
 - A `null` inside an array is passed back from Lua as `null`.
-
-### Removed
-
-- The trigram cube's cluster labels, in favour of highlighting a region
-  type from its legend.
 
 ## [0.2.0] - 2026-10-05
 
