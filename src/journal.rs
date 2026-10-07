@@ -37,6 +37,8 @@
 //! steps again). `docs/design/history-recipes.md` says who owns what.
 
 pub mod anchors;
+pub mod recipe;
+pub mod replay;
 
 use std::collections::{BTreeMap, VecDeque};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -51,6 +53,7 @@ use crate::bus::topics::JournalRecorded;
 use crate::bus::{Draft, Payload};
 
 pub use anchors::{Anchor, ParamValue};
+pub use recipe::Recipe;
 
 /// Where the values of a step's parameters came from: each parameter's
 /// path (`start`, `length_field.offset`, `ranges[0][0]`) and its anchor.
