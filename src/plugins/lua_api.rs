@@ -494,9 +494,12 @@ pub(super) fn install(lua: &Lua, theviewer: &Table) -> mlua::Result<()> {
 /// The simple types a parameter map may name.
 const SIMPLE_TYPES: [&str; 6] = ["integer", "number", "string", "boolean", "object", "array"];
 
-/// A method's parameter schema from a script: a JSON schema (a table with a
-/// `type`), or a simple map of names to types, such as
-/// `{ start = "integer", len = "integer?" }`, where `?` makes one optional.
+/// The types JSON Schema's `type` keyword names.
+const JSON_SCHEMA_TYPES: [&str; 7] = ["object", "array", "string", "integer", "number", "boolean", "null"];
+
+/// A method's parameter schema from a script: a JSON schema, or a simple
+/// map of names to types, such as `{ start = "integer", len = "integer?" }`,
+/// where `?` makes one optional. See [`is_full_schema`] for which is which.
 pub(super) fn params_schema(value: &LuaValue) -> Result<Value, String> {
     let json = lua_to_json(value)?;
     let Value::Object(fields) = &json else {
@@ -505,7 +508,7 @@ pub(super) fn params_schema(value: &LuaValue) -> Result<Value, String> {
             _ => Err("params must be a table".to_string()),
         };
     };
-    if fields.get("type").is_some_and(Value::is_string) {
+    if is_full_schema(fields) {
         return Ok(json);
     }
     let mut properties = Map::new();
@@ -522,6 +525,26 @@ pub(super) fn params_schema(value: &LuaValue) -> Result<Value, String> {
         }
     }
     Ok(serde_json::json!({ "type": "object", "properties": properties, "required": required, "additionalProperties": false }))
+}
+
+/// Whether a schema table is a full JSON Schema rather than a simple map:
+/// its `type` names a JSON Schema type and no other key declares a
+/// parameter the simple way (its value a simple type, such as "integer" or
+/// "string?"). So `{ type = "object", properties = {…} }` is a schema,
+/// while `{ type = "string", value = "integer" }` declares two parameters,
+/// one of them called `type`.
+fn is_full_schema(fields: &Map<String, Value>) -> bool {
+    let names_a_schema_type = fields.get("type").and_then(Value::as_str).is_some_and(|kind| JSON_SCHEMA_TYPES.contains(&kind));
+    let declares_parameters = fields
+        .iter()
+        .filter(|(name, _)| name.as_str() != "type")
+        .any(|(_, kind)| kind.as_str().is_some_and(is_simple_declaration));
+    names_a_schema_type && !declares_parameters
+}
+
+/// Whether `kind` is how a simple map declares a parameter: "integer", "string?"…
+fn is_simple_declaration(kind: &str) -> bool {
+    SIMPLE_TYPES.contains(&kind.strip_suffix('?').unwrap_or(kind))
 }
 
 /// Check `params` against a method's schema: an object, with the required
@@ -889,6 +912,20 @@ mod tests {
         assert!(logged(&ordinary, LogLevel::Error).is_empty(), "a frame past the end is passed over quietly: {:?}", logged(&ordinary, LogLevel::Error));
         assert_eq!(api::call(&mut ordinary, &Caller::Panel, "acme.decode_frame", json!({"start": 0})).unwrap(), json!({"sync": false}));
         assert!(!ordinary.document.is_modified());
+    }
+
+    #[test]
+    fn a_simple_map_may_declare_a_parameter_called_type() {
+        let lua = mlua::Lua::new();
+        let schema = |source: &str| super::params_schema(&lua.load(source).eval::<mlua::Value>().unwrap()).unwrap();
+        let simple = schema(r#"return { type = "string", value = "integer?" }"#);
+        assert_eq!(simple["properties"], json!({"type": {"type": "string"}, "value": {"type": "integer"}}));
+        assert_eq!(simple["required"], json!(["type"]));
+        let full = schema(r#"return { type = "object", properties = { type = { type = "string" } }, description = "A kind of thing." }"#);
+        assert_eq!(full["properties"], json!({"type": {"type": "string"}}), "a full schema is kept as it is");
+        assert_eq!(schema(r#"return { type = "array" }"#), json!({"type": "array"}), "a lone JSON Schema type is a schema");
+        let optional = schema(r#"return { type = "string?" }"#);
+        assert_eq!((optional["properties"].clone(), optional["required"].clone()), (json!({"type": {"type": "string"}}), json!([])));
     }
 
     #[test]

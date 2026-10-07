@@ -471,16 +471,21 @@ params = { start = "integer", len = "integer?", key = "string", raw = "boolean?"
 
 (the types are `integer`, `number`, `string`, `boolean`, `object` and
 `array`; unknown parameters are refused), or a full JSON Schema, a table
-with a `type`:
+whose `type` is a JSON Schema type:
 
 ```lua
 params = { type = "object", required = theviewer.array{ "start" },
            properties = { start = { type = "integer", minimum = 0 } }, additionalProperties = false }
 ```
 
-A table whose `type` is a string is taken as a full JSON Schema, so a
-simple map cannot have a parameter called `type`: write the full form for
-that.
+A table is taken as a full JSON Schema when its `type` names a JSON
+Schema type (`object`, `array`, `string`, `integer`, `number`, `boolean`
+or `null`) and none of its other keys declares a parameter the simple way,
+with a simple type such as `"integer"` or `"string?"`. So a simple map can
+have a parameter called `type`, as in `{ type = "string", value =
+"integer" }`, as long as it declares another one beside it or makes `type`
+optional (`type = "string?"`). A map whose only parameter is a required
+`type` reads as a schema: write the full form for that.
 
 Calls are checked before `run` sees them: the required parameters are
 there, no unknown ones (when the schema closes them), and each of the
