@@ -26,6 +26,12 @@
 //! again through [`super::replay::run`], which is deterministic, so the
 //! result is the same.
 //!
+//! The steps run again make one undo step of the document, as every run
+//! does, and the timeline keeps them as one: the document's undo takes them
+//! back together and its redo brings them back together. So they are not
+//! undone one at a time (`history.undo_step` says to use `history.undo`),
+//! and going back to a step between them replays again.
+//!
 //! What each step's inverse is, its method declares
 //! ([`super::undo::Undo`]), as it declares how going back, playback and
 //! recipes treat it ([`Replay`]); [`inverse_of`] puts them together.
@@ -109,6 +115,23 @@ pub enum StepStatus {
     Move,
 }
 
+/// One step of a document's undo history, as the journal saw it: the
+/// journal steps one undo of the document takes back, oldest first, and
+/// what the undo step is called. An edit is one step of its own; the edits
+/// going back ran again are one, as [`super::replay::run`] makes them.
+#[derive(Clone, Debug, PartialEq)]
+struct UndoGroup {
+    steps: Vec<u64>,
+    label: Option<String>,
+}
+
+impl UndoGroup {
+    /// Its latest step.
+    fn last_step(&self) -> u64 {
+        self.steps.last().copied().unwrap_or_default()
+    }
+}
+
 /// The journal's steps with where each stands: in effect, undone (and by
 /// what), failed, or a move along the timeline. The journal keeps its own
 /// up to date as it records ([`Journal::timeline`]).
@@ -117,10 +140,10 @@ pub struct Timeline {
     statuses: BTreeMap<u64, StepStatus>,
     /// Each document's edits in effect, oldest first: the document's undo
     /// stack, as far as the journal saw it.
-    edits: HashMap<String, Vec<u64>>,
+    edits: HashMap<String, Vec<UndoGroup>>,
     /// Each document's edits undone that a redo brings back, the next to
     /// redo last.
-    undone_edits: HashMap<String, Vec<u64>>,
+    undone_edits: HashMap<String, Vec<UndoGroup>>,
 }
 
 impl Timeline {
@@ -156,7 +179,17 @@ impl Timeline {
 
     /// The step that made document `doc`'s last edit still in effect.
     pub fn last_edit(&self, doc: &str) -> Option<u64> {
-        self.edits.get(doc).and_then(|edits| edits.last().copied())
+        self.last_undo(doc).map(UndoGroup::last_step)
+    }
+
+    /// Document `doc`'s last undo step in effect.
+    fn last_undo(&self, doc: &str) -> Option<&UndoGroup> {
+        self.edits.get(doc).and_then(|edits| edits.last())
+    }
+
+    /// The undo step in effect of document `doc` that holds `step`.
+    fn undo_holding(&self, doc: &str, step: u64) -> Option<&UndoGroup> {
+        self.edits.get(doc)?.iter().find(|group| group.steps.contains(&step))
     }
 
     /// Take in the next entry of the journal.
@@ -170,7 +203,7 @@ impl Timeline {
         let Replay::Move(kind) = replay_of(&entry.method) else {
             self.statuses.insert(step, StepStatus::Active);
             if entry.effect == Effect::Edit && entry.changed_document() {
-                self.edits.entry(doc.clone()).or_default().push(step);
+                self.edits.entry(doc.clone()).or_default().push(UndoGroup { steps: vec![step], label: edit_label(entry) });
                 self.undone_edits.remove(&doc);
             }
             return;
@@ -181,7 +214,7 @@ impl Timeline {
                 if entry.changed_document()
                     && let Some(undone) = self.edits.get_mut(&doc).and_then(Vec::pop)
                 {
-                    self.statuses.insert(undone, StepStatus::Undone { by: step });
+                    self.mark(&undone.steps, StepStatus::Undone { by: step });
                     self.undone_edits.entry(doc).or_default().push(undone);
                 }
             }
@@ -189,7 +222,7 @@ impl Timeline {
                 if entry.changed_document()
                     && let Some(redone) = self.undone_edits.get_mut(&doc).and_then(Vec::pop)
                 {
-                    self.statuses.insert(redone, StepStatus::Active);
+                    self.mark(&redone.steps, StepStatus::Active);
                     self.edits.entry(doc).or_default().push(redone);
                 }
             }
@@ -201,9 +234,8 @@ impl Timeline {
             Move::GoBack => {
                 let target = entry.params.get("step").and_then(Value::as_u64).unwrap_or(0);
                 let result = entry.result.as_ref();
-                let replayed = result.and_then(|result| result.get("way")).and_then(Value::as_str) == Some("replayed");
-                let replayed_doc = result.filter(|_| replayed).and_then(|result| result.get("doc")).and_then(Value::as_str);
-                self.go_back(target, step, replayed_doc);
+                let kept = result.map(kept_steps).unwrap_or_default();
+                self.go_back(target, step, result.and_then(RunAgain::of), &kept);
             }
         }
     }
@@ -213,7 +245,17 @@ impl Timeline {
     pub(super) fn forget(&mut self, step: u64) {
         self.statuses.remove(&step);
         for stack in self.edits.values_mut().chain(self.undone_edits.values_mut()) {
-            stack.retain(|held| *held != step);
+            for group in stack.iter_mut() {
+                group.steps.retain(|held| *held != step);
+            }
+            stack.retain(|group| !group.steps.is_empty());
+        }
+    }
+
+    /// Give each of `steps` the status `status`.
+    fn mark(&mut self, steps: &[u64], status: StepStatus) {
+        for step in steps {
+            self.statuses.insert(*step, status);
         }
     }
 
@@ -224,37 +266,68 @@ impl Timeline {
             return;
         }
         self.statuses.insert(target, StepStatus::Undone { by });
-        for (doc, edits) in &mut self.edits {
-            if edits.last() == Some(&target) {
-                edits.pop();
-                self.undone_edits.entry(doc.clone()).or_default().push(target);
-                return;
-            }
+        let holding = self.edits.iter().find(|(_, edits)| edits.last().is_some_and(|group| group.steps.contains(&target))).map(|(doc, _)| doc.clone());
+        if let Some(doc) = holding
+            && let Some(undone) = self.edits.get_mut(&doc).and_then(Vec::pop)
+        {
+            self.mark(&undone.steps, StepStatus::Undone { by });
+            self.undone_edits.entry(doc).or_default().push(undone);
         }
     }
 
     /// Mark every step in effect after `target` undone by step `by`. Their
     /// edits wait to be redone, latest first, as each document's undo left
-    /// them; only the document `replayed_doc`, brought back and its steps
-    /// up to `target` run again, has nothing left to redo once those steps
-    /// edited it anew.
-    fn go_back(&mut self, target: u64, by: u64, replayed_doc: Option<&str>) {
+    /// them, except the edits of the `kept` steps, which going back could
+    /// not undo and so stay on their document's undo stack. The document a
+    /// replay brought back had every edit undone, and its edits up to
+    /// `target` run again are its one undo step now, which leaves nothing
+    /// to redo.
+    fn go_back(&mut self, target: u64, by: u64, replayed: Option<RunAgain>, kept: &[u64]) {
         let later: Vec<u64> = self.statuses.range(target + 1..by).filter(|(_, status)| **status == StepStatus::Active).map(|(step, _)| *step).collect();
-        for step in later {
-            self.statuses.insert(step, StepStatus::Undone { by });
-        }
+        self.mark(&later, StepStatus::Undone { by });
         for (doc, edits) in &mut self.edits {
-            let kept = edits.partition_point(|step| *step <= target);
-            let undone: Vec<u64> = edits.split_off(kept);
             let waiting = self.undone_edits.entry(doc.clone()).or_default();
-            // Its edits run again are new ones, which leave nothing to redo.
-            if replayed_doc == Some(doc.as_str()) && !edits.is_empty() {
-                waiting.clear();
-            } else {
-                waiting.extend(undone.into_iter().rev());
+            if let Some(run) = replayed.as_ref().filter(|run| run.doc == *doc) {
+                let run_again: Vec<u64> = edits.iter().flat_map(|group| group.steps.iter().copied()).filter(|step| *step <= target).collect();
+                let undone = std::mem::take(edits);
+                if run_again.is_empty() {
+                    waiting.extend(undone.into_iter().rev());
+                } else {
+                    edits.push(UndoGroup { steps: run_again, label: run.label.clone() });
+                    waiting.clear();
+                }
+                continue;
             }
+            let staying = edits.partition_point(|group| group.last_step() <= target || group.steps.iter().any(|step| kept.contains(step)));
+            waiting.extend(edits.split_off(staying).into_iter().rev());
         }
     }
+}
+
+/// The document going back brought back and ran its steps on again, and
+/// what the one undo step those steps made is called.
+struct RunAgain {
+    doc: String,
+    label: Option<String>,
+}
+
+impl RunAgain {
+    /// What going back by replaying did, from its result; `None` when it
+    /// undid the later steps instead.
+    fn of(went_back: &Value) -> Option<RunAgain> {
+        if went_back.get("way").and_then(Value::as_str) != Some("replayed") {
+            return None;
+        }
+        let doc = went_back.get("doc").and_then(Value::as_str)?.to_string();
+        let label = went_back.get("label").and_then(Value::as_str).map(str::to_string);
+        Some(RunAgain { doc, label })
+    }
+}
+
+/// The later steps going back could not undo, from its result.
+fn kept_steps(went_back: &Value) -> Vec<u64> {
+    let kept = went_back.get("kept").and_then(Value::as_array);
+    kept.into_iter().flatten().filter_map(|kept| kept.get("step").and_then(Value::as_u64)).collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -364,8 +437,12 @@ pub fn inverse_of(workspace: &mut dyn Workspace, step: u64) -> Inverse {
         return inverse_for(journal, entry);
     }
     let Some(doc) = entry.doc.clone() else { return Inverse::unavailable("the journal does not say which document it edited") };
-    if let Some(last) = timeline.last_edit(&doc).filter(|last| *last != step) {
-        return Inverse::unavailable(format!("step {last} edited {doc} since; undo it first, or go back to step {}", step.saturating_sub(1)));
+    let last_undo = timeline.last_undo(&doc);
+    if let Some(last) = last_undo.filter(|group| !group.steps.contains(&step)) {
+        return Inverse::unavailable(format!("step {} edited {doc} since; undo it first, or go back to step {}", last.last_step(), step.saturating_sub(1)));
+    }
+    if let Some(together) = last_undo.filter(|group| group.steps.len() > 1) {
+        return Inverse::unavailable(format!("going back ran steps {} again as one change of {doc}; history.undo undoes them together", list_steps(&together.steps)));
     }
     let label = edit_label(entry);
     if let Err(why) = is_top_of_undo(workspace, &doc, label.as_deref()) {
@@ -437,6 +514,11 @@ fn later_change_of_the_same(journal: &Journal, entry: &JournalEntry) -> Option<u
 /// one.
 fn edit_label(entry: &JournalEntry) -> Option<String> {
     entry.result.as_ref().and_then(|result| result.get("label")).and_then(Value::as_str).map(str::to_string)
+}
+
+/// `steps` as a message names them: "2, 3".
+fn list_steps(steps: &[u64]) -> String {
+    steps.iter().map(u64::to_string).collect::<Vec<_>>().join(", ")
 }
 
 /// Whether document `doc`'s next undo would reverse an edit labelled
@@ -567,12 +649,35 @@ pub struct WentBack {
     /// What running the steps again did, when they were.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub replayed: Option<RunReport>,
+    /// What the one undo step the steps run again made on the document is
+    /// called, when they edited it: one undo takes them all back.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
 }
 
 /// A later step to undo, latest first, with its inverse taken on its own.
 struct Planned {
     entry: JournalEntry,
     inverse: Inverse,
+    /// For a byte edit, what its document's undo step holding it is called.
+    label: Option<String>,
+}
+
+impl Planned {
+    /// `entry`, a step after `target`, to undo going back to `target`. The
+    /// edits an earlier going back ran again are one undo step of their
+    /// document: the latest of them undoes them all, and going back to
+    /// between them replays.
+    fn going_back(journal: &Journal, entry: &JournalEntry, target: u64) -> Planned {
+        let group = entry.doc.as_deref().filter(|_| is_byte_edit(entry)).and_then(|doc| journal.timeline().undo_holding(doc, entry.step));
+        let inverse = match group.filter(|group| group.steps.len() > 1) {
+            Some(group) if group.steps[0] <= target => Inverse::unavailable(format!("going back ran it again as one change with steps {}, which are kept", list_steps(&group.steps))),
+            Some(group) if group.last_step() != entry.step => Inverse::nothing(format!("undoing step {} undoes it too", group.last_step())),
+            _ => inverse_for(journal, entry),
+        };
+        let label = group.map_or_else(|| edit_label(entry), |group| group.label.clone());
+        Planned { entry: entry.clone(), inverse, label }
+    }
 }
 
 /// Go back to step `step` as `caller`: undo every later step in effect, or
@@ -588,14 +693,14 @@ pub fn go_back(workspace: &mut dyn Workspace, caller: &Caller, step: u64) -> Res
         .since(step)
         .filter(|entry| timeline.is_active(entry.step))
         .rev()
-        .map(|entry| Planned { entry: entry.clone(), inverse: inverse_for(journal, entry) })
+        .map(|entry| Planned::going_back(journal, entry, step))
         .collect();
     match plan_undo(workspace, &later) {
         Ok(plan) => {
             for (undoing, calls) in &plan {
                 make_calls(workspace, caller, calls, *undoing)?;
             }
-            Ok(WentBack { step, way: Way::Undone, undone: plan.iter().map(|(undoing, _)| *undoing).collect(), kept: Vec::new(), doc: None, replayed: None })
+            Ok(WentBack { step, way: Way::Undone, undone: plan.iter().map(|(undoing, _)| *undoing).collect(), kept: Vec::new(), doc: None, replayed: None, label: None })
         }
         Err(_) => replay_up_to(workspace, caller, step, later),
     }
@@ -606,7 +711,7 @@ pub fn go_back(workspace: &mut dyn Workspace, caller: &Caller, step: u64) -> Res
 fn plan_undo(workspace: &mut dyn Workspace, later: &[Planned]) -> Result<Vec<(u64, Vec<InverseCall>)>, KeptStep> {
     let mut checked_documents: Vec<String> = Vec::new();
     let mut plan = Vec::new();
-    for Planned { entry, inverse } in later {
+    for Planned { entry, inverse, label } in later {
         let kept = |why: String| KeptStep { step: entry.step, method: entry.method.clone(), why };
         // Undone latest first, each edit is its document's last in turn
         // once the document's last undo is the journal's last edit.
@@ -614,7 +719,7 @@ fn plan_undo(workspace: &mut dyn Workspace, later: &[Planned]) -> Result<Vec<(u6
             && let Some(doc) = &entry.doc
             && !checked_documents.contains(doc)
         {
-            is_top_of_undo(workspace, doc, edit_label(entry).as_deref()).map_err(kept)?;
+            is_top_of_undo(workspace, doc, label.as_deref()).map_err(kept)?;
             checked_documents.push(doc.clone());
         }
         plan.push((entry.step, inverse.clone().into_calls().map_err(kept)?));
@@ -636,12 +741,12 @@ fn replay_up_to(workspace: &mut dyn Workspace, caller: &Caller, step: u64, later
     let steps = replayable_steps(workspace.journal(), 0..=step, Some(&doc));
     let mut undone = Vec::new();
     let mut kept = Vec::new();
-    for Planned { entry, inverse } in later {
+    for Planned { entry, inverse, label } in later {
         let calls = match (is_byte_edit(&entry), entry.doc.as_deref()) {
             // Bringing the document back undoes its edits.
             (true, Some(edited)) if edited == doc => Ok(Vec::new()),
             // Latest first, each is the other document's last in turn.
-            (true, Some(edited)) => is_top_of_undo(workspace, edited, edit_label(&entry).as_deref()).and_then(|()| inverse.into_calls()),
+            (true, Some(edited)) => inverse.into_calls().and_then(|calls| if calls.is_empty() { Ok(calls) } else { is_top_of_undo(workspace, edited, label.as_deref()).map(|()| calls) }),
             _ => inverse.into_calls(),
         };
         match calls.and_then(|calls| make_calls(workspace, caller, &calls, entry.step).map_err(|error| error.message)) {
@@ -660,7 +765,10 @@ fn replay_up_to(workspace: &mut dyn Workspace, caller: &Caller, step: u64, later
         let message = format!("going back to step {step}, running step {} again failed: {}", stopped.step, stopped.error.message);
         return Err(ApiError::new(stopped.error.code, message).with_data(serde_json::to_value(&report).unwrap_or(Value::Null)));
     }
-    Ok(WentBack { step, way: Way::Replayed, undone, kept, doc: Some(doc), replayed: Some(report) })
+    // The steps run again are one undo step of the document; the timeline
+    // knows it as theirs by its name.
+    let label = workspace.document_mut(&doc).and_then(|document| document.undo_label().map(str::to_string));
+    Ok(WentBack { step, way: Way::Replayed, undone, kept, doc: Some(doc), replayed: Some(report), label })
 }
 
 /// Undo every edit of document `doc` and check it is as the session first

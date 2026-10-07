@@ -844,6 +844,7 @@ Go back to a step of the journal (0 for before the first): undo every later step
 | --- | --- | --- | --- |
 | `doc` | string | no | The document brought back and replayed, when it was replayed. |
 | `kept` | array of KeptStep | no | The later steps that changed what they changed for good (no inverse), and stay as they are. |
+| `label` | string | no | What the one undo step the steps run again made on the document is called, when they edited it: one undo takes them all back. |
 | `replayed` | RunReport | no | What running the steps again did, when they were. |
 | `step` | integer | yes | The step gone back to: everything after it is undone. 0 is before the first step. |
 | `undone` | array of integer | yes | The later steps undone, latest first. |

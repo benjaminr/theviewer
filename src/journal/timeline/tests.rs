@@ -298,6 +298,41 @@ fn going_back_by_replaying_one_document_leaves_another_document_s_edits_to_redo(
 }
 
 #[test]
+fn the_edits_going_back_runs_again_undo_and_redo_together_as_the_document_does() {
+    let mut workspace = workspace_with("a.bin", &[0u8; 128]);
+    call(&mut workspace, "view.set_shape", json!({"width": 32})).unwrap();
+    call(&mut workspace, "bytes.write", json!({"start": 0, "data": "41"})).unwrap();
+    let first_write = last_step(&workspace);
+    call(&mut workspace, "bytes.write", json!({"start": 1, "data": "42"})).unwrap();
+    let second_write = last_step(&workspace);
+    call(&mut workspace, "packets.sets.create", json!({"from": "split_fixed", "record_len": 8, "len": 64})).unwrap();
+    call(&mut workspace, "packets.sets.remove", json!({"set": "set-1"})).unwrap();
+    let went = call(&mut workspace, GO_BACK, json!({"step": second_write})).unwrap();
+    assert_eq!(went["way"], "replayed");
+    let refused = undo(&mut workspace, second_write).unwrap_err();
+    assert!(refused.message.contains("history.undo undoes them together"), "{}", refused.message);
+
+    call(&mut workspace, "history.undo", json!({})).unwrap();
+    assert_eq!(bytes_of(&mut workspace, "doc-1")[..2], [0, 0], "one undo takes back both writes run again");
+    let timeline = Timeline::of(workspace.journal());
+    assert!(matches!(timeline.status(first_write), Some(StepStatus::Undone { .. })));
+    assert!(matches!(timeline.status(second_write), Some(StepStatus::Undone { .. })));
+    assert!(entries_for_recipe(workspace.journal(), None).iter().all(|entry| entry.method != "bytes.write"), "neither write goes into a recipe");
+
+    call(&mut workspace, "history.redo", json!({})).unwrap();
+    assert_eq!(bytes_of(&mut workspace, "doc-1")[..2], [0x41, 0x42]);
+    let active: Vec<u64> = Timeline::of(workspace.journal()).active_steps().collect();
+    assert_eq!(active, [1, first_write, second_write], "redo brings both back");
+
+    let between = call(&mut workspace, GO_BACK, json!({"step": first_write})).unwrap();
+    assert_eq!(between["way"], "replayed", "the writes cannot be undone apart");
+    assert_eq!(bytes_of(&mut workspace, "doc-1")[..2], [0x41, 0]);
+    let before_both = call(&mut workspace, GO_BACK, json!({"step": 1})).unwrap();
+    assert_eq!(before_both["way"], "undone", "the write run again on its own undoes as the document's last edit");
+    assert_eq!(bytes_of(&mut workspace, "doc-1")[..2], [0, 0]);
+}
+
+#[test]
 fn going_back_by_replaying_stops_with_why_when_a_step_cannot_run_again() {
     let mut workspace = workspace_with("a.bin", &[0u8; 128]);
     call(&mut workspace, "bytes.write", json!({"start": 0, "data": "41"})).unwrap();
