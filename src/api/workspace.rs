@@ -6,7 +6,17 @@
 //! command line and, later, the MCP server. Methods see only the trait, so
 //! the same method works in both. Each workspace has its own bus of facts
 //! and events.
+//!
+//! **Focus.** Each caller has a focus: the document an omitted `doc` means
+//! for it ([`focus_of`]). It is the current document when the caller first
+//! calls, and moves when the caller opens or activates a document or asks
+//! for a new sheet to be focused. Neither a sheet made (a derive, a node
+//! opened) nor a document named in a call moves it, so a client's next call
+//! without `doc` is about the document it was working on.
+//! The person's focus is the window's document, and `"current"` still
+//! names that (or, headless, the document opened or made last).
 
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -16,7 +26,7 @@ use serde::{Deserialize, Serialize};
 use super::permissions::{self, Caller, Decision, HeldCall};
 use super::packet_sets::PacketSets;
 use super::view::ViewShape;
-use super::{ApiError, Effect, RegisteredMethod};
+use super::{ApiError, Effect, MethodRef, RegisteredMethod, Replay};
 use crate::app::ViewerApp;
 use crate::bookmarks::Bookmark;
 use crate::bus::topics::{CursorMoved, DocumentEdited, DocumentOpened, FindingsPublished, SelectionChanged, TemplateApplied};
@@ -64,6 +74,25 @@ pub struct DocumentInfo {
     /// names it by.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
+    /// Whether it is the focus of the caller listing it: what an omitted
+    /// `doc` means for that caller (`documents.list` says).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub focus: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
+/// Where each caller works: the document an omitted `doc` means for it, by
+/// the caller's producer id. The person at the window, and every caller
+/// with `legacy_current`, works on the current document instead.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Foci {
+    by_caller: HashMap<String, String>,
+    /// Every caller's omitted `doc` means the current document, as before
+    /// callers had a focus of their own (`theviewer mcp --legacy-current`).
+    pub legacy_current: bool,
 }
 
 /// Where a document came from: the document it was derived from and the
@@ -280,6 +309,84 @@ pub trait Workspace {
     /// Say which call made the open document `id` (the journal does, once
     /// the call that made it has finished).
     fn note_made_by(&mut self, id: &str, made_by: MadeBy);
+    /// Each caller's focus (see [`focus_of`]).
+    fn foci(&self) -> &Foci;
+    fn foci_mut(&mut self) -> &mut Foci;
+}
+
+/// Whether `caller` works on the current document rather than a focus of
+/// its own: the person at the window, whose focus is the document shown,
+/// and every caller when foci are turned off.
+fn follows_current(workspace: &dyn Workspace, caller: &Caller) -> bool {
+    matches!(caller, Caller::Panel) || workspace.foci().legacy_current
+}
+
+/// The document `caller` works on, which an omitted `doc` means: the one
+/// it last opened or activated (or the current one when it first called),
+/// while that is open; else the current document.
+pub fn focus_of(workspace: &dyn Workspace, caller: &Caller) -> Option<String> {
+    if follows_current(workspace, caller) {
+        return workspace.current_document();
+    }
+    let focus = workspace.foci().by_caller.get(&caller.producer()).filter(|id| workspace.version(id).is_some()).cloned();
+    focus.or_else(|| workspace.current_document())
+}
+
+/// [`focus_of`], kept as the caller's focus from now on, so making a new
+/// document current does not move it.
+pub fn pin_focus(workspace: &mut dyn Workspace, caller: &Caller) -> Option<String> {
+    let focus = focus_of(workspace, caller)?;
+    set_focus(workspace, caller, &focus);
+    Some(focus)
+}
+
+/// Make the open document `id` `caller`'s focus; the person's focus is the
+/// window's document, which this does not change.
+pub fn set_focus(workspace: &mut dyn Workspace, caller: &Caller, id: &str) {
+    if follows_current(workspace, caller) {
+        return;
+    }
+    workspace.foci_mut().by_caller.insert(caller.producer(), id.to_string());
+}
+
+/// Whether a call's `params` ask for the sheet it makes to become the
+/// caller's focus: `output: {"new": {"focus": true}}`.
+pub fn asks_to_focus_the_sheet(params: &serde_json::Value) -> bool {
+    params.pointer("/output/new/focus").and_then(serde_json::Value::as_bool) == Some(true)
+}
+
+/// Move `caller`'s focus after a successful call of `method`: to a document
+/// it opened or activated, or to the new sheet it made when it asked for
+/// that (`focuses_sheet`, see [`asks_to_focus_the_sheet`]). A document it
+/// only named stays where it was.
+pub fn follow_focus(workspace: &mut dyn Workspace, caller: &Caller, method: &MethodRef, focuses_sheet: bool, result: &serde_json::Value) {
+    let opened = matches!(method.replay(), Replay::OpensDocument { .. }).then(|| opened_by(result)).flatten();
+    let focused_sheet = focuses_sheet.then(|| result.pointer("/output/doc")).flatten().and_then(serde_json::Value::as_str).map(str::to_string);
+    let moved_to = opened.or(focused_sheet);
+    if let Some(id) = moved_to.filter(|id| workspace.version(id).is_some()) {
+        set_focus(workspace, caller, &id);
+    }
+}
+
+/// The document a call that opens one opened, as its result names it.
+fn opened_by(result: &serde_json::Value) -> Option<String> {
+    let id = result.get("id").or_else(|| result.pointer("/document/id"));
+    id.and_then(serde_json::Value::as_str).map(str::to_string)
+}
+
+/// The open document `id` descends from that was opened, not derived: its
+/// parent's parent, and so on.
+pub fn root_of(workspace: &dyn Workspace, id: &str) -> String {
+    let mut current = id.to_string();
+    let mut seen = Vec::new();
+    while let Some(parent) = workspace.lineage(&current).and_then(|lineage| lineage.parent) {
+        if seen.contains(&parent) {
+            break;
+        }
+        seen.push(current);
+        current = parent;
+    }
+    current
 }
 
 /// `document.edited` with the changes `document` made since `published`,
@@ -373,11 +480,23 @@ pub struct HeadlessWorkspace {
     cause: Option<MessageId>,
     packet_sets: PacketSets,
     journal: Journal,
+    foci: Foci,
 }
 
 impl HeadlessWorkspace {
     pub fn new(registry: Arc<Registry>) -> Self {
-        HeadlessWorkspace { documents: Vec::new(), current: None, registry, opened: 0, bus: Bus::new(), methods: Vec::new(), cause: None, packet_sets: PacketSets::default(), journal: Journal::new() }
+        HeadlessWorkspace {
+            documents: Vec::new(),
+            current: None,
+            registry,
+            opened: 0,
+            bus: Bus::new(),
+            methods: Vec::new(),
+            cause: None,
+            packet_sets: PacketSets::default(),
+            journal: Journal::new(),
+            foci: Foci::default(),
+        }
     }
 
     /// Offer the methods plugins registered.
@@ -448,6 +567,7 @@ impl Workspace for HeadlessWorkspace {
                 parent: open.lineage.parent.clone(),
                 made_by: open.lineage.made_by.clone(),
                 label: open.lineage.label(),
+                focus: false,
             })
             .collect()
     }
@@ -649,6 +769,14 @@ impl Workspace for HeadlessWorkspace {
             open.lineage.made_by = Some(made_by);
         }
     }
+
+    fn foci(&self) -> &Foci {
+        &self.foci
+    }
+
+    fn foci_mut(&mut self) -> &mut Foci {
+        &mut self.foci
+    }
 }
 
 /// The window shows one document at a time; the documents it was derived
@@ -667,6 +795,7 @@ impl Workspace for ViewerApp {
             parent: None,
             made_by: None,
             label: None,
+            focus: false,
         });
         let shown = DocumentInfo {
             id: self.document_id(),
@@ -679,6 +808,7 @@ impl Workspace for ViewerApp {
             parent: None,
             made_by: None,
             label: None,
+            focus: false,
         };
         parents
             .chain(std::iter::once(shown))
@@ -996,6 +1126,14 @@ impl Workspace for ViewerApp {
             self.lineages.entry(id.to_string()).or_default().made_by = Some(made_by);
         }
     }
+
+    fn foci(&self) -> &Foci {
+        &self.foci
+    }
+
+    fn foci_mut(&mut self) -> &mut Foci {
+        &mut self.foci
+    }
 }
 
 /// Refuse to replace the window's documents while one has unsaved edits.
@@ -1069,6 +1207,104 @@ mod tests {
         assert_eq!(resolve(&workspace, Some(&path.display().to_string())).unwrap(), first, "an open document is found by its path");
         assert_eq!(workspace.open_path(Path::new("/no/such/file")).unwrap_err().code, ErrorCode::NotFound);
         std::fs::remove_file(path).ok();
+    }
+
+    mod focus {
+        use serde_json::json;
+
+        use super::super::*;
+        use crate::api::test_support::workspace_with;
+        use crate::api::{self, Caller};
+
+        fn client(name: &str) -> Caller {
+            Caller::Mcp(name.into())
+        }
+
+        fn read_text(workspace: &mut HeadlessWorkspace, caller: &Caller, params: serde_json::Value) -> String {
+            api::call(workspace, caller, "bytes.read", params).unwrap()["data"].as_str().unwrap().to_string()
+        }
+
+        #[test]
+        fn a_client_s_omitted_doc_stays_on_its_document_when_a_derive_makes_a_sheet() {
+            let mut workspace = workspace_with("container.bin", b"header payload");
+            let claude = client("claude-code");
+            let derived = api::call(&mut workspace, &claude, "documents.derive", json!({"start": 7})).unwrap();
+            assert_eq!(derived["output"]["doc"], "doc-2");
+            assert_eq!(workspace.current_document().as_deref(), Some("doc-2"), "headless, the newest document is current");
+            assert_eq!(read_text(&mut workspace, &claude, json!({"start": 0, "len": 6, "encoding": "text"})), "header", "the client's focus did not move");
+            assert_eq!(read_text(&mut workspace, &claude, json!({"doc": "current", "start": 0, "len": 7, "encoding": "text"})), "payload", "\"current\" is still the current document");
+            let entry = workspace.journal().entries().last().unwrap();
+            assert_eq!(entry.params["doc"], "doc-1", "the journal entry names the document");
+        }
+
+        #[test]
+        fn opening_or_activating_a_document_moves_the_client_s_focus_and_naming_one_does_not() {
+            let mut workspace = workspace_with("container.bin", b"header payload");
+            let claude = client("claude-code");
+            api::call(&mut workspace, &claude, "documents.derive", json!({"start": 7})).unwrap();
+            assert_eq!(read_text(&mut workspace, &claude, json!({"doc": "doc-2", "start": 0, "encoding": "text"})), "payload");
+            assert_eq!(read_text(&mut workspace, &claude, json!({"start": 0, "len": 6, "encoding": "text"})), "header", "a doc named once is not the default after");
+            api::call(&mut workspace, &claude, "documents.activate", json!({"doc": "doc-2"})).unwrap();
+            assert_eq!(focus_of(&workspace, &claude).as_deref(), Some("doc-2"), "a document activated becomes the focus");
+            api::call(&mut workspace, &claude, "documents.activate", json!({"doc": "doc-1"})).unwrap();
+            assert_eq!(focus_of(&workspace, &claude).as_deref(), Some("doc-1"));
+            assert_eq!(workspace.current_document().as_deref(), Some("doc-2"), "a client's activation leaves the current document");
+            let listed = api::call(&mut workspace, &claude, "documents.list", json!({})).unwrap();
+            let focused: Vec<&str> = listed["documents"].as_array().unwrap().iter().filter(|info| info["focus"] == true).map(|info| info["id"].as_str().unwrap()).collect();
+            assert_eq!(focused, ["doc-1"], "documents.list marks the caller's focus");
+            let path = std::env::temp_dir().join(format!("theviewer-focus-open-{}.bin", std::process::id()));
+            std::fs::write(&path, b"opened").unwrap();
+            let opened = api::call(&mut workspace, &claude, "documents.open", json!({"path": path.display().to_string()})).unwrap();
+            assert_eq!(focus_of(&workspace, &claude), opened["id"].as_str().map(str::to_string), "a document opened becomes the focus");
+            std::fs::remove_file(path).ok();
+        }
+
+        #[test]
+        fn each_client_has_a_focus_of_its_own_and_the_person_s_is_the_current_document() {
+            let mut workspace = workspace_with("first.bin", b"first");
+            workspace.add_document("second.bin", crate::document::Document::from_bytes(b"second".to_vec()));
+            let (claude, other) = (client("claude-code"), client("other"));
+            api::call(&mut workspace, &claude, "documents.activate", json!({"doc": "doc-1"})).unwrap();
+            assert_eq!(read_text(&mut workspace, &other, json!({"start": 0, "encoding": "text"})), "second", "a client starts on the current document");
+            assert_eq!(read_text(&mut workspace, &claude, json!({"start": 0, "encoding": "text"})), "first");
+            assert_eq!(focus_of(&workspace, &Caller::Panel).as_deref(), Some("doc-2"), "the person's focus is the current document");
+            set_focus(&mut workspace, &Caller::Panel, "doc-1");
+            assert_eq!(workspace.current_document().as_deref(), Some("doc-2"), "and is not moved by a focus of its own");
+        }
+
+        #[test]
+        fn with_legacy_current_every_client_s_omitted_doc_is_the_current_document() {
+            let mut workspace = workspace_with("container.bin", b"header payload");
+            workspace.foci_mut().legacy_current = true;
+            let claude = client("claude-code");
+            api::call(&mut workspace, &claude, "documents.derive", json!({"start": 7})).unwrap();
+            assert_eq!(read_text(&mut workspace, &claude, json!({"start": 0, "encoding": "text"})), "payload", "as before callers had a focus");
+        }
+
+        #[test]
+        fn a_new_sheet_asked_to_be_focused_becomes_the_focus() {
+            let mut workspace = workspace_with("container.bin", b"header payload");
+            let claude = client("claude-code");
+            let derive = api::find(&workspace, "documents.derive").unwrap();
+            set_focus(&mut workspace, &claude, "doc-1");
+            let sheet = workspace.open_derived("doc-1", b"payload".to_vec(), "payload").unwrap();
+            let result = json!({"output": {"doc": sheet, "len": 7}});
+            follow_focus(&mut workspace, &claude, &derive, asks_to_focus_the_sheet(&json!({"start": 7, "output": "new"})), &result);
+            assert_ne!(focus_of(&workspace, &claude).as_deref(), Some(sheet.as_str()), "a sheet made does not move the focus");
+            follow_focus(&mut workspace, &claude, &derive, asks_to_focus_the_sheet(&json!({"start": 7, "output": {"new": {"focus": true}}})), &result);
+            assert_eq!(focus_of(&workspace, &claude).as_deref(), Some(sheet.as_str()));
+        }
+
+        #[test]
+        fn a_closed_focus_falls_back_to_the_current_document_and_a_sheet_s_root_is_its_file() {
+            let mut workspace = workspace_with("container.bin", b"header payload");
+            let child = workspace.open_derived("doc-1", b"payload".to_vec(), "payload").unwrap();
+            let grandchild = workspace.open_derived(&child, b"load".to_vec(), "load").unwrap();
+            assert_eq!(root_of(&workspace, &grandchild), "doc-1");
+            let claude = client("claude-code");
+            set_focus(&mut workspace, &claude, "doc-9");
+            assert_eq!(focus_of(&workspace, &claude), workspace.current_document(), "a focus no longer open is the current document");
+        }
     }
 
     mod window {

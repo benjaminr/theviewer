@@ -88,7 +88,9 @@ fn conventions() -> String {
     format!(
         r#"## Conventions
 
-**Documents.** Each open document has an id: `doc-1`, `doc-2` and so on. A method about a document takes `doc`: an id, the path of an open document, or `"current"`, which is also what an omitted `doc` means. `documents.list` lists the open documents. A document derived from another (a span opened on its own, a stream decompressed, an embedded file) is a document of its own, with its own id.
+**Documents.** Each open document has an id: `doc-1`, `doc-2` and so on. A method about a document takes `doc`: an id, the path of an open document, or `"current"`, the window's document (headless, the one opened or made last). A document derived from another (a span opened on its own, a stream decompressed, an embedded file) is a document of its own, with its own id.
+
+**Focus.** An omitted `doc` means the caller's focus, filled in before the method runs, so the journal entry names the document. For the person at the window it is the document shown. Every other caller keeps its own: the current document when it first calls, then the document it opens (`documents.open`, `.new`, `.open_source`) or activates (`documents.activate`), or a new sheet it asks to focus (`output: {{"new": {{"focus": true}}}}`). Making a sheet (a derive, a node opened) does not move it, nor does naming a document in a call, so a client's calls without `doc` stay on the document it was working on. `documents.list` marks the caller's focus.
 
 **Spans** are `start` and `len` in bytes, counted from 0. A span must lie inside its document, or the call fails with `out_of_range`; an omitted `len` runs to the end of the document. Where several spans are given or returned, each is a pair `[start, len]`.
 

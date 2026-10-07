@@ -37,7 +37,7 @@ fn every_edit_view_change_and_job_is_a_step_by_whoever_called() {
     let write = workspace.journal().entry(1).unwrap();
     assert_eq!((write.effect, write.doc.as_deref(), write.version_before, write.version_after), (Effect::Edit, Some("doc-1"), Some(0), Some(1)));
     assert!(write.changed_document());
-    assert_eq!(write.params, json!({"start": 0, "data": "41"}));
+    assert_eq!(write.params, json!({"doc": "doc-1", "start": 0, "data": "41"}), "an omitted doc is filled in with the caller's focus");
     assert_eq!(write.result.as_ref().unwrap()["label"], "Overwrite 1 byte", "the result is kept");
     assert!(!write.description.is_empty());
     let cursor = workspace.journal().entry(2).unwrap();

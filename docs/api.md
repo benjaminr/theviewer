@@ -64,7 +64,9 @@ let head = api::call(&mut workspace, &Caller::Cli, "bytes.read", json!({"start":
 
 ## Conventions
 
-**Documents.** Each open document has an id: `doc-1`, `doc-2` and so on. A method about a document takes `doc`: an id, the path of an open document, or `"current"`, which is also what an omitted `doc` means. `documents.list` lists the open documents. A document derived from another (a span opened on its own, a stream decompressed, an embedded file) is a document of its own, with its own id.
+**Documents.** Each open document has an id: `doc-1`, `doc-2` and so on. A method about a document takes `doc`: an id, the path of an open document, or `"current"`, the window's document (headless, the one opened or made last). A document derived from another (a span opened on its own, a stream decompressed, an embedded file) is a document of its own, with its own id.
+
+**Focus.** An omitted `doc` means the caller's focus, filled in before the method runs, so the journal entry names the document. For the person at the window it is the document shown. Every other caller keeps its own: the current document when it first calls, then the document it opens (`documents.open`, `.new`, `.open_source`) or activates (`documents.activate`), or a new sheet it asks to focus (`output: {"new": {"focus": true}}`). Making a sheet (a derive, a node opened) does not move it, nor does naming a document in a call, so a client's calls without `doc` stay on the document it was working on. `documents.list` marks the caller's focus.
 
 **Spans** are `start` and `len` in bytes, counted from 0. A span must lie inside its document, or the call fails with `out_of_range`; an omitted `len` runs to the end of the document. Where several spans are given or returned, each is a pair `[start, len]`.
 
@@ -166,15 +168,16 @@ A recipe step that starts a job waits for it (up to 10 minutes), and later steps
 
 ## Methods
 
-175 methods in 45 namespaces. The MCP column says which are listed as tools of their own by `theviewer mcp` (every one is with `--all-tools`; the rest are reached with `api_call`).
+176 methods in 45 namespaces. The MCP column says which are listed as tools of their own by `theviewer mcp` (every one is with `--all-tools`; the rest are reached with `api_call`).
 
 | Method | Effect | MCP | Summary |
 | --- | --- | --- | --- |
 | [`api.version`](#apiversion) | read |  | The API version: 1.0. Changes within a major version only add methods, optional parameters and result fields. |
 | [`api.describe`](#apidescribe) | read |  | Every method with its summary, effect, stability and the JSON schemas of its parameters and result. |
-| [`documents.list`](#documentslist) | read | core | The open documents, with their ids, names, paths, lengths and versions. |
+| [`documents.list`](#documentslist) | read | core | The open documents, with their ids, names, paths, lengths and versions, and which is your focus: what an omitted doc means for you. |
 | [`documents.info`](#documentsinfo) | read |  | One document's id, name, path, length, version and whether it has unsaved edits. |
 | [`documents.open`](#documentsopen) | view | core | Open a file by path, or an open document by id, and make it current; a file already open is made current again. In the window, a parent of the document shown is gone back to, closing what was derived from it; that, or opening another file, is refused while what it closes has unsaved edits, unless the person at the window discards them. |
+| [`documents.activate`](#documentsactivate) | view |  | Make an open document your focus, which an omitted doc means from then on; for the person at the window, show it (a parent of the document shown is gone back to, as documents.open does). |
 | [`documents.new`](#documentsnew) | view |  | Open a new, empty document and make it current; the window refuses while its document has unsaved edits, unless the person at the window discards them. |
 | [`documents.save`](#documentssave) | edit | core | Save a document over its file, or to a path, with every edit made so far. |
 | [`documents.derive`](#documentsderive) | view |  | Open bytes of a document (a span, several ranges one after another, or bytes given), or what a transform such as decompress or XOR makes of them, as a document of their own derived from it, and make it current; in the window, Back goes back to the parent. Returns the new document, and output. |
@@ -380,7 +383,7 @@ Parameters: None.
 
 ### documents.list
 
-The open documents, with their ids, names, paths, lengths and versions.
+The open documents, with their ids, names, paths, lengths and versions, and which is your focus: what an omitted doc means for you.
 
 **Effect:** `read` · **MCP tool:** `documents_list`, listed by default
 
@@ -407,6 +410,7 @@ One document's id, name, path, length, version and whether it has unsaved edits.
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `current` | boolean | yes | Whether this is the current document. |
+| `focus` | boolean | no | Whether it is the focus of the caller listing it: what an omitted `doc` means for that caller (`documents.list` says). |
 | `id` | string | yes | Stable id, such as "doc-1". |
 | `label` | string | no | A short name its maker gave it, such as "payload", which a recipe names it by. |
 | `len` | integer | yes | Length in bytes. |
@@ -434,6 +438,33 @@ Open a file by path, or an open document by id, and make it current; a file alre
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `current` | boolean | yes | Whether this is the current document. |
+| `focus` | boolean | no | Whether it is the focus of the caller listing it: what an omitted `doc` means for that caller (`documents.list` says). |
+| `id` | string | yes | Stable id, such as "doc-1". |
+| `label` | string | no | A short name its maker gave it, such as "payload", which a recipe names it by. |
+| `len` | integer | yes | Length in bytes. |
+| `made_by` | MadeBy | no | The step that made it, for a sheet made from another. |
+| `modified` | boolean | yes | Whether there are edits not saved. |
+| `name` | string | yes | File name, or the name of a derived document. |
+| `parent` | string | no | The document it was derived from, for a sheet made from another; none for one opened from a file, a source or new. |
+| `path` | string | no | Path on disk, for documents opened from a file. |
+| `version` | integer | yes | Incremented on every edit. |
+
+### documents.activate
+
+Make an open document your focus, which an omitted doc means from then on; for the person at the window, show it (a parent of the document shown is gone back to, as documents.open does).
+
+**Effect:** `view` · **MCP tool:** `documents_activate`, through `api_call`, or with `--all-tools`
+
+**History:** Journalled as a step; undone by changing back which document is current; not repeated: what it opened is open already.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `doc` | string | yes | Id or path of the open document to work on. |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `current` | boolean | yes | Whether this is the current document. |
+| `focus` | boolean | no | Whether it is the focus of the caller listing it: what an omitted `doc` means for that caller (`documents.list` says). |
 | `id` | string | yes | Stable id, such as "doc-1". |
 | `label` | string | no | A short name its maker gave it, such as "payload", which a recipe names it by. |
 | `len` | integer | yes | Length in bytes. |
@@ -460,6 +491,7 @@ Open a new, empty document and make it current; the window refuses while its doc
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `current` | boolean | yes | Whether this is the current document. |
+| `focus` | boolean | no | Whether it is the focus of the caller listing it: what an omitted `doc` means for that caller (`documents.list` says). |
 | `id` | string | yes | Stable id, such as "doc-1". |
 | `label` | string | no | A short name its maker gave it, such as "payload", which a recipe names it by. |
 | `len` | integer | yes | Length in bytes. |
@@ -486,6 +518,7 @@ Save a document over its file, or to a path, with every edit made so far.
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `current` | boolean | yes | Whether this is the current document. |
+| `focus` | boolean | no | Whether it is the focus of the caller listing it: what an omitted `doc` means for that caller (`documents.list` says). |
 | `id` | string | yes | Stable id, such as "doc-1". |
 | `label` | string | no | A short name its maker gave it, such as "payload", which a recipe names it by. |
 | `len` | integer | yes | Length in bytes. |
@@ -518,6 +551,7 @@ Open bytes of a document (a span, several ranges one after another, or bytes giv
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `current` | boolean | yes | Whether this is the current document. |
+| `focus` | boolean | no | Whether it is the focus of the caller listing it: what an omitted `doc` means for that caller (`documents.list` says). |
 | `id` | string | yes | Stable id, such as "doc-1". |
 | `label` | string | no | A short name its maker gave it, such as "payload", which a recipe names it by. |
 | `len` | integer | yes | Length in bytes. |
@@ -840,6 +874,7 @@ Open one bit plane of a span (at most 1 MiB) as a derived document: bit k of eve
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `current` | boolean | yes | Whether this is the current document. |
+| `focus` | boolean | no | Whether it is the focus of the caller listing it: what an omitted `doc` means for that caller (`documents.list` says). |
 | `id` | string | yes | Stable id, such as "doc-1". |
 | `label` | string | no | A short name its maker gave it, such as "payload", which a recipe names it by. |
 | `len` | integer | yes | Length in bytes. |
@@ -3323,6 +3358,7 @@ Open one file (or volume) of the filesystem image at an offset of the document a
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `current` | boolean | yes | Whether this is the current document. |
+| `focus` | boolean | no | Whether it is the focus of the caller listing it: what an omitted `doc` means for that caller (`documents.list` says). |
 | `id` | string | yes | Stable id, such as "doc-1". |
 | `label` | string | no | A short name its maker gave it, such as "payload", which a recipe names it by. |
 | `len` | integer | yes | Length in bytes. |
@@ -3385,6 +3421,7 @@ Open one node of the unpacked tree (by its path of child indices, as unpack.run 
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `current` | boolean | yes | Whether this is the current document. |
+| `focus` | boolean | no | Whether it is the focus of the caller listing it: what an omitted `doc` means for that caller (`documents.list` says). |
 | `id` | string | yes | Stable id, such as "doc-1". |
 | `label` | string | no | A short name its maker gave it, such as "payload", which a recipe names it by. |
 | `len` | integer | yes | Length in bytes. |
@@ -3941,6 +3978,7 @@ Open a recorded version of a document as a document derived from it; the window 
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `current` | boolean | yes | Whether this is the current document. |
+| `focus` | boolean | no | Whether it is the focus of the caller listing it: what an omitted `doc` means for that caller (`documents.list` says). |
 | `id` | string | yes | Stable id, such as "doc-1". |
 | `label` | string | no | A short name its maker gave it, such as "payload", which a recipe names it by. |
 | `len` | integer | yes | Length in bytes. |

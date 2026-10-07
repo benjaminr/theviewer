@@ -418,6 +418,9 @@ pub struct ViewerApp {
     /// Where each document derived through the API came from, by id: its
     /// parent and the step that made it.
     pub lineages: std::collections::HashMap<String, crate::api::workspace::Lineage>,
+    /// Where each client calling the API works: the document an omitted
+    /// `doc` means for it. The person's is the document shown.
+    pub foci: crate::api::workspace::Foci,
 }
 
 /// Matches of the Find box within a window of the document, for highlighting.
@@ -682,6 +685,7 @@ impl ViewerApp {
             recipe_window: Default::default(),
             journal: crate::journal::Journal::new(),
             lineages: std::collections::HashMap::new(),
+            foci: Default::default(),
         };
         if launch.restore_layout {
             app.persist_layout = true;

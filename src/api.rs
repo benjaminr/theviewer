@@ -21,8 +21,9 @@
 //!
 //! Conventions every method follows:
 //!
-//! * Documents are named by id (`doc-1`), by path, or as `"current"`, which
-//!   is also what an omitted `doc` means.
+//! * Documents are named by id (`doc-1`), by path, or as `"current"`, the
+//!   window's document. An omitted `doc` means the caller's focus (see
+//!   [`workspace::focus_of`]), filled in before the method runs.
 //! * Spans are `start` and `len` in bytes and must lie inside the document;
 //!   an omitted `len` runs to the end.
 //! * Bytes in JSON are hex strings unless `encoding` asks for `base64` or
@@ -244,6 +245,8 @@ pub struct Method {
     /// Whether it takes a `doc` parameter; filled in from the params
     /// schema when the table is built ([`METHODS`]).
     pub takes_doc: bool,
+    /// What an omitted `doc` means, for a method that takes one.
+    pub doc_default: DocDefault,
     /// Where what it produces can go, for a method that produces bytes.
     pub outputs: Option<Outputs>,
     /// Says in plain words what a call would do; its module's, filled in
@@ -271,9 +274,25 @@ impl Method {
             merge: false,
             writes_file: WritesFile::No,
             takes_doc: false,
+            doc_default: DocDefault::Focus,
             outputs: None,
             describe_call: describe_nothing,
         }
+    }
+
+    /// An omitted `doc` is left out rather than filled in with the
+    /// caller's focus: the method says what it means (`documents.open`
+    /// opens the path given).
+    pub const fn leaves_doc_out(mut self) -> Self {
+        self.doc_default = DocDefault::LeftOut;
+        self
+    }
+
+    /// An omitted `doc` is the document `chosen` names for the caller, or,
+    /// when it names none, the caller's focus.
+    pub const fn doc_defaults_to(mut self, chosen: ChooseDoc) -> Self {
+        self.doc_default = DocDefault::Chosen(chosen);
+        self
     }
 
     /// The namespace, such as `bytes` for `bytes.read`.
@@ -365,6 +384,22 @@ impl Method {
         self.journal = Journalled::Skip;
         self
     }
+}
+
+/// Chooses the document an omitted `doc` means for a caller, from the
+/// call's params, or `None` to leave it to the caller's focus.
+pub type ChooseDoc = fn(&dyn Workspace, &Caller, &Value) -> Option<String>;
+
+/// What an omitted `doc` means, for a method that takes one.
+#[derive(Clone, Copy)]
+pub enum DocDefault {
+    /// The caller's focus: filled in before the method runs, so the
+    /// journal entry names the document.
+    Focus,
+    /// Nothing: it is left out, and the method says what that means.
+    LeftOut,
+    /// The document a function chooses, else the caller's focus.
+    Chosen(ChooseDoc),
 }
 
 /// The namespace of a dotted method name.
@@ -507,6 +542,15 @@ impl MethodRef {
         match self {
             MethodRef::Builtin(method) => method.takes_doc,
             MethodRef::Registered(method) => method.params["properties"].get("doc").is_some(),
+        }
+    }
+
+    /// What an omitted `doc` means; a plugin's method's is the caller's
+    /// focus.
+    pub fn doc_default(&self) -> DocDefault {
+        match self {
+            MethodRef::Builtin(method) => method.doc_default,
+            MethodRef::Registered(_) => DocDefault::Focus,
         }
     }
 
@@ -807,13 +851,53 @@ pub fn call_permitted(workspace: &mut dyn Workspace, caller: &Caller, name: &str
 /// recorded as refused; one it would ask about fails with a `read_only`
 /// error for which [`ApiError::needs_confirmation`] holds. Every way a call
 /// runs comes here, but for [`call_or_hold`]'s holding.
+///
+/// Before the call runs ([`prepare_call`]), an omitted `doc`, for a method
+/// that takes one, is filled in with the caller's focus (or what the method
+/// chooses), so the journal entry always names the document.
+///
+/// The caller's focus is kept from its first call on (see
+/// [`workspace::pin_focus`]), and after a call succeeds it follows a
+/// document the call opened or activated, or a new sheet it asked to focus
+/// (`output: {"new": {"focus": true}}`). Neither making a sheet nor naming a
+/// document in a call moves it.
 pub fn call_as(workspace: &mut dyn Workspace, caller: &Caller, name: &str, params: Value, consent: Consent<'_>) -> Result<Value, ApiError> {
     let method = find(workspace, name)?;
-    match leave(workspace, &method, &params, consent) {
+    let params = prepare_call(workspace, caller, &method, params);
+    let focuses_sheet = workspace::asks_to_focus_the_sheet(&params);
+    let result = match leave(workspace, &method, &params, consent) {
         Leave::Granted => run_journalled(workspace, &method, caller, consent, params),
         Leave::Denied(subject) => journal::record_refusal(workspace, caller, &method, &params, permissions::denied(subject, name)),
         Leave::MustAsk(subject) => Err(permissions::needs_confirmation(subject, name)),
+    };
+    if let Ok(value) = &result {
+        workspace::follow_focus(workspace, caller, &method, focuses_sheet, value);
     }
+    result
+}
+
+/// Fill in an omitted `doc` with the caller's focus, as [`call_as`] says.
+fn prepare_call(workspace: &mut dyn Workspace, caller: &Caller, method: &MethodRef, mut params: Value) -> Value {
+    // Kept from the caller's first call, so what that call opens or derives
+    // does not move it.
+    let focus = workspace::pin_focus(workspace, caller);
+    if !method.takes_doc() {
+        return params;
+    }
+    if params.is_null() {
+        params = Value::Object(Default::default());
+    }
+    if params.get("doc").is_none_or(Value::is_null) {
+        let filled = match method.doc_default() {
+            DocDefault::LeftOut => None,
+            DocDefault::Chosen(choose) => choose(&*workspace, caller, &params).or(focus),
+            DocDefault::Focus => focus,
+        };
+        if let (Some(doc), Some(fields)) = (filled, params.as_object_mut()) {
+            fields.insert("doc".to_string(), Value::String(doc));
+        }
+    }
+    params
 }
 
 /// Whether a call may run now.
@@ -854,7 +938,7 @@ pub fn call_or_hold(workspace: &mut dyn Workspace, caller: Caller, name: &str, p
         Err(error) => return reply(workspace, Err(error)),
     };
     let result = match leave(workspace, &method, &params, Consent::CheckedAs(&caller)) {
-        Leave::Granted => run_journalled(workspace, &method, &caller, Consent::CheckedAs(&caller), params),
+        Leave::Granted => call_as(workspace, &caller, name, params, Consent::CheckedAs(&caller)),
         Leave::Denied(_) => journal::record_refusal(workspace, &caller, &method, &params, permissions::denied(&caller, name)),
         Leave::MustAsk(_) => {
             let description = method.describe_call(workspace, &params);

@@ -17,9 +17,10 @@ use crate::sources::{self, SourceSpec};
 /// This module's methods, in the order `api.describe` lists them within
 /// their namespace. A new method is added here, and only here.
 pub(super) const METHODS: &[super::Method] = &[
-    method!("documents.list", Read, list, super::values::NoParams, DocumentList, "The open documents, with their ids, names, paths, lengths and versions."),
+    method!("documents.list", Read, caller list, super::values::NoParams, DocumentList, "The open documents, with their ids, names, paths, lengths and versions, and which is your focus: what an omitted doc means for you."),
     method!("documents.info", Read, info, InfoParams, super::workspace::DocumentInfo, "One document's id, name, path, length, version and whether it has unsaved edits."),
-    method!("documents.open", View, caller open, OpenParams, super::workspace::DocumentInfo, "Open a file by path, or an open document by id, and make it current; a file already open is made current again. In the window, a parent of the document shown is gone back to, closing what was derived from it; that, or opening another file, is refused while what it closes has unsaved edits, unless the person at the window discards them.").opens_document(false),
+    method!("documents.open", View, caller open, OpenParams, super::workspace::DocumentInfo, "Open a file by path, or an open document by id, and make it current; a file already open is made current again. In the window, a parent of the document shown is gone back to, closing what was derived from it; that, or opening another file, is refused while what it closes has unsaved edits, unless the person at the window discards them.").opens_document(false).leaves_doc_out(),
+    method!("documents.activate", View, caller activate, ActivateParams, super::workspace::DocumentInfo, "Make an open document your focus, which an omitted doc means from then on; for the person at the window, show it (a parent of the document shown is gone back to, as documents.open does).").opens_document(false),
     method!("documents.new", View, caller new, NewParams, super::workspace::DocumentInfo, "Open a new, empty document and make it current; the window refuses while its document has unsaved edits, unless the person at the window discards them.").opens_document(false),
     method!("documents.save", Edit, save, SaveParams, super::workspace::DocumentInfo, "Save a document over its file, or to a path, with every edit made so far.").writes_file(crate::api::WritesFile::Always),
     method!("documents.derive", View, derive, DeriveParams, super::workspace::SheetMade, "Open bytes of a document (a span, several ranges one after another, or bytes given), or what a transform such as decompress or XOR makes of them, as a document of their own derived from it, and make it current; in the window, Back goes back to the parent. Returns the new document, and output.").makes_sheet(),
@@ -36,6 +37,7 @@ pub(super) fn examples() -> Vec<(&'static str, serde_json::Value)> {
         ("documents.list", json!({})),
         ("documents.info", json!({"doc": "current"})),
         ("documents.open", json!({"path": super::test_support::example_file().display().to_string()})),
+        ("documents.activate", json!({"doc": "doc-1"})),
         ("documents.save", json!({"path": super::test_support::example_save_path().display().to_string()})),
         ("documents.export", json!({"start": 0, "len": 40, "path": std::env::temp_dir().join(format!("theviewer-api-examples-export-{}.bin", std::process::id())).display().to_string(), "decompress": true})),
         ("documents.derive", json!({"start": 0, "len": 32, "name": "zlib stream", "transform": {"op": "decompress"}})),
@@ -122,6 +124,14 @@ pub struct OpenParams {
     /// File › Open and Back do; only the person at the window may.
     #[serde(default)]
     pub discard_unsaved: bool,
+}
+
+/// Parameters of `documents.activate`.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ActivateParams {
+    /// Id or path of the open document to work on.
+    pub doc: String,
 }
 
 /// Parameters of `documents.save`.
@@ -393,8 +403,27 @@ pub fn new(workspace: &mut dyn Workspace, caller: &Caller, params: NewParams) ->
     workspace::info(workspace, &id)
 }
 
-pub fn list(workspace: &mut dyn Workspace, _params: NoParams) -> Result<DocumentList, ApiError> {
-    Ok(DocumentList { documents: workspace.documents() })
+pub fn list(workspace: &mut dyn Workspace, caller: &Caller, _params: NoParams) -> Result<DocumentList, ApiError> {
+    let focus = workspace::focus_of(workspace, caller);
+    let mut documents = workspace.documents();
+    for document in &mut documents {
+        document.focus = focus.as_deref() == Some(document.id.as_str());
+    }
+    Ok(DocumentList { documents })
+}
+
+/// `documents.activate`: the caller's focus moves to the document once the
+/// call has succeeded, as it does for every document opened (naming a
+/// document in a call does not move it); the person's focus is the document
+/// shown, so it is shown.
+pub fn activate(workspace: &mut dyn Workspace, caller: &Caller, params: ActivateParams) -> Result<DocumentInfo, ApiError> {
+    let id = workspace::resolve(workspace, Some(&params.doc))?;
+    if matches!(caller, Caller::Panel) || workspace.foci().legacy_current {
+        workspace.switch_to(&id)?;
+    }
+    let mut info = workspace::info(workspace, &id)?;
+    info.focus = true;
+    Ok(info)
 }
 
 pub fn info(workspace: &mut dyn Workspace, params: InfoParams) -> Result<DocumentInfo, ApiError> {
@@ -527,7 +556,7 @@ mod tests {
         assert_eq!((step.method.as_str(), step.doc.as_deref(), step.made.as_slice()), ("documents.derive", Some("doc-1"), ["doc-2".to_string()].as_slice()));
         let info = call(&mut workspace, "documents.info", json!({"doc": "doc-2"})).unwrap();
         assert_eq!(info["parent"], "doc-1");
-        assert_eq!(info["made_by"], json!({"step": step.step, "method": "documents.derive", "params": {"start": 2, "len": 3}, "span": [[2, 3]]}));
+        assert_eq!(info["made_by"], json!({"step": step.step, "method": "documents.derive", "params": {"doc": "doc-1", "start": 2, "len": 3}, "span": [[2, 3]]}), "the params name the document the call was about");
         assert!(call(&mut workspace, "documents.info", json!({"doc": "doc-1"})).unwrap().get("parent").is_none(), "the file is a root");
     }
 

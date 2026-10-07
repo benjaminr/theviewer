@@ -35,7 +35,7 @@ fn a_match_found_with_find_next_is_selected_as_the_nth_match_of_the_needle() {
     app.set_cursor(1, false);
     app.find_next();
     let selected = last_entry(&app, "selection.set");
-    assert_eq!(selected.params, json!({"selection": {"range": [4, 2]}}), "the step's own params are unchanged");
+    assert_eq!(selected.params["selection"], json!({"range": [4, 2]}), "the step's own params are unchanged");
     let text = Needle::Text("PK".into());
     let expected = DerivedFrom::from([("selection.range[0]".into(), find(text.clone(), 1, None)), ("selection.range[1]".into(), find(text, 1, Some(Part::Len)))]);
     assert_eq!(selected.derived_from, expected);

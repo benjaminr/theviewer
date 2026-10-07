@@ -740,7 +740,7 @@ mod tests {
         assert_eq!(app.document.undo_label(), Some("Replace 5 bytes by plugin:uppercase_selection.lua"));
         let step = app.journal.entries().rev().find(|entry| entry.method == "bytes.replace").expect("the edit is in the journal");
         assert_eq!(step.caller, "plugin:uppercase_selection.lua");
-        assert_eq!(step.params, json!({"start": 6, "len": 5, "data": "574f524c44"}));
+        assert_eq!(step.params, json!({"doc": step.doc, "start": 6, "len": 5, "data": "574f524c44"}));
     }
 
     #[test]
