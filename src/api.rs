@@ -24,6 +24,9 @@
 //! * Documents are named by id (`doc-1`), by path, or as `"current"`, the
 //!   window's document. An omitted `doc` means the caller's focus (see
 //!   [`workspace::focus_of`]), filled in before the method runs.
+//! * Any parameter may be an anchor, `{"$anchor": …}` (or `{"$var": name}`,
+//!   `{"$sheet": step or label}`), resolved before the method runs and
+//!   recorded as the call's provenance (see [`call_as`]).
 //! * Spans are `start` and `len` in bytes and must lie inside the document;
 //!   an omitted `len` runs to the end.
 //! * Bytes in JSON are hex strings unless `encoding` asks for `base64` or
@@ -100,6 +103,7 @@ pub mod selection;
 pub mod structure;
 pub mod tools;
 pub mod values;
+pub mod vars;
 pub mod view;
 pub mod workspace;
 
@@ -247,6 +251,10 @@ pub struct Method {
     pub takes_doc: bool,
     /// What an omitted `doc` means, for a method that takes one.
     pub doc_default: DocDefault,
+    /// Whether the anchors marked in its params are resolved when it is
+    /// called; not for a method whose params carry other calls or a recipe,
+    /// whose anchors are theirs ([`Method::passes_anchors_on`]).
+    pub resolves_anchors: bool,
     /// Where what it produces can go, for a method that produces bytes.
     pub outputs: Option<Outputs>,
     /// Says in plain words what a call would do; its module's, filled in
@@ -275,6 +283,7 @@ impl Method {
             writes_file: WritesFile::No,
             takes_doc: false,
             doc_default: DocDefault::Focus,
+            resolves_anchors: true,
             outputs: None,
             describe_call: describe_nothing,
         }
@@ -285,6 +294,14 @@ impl Method {
     /// opens the path given).
     pub const fn leaves_doc_out(mut self) -> Self {
         self.doc_default = DocDefault::LeftOut;
+        self
+    }
+
+    /// Its params carry other calls or a recipe (`history.transaction`,
+    /// `recipes.run`), whose anchors are resolved when those run: only its
+    /// own `doc`'s anchor is resolved when it is called.
+    pub const fn passes_anchors_on(mut self) -> Self {
+        self.resolves_anchors = false;
         self
     }
 
@@ -545,6 +562,15 @@ impl MethodRef {
         }
     }
 
+    /// Whether the anchors marked in its params are resolved when it is
+    /// called; a plugin's are.
+    pub fn resolves_anchors(&self) -> bool {
+        match self {
+            MethodRef::Builtin(method) => method.resolves_anchors,
+            MethodRef::Registered(_) => true,
+        }
+    }
+
     /// What an omitted `doc` means; a plugin's method's is the caller's
     /// focus.
     pub fn doc_default(&self) -> DocDefault {
@@ -746,6 +772,7 @@ const PARTS: &[Part] = &[
     part!(history),
     part!(provenance),
     part!(recipes),
+    part!(vars),
 ];
 
 /// For modules whose calls need no description of their own.
@@ -852,9 +879,18 @@ pub fn call_permitted(workspace: &mut dyn Workspace, caller: &Caller, name: &str
 /// error for which [`ApiError::needs_confirmation`] holds. Every way a call
 /// runs comes here, but for [`call_or_hold`]'s holding.
 ///
-/// Before the call runs ([`prepare_call`]), an omitted `doc`, for a method
-/// that takes one, is filled in with the caller's focus (or what the method
-/// chooses), so the journal entry always names the document.
+/// Before the call runs ([`prepare_call`]):
+///
+/// * **Anchors** marked anywhere in `params` (`{"$anchor": …}`, `{"$var":
+///   name}`, `{"$sheet": step or label}`) are resolved against the live
+///   session, `doc`'s first: step and pick anchors read the journal's
+///   entries (a read they cite becomes a step), sheet anchors the sheets
+///   the session's steps made. The call runs on the values, which its
+///   journal entry keeps in `params`, with the anchors as its
+///   `derived_from`, so a recipe made from it finds them again.
+/// * **The document.** An omitted `doc`, for a method that takes one, is
+///   filled in with the caller's focus (or what the method chooses), so the
+///   journal entry always names the document.
 ///
 /// The caller's focus is kept from its first call on (see
 /// [`workspace::pin_focus`]), and after a call succeeds it follows a
@@ -863,31 +899,52 @@ pub fn call_permitted(workspace: &mut dyn Workspace, caller: &Caller, name: &str
 /// document in a call moves it.
 pub fn call_as(workspace: &mut dyn Workspace, caller: &Caller, name: &str, params: Value, consent: Consent<'_>) -> Result<Value, ApiError> {
     let method = find(workspace, name)?;
-    let params = prepare_call(workspace, caller, &method, params);
+    let prepared = match prepare_call(workspace, caller, &method, params) {
+        Ok(prepared) => prepared,
+        Err((params, error)) => return journal::record_refusal(workspace, caller, &method, &params, error),
+    };
+    let PreparedCall { params, derived_from } = prepared;
     let focuses_sheet = workspace::asks_to_focus_the_sheet(&params);
+    let outermost = workspace.journal_mut().provide_for_next_call(derived_from);
     let result = match leave(workspace, &method, &params, consent) {
         Leave::Granted => run_journalled(workspace, &method, caller, consent, params),
         Leave::Denied(subject) => journal::record_refusal(workspace, caller, &method, &params, permissions::denied(subject, name)),
         Leave::MustAsk(subject) => Err(permissions::needs_confirmation(subject, name)),
     };
+    if outermost {
+        // A call that never ran leaves its provenance for none other.
+        workspace.journal_mut().take_pending_provenance();
+    }
     if let Ok(value) = &result {
         workspace::follow_focus(workspace, caller, &method, focuses_sheet, value);
     }
     result
 }
 
-/// Fill in an omitted `doc` with the caller's focus, as [`call_as`] says.
-fn prepare_call(workspace: &mut dyn Workspace, caller: &Caller, method: &MethodRef, mut params: Value) -> Value {
+/// A call ready to run: its params with anchors resolved and `doc` filled
+/// in, and where those anchors came from.
+struct PreparedCall {
+    params: Value,
+    derived_from: journal::DerivedFrom,
+}
+
+/// Resolve the anchors marked in `params` and fill in an omitted `doc`, as
+/// [`call_as`] says. On failure, the params as far as they were prepared,
+/// and why.
+fn prepare_call(workspace: &mut dyn Workspace, caller: &Caller, method: &MethodRef, mut params: Value) -> Result<PreparedCall, (Value, ApiError)> {
+    let takes_doc = method.takes_doc();
     // Kept from the caller's first call, so what that call opens or derives
     // does not move it.
     let focus = workspace::pin_focus(workspace, caller);
-    if !method.takes_doc() {
-        return params;
-    }
-    if params.is_null() {
+    if takes_doc && params.is_null() {
         params = Value::Object(Default::default());
     }
-    if params.get("doc").is_none_or(Value::is_null) {
+    let mut live = journal::anchors::live::LiveAnchors::new(caller);
+    let mut derived_from = match live.resolve_doc(workspace, &mut params) {
+        Ok(derived_from) => derived_from,
+        Err(error) => return Err((params, error)),
+    };
+    if takes_doc && params.get("doc").is_none_or(Value::is_null) {
         let filled = match method.doc_default() {
             DocDefault::LeftOut => None,
             DocDefault::Chosen(choose) => choose(&*workspace, caller, &params).or(focus),
@@ -897,7 +954,13 @@ fn prepare_call(workspace: &mut dyn Workspace, caller: &Caller, method: &MethodR
             fields.insert("doc".to_string(), Value::String(doc));
         }
     }
-    params
+    if method.resolves_anchors() {
+        match live.resolve_rest(workspace, &mut params) {
+            Ok(resolved) => derived_from.extend(resolved),
+            Err(error) => return Err((params, error)),
+        }
+    }
+    Ok(PreparedCall { params, derived_from })
 }
 
 /// Whether a call may run now.

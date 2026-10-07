@@ -12,8 +12,10 @@
 //! fallback, citing a read that is first moved into the journal with
 //! [`super::promote`].
 //!
-//! **Clients** (MCP, Ask, Lua) carry no provenance in band: a call's params
-//! are the method's own. A client that used an earlier result says so
+//! **Clients** (MCP, Ask, Lua) carry provenance in band by passing anchors
+//! in place of literals (`{"$anchor": …}`, `{"$var": name}`, `{"$sheet":
+//! N}`), which the call resolves and records (see [`crate::api::call_as`]).
+//! A client that passed a literal it took from an earlier result can say so
 //! afterwards with `history.make_anchor {step, path, anchor}`, which also
 //! promotes a cited read; `history.suggest_anchors` offers the anchors that
 //! fit a step's literals.
@@ -32,9 +34,13 @@
 //!
 //! * each literal at a `derived_from` path becomes `{"$anchor": …}`; a path
 //!   the params no longer hold (summarised, say) stays literal;
-//! * steps are numbered 1, 2, 3… in step order, and step anchors are
-//!   renumbered to match; a step anchor citing a step the recipe does not
-//!   hold (failed, left out or dropped) stays literal;
+//! * steps are numbered 1, 2, 3… in step order, and step anchors (and the
+//!   steps of picks and thens) are renumbered to match; an anchor citing a
+//!   step the recipe does not hold (failed, left out or dropped) stays
+//!   literal;
+//! * a step that reads a variable brings the `vars.set` step that bound it,
+//!   and a parameter whose default is an anchor brings the steps that
+//!   anchor cites;
 //! * each [`Anchor::Param`] declares its parameter: the type and default
 //!   from the literal (or as `history.make_parameter` gave them), its
 //!   description as given;
@@ -172,7 +178,7 @@ pub fn with_part(anchor: &Anchor, part: Part) -> Anchor {
     let mut anchor = anchor.clone();
     match &mut anchor {
         Anchor::Find { part: kept, .. } | Anchor::Structure { part: kept, .. } | Anchor::Finding { part: kept, .. } | Anchor::Selection { part: kept, .. } => *kept = Some(part),
-        Anchor::Step { .. } | Anchor::Param { .. } | Anchor::Sheet { .. } => {}
+        Anchor::Step { .. } | Anchor::Param { .. } | Anchor::Sheet { .. } | Anchor::Pick { .. } | Anchor::Then { .. } | Anchor::Var { .. } => {}
     }
     anchor
 }
@@ -365,7 +371,7 @@ pub fn make_parameter(workspace: &mut dyn Workspace, step: u64, path: &str, name
     if let Some(earlier) = workspace.journal().parameters().get(name).filter(|earlier| earlier.kind != kind) {
         return Err(ApiError::invalid_params(format!("the parameter '{name}' is already of type {}", earlier.kind.name())));
     }
-    let parameter = RecipeParameter { kind, description: description.unwrap_or_default(), default: Some(value) };
+    let parameter = RecipeParameter { kind, description: description.unwrap_or_default(), default: Some(value), default_anchor: None };
     workspace.journal_mut().declare_parameter(name, parameter.clone());
     let change = make_anchor(workspace, step, path, Anchor::Param { param: name.to_string() })?;
     Ok((change, parameter))
@@ -505,6 +511,20 @@ impl SheetLineage {
     pub fn maker_of(&self, doc: &str) -> Option<u64> {
         self.made.get(doc).map(|maker| maker.step)
     }
+
+    /// The sheets as a run's anchors name them: by the step that made them,
+    /// and by label.
+    pub fn as_run_sheets(&self) -> anchors::RunSheets {
+        let mut sheets = anchors::RunSheets::default();
+        for (doc, maker) in &self.made {
+            let made = sheets.made.entry(maker.step).or_default();
+            made.push(doc.clone());
+            if let Some(label) = &maker.label {
+                sheets.labels.insert(label.clone(), doc.clone());
+            }
+        }
+        sheets
+    }
 }
 
 /// The id of the document a step that opens one opened, as its result
@@ -591,8 +611,8 @@ impl Recipe {
                 let Ok(Some(literal)) = anchors::value_at(&step.params, path).map(|value| value.cloned()) else { continue };
                 if let Anchor::Param { param } = &anchor {
                     let Some(kind) = parameter_type_of(&literal) else { continue };
-                    let declared = declared.get(param).cloned();
-                    let parameter = declared.unwrap_or(RecipeParameter { kind, description: String::new(), default: Some(literal.clone()) });
+                    let mut parameter = declared.get(param).cloned().unwrap_or(RecipeParameter { kind, description: String::new(), default: Some(literal.clone()), default_anchor: None });
+                    parameter.default_anchor = parameter.default_anchor.as_ref().and_then(|default| renumbered(default, &numbers));
                     recipe.parameters.entry(param.clone()).or_insert(parameter);
                 }
                 let _ = anchors::replace_at(&mut step.params, path, anchors::marked(&anchor));
@@ -702,16 +722,20 @@ fn sheet_anchor(doc: &str, entry: &JournalEntry, lineage: &SheetLineage, numbers
     Ok(Anchor::Sheet { sheet })
 }
 
-/// The entries numbered `steps`, and every earlier entry their step anchors
+/// The entries numbered `steps`, and every earlier entry their anchors
 /// cite (and those cite), in step order.
 pub fn with_cited_steps<'a>(journal: &'a Journal, steps: &[u64]) -> Vec<&'a JournalEntry> {
     with_cited_steps_and_sheets(journal, steps, &SheetLineage::default())
 }
 
 /// [`with_cited_steps`], and the steps in effect that made the sheets they
-/// name (and those sheets' parents), so a recipe makes them again.
+/// name (and those sheets' parents), so a recipe makes them again. An anchor
+/// cites the steps its step and pick anchors read, the `vars.set` step that
+/// bound a variable it reads, and, for a parameter whose default is an
+/// anchor, the steps that anchor cites.
 fn with_cited_steps_and_sheets<'a>(journal: &'a Journal, steps: &[u64], lineage: &SheetLineage) -> Vec<&'a JournalEntry> {
     let timeline = journal.timeline();
+    let sheets = lineage.as_run_sheets();
     let mut wanted: BTreeSet<u64> = BTreeSet::new();
     let mut pending: Vec<u64> = steps.to_vec();
     while let Some(step) = pending.pop() {
@@ -720,8 +744,13 @@ fn with_cited_steps_and_sheets<'a>(journal: &'a Journal, steps: &[u64], lineage:
             continue;
         }
         for anchor in entry.derived_from.values() {
-            if let Anchor::Step { step: cited, .. } = anchor {
-                pending.push(*cited);
+            let default = match anchor {
+                Anchor::Param { param } => journal.parameters().get(param).and_then(|parameter| parameter.default_anchor.clone()),
+                _ => None,
+            };
+            for anchor in std::iter::once(anchor).chain(default.as_ref()) {
+                pending.extend(anchor.cited_steps(&sheets));
+                pending.extend(anchor.variables().iter().filter_map(|name| binding_step(journal, name, step)));
             }
         }
         for (_, doc) in documents_named(entry) {
@@ -733,14 +762,22 @@ fn with_cited_steps_and_sheets<'a>(journal: &'a Journal, steps: &[u64], lineage:
     wanted.into_iter().filter_map(|step| journal.entry(step)).collect()
 }
 
-/// `anchor` with its step renumbered as the recipe numbers it; `None` when
-/// it cites a step the recipe does not hold.
+/// The latest step in effect before `before` that bound variable `name`
+/// with `vars.set`.
+fn binding_step(journal: &Journal, name: &str, before: u64) -> Option<u64> {
+    let timeline = journal.timeline();
+    journal
+        .entries()
+        .rev()
+        .filter(|entry| entry.step < before && entry.method == "vars.set" && entry.outcome.is_ok() && timeline.is_active(entry.step))
+        .find(|entry| entry.params.get("name").and_then(Value::as_str) == Some(name))
+        .map(|entry| entry.step)
+}
+
+/// `anchor` with its steps renumbered as the recipe numbers them; `None`
+/// when it cites a step the recipe does not hold.
 fn renumbered(anchor: &Anchor, numbers: &BTreeMap<u64, u64>) -> Option<Anchor> {
-    match anchor {
-        Anchor::Step { step, path } => numbers.get(step).map(|number| Anchor::Step { step: *number, path: path.clone() }),
-        Anchor::Sheet { sheet: SheetRef::Step { step, nth } } => numbers.get(step).map(|number| Anchor::Sheet { sheet: SheetRef::Step { step: *number, nth: *nth } }),
-        other => Some(other.clone()),
-    }
+    anchor.renumbered(&|step| numbers.get(&step).copied())
 }
 
 // ---------------------------------------------------------------------------

@@ -92,6 +92,8 @@ fn conventions() -> String {
 
 **Focus.** An omitted `doc` means the caller's focus, filled in before the method runs, so the journal entry names the document. For the person at the window it is the document shown. Every other caller keeps its own: the current document when it first calls, then the document it opens (`documents.open`, `.new`, `.open_source`) or activates (`documents.activate`), or a new sheet it asks to focus (`output: {{"new": {{"focus": true}}}}`). Making a sheet (a derive, a node opened) does not move it, nor does naming a document in a call, so a client's calls without `doc` stay on the document it was working on. `documents.list` marks the caller's focus.
 
+**Anchors at call time.** Any parameter may be an anchor in place of a literal: `{{"$anchor": …}}`, or the shorthands `{{"$var": "serial"}}` (a variable bound with `vars.set`) and `{{"$sheet": 7}}` or `{{"$sheet": "payload"}}` (the sheet step 7 made, or the one labelled so). They are resolved against the session before the method runs (`doc`'s first), and the journal entry keeps both the values, in `params`, and the anchors, in `derived_from`, so a recipe made from it finds the values again on the next file. Step and pick anchors cite earlier steps by number; a read they cite becomes a step of the journal. The kinds of anchor are in [Recipes](recipes.md#anchors).
+
 **Spans** are `start` and `len` in bytes, counted from 0. A span must lie inside its document, or the call fails with `out_of_range`; an omitted `len` runs to the end of the document. Where several spans are given or returned, each is a pair `[start, len]`.
 
 **Bit spans** are `bit_start` and `bit_len`: the byte offset times 8 plus the bit within that byte, counted in the call's `order`, `"msb"` (the default: the most significant bit of each byte first) or `"lsb"`.
@@ -368,6 +370,7 @@ fn reversed(reverse: Reverse) -> &'static str {
         Reverse::ClearTemplate | Reverse::PinTemplate => "the template pinned over the document (when the call pins or clears one)",
         Reverse::Decoding => "how the packet set decodes",
         Reverse::PublishFindings | Reverse::RetractFindings => "the findings its caller published under that key",
+        Reverse::Variable => "the value bound to the variable",
     }
 }
 

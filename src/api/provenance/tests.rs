@@ -174,3 +174,62 @@ fn a_recipe_recorded_on_one_file_splits_another_where_its_match_is_elsewhere() {
     let offsets = packet_offsets(&mut other, &set);
     assert_eq!(offsets, (0..8).map(|record| 77 + record * 8).collect::<Vec<u64>>());
 }
+
+// ---------------------------------------------------------------------------
+// Values bound at call time, and found again by a recipe
+// ---------------------------------------------------------------------------
+
+/// A firmware-like file: a unit serial among its strings, then after
+/// "CONFIG:" a config XORed with that serial.
+fn firmware_with_serial(serial: &str) -> Vec<u8> {
+    let config = b"[camera]\nflag=FLAG{bound}\n";
+    let key = serial.as_bytes();
+    let mut bytes = b"\x00\x01novacamd v2.1\x00\x00".to_vec();
+    bytes.extend(serial.as_bytes());
+    bytes.extend(b"\x00\x00\x00CONFIG:");
+    bytes.extend(config.iter().enumerate().map(|(index, byte)| byte ^ key[index % key.len()]));
+    bytes
+}
+
+/// The config's length, as [`firmware_with_serial`] writes it.
+const CONFIG_LEN: u64 = 26;
+
+/// A session that finds the strings, binds the serial with a pick over
+/// them, and XORs the config with it as hex, all as an MCP client passing
+/// anchors; returns the strings step.
+fn bind_serial_and_decrypt(workspace: &mut crate::api::HeadlessWorkspace) -> u64 {
+    let client = Caller::Mcp("claude-code".into());
+    let started = api::call(workspace, &client, "strings.find", json!({"min_chars": 5})).unwrap();
+    let strings = workspace.journal().last_step().unwrap();
+    crate::journal::replay::wait_for_job(workspace, started["job"].as_str().unwrap()).unwrap();
+    let serial = json!({"$anchor": {"pick": {"step": strings, "list": "job.strings", "where": {"text": {"regex": "^NC500-[0-9A-F]{8}$"}}, "field": "text"}}});
+    api::call(workspace, &client, "vars.set", json!({"name": "serial", "value": serial})).unwrap();
+    let start = json!({"$anchor": {"of": {"find": {"text": "CONFIG:"}}, "then": [{"add": 7}]}});
+    let key = json!({"$anchor": {"of": {"var": "serial"}, "then": [{"encode": "text_to_hex"}]}});
+    api::call(workspace, &client, "transform.apply", json!({"selection": {"range": [start, CONFIG_LEN]}, "operation": {"op": "xor", "key": key}})).unwrap();
+    strings
+}
+
+fn config_of(workspace: &mut crate::api::HeadlessWorkspace) -> String {
+    let at = call(workspace, "search.find", json!({"query": "CONFIG:", "mode": "text"})).unwrap()["at"].as_u64().unwrap() + 7;
+    call(workspace, "bytes.read", json!({"doc": "doc-1", "start": at, "len": CONFIG_LEN, "encoding": "text"})).unwrap()["data"].as_str().unwrap().to_string()
+}
+
+#[test]
+fn a_serial_bound_from_one_file_s_strings_decrypts_the_config_of_another_through_its_recipe() {
+    let mut recorded = workspace_with("novacam_2.1.0.upd", &firmware_with_serial("NC500-8D98EE98"));
+    bind_serial_and_decrypt(&mut recorded);
+    assert_eq!(config_of(&mut recorded), "[camera]\nflag=FLAG{bound}\n");
+    let recipe = call(&mut recorded, "history.recipe", json!({"name": "Config"})).unwrap();
+    let methods: Vec<&str> = recipe["steps"].as_array().unwrap().iter().map(|step| step["method"].as_str().unwrap()).collect();
+    assert_eq!(methods, ["strings.find", "vars.set", "transform.apply"]);
+    assert_eq!(recipe["recipe"], 2, "picks, thens and variables are format 2");
+    assert_eq!(recipe["steps"][1]["params"]["value"]["$anchor"]["pick"]["step"], 1, "the pick names the strings step by its number in the recipe");
+    assert_eq!(recipe["steps"][2]["params"]["operation"]["key"], json!({"$anchor": {"of": {"var": "serial"}, "then": [{"encode": "text_to_hex"}]}}));
+
+    let mut other = workspace_with("novacam_2.1.0.upd", &firmware_with_serial("NC500-2F357657"));
+    let report = call(&mut other, "recipes.run", json!({"recipe": recipe})).unwrap();
+    assert!(report.get("stopped").is_none(), "{report}");
+    assert_eq!(report["steps"][1]["result"]["value"], "NC500-2F357657", "the variant's own serial");
+    assert_eq!(config_of(&mut other), "[camera]\nflag=FLAG{bound}\n");
+}

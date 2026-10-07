@@ -61,7 +61,7 @@ fn a_recipe_with_anchors_puts_each_recorded_provenance_in_place_of_its_literal()
     assert_eq!(recipe.steps[1].params["start"], json!({"$anchor": {"step": 1, "path": "result.matches[0]"}}), "the step anchor names the recipe's own step");
     assert_eq!(recipe.steps[1].params["record_len"], json!({"$anchor": {"param": "record"}}));
     assert_eq!(recipe.steps[1].params["len"], 400, "a value with no provenance stays literal");
-    assert_eq!(recipe.parameters["record"], RecipeParameter { kind: ParameterType::Integer, description: String::new(), default: Some(json!(12)) });
+    assert_eq!(recipe.parameters["record"], RecipeParameter { kind: ParameterType::Integer, description: String::new(), default: Some(json!(12)), default_anchor: None });
     assert!(recipe.steps.iter().all(|step| step.params.get("doc").is_none()), "the recorded document is the one the recipe runs on");
     assert_eq!(anchors_in(&recipe.steps[2].params), [("selection.range[0]".to_string(), find_7ea5(1))]);
     assert_eq!(recipe.recorded_on.as_ref().map(|file| file.name.as_str()), Some("flight-03.bin"));
@@ -70,7 +70,7 @@ fn a_recipe_with_anchors_puts_each_recorded_provenance_in_place_of_its_literal()
 #[test]
 fn a_parameter_declared_for_the_session_keeps_its_description_and_type() {
     let entries = [entry(2, "transform.apply", json!({"selection": {"range": [0, 4]}, "operation": {"op": "xor", "key": "5A"}}), DerivedFrom::from([("operation.key".into(), Anchor::Param { param: "key".into() })]))];
-    let declared = BTreeMap::from([("key".to_string(), RecipeParameter { kind: ParameterType::String, description: "XOR key, hex".into(), default: Some(json!("5A")) })]);
+    let declared = BTreeMap::from([("key".to_string(), RecipeParameter { kind: ParameterType::String, description: "XOR key, hex".into(), default: Some(json!("5A")), default_anchor: None })]);
     let recipe = Recipe::with_anchors("Unmask", &session(), &entries, &declared, &SheetLineage::default()).unwrap();
     assert_eq!(recipe.parameters, declared);
 }

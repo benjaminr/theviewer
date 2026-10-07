@@ -446,6 +446,19 @@ pub struct Journal {
     /// descriptions and types, kept until a recipe is built (see
     /// [`provenance`]).
     parameters: BTreeMap<String, recipe::RecipeParameter>,
+    /// The session's variables, by name: values bound with `vars.set`,
+    /// which `{"var": name}` anchors read.
+    variables: BTreeMap<String, Binding>,
+}
+
+/// A value bound to a variable with `vars.set`: a clipboard with
+/// provenance, the step that bound it carrying where the value came from.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct Binding {
+    pub value: Value,
+    /// The step that bound it, when that was recorded as one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step: Option<u64>,
 }
 
 impl Default for Journal {
@@ -480,7 +493,43 @@ impl Journal {
             reads_bytes: 0,
             timeline: Timeline::default(),
             parameters: BTreeMap::new(),
+            variables: BTreeMap::new(),
         }
+    }
+
+    /// The session's variables, by name.
+    pub fn variables(&self) -> &BTreeMap<String, Binding> {
+        &self.variables
+    }
+
+    /// The value bound to variable `name`, if any.
+    pub fn variable(&self, name: &str) -> Option<&Binding> {
+        self.variables.get(name)
+    }
+
+    /// Bind `value` to variable `name`, by `step`; returns what it replaced.
+    pub fn bind_variable(&mut self, name: &str, value: Value, step: Option<u64>) -> Option<Binding> {
+        self.revision += 1;
+        self.variables.insert(name.to_string(), Binding { value, step })
+    }
+
+    /// Remove variable `name`'s binding (every binding when `None`);
+    /// returns the names unbound.
+    pub fn unbind_variables(&mut self, name: Option<&str>) -> Vec<String> {
+        let unbound: Vec<String> = match name {
+            Some(name) => self.variables.remove(name).map(|_| name.to_string()).into_iter().collect(),
+            None => std::mem::take(&mut self.variables).into_keys().collect(),
+        };
+        if !unbound.is_empty() {
+            self.revision += 1;
+        }
+        unbound
+    }
+
+    /// The step the call running now will be recorded as, when it is the
+    /// outermost call and so recorded as one.
+    pub fn step_being_recorded(&self) -> Option<u64> {
+        self.records_the_call_running_now().then(|| self.next_step())
     }
 
     /// The session header: API version, plugins and documents.
@@ -572,6 +621,20 @@ impl Journal {
     /// Take back provenance no call has taken, after a call that never ran.
     pub fn take_pending_provenance(&mut self) -> Option<DerivedFrom> {
         self.pending_provenance.take()
+    }
+
+    /// Add `derived_from`, the anchors a call about to start was given, to
+    /// the provenance the next recorded call takes, when that call is the
+    /// outermost (a call inside another is part of that one's step). Returns
+    /// whether it is.
+    pub fn provide_for_next_call(&mut self, derived_from: DerivedFrom) -> bool {
+        if self.depth > 0 {
+            return false;
+        }
+        if !derived_from.is_empty() {
+            self.pending_provenance.get_or_insert_with(DerivedFrom::new).extend(derived_from);
+        }
+        true
     }
 
     /// Whether a call of a setter that merges its repeats, `method` by

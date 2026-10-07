@@ -46,9 +46,9 @@ use crate::recipes::{self, RecipeSummary};
 pub(super) const METHODS: &[super::Method] = &[
     method!("recipes.list", Read, list, NoParams, ListResult, "The recipes saved in ~/.config/theviewer/recipes/: each one's name, description, steps and the parameters it asks for."),
     method!("recipes.describe", Read, describe, DescribeParams, DescribeResult, "One recipe in full, by name or path, with what to know before running it here: another API version, a plugin missing or changed, a method this build lacks, or mistakes in its anchors."),
-    method!("recipes.save", Read, save, SaveParams, SaveResult, "Save a recipe in ~/.config/theviewer/recipes/, given whole or made from steps of this session's journal, to run later on other files.").writes_file(crate::api::WritesFile::Always),
-    method!("recipes.preview", Read, preview, RunParams, RunReport, "What a recipe would do to a document, without changing anything: each step described with its anchors resolved on this file, and where the run would stop."),
-    method!("recipes.run", Edit, consent run, RunParams, RunReport, "Run a recipe on a document, each step called as recipe:NAME with its anchors resolved on this file, waiting for the jobs steps start; its edits undo as one step, and the first failure stops it with which step and why."),
+    method!("recipes.save", Read, save, SaveParams, SaveResult, "Save a recipe in ~/.config/theviewer/recipes/, given whole or made from steps of this session's journal, to run later on other files.").writes_file(crate::api::WritesFile::Always).passes_anchors_on(),
+    method!("recipes.preview", Read, preview, RunParams, RunReport, "What a recipe would do to a document, without changing anything: each step described with its anchors resolved on this file, and where the run would stop.").passes_anchors_on(),
+    method!("recipes.run", Edit, consent run, RunParams, RunReport, "Run a recipe on a document, each step called as recipe:NAME with its anchors resolved on this file, waiting for the jobs steps start; its edits undo as one step, and the first failure stops it with which step and why.").passes_anchors_on(),
 ];
 
 /// An example call of each of [`METHODS`], run in order on a fresh

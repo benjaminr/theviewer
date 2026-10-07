@@ -79,7 +79,7 @@ fn loading_warns_about_plugins_another_api_and_methods_this_build_lacks() {
     let mut recipe = sync_recipe();
     recipe.plugins = vec![RecordedPlugin { name: "acme_telemetry.lua".into(), sha256: "ab".into() }];
     recipe.steps[0].method = "acme.find_frames".into();
-    recipe.parameters.insert("length_hex".into(), crate::journal::recipe::RecipeParameter { kind: crate::journal::recipe::ParameterType::String, description: String::new(), default: None });
+    recipe.parameters.insert("length_hex".into(), crate::journal::recipe::RecipeParameter { kind: crate::journal::recipe::ParameterType::String, description: String::new(), default: None, default_anchor: None });
     let found = warnings(&workspace(), &recipe);
     assert_eq!(found.len(), 2, "{found:?}");
     assert!(found[0].contains("the plugin acme_telemetry.lua the recipe was recorded with is not loaded"));
@@ -169,7 +169,7 @@ fn the_window_previews_then_runs_the_chosen_recipe_without_asking_about_each_ste
     let dir = temp_dir("window");
     use_dir_for_this_thread(dir.clone());
     let mut recipe = sync_recipe();
-    recipe.parameters.insert("length_hex".into(), crate::journal::recipe::RecipeParameter { kind: crate::journal::recipe::ParameterType::String, description: "Hex".into(), default: Some(json!("0a0b")) });
+    recipe.parameters.insert("length_hex".into(), crate::journal::recipe::RecipeParameter { kind: crate::journal::recipe::ParameterType::String, description: "Hex".into(), default: Some(json!("0a0b")), default_anchor: None });
     save(&dir, &recipe, false).unwrap();
     let mut app = crate::app::ViewerApp::new(crate::app::Launch::default());
     app.open_bytes(b"..\x7e\xa5\x00\x00".to_vec(), "frames.bin".to_string());

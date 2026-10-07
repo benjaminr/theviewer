@@ -40,7 +40,7 @@ pub(super) const METHODS: &[super::Method] = &[
     method!("transform.preview", Read, preview_transform, PreviewParams, PreviewResult, "What transform.apply would write into each range of a selection, without changing anything."),
     method!("history.undo", Edit, caller undo, HistoryParams, HistoryResult, "Undo the document's last step, whoever made it, and put the cursor where it was.").moves_along_the_timeline(crate::api::Move::Undo),
     method!("history.redo", Edit, caller redo, HistoryParams, HistoryResult, "Redo the last step undone, and put the cursor where it was.").moves_along_the_timeline(crate::api::Move::Redo),
-    method!("history.transaction", Edit, caller transaction, TransactionParams, TransactionResult, "Run several calls on one document as one undoable step; when one fails, every change the others made is reversed."),
+    method!("history.transaction", Edit, caller transaction, TransactionParams, TransactionResult, "Run several calls on one document as one undoable step; when one fails, every change the others made is reversed.").passes_anchors_on(),
 ];
 
 /// An example call of each of [`METHODS`], run in order on a fresh

@@ -68,6 +68,8 @@ let head = api::call(&mut workspace, &Caller::Cli, "bytes.read", json!({"start":
 
 **Focus.** An omitted `doc` means the caller's focus, filled in before the method runs, so the journal entry names the document. For the person at the window it is the document shown. Every other caller keeps its own: the current document when it first calls, then the document it opens (`documents.open`, `.new`, `.open_source`) or activates (`documents.activate`), or a new sheet it asks to focus (`output: {"new": {"focus": true}}`). Making a sheet (a derive, a node opened) does not move it, nor does naming a document in a call, so a client's calls without `doc` stay on the document it was working on. `documents.list` marks the caller's focus.
 
+**Anchors at call time.** Any parameter may be an anchor in place of a literal: `{"$anchor": …}`, or the shorthands `{"$var": "serial"}` (a variable bound with `vars.set`) and `{"$sheet": 7}` or `{"$sheet": "payload"}` (the sheet step 7 made, or the one labelled so). They are resolved against the session before the method runs (`doc`'s first), and the journal entry keeps both the values, in `params`, and the anchors, in `derived_from`, so a recipe made from it finds the values again on the next file. Step and pick anchors cite earlier steps by number; a read they cite becomes a step of the journal. The kinds of anchor are in [Recipes](recipes.md#anchors).
+
 **Spans** are `start` and `len` in bytes, counted from 0. A span must lie inside its document, or the call fails with `out_of_range`; an omitted `len` runs to the end of the document. Where several spans are given or returned, each is a pair `[start, len]`.
 
 **Bit spans** are `bit_start` and `bit_len`: the byte offset times 8 plus the bit within that byte, counted in the call's `order`, `"msb"` (the default: the most significant bit of each byte first) or `"lsb"`.
@@ -168,7 +170,7 @@ A recipe step that starts a job waits for it (up to 10 minutes), and later steps
 
 ## Methods
 
-176 methods in 45 namespaces. The MCP column says which are listed as tools of their own by `theviewer mcp` (every one is with `--all-tools`; the rest are reached with `api_call`).
+179 methods in 46 namespaces. The MCP column says which are listed as tools of their own by `theviewer mcp` (every one is with `--all-tools`; the rest are reached with `api_call`).
 
 | Method | Effect | MCP | Summary |
 | --- | --- | --- | --- |
@@ -348,6 +350,9 @@ A recipe step that starts a job waits for it (up to 10 minutes), and later steps
 | [`recipes.save`](#recipessave) | read |  | Save a recipe in ~/.config/theviewer/recipes/, given whole or made from steps of this session's journal, to run later on other files. |
 | [`recipes.preview`](#recipespreview) | read |  | What a recipe would do to a document, without changing anything: each step described with its anchors resolved on this file, and where the run would stop. |
 | [`recipes.run`](#recipesrun) | edit |  | Run a recipe on a document, each step called as recipe:NAME with its anchors resolved on this file, waiting for the jobs steps start; its edits undo as one step, and the first failure stops it with which step and why. |
+| [`vars.set`](#varsset) | analysis |  | Bind a value to a variable by name, so later calls can pass it as {"$var": name}: give the value as an anchor ({"$anchor": {"pick": …}}) to keep where it came from, and a recipe finds it again on the next file. Undone by putting back the value bound before. |
+| [`vars.list`](#varslist) | read |  | The session's variables, each with its value, the step that bound it and the anchor it was found by. |
+| [`vars.clear`](#varsclear) | analysis |  | Remove a variable's binding, or every variable's. |
 
 Each method's full JSON schemas are in `api.describe` (`theviewer api --describe`).
 
@@ -4093,6 +4098,55 @@ Run a recipe on a document, each step called as recipe:NAME with its anchors res
 | `steps` | array of StepReport | yes | Each step run (or previewed), in order. |
 | `stopped` | Stopped | no | Why the run stopped early, if it did. |
 | `warnings` | array of string | no | Things to know that did not stop it: a plugin missing or changed, a different API version, another file than the one recorded on. |
+
+### vars.set
+
+Bind a value to a variable by name, so later calls can pass it as {"$var": name}: give the value as an anchor ({"$anchor": {"pick": …}}) to keep where it came from, and a recipe finds it again on the next file. Undone by putting back the value bound before.
+
+**Effect:** `analysis` · **MCP tool:** `vars_set`, through `api_call`, or with `--all-tools`
+
+**History:** Journalled as a step; undone by changing back the value bound to the variable; repeated by going back, playback and recipes.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `name` | string | yes | The variable's name: letters, digits, '_' or '-', such as "serial". |
+| `value` | any | yes | The value: any JSON, or an anchor that finds it, such as {"$anchor": {"pick": {"step": 7, "list": "job.strings", "where": {"text": {"regex": "^NC500-"}}, "field": "text"}}}. |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `name` | string | yes |  |
+| `replaced` | any | no | The value it replaced, if it was bound before. |
+| `value` | any | yes | The value bound, its anchor resolved. |
+
+### vars.list
+
+The session's variables, each with its value, the step that bound it and the anchor it was found by.
+
+**Effect:** `read` · **MCP tool:** `vars_list`, through `api_call`, or with `--all-tools`
+
+**History:** Kept among the recent reads, which a later step can cite.
+
+Parameters: None.
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `variables` | array of Variable | yes |  |
+
+### vars.clear
+
+Remove a variable's binding, or every variable's.
+
+**Effect:** `analysis` · **MCP tool:** `vars_clear`, through `api_call`, or with `--all-tools`
+
+**History:** Journalled as a step; it has no inverse, so going back past it runs the session's steps again; repeated by going back, playback and recipes.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `name` | string | no | The variable to clear; every variable when omitted. |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `cleared` | array of string | yes | The variables no longer bound. |
 
 ## Topics
 

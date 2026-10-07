@@ -49,8 +49,9 @@
 //! A **preview** (`options.preview`) resolves and describes each step on
 //! this file without calling anything. It goes on past a problem, marking
 //! that step failed and the first such as where the run would stop. A step
-//! anchor cannot be known until its step has run, so it is shown as
-//! waiting for that step.
+//! or pick anchor cannot be known until its step has run, nor a variable
+//! until the step that binds it has, so each is shown as waiting for that
+//! step.
 
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
@@ -232,7 +233,7 @@ pub fn run(workspace: &mut dyn Workspace, steps: &[RecipeStep], options: &Replay
             return report;
         }
     };
-    let mut run = Run { options, sheets: RunSheets::on(&run_doc), run_doc: run_doc.clone(), done: BTreeMap::new(), grouped: Vec::new() };
+    let mut run = Run { options, sheets: RunSheets::on(&run_doc), run_doc: run_doc.clone(), done: BTreeMap::new(), grouped: Vec::new(), previewed_bindings: Vec::new() };
     if !options.preview {
         run.open_undo_group(workspace, &run_doc);
     }
@@ -320,6 +321,8 @@ struct Run<'a> {
     done: BTreeMap<u64, Value>,
     /// The documents with an undo step open for the run's edits.
     grouped: Vec<String>,
+    /// The variables earlier steps of a preview would have bound.
+    previewed_bindings: Vec<String>,
 }
 
 impl Run<'_> {
@@ -350,6 +353,11 @@ impl Run<'_> {
             return report;
         }
         if self.options.preview {
+            if step.method == "vars.set"
+                && let Some(name) = step.params.get("name").and_then(Value::as_str)
+            {
+                self.previewed_bindings.push(name.to_string());
+            }
             return report;
         }
         if let Some(refused) = method.as_ref().ok().and_then(|method| self.refuse_writing(step, method, &report.params)) {
@@ -413,7 +421,7 @@ impl Run<'_> {
         // A doc still marked waits for its step; it was reported above.
         for (path, anchor) in anchors_in(&report.params).into_iter().filter(|(path, _)| path != "doc") {
             if let Some(waiting) = &waiting_for_doc
-                && !matches!(anchor, Anchor::Param { .. } | Anchor::Step { .. } | Anchor::Sheet { .. })
+                && !matches!(anchor, Anchor::Param { .. } | Anchor::Step { .. } | Anchor::Sheet { .. } | Anchor::Pick { .. } | Anchor::Var { .. })
             {
                 let pending = format!("found in {waiting}");
                 report.anchors.push(ResolvedAnchor { path, anchor, value: Value::Null, pending: Some(pending) });
@@ -492,22 +500,34 @@ impl Run<'_> {
     /// put its value there. In a preview, a step anchor is left marked and
     /// reported as waiting for its step.
     fn resolve_into(&self, workspace: &mut dyn Workspace, report: &mut StepReport, path: &str, anchor: &Anchor, doc: &str) -> Result<(), ApiError> {
-        if self.options.preview {
-            let pending = match anchor {
-                Anchor::Step { step, .. } if !self.done.contains_key(step) => Some(format!("found once step {step} has run")),
-                Anchor::Sheet { sheet } if self.sheets.is_waiting_for(sheet) => Some(format!("{}, once it is made", sheet.describe())),
-                _ => None,
-            };
-            if let Some(pending) = pending {
-                report.anchors.push(ResolvedAnchor { path: path.to_string(), anchor: anchor.clone(), value: Value::Null, pending: Some(pending) });
-                return Ok(());
-            }
+        if self.options.preview
+            && let Some(pending) = self.waiting_for(anchor)
+        {
+            report.anchors.push(ResolvedAnchor { path: path.to_string(), anchor: anchor.clone(), value: Value::Null, pending: Some(pending) });
+            return Ok(());
         }
         let mut context = ResolveContext { workspace, doc: Some(doc.to_string()), steps: &self.done, parameters: &self.options.parameters, sheets: &self.sheets };
         let value = anchor.resolve(&mut context).map_err(|error| at_parameter(error, path))?;
         replace_at(&mut report.params, path, value.clone())?;
         report.anchors.push(ResolvedAnchor { path: path.to_string(), anchor: anchor.clone(), value, pending: None });
         Ok(())
+    }
+
+    /// Why `anchor` cannot be resolved yet in a preview: a step it reads
+    /// has not run, a sheet it names is not made, or a variable it reads is
+    /// bound by an earlier step that has not run. A parameter whose default
+    /// is an anchor waits as that anchor does.
+    fn waiting_for(&self, anchor: &Anchor) -> Option<String> {
+        match anchor {
+            Anchor::Sheet { sheet } if self.sheets.is_waiting_for(sheet) => return Some(format!("{}, once it is made", sheet.describe())),
+            Anchor::Pick { pick } if pick.step.number(&self.sheets).is_err() => return Some(format!("found once {} has run", pick.step.describe())),
+            Anchor::Var { var } if self.previewed_bindings.contains(var) => return Some(format!("found once the step that binds ${var} has run")),
+            Anchor::Then { of, .. } => return self.waiting_for(of),
+            Anchor::Param { param } => return self.options.parameters.get(param).and_then(super::anchors::as_anchor).and_then(|default| self.waiting_for(&default)),
+            _ => {}
+        }
+        let step = anchor.cited_steps(&self.sheets).into_iter().find(|step| !self.done.contains_key(step))?;
+        Some(format!("found once step {step} has run"))
     }
 
     /// When `step`, of a method that starts jobs, started one, wait for it

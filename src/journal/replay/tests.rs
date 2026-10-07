@@ -414,7 +414,7 @@ fn recorded_and_anchored() -> Recipe {
     recipe.steps[1].params["start"] = json!({"$anchor": {"param": "length_at"}});
     recipe.steps[2].params["selection"] = marked(&Anchor::Find { find: Needle::Hex("7EA5".into()), nth: 0, part: Some(Part::Value) });
     recipe.steps[0].note = Some(format!("step {found} finds the sync word"));
-    recipe.parameters.insert("length_at".into(), RecipeParameter { kind: ParameterType::Integer, description: "Where the length is".into(), default: None });
+    recipe.parameters.insert("length_at".into(), RecipeParameter { kind: ParameterType::Integer, description: "Where the length is".into(), default: None, default_anchor: None });
     recipe
 }
 

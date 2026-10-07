@@ -29,14 +29,21 @@
 //! stops it, rather than running the step on the input.
 //!
 //! **Format 2** adds what format 1 cannot say: a step's `makes` label, the
-//! recipe's `inputs`, and sheet anchors. A recipe is written as format 1
-//! unless it uses one of them, so older builds still run what they can;
-//! this build reads both.
+//! recipe's `inputs`, and the anchors format 1 does not have (sheet, pick,
+//! then and var) or a parameter whose default is an anchor. A recipe is
+//! written as format 1 unless it uses one of them, so older builds still
+//! run what they can; this build reads both.
+//!
+//! **Variables.** A `vars.set` step binds a value, often found by an anchor
+//! (`{"pick": …}`), and later steps read it with `{"var": name}`, so a value
+//! found once is used wherever it is needed and found again on each file.
 //!
 //! **Parameters** are declared with a type (`string`, `integer`, `number`
-//! or `boolean`), a description and an optional default. A value given as
-//! text (as `theviewer replay --param key=value` gives it) is read as the
-//! declared type; an integer may be written in decimal or as 0x hex.
+//! or `boolean`), a description and an optional default: a literal, or an
+//! anchor that finds it (`default_anchor`), used when no value is given. A
+//! value given as text (as `theviewer replay --param key=value` gives it)
+//! is read as the declared type; an integer may be written in decimal or as
+//! 0x hex.
 //!
 //! This module declares the file format, makes a literal recipe from
 //! journal entries, and checks a recipe's parameters and whether it was
@@ -49,7 +56,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::anchors::{Anchor, INPUT, SheetRef, anchors_in, parse_integer};
+use super::anchors::{Anchor, INPUT, SheetRef, StepRef, anchors_in, marked, parse_integer};
 use super::{FileIdentity, JournalEntry, JournalSession, RecordedPlugin};
 use crate::api::ApiError;
 
@@ -111,6 +118,10 @@ pub struct RecipeParameter {
     /// The value used when none is given.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default: Option<Value>,
+    /// An anchor that finds the value when none is given, in place of
+    /// `default`, which then says what it found when recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_anchor: Option<Anchor>,
 }
 
 /// The JSON type of a recipe parameter.
@@ -185,11 +196,13 @@ impl Recipe {
         self.recorded_on.as_ref().or_else(|| self.inputs.get(INPUT).and_then(|input| input.recorded_on.as_ref()))
     }
 
-    /// Whether the recipe says anything only format 2 can: a sheet anchor,
-    /// a step's `makes`, or `inputs`.
+    /// Whether the recipe says anything only format 2 can: a sheet, pick,
+    /// then or var anchor, a parameter whose default is an anchor, a step's
+    /// `makes`, or `inputs`.
     pub fn needs_second_format(&self) -> bool {
-        let sheet_anchor = self.steps.iter().flat_map(|step| anchors_in(&step.params)).any(|(_, anchor)| matches!(anchor, Anchor::Sheet { .. }));
-        sheet_anchor || !self.inputs.is_empty() || self.steps.iter().any(|step| step.makes.is_some())
+        let new_anchor = self.steps.iter().flat_map(|step| anchors_in(&step.params)).any(|(_, anchor)| anchor.needs_second_format());
+        let anchored_default = self.parameters.values().any(|parameter| parameter.default_anchor.is_some());
+        new_anchor || anchored_default || !self.inputs.is_empty() || self.steps.iter().any(|step| step.makes.is_some())
     }
 
     /// Write the recipe in the oldest format that says all it holds: format
@@ -247,12 +260,25 @@ impl Recipe {
         let mut mistakes = Vec::new();
         let mut earlier: Vec<u64> = Vec::new();
         let mut labels: Vec<String> = Vec::new();
+        let mut bound: Vec<String> = Vec::new();
         for step in &self.steps {
             if earlier.contains(&step.step) {
                 mistakes.push(format!("two steps are numbered {}; step anchors naming it find the later", step.step));
             }
-            for (path, anchor) in anchors_in(&step.params) {
+            for (path, anchor) in anchors_in(&step.params).into_iter().flat_map(|(path, anchor)| inside(&anchor).into_iter().map(move |inner| (path.clone(), inner))) {
                 match anchor {
+                    Anchor::Pick { pick } => match &pick.step {
+                        StepRef::Number(named) if !earlier.contains(named) => {
+                            mistakes.push(format!("step {} ({}) picks {path} from step {named}, which does not come before it", step.step, step.method));
+                        }
+                        StepRef::Label(label) if !labels.iter().any(|known| Some(known.as_str()) == label.strip_prefix('@')) => {
+                            mistakes.push(format!("step {} ({}) picks {path} from the step that made {label}, which no earlier step makes", step.step, step.method));
+                        }
+                        _ => {}
+                    },
+                    Anchor::Var { var } if !bound.contains(&var) => {
+                        mistakes.push(format!("step {} ({}) reads ${var} at {path}, which no earlier step binds with vars.set", step.step, step.method));
+                    }
                     Anchor::Step { step: named, .. } if !earlier.contains(&named) => {
                         mistakes.push(format!("step {} ({}) takes {path} from step {named}, which does not come before it", step.step, step.method));
                     }
@@ -270,6 +296,11 @@ impl Recipe {
             }
             earlier.push(step.step);
             labels.extend(step.makes.clone());
+            if step.method == "vars.set"
+                && let Some(name) = step.params.get("name").and_then(Value::as_str)
+            {
+                bound.push(name.to_string());
+            }
         }
         mistakes
     }
@@ -310,11 +341,15 @@ impl Recipe {
             if values.contains_key(name) {
                 continue;
             }
-            match &declared.default {
-                Some(default) => {
+            match (&declared.default_anchor, &declared.default) {
+                // Found when the step that uses it runs.
+                (Some(anchor), _) => {
+                    values.insert(name.clone(), marked(anchor));
+                }
+                (None, Some(default)) => {
                     values.insert(name.clone(), default.clone());
                 }
-                None => {
+                (None, None) => {
                     let about = if declared.description.is_empty() { String::new() } else { format!(" ({})", declared.description) };
                     return Err(ApiError::invalid_params(format!("the recipe '{}' needs a value for its parameter '{name}'{about}", self.name)));
                 }
@@ -382,6 +417,16 @@ impl ParameterType {
             ParameterType::Boolean => "true or false",
         }
     }
+}
+
+/// `anchor` and every anchor inside it, outermost first: a then anchor's
+/// value comes from the anchor it transforms.
+fn inside(anchor: &Anchor) -> Vec<Anchor> {
+    let mut all = vec![anchor.clone()];
+    if let Anchor::Then { of, .. } = anchor {
+        all.extend(inside(of));
+    }
+    all
 }
 
 /// "1.x" for "1.0": a recipe runs on any API of the same major version.
@@ -502,6 +547,37 @@ mod tests {
         let warnings = recipe.warnings("1.0", &session().plugins);
         assert!(warnings.iter().any(|warning| warning.contains("step 1 (bytes.write) takes doc from the sheet step 2 made, which does not come before it")), "{warnings:?}");
         assert!(warnings.iter().any(|warning| warning.contains("step 3 (bytes.write) takes doc from the sheet labelled rootfs, which no earlier step makes")), "{warnings:?}");
+    }
+
+    #[test]
+    fn a_variable_or_pick_the_recipe_cannot_find_is_a_mistake_it_warns_of() {
+        let mut recipe = Recipe::from_journal("Serial", &session(), &[]);
+        recipe.steps = vec![
+            RecipeStep::new(1, "transform.apply", json!({"operation": {"op": "xor", "key": {"$anchor": {"of": {"var": "serial"}, "then": [{"encode": "text_to_hex"}]}}}})),
+            RecipeStep::new(2, "strings.find", json!({})),
+            RecipeStep::new(3, "vars.set", json!({"name": "serial", "value": {"$anchor": {"pick": {"step": 4, "list": "job.strings"}}}})),
+        ];
+        let warnings = recipe.warnings("1.0", &session().plugins);
+        assert!(warnings.iter().any(|warning| warning.contains("step 1 (transform.apply) reads $serial at operation.key, which no earlier step binds with vars.set")), "{warnings:?}");
+        assert!(warnings.iter().any(|warning| warning.contains("step 3 (vars.set) picks value from step 4, which does not come before it")), "{warnings:?}");
+        recipe.settle_format();
+        assert_eq!(recipe.recipe, 2, "pick, then and var anchors are format 2");
+    }
+
+    #[test]
+    fn a_parameter_whose_default_is_an_anchor_is_found_unless_given() {
+        let mut recipe = Recipe::from_journal("Serial", &session(), &[]);
+        let pick = json!({"pick": {"step": 2, "list": "job.strings", "field": "text"}});
+        recipe.parameters.insert(
+            "serial".into(),
+            RecipeParameter { kind: ParameterType::String, description: "The unit's serial".into(), default: Some(json!("NC500-2F357657")), default_anchor: Some(serde_json::from_value(pick.clone()).unwrap()) },
+        );
+        let found = recipe.parameter_values(&BTreeMap::new()).unwrap();
+        assert_eq!(found["serial"], json!({"$anchor": pick}), "left to the anchor, which the step resolves");
+        let given = recipe.parameter_values(&BTreeMap::from([("serial".to_string(), json!("NC500-00000000"))])).unwrap();
+        assert_eq!(given["serial"], "NC500-00000000");
+        recipe.settle_format();
+        assert_eq!(recipe.recipe, 2);
     }
 
     #[test]

@@ -133,6 +133,8 @@ pub enum Reverse {
     PublishFindings,
     /// `findings.retract`: the findings the caller published under a key.
     RetractFindings,
+    /// `vars.set`: the value bound to a variable.
+    Variable,
 }
 
 /// What a step changed: two steps with the same target change the same
@@ -150,6 +152,8 @@ pub(super) enum Target {
     Decoding(String),
     /// Findings are their publisher's, under a key, about a document.
     Findings { doc: Option<String>, key: String, caller: String },
+    /// A variable: the session's, not a document's.
+    Variable(String),
 }
 
 impl Reverse {
@@ -172,6 +176,7 @@ impl Reverse {
                 let key = params.get("key").and_then(Value::as_str).unwrap_or_default().to_string();
                 Target::Findings { doc, key, caller: caller.to_string() }
             }
+            Reverse::Variable => Target::Variable(params.get("name").and_then(Value::as_str)?.to_string()),
         };
         Some(target)
     }
@@ -190,13 +195,17 @@ impl Reverse {
     /// inverse needs nothing kept, or what it replaced cannot be kept.
     ///
     /// The value is `{"shape"}`, `{"folds"}`, `{"bookmarks"}`,
-    /// `{"selection", "cursor"}`, `{"current"}`, `{"template"}` or
-    /// `{"decoding"}`, as [`Reverse::inverse`] reads it.
+    /// `{"selection", "cursor"}`, `{"current"}`, `{"template"}`,
+    /// `{"decoding"}` or `{"variable"}`, as [`Reverse::inverse`] reads it.
     pub(super) fn snapshot(self, workspace: &mut dyn Workspace, doc: Option<&str>, params: &Value) -> Option<Value> {
         match self {
             Reverse::OpenDocument { .. } => return Some(json!({"current": workspace.current_document()?})),
             Reverse::Decoding => return decoding_of(workspace, params.get("set").and_then(Value::as_str)?),
             Reverse::PublishFindings | Reverse::RetractFindings => return None,
+            Reverse::Variable => {
+                let bound = workspace.journal().variable(params.get("name").and_then(Value::as_str)?).map(|binding| binding.value.clone());
+                return Some(json!({"variable": bound}));
+            }
             Reverse::PinTemplate if self.target(params, doc, "").is_none() => return None,
             _ => {}
         }
@@ -223,7 +232,7 @@ impl Reverse {
                     None => Some(json!({"template": null})),
                 }
             }
-            Reverse::OpenDocument { .. } | Reverse::Decoding | Reverse::PublishFindings | Reverse::RetractFindings => None,
+            Reverse::OpenDocument { .. } | Reverse::Decoding | Reverse::PublishFindings | Reverse::RetractFindings | Reverse::Variable => None,
         }
     }
 
@@ -246,6 +255,7 @@ impl Reverse {
             Reverse::Decoding => Some(json!({"decoding": entry.params})),
             Reverse::RetractFindings => Some(json!({"findings": null})),
             Reverse::PublishFindings => Some(json!({"findings": entry.params.get("findings")?})),
+            Reverse::Variable => Some(json!({"variable": entry.params.get("value")?})),
         }
     }
 
@@ -325,6 +335,14 @@ impl Reverse {
                     Some(findings) => as_publisher("findings.publish", json!({"doc": doc, "key": key, "findings": findings})),
                     // Never published under the key before: nothing to put back.
                     None if self == Reverse::PublishFindings => as_publisher("findings.retract", json!({"doc": doc, "key": key})),
+                    None => unknown(),
+                }
+            }
+            Reverse::Variable => {
+                let Some(name) = entry.params.get("name") else { return unknown() };
+                match before.as_ref().map(|before| before.get("variable").cloned().unwrap_or(Value::Null)) {
+                    Some(Value::Null) => one("vars.clear", json!({"name": name})),
+                    Some(value) => one("vars.set", json!({"name": name, "value": value})),
                     None => unknown(),
                 }
             }
