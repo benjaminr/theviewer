@@ -577,15 +577,18 @@ fn time_of_day(at: &str) -> &str {
 fn show_note_box(state: &mut HistoryState, app: &mut ViewerApp, ui: &mut Ui) {
     let id = egui::Id::new("history-note-box-text");
     let added_by_key = ui.memory(|memory| memory.has_focus(id)) && ui.input_mut(|input| input.consume_key(Modifiers::COMMAND, Key::Enter));
-    if std::mem::take(&mut state.focus_note_box) {
+    let wants_focus = std::mem::take(&mut state.focus_note_box);
+    if wants_focus {
         // Typing goes on after the step it was started about.
         let mut text_state = egui::TextEdit::load_state(ui.ctx(), id).unwrap_or_default();
         let end = egui::text::CCursor::new(state.note_draft.chars().count());
         text_state.cursor.set_char_range(Some(egui::text::CCursorRange::one(end)));
         text_state.store(ui.ctx(), id);
-        ui.memory_mut(|memory| memory.request_focus(id));
     }
-    ui.add(egui::TextEdit::multiline(&mut state.note_draft).id(id).hint_text(NOTE_HINT).desired_rows(NOTE_BOX_ROWS).desired_width(f32::INFINITY));
+    let response = ui.add(egui::TextEdit::multiline(&mut state.note_draft).id(id).hint_text(NOTE_HINT).desired_rows(NOTE_BOX_ROWS).desired_width(f32::INFINITY));
+    if wants_focus {
+        response.request_focus();
+    }
     let mut add = added_by_key;
     ui.horizontal(|ui| {
         add |= ui.add_enabled(!state.note_draft.trim().is_empty(), egui::Button::new("Add note")).on_hover_text("Add the note to the history here (Cmd+Enter)").clicked();

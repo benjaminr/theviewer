@@ -1679,3 +1679,18 @@ fn cmd_enter_in_the_history_note_box_adds_the_note_rather_than_opening_media() {
     let notes = theviewer::api::call(harness.state_mut(), &theviewer::api::Caller::Panel, "history.list", serde_json::json!({})).unwrap();
     assert!(notes.to_string().contains("the header looks like a vendor container"), "{notes}");
 }
+
+#[test]
+fn a_step_s_note_button_puts_typing_in_the_note_box_not_the_bytes() {
+    let mut harness = harness(sample_file("note-button"));
+    harness.state_mut().dock.toggle(theviewer::dock::DockTab::History);
+    theviewer::api::call(harness.state_mut(), &theviewer::api::Caller::Panel, "bytes.write", serde_json::json!({"start": 0, "data": "00"})).unwrap();
+    steps(&mut harness, 3);
+    let before = harness.state_mut().document.read_range(0, 64);
+    harness.get_by_label("Note").click();
+    steps(&mut harness, 3);
+    harness.event(Event::Text("ab".to_string()));
+    steps(&mut harness, 2);
+    assert_eq!(harness.state().bench.panels.history.note_draft, "#1 ab", "typing goes after the step's link");
+    assert_eq!(harness.state_mut().document.read_range(0, 64), before, "no byte was typed over");
+}
