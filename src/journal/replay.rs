@@ -251,6 +251,7 @@ pub fn run_recipe(workspace: &mut dyn Workspace, recipe: &Recipe, options: &Repl
         }
     };
     warnings.append(&mut report.warnings);
+    warnings.extend(crate::recipes::unknown_methods(workspace, recipe));
     report.warnings = warnings;
     report
 }

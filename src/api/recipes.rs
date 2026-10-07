@@ -37,6 +37,7 @@ use super::values::NoParams;
 use super::workspace::Workspace;
 use super::{ApiError, Effect};
 use crate::journal::Recipe;
+use crate::journal::provenance;
 use crate::journal::replay::{self, ReplayOptions, RunReport};
 use crate::recipes::{self, RecipeSummary};
 
@@ -232,21 +233,15 @@ fn from_journal(workspace: &mut dyn Workspace, name: Option<&str>, steps: &[u64]
     if steps.is_empty() {
         return Err(ApiError::invalid_params("journal_steps names no steps; history.list gives them"));
     }
-    let journal = workspace.journal();
-    if let Some(step) = steps.iter().find(|step| journal.entry(**step).is_none()) {
-        return Err(ApiError::not_found(format!("the journal holds no step {step}; history.list gives the steps held")));
-    }
     // With the anchors and parameters recorded for the steps, and the
     // earlier steps they cite, so the recipe ports to other files.
-    Ok(Recipe::from_journal_with_anchors(name, journal, Some(steps)))
+    provenance::checked_recipe(workspace.journal(), name, Some(steps))
 }
 
 pub fn preview(workspace: &mut dyn Workspace, params: RunParams) -> Result<RunReport, ApiError> {
     let (recipe, _) = chosen(params.name, params.path, params.recipe)?;
     let options = ReplayOptions { parameters: params.parameters, doc: params.doc, through_step: params.through_step, preview: true, ..ReplayOptions::new(Caller::Recipe(recipe.name.clone())) };
-    let mut report = replay::run_recipe(workspace, &recipe, &options);
-    report.warnings.extend(recipes::unknown_methods(workspace, &recipe));
-    Ok(report)
+    Ok(replay::run_recipe(workspace, &recipe, &options))
 }
 
 /// `recipes.run`: the recipe's steps called as `recipe:NAME`, consented to
@@ -265,8 +260,7 @@ pub fn run(workspace: &mut dyn Workspace, caller: &Caller, params: RunParams) ->
         Decision::NeedsConfirmation => options.consented = true,
         Decision::Allowed | Decision::Denied => options.checked_as = Some(caller.clone()),
     }
-    let mut report = replay::run_recipe(workspace, &recipe, &options);
-    report.warnings.extend(recipes::unknown_methods(workspace, &recipe));
+    let report = replay::run_recipe(workspace, &recipe, &options);
     match &report.stopped {
         None => Ok(report),
         Some(stopped) => {

@@ -154,11 +154,7 @@ pub fn clear_anchor(workspace: &mut dyn Workspace, params: ClearAnchorParams) ->
 }
 
 pub fn recipe(workspace: &mut dyn Workspace, params: RecipeParams) -> Result<Recipe, ApiError> {
-    let journal = workspace.journal();
-    if let Some(missing) = params.steps.iter().flatten().find(|step| journal.entry(**step).is_none()) {
-        return Err(ApiError::not_found(format!("there is no step {missing} in the journal; history.list shows the steps held")));
-    }
-    let mut recipe = Recipe::from_journal_with_anchors(&params.name, journal, params.steps.as_deref());
+    let mut recipe = provenance::checked_recipe(workspace.journal(), &params.name, params.steps.as_deref())?;
     recipe.description = params.description.unwrap_or_default();
     Ok(recipe)
 }

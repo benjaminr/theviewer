@@ -65,13 +65,19 @@ pub fn file_name_for(name: &str) -> String {
 /// Save `recipe` in `dir` as [`file_name_for`] its name, and return the
 /// path. An existing recipe of that name is replaced only with `overwrite`.
 pub fn save(dir: &Path, recipe: &Recipe, overwrite: bool) -> Result<PathBuf, ApiError> {
-    recipe.check_format()?;
     let path = dir.join(file_name_for(&recipe.name));
     if path.exists() && !overwrite {
         return Err(ApiError::invalid_params(format!("a recipe called '{}' is already saved at {}; pass overwrite to replace it", recipe.name, path.display())));
     }
-    crate::config::write_json(&path, recipe).map_err(|message| ApiError::new(ErrorCode::Unavailable, format!("the recipe could not be saved: {message}")))?;
+    write(&path, recipe)?;
     Ok(path)
+}
+
+/// Write `recipe` to the file at `path`, replacing it, once this build is
+/// sure it reads the recipe back: how every recipe file is written.
+pub fn write(path: &Path, recipe: &Recipe) -> Result<(), ApiError> {
+    recipe.check_format()?;
+    crate::config::write_json(path, recipe).map_err(|message| ApiError::new(ErrorCode::Unavailable, format!("the recipe could not be saved: {message}")))
 }
 
 /// Load the recipe in the file at `path`, checking this build reads its
@@ -104,21 +110,36 @@ pub struct RecipeSummary {
 
 /// Every recipe file in `dir`, by name; none when the folder does not exist.
 pub fn list(dir: &Path) -> Vec<RecipeSummary> {
+    load_all(dir).into_iter().map(|(path, loaded)| summary_of(&path, loaded)).collect()
+}
+
+/// Every recipe file in `dir` with what loading it gave, by the name
+/// [`list`] lists it under.
+fn load_all(dir: &Path) -> Vec<(PathBuf, Result<Recipe, ApiError>)> {
     let Ok(entries) = std::fs::read_dir(dir) else { return Vec::new() };
     let mut paths: Vec<PathBuf> = entries.filter_map(Result::ok).map(|entry| entry.path()).filter(|path| path.to_string_lossy().ends_with(RECIPE_EXTENSION)).collect();
     paths.sort();
-    let mut summaries: Vec<RecipeSummary> = paths
-        .into_iter()
-        .map(|path| match load(&path) {
-            Ok(recipe) => RecipeSummary { name: recipe.name, description: recipe.description, path: path.display().to_string(), steps: recipe.steps.len(), parameters: recipe.parameters, error: None },
-            Err(error) => {
-                let file = path.file_name().map(|name| name.to_string_lossy().trim_end_matches(RECIPE_EXTENSION).to_string()).unwrap_or_default();
-                RecipeSummary { name: file, description: String::new(), path: path.display().to_string(), steps: 0, parameters: BTreeMap::new(), error: Some(error.message) }
-            }
-        })
-        .collect();
-    summaries.sort_by_key(|summary| summary.name.to_lowercase());
-    summaries
+    let mut loaded: Vec<(PathBuf, Result<Recipe, ApiError>)> = paths.into_iter().map(|path| (path.clone(), load(&path))).collect();
+    loaded.sort_by_key(|(path, recipe)| listed_name(path, recipe.as_ref().ok()).to_lowercase());
+    loaded
+}
+
+/// The name a recipe file is listed under: the recipe's, or its file's
+/// when it could not be read.
+fn listed_name(path: &Path, recipe: Option<&Recipe>) -> String {
+    match recipe {
+        Some(recipe) => recipe.name.clone(),
+        None => path.file_name().map(|name| name.to_string_lossy().trim_end_matches(RECIPE_EXTENSION).to_string()).unwrap_or_default(),
+    }
+}
+
+fn summary_of(path: &Path, loaded: Result<Recipe, ApiError>) -> RecipeSummary {
+    let name = listed_name(path, loaded.as_ref().ok());
+    let path = path.display().to_string();
+    match loaded {
+        Ok(recipe) => RecipeSummary { name, description: recipe.description, path, steps: recipe.steps.len(), parameters: recipe.parameters, error: None },
+        Err(error) => RecipeSummary { name, description: String::new(), path, steps: 0, parameters: BTreeMap::new(), error: Some(error.message) },
+    }
 }
 
 /// The recipe `name_or_path` names: a recipe file's path, or the name of
@@ -132,12 +153,15 @@ pub fn find(dir: &Path, name_or_path: &str) -> Result<(Recipe, PathBuf), ApiErro
     if by_file.is_file() {
         return load(&by_file).map(|recipe| (recipe, by_file));
     }
-    let saved = list(dir);
-    if let Some(found) = saved.iter().find(|summary| summary.error.is_none() && summary.name.eq_ignore_ascii_case(name_or_path.trim())) {
-        let path = PathBuf::from(&found.path);
-        return load(&path).map(|recipe| (recipe, path));
+    let saved = load_all(dir);
+    let names: Vec<String> = saved.iter().map(|(path, recipe)| listed_name(path, recipe.as_ref().ok())).collect();
+    for (path, loaded) in saved {
+        if let Ok(recipe) = loaded
+            && recipe.name.eq_ignore_ascii_case(name_or_path.trim())
+        {
+            return Ok((recipe, path));
+        }
     }
-    let names: Vec<&str> = saved.iter().map(|summary| summary.name.as_str()).collect();
     let known = if names.is_empty() { format!("none is saved in {}", dir.display()) } else { format!("those saved are {}", names.join(", ")) };
     Err(ApiError::not_found(format!("there is no recipe '{name_or_path}' ({known})")))
 }
@@ -215,8 +239,7 @@ pub fn replay_file(workspace: &mut HeadlessWorkspace, recipe: &Recipe, file: &Pa
         }
     };
     let options = ReplayOptions { parameters: parameters.clone(), doc: Some(doc.clone()), checked_as: Some(Caller::Cli), ..ReplayOptions::new(Caller::Recipe(recipe.name.clone())) };
-    let mut report = replay::run_recipe(workspace, recipe, &options);
-    report.warnings.extend(unknown_methods(workspace, recipe));
+    let report = replay::run_recipe(workspace, recipe, &options);
     let completed = report.completed();
     run.report = Some(report);
     if !completed {

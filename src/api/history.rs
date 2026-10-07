@@ -16,7 +16,7 @@ use serde_json::Value;
 
 use super::values::{self, NoParams};
 use super::workspace::Workspace;
-use super::{ApiError, Caller, ErrorCode};
+use super::{ApiError, Caller};
 use crate::journal::timeline::{self, Inverse, StepStatus, Timeline};
 use crate::journal::{Dropped, JournalEntry, JournalSession};
 
@@ -253,8 +253,7 @@ pub fn save_recipe(workspace: &mut dyn Workspace, params: SaveRecipeParams) -> R
         return Err(ApiError::invalid_params("there are no steps in effect to save as a recipe"));
     }
     recipe.description = params.description;
-    let text = serde_json::to_string_pretty(&recipe).map_err(|error| ApiError::invalid_params(format!("the recipe could not be written as JSON: {error}")))?;
-    std::fs::write(&params.path, text + "\n").map_err(|error| ApiError::new(ErrorCode::Unavailable, format!("could not write {}: {error}", params.path)))?;
+    crate::recipes::write(std::path::Path::new(&params.path), &recipe)?;
     Ok(SavedRecipe { path: params.path, name: recipe.name, steps: recipe.steps.iter().map(|step| step.step).collect() })
 }
 
@@ -314,6 +313,22 @@ mod tests {
         assert_eq!(recipe.recorded_on.map(|file| file.name).as_deref(), Some("flight.bin"));
         let saving = crate::api::Workspace::journal(&workspace).entries().last().unwrap();
         assert_eq!(saving.method, "history.save_recipe", "saving is a step of its own");
+    }
+
+    #[test]
+    fn a_recipe_saved_from_the_history_is_written_as_recipes_save_writes_it() {
+        let dir = std::env::temp_dir().join(format!("theviewer-history-writer-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        crate::recipes::use_dir_for_this_thread(dir.join("saved"));
+        let mut workspace = workspace_with("flight.bin", b"0123456789");
+        call(&mut workspace, "bytes.write", json!({"start": 0, "data": "41"})).unwrap();
+        let by_recipes = call(&mut workspace, "recipes.save", json!({"name": "Patch", "journal_steps": [1]})).unwrap();
+        let path = dir.join("from history").join("Patch.theviewer-recipe.json");
+        call(&mut workspace, "history.save_recipe", json!({"path": path.display().to_string(), "name": "Patch"})).unwrap();
+        let written = std::fs::read_to_string(&path).expect("the folder it is saved in is made");
+        let saved = std::fs::read_to_string(by_recipes["path"].as_str().unwrap()).unwrap();
+        std::fs::remove_dir_all(&dir).ok();
+        assert_eq!(written, saved, "one writer for every recipe file");
     }
 
     #[test]
