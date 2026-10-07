@@ -4,6 +4,20 @@ All notable changes to theviewer are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1] - 2026-10-07
+
+### Fixed
+
+- Arrows in labels and buttons ("← Back to the cursor", the recipe
+  preview, the follow-stream legend) draw instead of boxes.
+- A decompressed stream's toolbar, *Back* and the API's document list name
+  the file it came from rather than "untitled".
+- A packet picked in the packet list shows its innermost protocol, such as
+  DNS, in the Reference tab rather than its record header.
+- The Reference tab no longer adds a format guessed from bytes a packet
+  dissector has already read, such as a DNS name taken for CBOR.
+- The recipes guide's finding anchor example uses an id that exists.
+
 ## [0.3.0] - 2026-10-07
 
 A packet viewer, reference notes on about 260 formats and protocols, a
@@ -230,6 +244,7 @@ The first published release.
 - The file report no longer lists bare magic-number matches as objects.
 - *Columns* profiles from the cursor's record to the end of the table.
 
+[0.3.1]: https://github.com/benjaminr/theviewer/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/benjaminr/theviewer/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/benjaminr/theviewer/compare/v0.1.2...v0.2.0
 [0.1.2]: https://github.com/benjaminr/theviewer/compare/v0.1.1...v0.1.2

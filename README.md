@@ -33,9 +33,9 @@ from the [releases page](https://github.com/benjaminr/theviewer/releases),
 then:
 
 ```sh
-tar -xzf theviewer-0.3.0-macos-arm64.tar.gz
-xattr -d com.apple.quarantine theviewer-0.3.0-macos-arm64/theviewer   # the binary is not signed
-./theviewer-0.3.0-macos-arm64/theviewer path/to/file.bin
+tar -xzf theviewer-0.3.1-macos-arm64.tar.gz
+xattr -d com.apple.quarantine theviewer-0.3.1-macos-arm64/theviewer   # the binary is not signed
+./theviewer-0.3.1-macos-arm64/theviewer path/to/file.bin
 ```
 
 **From source, anywhere else.** You need a Rust toolchain
