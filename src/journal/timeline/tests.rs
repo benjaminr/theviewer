@@ -277,6 +277,27 @@ fn going_back_past_a_step_with_no_inverse_replays_from_the_document_as_first_see
 }
 
 #[test]
+fn going_back_by_replaying_one_document_leaves_another_document_s_edits_to_redo() {
+    let mut workspace = workspace_with("a.bin", &[0u8; 128]);
+    call(&mut workspace, "documents.derive", json!({"start": 0, "len": 8})).unwrap();
+    let opened = last_step(&workspace);
+    let derived = workspace.current_document().unwrap();
+    call(&mut workspace, "bytes.write", json!({"doc": derived, "start": 0, "data": "41"})).unwrap();
+    let written = last_step(&workspace);
+    let written_bytes = bytes_of(&mut workspace, &derived);
+    call(&mut workspace, "packets.sets.create", json!({"doc": "doc-1", "from": "split_fixed", "record_len": 8, "len": 64})).unwrap();
+    call(&mut workspace, "packets.sets.remove", json!({"set": "set-1"})).unwrap();
+    let went = call(&mut workspace, GO_BACK, json!({"step": opened})).unwrap();
+    assert_eq!(went["way"], "replayed", "a set removed for good has no inverse");
+    assert_ne!(bytes_of(&mut workspace, &derived), written_bytes, "the write was undone");
+    call(&mut workspace, "history.redo", json!({"doc": derived})).unwrap();
+    assert_eq!(bytes_of(&mut workspace, &derived), written_bytes);
+    assert!(Timeline::of(workspace.journal()).is_active(written), "redo brings the write back into the analysis");
+    let in_recipe: Vec<u64> = entries_for_recipe(workspace.journal(), None).iter().map(|entry| entry.step).collect();
+    assert!(in_recipe.contains(&written), "{in_recipe:?}");
+}
+
+#[test]
 fn going_back_by_replaying_stops_with_why_when_a_step_cannot_run_again() {
     let mut workspace = workspace_with("a.bin", &[0u8; 128]);
     call(&mut workspace, "bytes.write", json!({"start": 0, "data": "41"})).unwrap();

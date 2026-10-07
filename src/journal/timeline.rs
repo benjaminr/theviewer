@@ -200,8 +200,10 @@ impl Timeline {
             }
             Move::GoBack => {
                 let target = entry.params.get("step").and_then(Value::as_u64).unwrap_or(0);
-                let replayed = entry.result.as_ref().and_then(|result| result.get("way")).and_then(Value::as_str) == Some("replayed");
-                self.go_back(target, step, replayed);
+                let result = entry.result.as_ref();
+                let replayed = result.and_then(|result| result.get("way")).and_then(Value::as_str) == Some("replayed");
+                let replayed_doc = result.filter(|_| replayed).and_then(|result| result.get("doc")).and_then(Value::as_str);
+                self.go_back(target, step, replayed_doc);
             }
         }
     }
@@ -231,10 +233,12 @@ impl Timeline {
         }
     }
 
-    /// Mark every step in effect after `target` undone by step `by`. When
-    /// they were undone (not replayed over), their edits wait to be redone,
-    /// latest first.
-    fn go_back(&mut self, target: u64, by: u64, replayed: bool) {
+    /// Mark every step in effect after `target` undone by step `by`. Their
+    /// edits wait to be redone, latest first, as each document's undo left
+    /// them; only the document `replayed_doc`, brought back and its steps
+    /// up to `target` run again, has nothing left to redo once those steps
+    /// edited it anew.
+    fn go_back(&mut self, target: u64, by: u64, replayed_doc: Option<&str>) {
         let later: Vec<u64> = self.statuses.range(target + 1..by).filter(|(_, status)| **status == StepStatus::Active).map(|(step, _)| *step).collect();
         for step in later {
             self.statuses.insert(step, StepStatus::Undone { by });
@@ -243,7 +247,8 @@ impl Timeline {
             let kept = edits.partition_point(|step| *step <= target);
             let undone: Vec<u64> = edits.split_off(kept);
             let waiting = self.undone_edits.entry(doc.clone()).or_default();
-            if replayed {
+            // Its edits run again are new ones, which leave nothing to redo.
+            if replayed_doc == Some(doc.as_str()) && !edits.is_empty() {
                 waiting.clear();
             } else {
                 waiting.extend(undone.into_iter().rev());
