@@ -70,6 +70,6 @@ pub(crate) fn finished_job(workspace: &mut super::HeadlessWorkspace, started: &s
 /// for the window that asks the person to confirm it; `None` leaves it to
 /// the general "Call method with params".
 pub(super) fn describe_call(workspace: &mut dyn Workspace, method: &str, params: &serde_json::Value) -> Option<String> {
-    let describers: [super::DescribeCall; 7] = [disasm::describe_call, columns::describe_call, protocol::describe_call, report::describe_call, structure_map::describe_call, learn::describe_call, alignment::describe_call];
+    let describers: [super::DescribeCall; 8] = [disasm::describe_call, unpack::describe_call, columns::describe_call, protocol::describe_call, report::describe_call, structure_map::describe_call, learn::describe_call, alignment::describe_call];
     describers.into_iter().find_map(|describe| describe(workspace, method, params))
 }

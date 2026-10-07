@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use eframe::egui::{self, Color32, ColorImage, Context, Rect, RichText, Sense, Stroke, StrokeKind, TextureHandle, TextureOptions, Ui, pos2, vec2};
 
-use crate::app::{DialogKind, FileAction, ViewerApp};
+use crate::app::ViewerApp;
 use crate::panels::{self, PanelStates};
 use crate::assistant::{self, FileContext, ToolCall, ToolReply};
 use crate::bus::{Message, Payload};
@@ -931,9 +931,7 @@ impl ViewerApp {
             Some(NodeAction::Jump(offset)) => self.jump_found(offset),
             Some(NodeAction::Save(path)) => {
                 if let Some(node) = root.find(&path) {
-                    let dialog = rfd::AsyncFileDialog::new().set_file_name(node.name.replace('/', "_"));
-                    let action = FileAction::SaveBytes { name: node.name.clone(), bytes: Arc::clone(&node.data) };
-                    self.ask_for_file(DialogKind::Save, dialog, action);
+                    self.save_dialog_then_call("Save unpacked item", &node.name.replace('/', "_"), "unpack.save", serde_json::json!({ "node": path }), "path");
                 }
             }
             None => {}

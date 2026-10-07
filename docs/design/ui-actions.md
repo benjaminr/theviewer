@@ -246,7 +246,7 @@ Owns `src/api/tools.rs` (a namespace per tool), `src/api/analysis.rs`,
 | XOR: Find keys | `show_xor`, context menu "Find XOR key" | NEW `xor.recover_keys {start, len, max_key?}` (R) | R |
 | XOR: Preview / Apply | XOR | `documents.derive {…, transform}` (D) / `transform.apply {xor}` | J |
 | Size map: source, tile zoom, breadcrumb | `panel_treemap.rs` | none | V |
-| Unpack everything; node Open / Save…; tile click | Unpacked tab, Size map, palette `tools.unpack` (`start_unpack`) | NEW `unpack.run` (J), `unpack.open {path}` (J), `unpack.read {path}` (R); `cursor.set` | J |
+| Unpack everything; node Open / Save…; tile click | Unpacked tab, Size map, palette `tools.unpack` (`start_unpack`) | NEW `unpack.run` (J), `unpack.open {path}` (J), `unpack.read {path}` (R), `unpack.save {node, path}` (E, through the save dialog); `cursor.set` | J |
 | Trigrams: Plot (labels, whole file) | `panel_trigram.rs` | NEW `trigrams.count {start, len, labels, whole_file}` (J) | J |
 | Trigrams: camera, colouring, legend, dim | Trigrams | none | V |
 | Trigrams: point or strip click | Trigrams | `cursor.set` | J |
@@ -300,7 +300,7 @@ Owns `src/api/tools.rs` (a namespace per tool), `src/api/analysis.rs`,
   - `statistics.analyse`.
   - `strings.find`.
   - `xor.recover_keys`.
-  - `unpack.run`, `unpack.open`, `unpack.read`.
+  - `unpack.run`, `unpack.open`, `unpack.read`, `unpack.save`.
   - `trigrams.count`.
   - `characterise.profile_file`, `characterise.streams`.
   - `bits.scan_periods`, `bits.planes`, `bits.open_plane`,

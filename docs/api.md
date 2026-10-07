@@ -146,6 +146,7 @@ Errors are `{code, message, data}`, with these codes:
 | [`unpack.run`](#unpackrun) | job | Start extracting the archives and compressed streams in the document (its first 256 MiB) recursively, like binwalk -e, as a job: the tree of what was found, each node with its kind, size and where its bytes came from, is job.finished's result, and in the window it fills the Unpacked tab and the Size map. |
 | [`unpack.open`](#unpackopen) | view | Open one node of the unpacked tree (by its path of child indices, as unpack.run gave it) as a derived document. |
 | [`unpack.read`](#unpackread) | read | Read the bytes of one node of the unpacked tree, by its path of child indices, as hex by default, or as base64 or text. |
+| [`unpack.save`](#unpacksave) | edit | Write the bytes of one node of the unpacked tree (by its path of child indices, as node) to a file; the document is left as it is. |
 | [`characterise.profile_selection`](#characteriseprofile_selection) | job | Start compressing a sample of a span with deflate, bzip2, LZ4, zstd and an order-1 entropy coder as a job: the ratios and the verdict they give (encrypted or random, already compressed, lossy media or structured) are job.finished's result, and in the window they fill Characterise (analysis.compressibility is the quick read). |
 | [`characterise.profile_file`](#characteriseprofile_file) | job | Start profiling the compressibility of the whole document as a job, overall and for up to 64 segments sampled along it: the verdicts are job.finished's result, and in the window they fill Characterise with a strip of verdicts. |
 | [`characterise.streams`](#characterisestreams) | job | Start a search of the document (its first 256 MiB) for raw MP3/MP2 and AAC frames, H.264 and H.265 Annex B video and 16-bit PCM audio without a container as a job: the runs found are job.finished's result, and in the window they fill Characterise. |
@@ -2272,6 +2273,22 @@ Read the bytes of one node of the unpacked tree, by its path of child indices, a
 | `encoding` | `"hex"` \| `"base64"` \| `"text"` | yes | How bytes are written in JSON. |
 | `name` | string | yes |  |
 | `node_len` | integer | yes | Bytes in the whole node. |
+
+### unpack.save
+
+Write the bytes of one node of the unpacked tree (by its path of child indices, as node) to a file; the document is left as it is.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `doc` | string | no | Document id, path or "current" (the default). |
+| `node` | array of integer | yes | The node's child indices from the root, such as [0, 2]. |
+| `path` | string | yes | The file to write. |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `name` | string | yes | The node's name. |
+| `path` | string | yes | The file written. |
+| `written` | integer | yes | Bytes written. |
 
 ### characterise.profile_selection
 
