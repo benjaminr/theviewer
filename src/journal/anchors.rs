@@ -471,8 +471,9 @@ fn resolve_find(needle: &Needle, nth: usize, part: Option<Part>, context: &mut R
 
 /// The findings `findings.query` lists in the first `len` bytes of document
 /// `doc` (at most a call's worth, the first 16 MiB), in offset order, at
-/// least `min_confidence` confident (as the Findings list shows them, 0.5,
-/// when `None`), without recording a read. A finding anchor counts among
+/// least `min_confidence` confident (0.5 when `None`, `findings.query`'s
+/// own floor; the Findings list shows those below it too, dimmed), without
+/// recording a read. A finding anchor counts among
 /// these, both when it is recorded and when it resolves.
 pub(crate) fn findings_in(workspace: &mut dyn Workspace, doc: &str, len: u64, min_confidence: Option<f32>) -> Result<Vec<Finding>, ApiError> {
     let len = len.min(MAX_CALL_BYTES as u64);
