@@ -42,7 +42,7 @@ usage: theviewer [FILE] [--format NAME] [--palette NAME] [--width PIXELS] [--off
              for Claude Code and other MCP clients; --plugins loads plugins from DIR instead
              of ./plugins and ~/.config/theviewer/plugins; it lists the core methods and the
              plugins' as tools, with api_search, api_describe and api_call to reach the rest;
-             --all-tools lists every method instead (about four times the size, which clients
+             --all-tools lists every method instead (about five times the size, which clients
              keep in context); --output-schemas lists each tool's result schema too (about
              twice the size)
   replay     run a saved recipe (by name, from ~/.config/theviewer/recipes, or a
