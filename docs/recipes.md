@@ -195,15 +195,17 @@ integer (decimal or `0x` hex), otherwise that text.
 
 ```json
 { "finding": { "category": "compressed", "nth": 0 } }
-{ "finding": { "id": "zlib", "nth": 1 }, "part": "len" }
+{ "finding": { "id": "image/png", "nth": 1 }, "part": "len" }
 ```
 
 The `nth` (from 0, in offset order) of the findings the Findings list would
 show in the document's first 16 MiB (confidence 0.5 or more) that are of
 `category` (a finding category in snake case: `compressed`, `image`,
 `timestamp`, `offset_table`…) and whose id starts with `id`, or whose id's
-part after its kind does (`zlib` finds `stream:zlib`). Give `category`,
-`id` or both. `part` gives the finding's start (the default), its length,
+part after its kind does (`image/png` finds `signature:image/png`). The
+Findings list and `findings.query` show each finding's id; a zlib or other
+compressed stream is `compressed-streams`, so the category `compressed`
+finds it. Give `category`, `id` or both. `part` gives the finding's start (the default), its length,
 or `{"range": [start, len]}`.
 
 ### Selection: what is selected when the step runs

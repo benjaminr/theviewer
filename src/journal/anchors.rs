@@ -137,7 +137,7 @@ pub struct FindingMatch {
     /// The finding's category, such as `compressed`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub category: Option<String>,
-    /// The start of the finding's id, such as `zlib`.
+    /// The start of the finding's id, or of the part after its kind, such as `image/png` for `signature:image/png`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
     /// Which of those matching, counting from 0 in offset order.
@@ -302,7 +302,7 @@ impl Anchor {
     /// * **Finding**: the `nth` (from 0, in offset order) of the findings the
     ///   Findings list would show in the first 16 MiB that are of the
     ///   category and whose id starts with `id` (or whose id's part after
-    ///   its kind does: `zlib` finds `stream:zlib`); `part` gives its start
+    ///   its kind does: `image/png` finds `signature:image/png`); `part` gives its start
     ///   (the default), length, or `{"range": [start, len]}`.
     /// * **Selection**: what is selected in the step's document when the
     ///   step runs, as `selection.set` takes it (the default, and `value`),
@@ -360,7 +360,7 @@ impl Needle {
 }
 
 impl FindingMatch {
-    /// "1st compressed finding whose id starts with zlib".
+    /// "1st image finding whose id starts with image/png".
     pub fn describe(&self) -> String {
         let category = self.category.as_deref().map_or(String::new(), |category| format!("{category} "));
         let id = self.id.as_deref().map_or(String::new(), |id| format!(" whose id starts with {id}"));
