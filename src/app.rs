@@ -2350,6 +2350,8 @@ impl ViewerApp {
     pub fn open_derived(&mut self, bytes: Vec<u8>, name: String) {
         // Edits so far are said about the parent before it is put away.
         self.publish_edits_as(crate::api::workspace::DOCUMENT_PRODUCER);
+        // Named before its document is taken, which would leave it "untitled".
+        let parent_name = self.display_name();
         let parent = ParentDocument {
             id: self.document_id.clone(),
             published_version: self.document.version(),
@@ -2357,7 +2359,7 @@ impl ViewerApp {
             shape: self.shape,
             cursor: self.cursor,
             top_row: self.top_row,
-            name: self.display_name(),
+            name: parent_name,
             patterns: std::mem::take(&mut self.patterns),
             pattern_key: self.pattern_key.take(),
             period_scan: self.period_scan.take(),
@@ -4178,6 +4180,20 @@ mod tests {
         let app = ViewerApp::new(Launch { tool: Some("sparkles".to_string()), ..Default::default() });
         assert!(!app.dock.open, "nothing is opened for it");
         assert_eq!(app.status, "No tool called 'sparkles'; theviewer --help lists them");
+    }
+
+    #[test]
+    fn a_decompressed_child_names_the_file_it_came_from() {
+        let path = std::env::temp_dir().join(format!("theviewer-parent-name-{}.bin", std::process::id()));
+        std::fs::write(&path, b"outer bytes").unwrap();
+        let mut app = ViewerApp::new(Launch::default());
+        app.open_file(&path);
+        app.open_derived(b"inner".to_vec(), "zlib@0x0".to_string());
+        let file_name = path.file_name().unwrap().to_string_lossy().into_owned();
+        assert_eq!(app.parents.last().map(|parent| parent.name.as_str()), Some(file_name.as_str()));
+        app.go_back_to_parent();
+        assert_eq!(app.status, format!("Back to {file_name}"));
+        std::fs::remove_file(&path).ok();
     }
 
     #[test]
