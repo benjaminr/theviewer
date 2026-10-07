@@ -13,8 +13,9 @@
 //! for a new sheet to be focused. Neither a sheet made (a derive, a node
 //! opened) nor a document named in a call moves it, so a client's next call
 //! without `doc` is about the document it was working on.
-//! The person's focus is the window's document, and `"current"` still
-//! names that (or, headless, the document opened or made last).
+//! The person's focus is the window's document, as are a plugin's and
+//! Ask's, which act for the person; `"current"` still names that (or,
+//! headless, the document opened or made last).
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -315,10 +316,12 @@ pub trait Workspace {
 }
 
 /// Whether `caller` works on the current document rather than a focus of
-/// its own: the person at the window, whose focus is the document shown,
-/// and every caller when foci are turned off.
-fn follows_current(workspace: &dyn Workspace, caller: &Caller) -> bool {
-    matches!(caller, Caller::Panel) || workspace.foci().legacy_current
+/// its own: the person at the window, whose focus is the document shown;
+/// a plugin's action and Ask, which act for the person on what they see;
+/// and every caller when foci are turned off. MCP clients, the command
+/// line and recipes keep a focus of their own.
+pub fn follows_current(workspace: &dyn Workspace, caller: &Caller) -> bool {
+    matches!(caller, Caller::Panel | Caller::Plugin(_) | Caller::Ask) || workspace.foci().legacy_current
 }
 
 /// The document `caller` works on, which an omitted `doc` means: the one
@@ -1268,6 +1271,10 @@ mod tests {
             assert_eq!(read_text(&mut workspace, &other, json!({"start": 0, "encoding": "text"})), "second", "a client starts on the current document");
             assert_eq!(read_text(&mut workspace, &claude, json!({"start": 0, "encoding": "text"})), "first");
             assert_eq!(focus_of(&workspace, &Caller::Panel).as_deref(), Some("doc-2"), "the person's focus is the current document");
+            api::call(&mut workspace, &Caller::Plugin("sync.lua".into()), "documents.activate", json!({"doc": "doc-1"})).unwrap();
+            assert_eq!(workspace.current_document().as_deref(), Some("doc-1"), "a plugin acts for the person, on the current document");
+            assert_eq!(focus_of(&workspace, &Caller::Ask).as_deref(), Some("doc-1"), "as Ask does");
+            workspace.switch_to("doc-2").unwrap();
             set_focus(&mut workspace, &Caller::Panel, "doc-1");
             assert_eq!(workspace.current_document().as_deref(), Some("doc-2"), "and is not moved by a focus of its own");
         }

@@ -157,7 +157,7 @@ notes as Markdown (or writes them to a `path`). See
 ### Which document a call is about
 
 A method about a document takes `doc`. When a call leaves it out, it means
-the client's **focus**: the current document when the client first calls,
+the client's **focus**, which each client keeps for itself: the current document when the client first calls,
 then the document it opens (`documents_open`) or activates
 (`documents.activate`). Making a sheet (`documents.derive`, `unpack.open`,
 `codecs.open_decoded`…) does not move the focus, and nor does naming a

@@ -415,10 +415,10 @@ pub fn list(workspace: &mut dyn Workspace, caller: &Caller, _params: NoParams) -
 /// `documents.activate`: the caller's focus moves to the document once the
 /// call has succeeded, as it does for every document opened (naming a
 /// document in a call does not move it); the person's focus is the document
-/// shown, so it is shown.
+/// shown (as are a plugin's and Ask's), so it is shown.
 pub fn activate(workspace: &mut dyn Workspace, caller: &Caller, params: ActivateParams) -> Result<DocumentInfo, ApiError> {
     let id = workspace::resolve(workspace, Some(&params.doc))?;
-    if matches!(caller, Caller::Panel) || workspace.foci().legacy_current {
+    if workspace::follows_current(workspace, caller) {
         workspace.switch_to(&id)?;
     }
     let mut info = workspace::info(workspace, &id)?;

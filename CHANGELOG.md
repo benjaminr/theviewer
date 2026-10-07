@@ -125,10 +125,11 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   beside them; `packets.sets.create` returns the set's with `output` when
   it opened a decompressed capture.
 - **An omitted `doc` means the caller's focus**, not the current document.
-  At the window nothing changes: the person's focus is the document shown.
-  For MCP clients, plugins, Ask and the command line, deriving a document,
-  opening a node or decompressing a stream no longer moves where their
-  next call without `doc` goes; `"current"` still names the document opened
+  At the window nothing changes: the person's focus is the document shown,
+  and plugins and Ask, which act for the person, follow it. For MCP
+  clients and the command line, deriving a document, opening a node or
+  decompressing a stream no longer moves where their next call without
+  `doc` goes; `"current"` still names the document opened
   or made last. Every journal entry's `params` now name the document.
 - A value marked `$anchor`, `$var` or `$sheet` that is not an anchor is
   refused rather than passed to the method as a literal.
