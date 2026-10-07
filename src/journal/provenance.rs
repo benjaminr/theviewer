@@ -160,7 +160,7 @@ pub fn with_part(anchor: &Anchor, part: Part) -> Anchor {
     let mut anchor = anchor.clone();
     match &mut anchor {
         Anchor::Find { part: kept, .. } | Anchor::Structure { part: kept, .. } | Anchor::Finding { part: kept, .. } | Anchor::Selection { part: kept, .. } => *kept = Some(part),
-        Anchor::Step { .. } | Anchor::Param { .. } => {}
+        Anchor::Step { .. } | Anchor::Param { .. } | Anchor::Sheet { .. } => {}
     }
     anchor
 }

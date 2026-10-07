@@ -960,7 +960,7 @@ fn replayable_entries(journal: &Journal, steps: std::ops::RangeInclusive<u64>) -
 fn replayable_steps(journal: &Journal, steps: std::ops::RangeInclusive<u64>, doc: Option<&str>) -> Vec<RecipeStep> {
     replayable_entries(journal, steps)
         .filter(|entry| doc.is_none_or(|doc| entry.doc.as_deref() == Some(doc)))
-        .map(|entry| RecipeStep { step: entry.step, method: entry.method.clone(), params: entry.params.clone(), note: None })
+        .map(|entry| RecipeStep::new(entry.step, entry.method.clone(), entry.params.clone()))
         .collect()
 }
 

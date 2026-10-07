@@ -26,8 +26,8 @@ fn sync_recipe() -> Recipe {
         "parameters": {"length": {"type": "integer", "description": "The new length", "default": 255}},
         "recorded_on": {"name": "flight-03.bin", "size": 4, "sha256": null},
         "steps": [
-            {"step": 1, "method": "search.find", "params": {"doc": "doc-1", "query": "7EA5", "mode": "hex"}},
-            {"step": 2, "method": "bytes.write", "params": {"doc": "doc-1", "start": {"$anchor": {"step": 1, "path": "result.at"}}, "data": {"$anchor": {"param": "length_hex"}}}}
+            {"step": 1, "method": "search.find", "params": {"doc": "current", "query": "7EA5", "mode": "hex"}},
+            {"step": 2, "method": "bytes.write", "params": {"start": {"$anchor": {"step": 1, "path": "result.at"}}, "data": {"$anchor": {"param": "length_hex"}}}}
         ]
     }))
 }
@@ -69,7 +69,7 @@ fn a_file_that_is_not_a_recipe_this_build_reads_is_listed_with_why() {
     let listed = list(&dir);
     assert_eq!(listed.iter().map(|summary| summary.name.as_str()).collect::<Vec<_>>(), ["Broken", "Newer"]);
     assert!(listed[0].error.as_deref().unwrap().contains("is not a recipe"));
-    assert!(listed[1].error.as_deref().unwrap().contains("is in format 9, and this theviewer reads format 1; update theviewer"), "{:?}", listed[1].error);
+    assert!(listed[1].error.as_deref().unwrap().contains("is in format 9, and this theviewer reads formats up to 2; update theviewer"), "{:?}", listed[1].error);
     assert!(save(&dir, &newer, false).is_err(), "nor is one saved");
     assert!(find(&dir, "Nothing").unwrap_err().message.contains("there is no recipe 'Nothing' (those saved are Broken, Newer)"));
 }

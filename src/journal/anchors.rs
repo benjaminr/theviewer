@@ -13,6 +13,7 @@
 //! | [`Anchor::Finding`] | `{"finding": {"category": "compressed", "nth": 0}}` | a finding's span |
 //! | [`Anchor::Selection`] | `{"selection": "current"}` | whatever is selected when the recipe runs |
 //! | [`Anchor::Param`] | `{"param": "key"}` | a value the person supplies when running the recipe |
+//! | [`Anchor::Sheet`] | `{"sheet": {"step": 3}}`, `{"sheet": "payload"}`, `{"sheet": "input"}` | the sheet step 3 made, the sheet labelled payload, or the run's input |
 //!
 //! **How an anchor is marked in a recipe step's parameters.** Any value at
 //! any depth of a step's `params` may be `{"$anchor": ANCHOR}`, an object
@@ -106,6 +107,87 @@ pub enum Anchor {
         /// The parameter's name.
         param: String,
     },
+    /// A document of the run: a sheet an earlier step made, one labelled,
+    /// or the run's input.
+    Sheet {
+        sheet: SheetRef,
+    },
+}
+
+/// Which document of a run a sheet anchor names.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged)]
+pub enum SheetRef {
+    /// The sheet an earlier step made: its `nth` (from 0) when it made
+    /// several.
+    Step {
+        step: u64,
+        #[serde(default, skip_serializing_if = "is_zero")]
+        nth: usize,
+    },
+    /// The run's input, as `"input"`, or the sheet a step labelled so with
+    /// its `makes`.
+    Named(String),
+}
+
+/// The name a sheet anchor gives the run's input.
+pub const INPUT: &str = "input";
+
+fn is_zero(value: &usize) -> bool {
+    *value == 0
+}
+
+impl SheetRef {
+    /// "the sheet step 3 made", "the 2nd sheet step 3 made", "the run's
+    /// input", "the sheet labelled payload".
+    pub fn describe(&self) -> String {
+        match self {
+            SheetRef::Step { step, nth: 0 } => format!("the sheet step {step} made"),
+            SheetRef::Step { step, nth } => format!("the {} sheet step {step} made", ordinal(*nth)),
+            SheetRef::Named(name) if name == INPUT => "the run's input".to_string(),
+            SheetRef::Named(label) => format!("the sheet labelled {label}"),
+        }
+    }
+}
+
+/// Whether `text` is a document's id as the API gives them, such as
+/// "doc-4": how a recipe tells a document named literally among a step's
+/// parameters.
+pub fn is_document_id(text: &str) -> bool {
+    text.strip_prefix("doc-").is_some_and(|number| !number.is_empty() && number.chars().all(|digit| digit.is_ascii_digit()))
+}
+
+/// The documents a run has: its input, and the sheets its steps made, by
+/// step and by label.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct RunSheets {
+    /// The document the run is on.
+    pub input: Option<String>,
+    /// The sheets each step made, in the order made.
+    pub made: BTreeMap<u64, Vec<String>>,
+    /// The sheets steps labelled with their `makes`.
+    pub labels: BTreeMap<String, String>,
+}
+
+impl RunSheets {
+    /// The documents of a run on `input`, before any step has run.
+    pub fn on(input: &str) -> Self {
+        RunSheets { input: Some(input.to_string()), ..RunSheets::default() }
+    }
+
+    /// Whether `doc` is the run's input or a sheet one of its steps made.
+    pub fn holds(&self, doc: &str) -> bool {
+        self.input.as_deref() == Some(doc) || self.made.values().flatten().any(|made| made == doc)
+    }
+
+    /// Whether `sheet` names a sheet the run does not have yet, but one of
+    /// its later steps may make.
+    pub fn is_waiting_for(&self, sheet: &SheetRef) -> bool {
+        match sheet {
+            SheetRef::Step { step, .. } => !self.made.contains_key(step),
+            SheetRef::Named(name) => name != INPUT && !self.labels.contains_key(name),
+        }
+    }
 }
 
 /// What a find anchor looks for.
@@ -277,6 +359,9 @@ pub struct ResolveContext<'a> {
     pub steps: &'a BTreeMap<u64, Value>,
     /// The recipe's parameters as the person gave them.
     pub parameters: &'a BTreeMap<String, Value>,
+    /// The run's input and the sheets its steps have made, which sheet
+    /// anchors name.
+    pub sheets: &'a RunSheets,
 }
 
 impl Anchor {
@@ -319,6 +404,7 @@ impl Anchor {
             Anchor::Finding { finding, part } => resolve_finding(finding, *part, context),
             Anchor::Selection { part, .. } => resolve_selection(*part, context),
             Anchor::Param { param } => resolve_param(param, context),
+            Anchor::Sheet { sheet } => resolve_sheet(sheet, context.sheets),
         };
         resolved.map_err(|error| {
             let data = serde_json::json!({ "anchor": self, "reason": error.to_json() });
@@ -336,6 +422,7 @@ impl Anchor {
             Anchor::Finding { finding, part } => format!("the {}{}", part_phrase(*part), finding.describe()),
             Anchor::Selection { part, .. } => format!("the {}current selection", part_phrase(*part)),
             Anchor::Param { param } => format!("the parameter '{param}'"),
+            Anchor::Sheet { sheet } => sheet.describe(),
         }
     }
 }
@@ -637,6 +724,25 @@ fn resolve_selection(part: Option<Part>, context: &mut ResolveContext<'_>) -> Re
     })
 }
 
+fn resolve_sheet(sheet: &SheetRef, sheets: &RunSheets) -> Result<Value, ApiError> {
+    let found = match sheet {
+        SheetRef::Named(name) if name == INPUT => sheets.input.clone().ok_or_else(|| ApiError::not_found("the run has no input document"))?,
+        SheetRef::Named(label) => sheets.labels.get(label).cloned().ok_or_else(|| {
+            let known: Vec<&str> = sheets.labels.keys().map(String::as_str).collect();
+            let known = if known.is_empty() { "no step has labelled one yet".to_string() } else { format!("those labelled are {}", known.join(", ")) };
+            ApiError::not_found(format!("no step of this run has made a sheet labelled {label} ({known})"))
+        })?,
+        SheetRef::Step { step, nth } => {
+            let made = sheets.made.get(step).ok_or_else(|| ApiError::not_found(format!("step {step} has not made a sheet earlier in this run")))?;
+            made.get(*nth).cloned().ok_or_else(|| match made.len() {
+                0 => ApiError::not_found(format!("step {step} made no sheet in this run")),
+                count => ApiError::not_found(format!("step {step} made {count} sheet{} in this run, so there is no {}", if count == 1 { "" } else { "s" }, ordinal(*nth))),
+            })?
+        }
+    };
+    Ok(Value::String(found))
+}
+
 fn resolve_param(name: &str, context: &ResolveContext<'_>) -> Result<Value, ApiError> {
     context.parameters.get(name).cloned().ok_or_else(|| {
         let given: Vec<&str> = context.parameters.keys().map(String::as_str).collect();
@@ -671,6 +777,35 @@ mod tests {
         );
         round_trip(Anchor::Selection { selection: SelectionWhich::Current, part: None }, json!({"selection": "current"}));
         round_trip(Anchor::Param { param: "key".into() }, json!({"param": "key"}));
+        round_trip(Anchor::Sheet { sheet: SheetRef::Step { step: 3, nth: 0 } }, json!({"sheet": {"step": 3}}));
+        round_trip(Anchor::Sheet { sheet: SheetRef::Step { step: 3, nth: 1 } }, json!({"sheet": {"step": 3, "nth": 1}}));
+        round_trip(Anchor::Sheet { sheet: SheetRef::Named("payload".into()) }, json!({"sheet": "payload"}));
+        round_trip(Anchor::Sheet { sheet: SheetRef::Named(INPUT.into()) }, json!({"sheet": "input"}));
+    }
+
+    #[test]
+    fn a_sheet_anchor_names_the_run_s_input_a_sheet_a_step_made_or_one_labelled() {
+        let mut workspace = crate::api::test_support::workspace_with("a.bin", b"abc");
+        let sheets = RunSheets { input: Some("doc-1".into()), made: BTreeMap::from([(2, vec!["doc-2".into(), "doc-3".into()]), (4, Vec::new())]), labels: BTreeMap::from([("payload".into(), "doc-3".into())]) };
+        let none = BTreeMap::new();
+        let mut resolve = |sheet: SheetRef| Anchor::Sheet { sheet }.resolve(&mut ResolveContext { workspace: &mut workspace, doc: None, steps: &none, parameters: &BTreeMap::new(), sheets: &sheets });
+        assert_eq!(resolve(SheetRef::Named(INPUT.into())).unwrap(), json!("doc-1"));
+        assert_eq!(resolve(SheetRef::Step { step: 2, nth: 0 }).unwrap(), json!("doc-2"));
+        assert_eq!(resolve(SheetRef::Step { step: 2, nth: 1 }).unwrap(), json!("doc-3"));
+        assert_eq!(resolve(SheetRef::Named("payload".into())).unwrap(), json!("doc-3"));
+        let later = resolve(SheetRef::Step { step: 9, nth: 0 }).unwrap_err();
+        assert!(later.message.contains("the sheet step 9 made did not resolve: step 9 has not made a sheet earlier in this run"), "{}", later.message);
+        let third = resolve(SheetRef::Step { step: 2, nth: 2 }).unwrap_err();
+        assert!(third.message.ends_with("step 2 made 2 sheets in this run, so there is no 3rd"), "{}", third.message);
+        assert!(resolve(SheetRef::Step { step: 4, nth: 0 }).unwrap_err().message.ends_with("step 4 made no sheet in this run"));
+        let unknown = resolve(SheetRef::Named("rootfs".into())).unwrap_err();
+        assert!(unknown.message.ends_with("no step of this run has made a sheet labelled rootfs (those labelled are payload)"), "{}", unknown.message);
+    }
+
+    #[test]
+    fn a_document_s_id_is_told_from_other_text() {
+        assert!(is_document_id("doc-1") && is_document_id("doc-42"));
+        assert!(!is_document_id("doc-") && !is_document_id("doc-1a") && !is_document_id("current") && !is_document_id("/tmp/doc-1"));
     }
 
     #[test]
@@ -682,7 +817,7 @@ mod tests {
     #[test]
     fn the_anchor_schema_offers_each_kind() {
         let schema = schemars::schema_for!(Anchor).to_value();
-        assert_eq!(schema["anyOf"].as_array().map(Vec::len), Some(6), "{schema}");
+        assert_eq!(schema["anyOf"].as_array().map(Vec::len), Some(7), "{schema}");
     }
 
     #[test]

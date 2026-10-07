@@ -19,14 +19,19 @@
 //! `{"$anchor": …}` (see [`super::anchors`]). Each step keeps the number it
 //! was recorded as, which later steps' step anchors name.
 //!
-//! **Documents.** A recipe runs on one document, the run's (the one given,
-//! or the current one). A step's `doc` that names the document it was
-//! recorded on means the run's document: a step with no `doc`, with
-//! `"current"`, or with the id the first step that names a document names
-//! (such as `"doc-1"`, as recorded). Another id is kept as written; a
-//! document an earlier step opened is best named by a step anchor, such as
-//! `{"$anchor": {"step": 2, "path": "result.doc"}}`, which is found when the
-//! recipe runs.
+//! **Documents.** A recipe runs on one document, its input (the one given,
+//! or the current one): a step with no `doc`, or with `"current"`, runs on
+//! it. The sheets its steps make (`documents.derive`, `unpack.open`…) are
+//! named by sheet anchors, `{"$anchor": {"sheet": {"step": 2}}}` for the
+//! sheet step 2 made, `{"sheet": "payload"}` for the one a step labelled
+//! with `makes`, and `{"sheet": "input"}` for the input. A literal id names
+//! a document of the run as it is; one the run neither runs on nor made
+//! stops it, rather than running the step on the input.
+//!
+//! **Format 2** adds what format 1 cannot say: a step's `makes` label, the
+//! recipe's `inputs`, and sheet anchors. A recipe is written as format 1
+//! unless it uses one of them, so older builds still run what they can;
+//! this build reads both.
 //!
 //! **Parameters** are declared with a type (`string`, `integer`, `number`
 //! or `boolean`), a description and an optional default. A value given as
@@ -44,12 +49,15 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::anchors::{Anchor, anchors_in, parse_integer};
+use super::anchors::{Anchor, INPUT, SheetRef, anchors_in, parse_integer};
 use super::{FileIdentity, JournalEntry, JournalSession, RecordedPlugin};
 use crate::api::ApiError;
 
-/// The recipe format this build writes and reads.
-pub const RECIPE_FORMAT: u32 = 1;
+/// The newest recipe format this build reads and writes.
+pub const RECIPE_FORMAT: u32 = 2;
+
+/// The format of a recipe that needs nothing format 2 added.
+pub const FIRST_FORMAT: u32 = 1;
 
 /// What recipe files are called: `Telemetry frames.theviewer-recipe.json`.
 pub const RECIPE_EXTENSION: &str = ".theviewer-recipe.json";
@@ -57,7 +65,8 @@ pub const RECIPE_EXTENSION: &str = ".theviewer-recipe.json";
 /// A saved analysis, to run on other files.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Recipe {
-    /// The recipe format, 1.
+    /// The recipe format: 1, or 2 for a recipe with sheet anchors, `makes`
+    /// labels or `inputs`.
     pub recipe: u32,
     /// The API version the steps were recorded against, by major version:
     /// "1.x".
@@ -69,14 +78,27 @@ pub struct Recipe {
     /// `{"param": name}` anchors stand for.
     #[serde(default)]
     pub parameters: BTreeMap<String, RecipeParameter>,
-    /// The file it was recorded on, to say when another is the same.
+    /// The file it was recorded on, to say when another is the same (in
+    /// format 2, `inputs.input.recorded_on`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recorded_on: Option<FileIdentity>,
+    /// The documents it runs on, by name, in format 2: `input` is the one
+    /// given when it runs, which `{"sheet": "input"}` names.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub inputs: BTreeMap<String, RecipeInput>,
     /// The plugins loaded when it was recorded; running it warns when one
     /// is missing or has changed.
     #[serde(default)]
     pub plugins: Vec<RecordedPlugin>,
     pub steps: Vec<RecipeStep>,
+}
+
+/// A document a recipe runs on.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct RecipeInput {
+    /// The file it was recorded on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recorded_on: Option<FileIdentity>,
 }
 
 /// A value a recipe asks for when it runs.
@@ -115,6 +137,17 @@ pub struct RecipeStep {
     /// What the step is for, in the person's words.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
+    /// The label of the sheet the step makes, which `{"sheet": label}`
+    /// anchors name (format 2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub makes: Option<String>,
+}
+
+impl RecipeStep {
+    /// Step `step`, a call of `method` with `params`, with no note or label.
+    pub fn new(step: u64, method: impl Into<String>, params: Value) -> Self {
+        RecipeStep { step, method: method.into(), params, note: None, makes: None }
+    }
 }
 
 impl Recipe {
@@ -130,18 +163,45 @@ impl Recipe {
             if recorded_on.is_none() {
                 recorded_on = entry.doc.as_deref().and_then(|doc| session.document(doc)).map(|document| document.file());
             }
-            steps.push(RecipeStep { step: entry.step, method: entry.method.clone(), params: entry.params.clone(), note: None });
+            steps.push(RecipeStep::new(entry.step, entry.method.clone(), entry.params.clone()));
         }
         steps.sort_by_key(|step| step.step);
         Recipe {
-            recipe: RECIPE_FORMAT,
+            recipe: FIRST_FORMAT,
             api_version: major_version(&session.api_version),
             name: name.to_string(),
             description: String::new(),
             parameters: BTreeMap::new(),
             recorded_on,
+            inputs: BTreeMap::new(),
             plugins: session.plugins.clone(),
             steps,
+        }
+    }
+
+    /// The file the recipe's input was recorded on: `recorded_on`, or in
+    /// format 2 `inputs.input.recorded_on`.
+    pub fn input_recorded_on(&self) -> Option<&FileIdentity> {
+        self.recorded_on.as_ref().or_else(|| self.inputs.get(INPUT).and_then(|input| input.recorded_on.as_ref()))
+    }
+
+    /// Whether the recipe says anything only format 2 can: a sheet anchor,
+    /// a step's `makes`, or `inputs`.
+    pub fn needs_second_format(&self) -> bool {
+        let sheet_anchor = self.steps.iter().flat_map(|step| anchors_in(&step.params)).any(|(_, anchor)| matches!(anchor, Anchor::Sheet { .. }));
+        sheet_anchor || !self.inputs.is_empty() || self.steps.iter().any(|step| step.makes.is_some())
+    }
+
+    /// Write the recipe in the oldest format that says all it holds: format
+    /// 2 (its file named under `inputs`) when it needs it, otherwise 1.
+    pub fn settle_format(&mut self) {
+        if !self.needs_second_format() {
+            self.recipe = FIRST_FORMAT;
+            return;
+        }
+        self.recipe = RECIPE_FORMAT;
+        if let Some(recorded_on) = self.recorded_on.take() {
+            self.inputs.entry(INPUT.to_string()).or_default().recorded_on = Some(recorded_on);
         }
     }
 
@@ -150,7 +210,7 @@ impl Recipe {
     pub fn check_format(&self) -> Result<(), ApiError> {
         if self.recipe > RECIPE_FORMAT || self.recipe == 0 {
             return Err(ApiError::invalid_params(format!(
-                "the recipe '{}' is in format {}, and this theviewer reads format {RECIPE_FORMAT}; update theviewer to run it",
+                "the recipe '{}' is in format {}, and this theviewer reads formats up to {RECIPE_FORMAT}; update theviewer to run it",
                 self.name, self.recipe
             )));
         }
@@ -186,6 +246,7 @@ impl Recipe {
     fn mistakes(&self) -> Vec<String> {
         let mut mistakes = Vec::new();
         let mut earlier: Vec<u64> = Vec::new();
+        let mut labels: Vec<String> = Vec::new();
         for step in &self.steps {
             if earlier.contains(&step.step) {
                 mistakes.push(format!("two steps are numbered {}; step anchors naming it find the later", step.step));
@@ -198,10 +259,17 @@ impl Recipe {
                     Anchor::Param { param } if !self.parameters.contains_key(&param) => {
                         mistakes.push(format!("step {} ({}) uses the parameter '{param}', which the recipe does not declare", step.step, step.method));
                     }
+                    Anchor::Sheet { sheet: SheetRef::Step { step: named, .. } } if !earlier.contains(&named) => {
+                        mistakes.push(format!("step {} ({}) takes {path} from the sheet step {named} made, which does not come before it", step.step, step.method));
+                    }
+                    Anchor::Sheet { sheet: SheetRef::Named(label) } if label != INPUT && !labels.contains(&label) => {
+                        mistakes.push(format!("step {} ({}) takes {path} from the sheet labelled {label}, which no earlier step makes", step.step, step.method));
+                    }
                     _ => {}
                 }
             }
             earlier.push(step.step);
+            labels.extend(step.makes.clone());
         }
         mistakes
     }
@@ -399,6 +467,41 @@ mod tests {
         assert_eq!(recipe.parameters["key"].kind, ParameterType::String);
         assert_eq!(crate::journal::anchors::anchors_in(&recipe.steps[0].params).len(), 1);
         assert_eq!(serde_json::to_value(&recipe).unwrap(), written);
+    }
+
+    #[test]
+    fn a_recipe_is_written_as_format_one_unless_it_names_sheets() {
+        let mut plain = Recipe::from_journal("Patch", &session(), &[entry(2, "bytes.write", json!({"start": 2, "data": "41"}), Outcome::Ok)]);
+        plain.settle_format();
+        assert_eq!((plain.recipe, plain.inputs.len()), (1, 0), "nothing format 2 adds");
+        assert!(plain.recorded_on.is_some());
+
+        let mut derived = plain.clone();
+        derived.steps.push(RecipeStep { makes: Some("payload".into()), ..RecipeStep::new(3, "documents.derive", json!({"start": 4})) });
+        derived.steps.push(RecipeStep::new(4, "bytes.write", json!({"doc": {"$anchor": {"sheet": "payload"}}, "start": 0, "data": "00"})));
+        derived.settle_format();
+        assert_eq!(derived.recipe, 2);
+        assert_eq!(derived.recorded_on, None, "format 2 names the file under inputs");
+        assert_eq!(derived.input_recorded_on().map(|file| file.name.as_str()), Some("flight-03.bin"));
+        let written = serde_json::to_value(&derived).unwrap();
+        assert_eq!(written["inputs"]["input"]["recorded_on"]["name"], "flight-03.bin");
+        assert_eq!(written["steps"][1]["makes"], "payload");
+        let read: Recipe = serde_json::from_value(written).unwrap();
+        assert!(read.check_format().is_ok(), "this build reads format 2");
+        assert!(read.warnings("1.0", &session().plugins).is_empty(), "{:?}", read.warnings("1.0", &session().plugins));
+    }
+
+    #[test]
+    fn a_sheet_anchor_naming_a_later_step_or_an_unknown_label_is_a_mistake_the_recipe_warns_of() {
+        let mut recipe = Recipe::from_journal("Sheets", &session(), &[]);
+        recipe.steps = vec![
+            RecipeStep::new(1, "bytes.write", json!({"doc": {"$anchor": {"sheet": {"step": 2}}}, "start": 0, "data": "00"})),
+            RecipeStep { makes: Some("payload".into()), ..RecipeStep::new(2, "documents.derive", json!({"start": 4})) },
+            RecipeStep::new(3, "bytes.write", json!({"doc": {"$anchor": {"sheet": "rootfs"}}, "start": 0, "data": "00"})),
+        ];
+        let warnings = recipe.warnings("1.0", &session().plugins);
+        assert!(warnings.iter().any(|warning| warning.contains("step 1 (bytes.write) takes doc from the sheet step 2 made, which does not come before it")), "{warnings:?}");
+        assert!(warnings.iter().any(|warning| warning.contains("step 3 (bytes.write) takes doc from the sheet labelled rootfs, which no earlier step makes")), "{warnings:?}");
     }
 
     #[test]

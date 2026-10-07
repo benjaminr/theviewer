@@ -9,15 +9,19 @@
 //!
 //! How a run goes ([`run`]):
 //!
-//! 1. **The run's document** is `options.doc`, or the current one. A step's
-//!    `doc` that names the recorded document means the run's document: a
-//!    step with no `doc` (when its method takes one), with `"current"`, or
-//!    with the id the recipe's first step named. Any other id is kept as it
-//!    is (a document an earlier step opened is best named by a step anchor,
-//!    `{"step": 2, "path": "result.doc"}`). See [`super::recipe`].
+//! 1. **The run's document**, its input, is `options.doc`, or the current
+//!    one. A step with no `doc` (when its method takes one), or with
+//!    `"current"`, runs on it. The sheets the steps make are kept in a run
+//!    map, by step and by the label a step's `makes` gives, and `sheet`
+//!    anchors name them (`{"sheet": {"step": 2}}`, `{"sheet": "payload"}`,
+//!    `{"sheet": "input"}`). A literal id is kept as it is; running a recipe
+//!    (`options.only_own_documents`), one that is neither the input nor a
+//!    sheet the run made stops the run, rather than running the step on
+//!    some other document. See [`super::recipe`].
 //! 2. **Anchors** marked `{"$anchor": …}` in a step's params are resolved
-//!    against the step's document, in the order [`super::anchors::anchors_in`]
-//!    lists them, and each is reported in [`StepReport::anchors`].
+//!    against the step's document (its `doc` first), in the order
+//!    [`super::anchors::anchors_in`] lists them, and each is reported in
+//!    [`StepReport::anchors`].
 //! 3. **The call** is made as `options.caller`, so its edits are labelled
 //!    "… by recipe:NAME", through [`crate::api::call_as`]. Each step is
 //!    checked against the policy of `options.checked_as`: whoever started
@@ -33,9 +37,14 @@
 //! 5. **The first failure stops the run**: a step whose anchor does not
 //!    resolve or whose call fails, with [`RunReport::stopped`] saying which
 //!    and why.
-//! 6. **The run's edits undo as one step** of the run's document, named
-//!    "Recipe steps by recipe:NAME", whether it completed or stopped, so
-//!    one Undo takes back everything it changed.
+//! 6. **The run's edits undo as one step** of each document it edited, the
+//!    input and each sheet, named "Recipe steps by recipe:NAME", whether it
+//!    completed or stopped, so one Undo of a document takes back everything
+//!    the run changed in it.
+//! 7. **Files.** A step that writes a file runs only when
+//!    `options.allow_writes` says so (`theviewer replay --allow-writes`).
+//!
+//! The report lists the sheets the run made ([`RunReport::sheets`]).
 //!
 //! A **preview** (`options.preview`) resolves and describes each step on
 //! this file without calling anything. It goes on past a problem, marking
@@ -50,7 +59,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::anchors::{Anchor, ResolveContext, anchors_in, replace_at};
+use super::anchors::{Anchor, ResolveContext, RunSheets, anchors_in, is_document_id, replace_at, visit_paths};
 use super::recipe::{Recipe, RecipeStep};
 use super::{FileIdentity, Outcome};
 use crate::api::{self, ApiError, Caller, Consent, Effect, ErrorCode, MethodRef, Workspace, workspace};
@@ -83,13 +92,21 @@ pub struct ReplayOptions {
     /// when the whole run is allowed already: the person pressed Run after
     /// the preview, went back to a step, or allowed the run when asked.
     pub checked_as: Option<Caller>,
+    /// Whether a step that writes a file may run. `theviewer replay` lets
+    /// one only with `--allow-writes`; through the API, the caller's leave
+    /// to edit decides.
+    pub allow_writes: bool,
+    /// Whether a literal document id must name the run's input or a sheet
+    /// the run made, as a recipe's must: going back and playback run the
+    /// session's own steps, whose ids are its documents.
+    pub only_own_documents: bool,
 }
 
 impl ReplayOptions {
     /// Options to run every step as `caller` on the current document,
     /// waiting for jobs, each step checked against `caller`'s policy.
     pub fn new(caller: Caller) -> Self {
-        ReplayOptions { checked_as: Some(caller.clone()), caller, parameters: BTreeMap::new(), doc: None, through_step: None, preview: false }
+        ReplayOptions { checked_as: Some(caller.clone()), caller, parameters: BTreeMap::new(), doc: None, through_step: None, preview: false, allow_writes: true, only_own_documents: false }
     }
 
     /// Whether each step needs leave to run, and whose.
@@ -159,6 +176,25 @@ pub struct RunReport {
     /// different API version, another file than the one recorded on.
     #[serde(default)]
     pub warnings: Vec<String>,
+    /// The sheets the run made, in the order made.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sheets: Vec<RunSheet>,
+}
+
+/// A sheet a run made.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct RunSheet {
+    /// The step that made it.
+    pub step: u64,
+    /// Its id in the workspace the run was in.
+    pub doc: String,
+    /// The label its step's `makes` gave it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// Its name, as `documents.info` gives it.
+    pub name: String,
+    /// Its length in bytes.
+    pub len: u64,
 }
 
 impl RunReport {
@@ -196,9 +232,9 @@ pub fn run(workspace: &mut dyn Workspace, steps: &[RecipeStep], options: &Replay
             return report;
         }
     };
-    let mut run = Run { options, run_doc, recorded_doc: recorded_document(steps), done: BTreeMap::new() };
+    let mut run = Run { options, sheets: RunSheets::on(&run_doc), run_doc: run_doc.clone(), done: BTreeMap::new(), grouped: Vec::new() };
     if !options.preview {
-        run.open_undo_group(workspace);
+        run.open_undo_group(workspace, &run_doc);
     }
     for step in steps {
         if options.through_step.is_some_and(|through| step.step > through) {
@@ -217,8 +253,9 @@ pub fn run(workspace: &mut dyn Workspace, steps: &[RecipeStep], options: &Replay
         }
     }
     if !options.preview {
-        run.close_undo_group(workspace);
+        run.close_undo_groups(workspace);
     }
+    report.sheets = run.sheets_made(workspace);
     report
 }
 
@@ -228,8 +265,9 @@ pub fn run(workspace: &mut dyn Workspace, steps: &[RecipeStep], options: &Replay
 /// recorded on) are added to the report.
 pub fn run_recipe(workspace: &mut dyn Workspace, recipe: &Recipe, options: &ReplayOptions) -> RunReport {
     let mut options = options.clone();
+    options.only_own_documents = true;
     let mut warnings = recipe.warnings(&workspace.journal().session().api_version, &workspace.journal().session().plugins);
-    if let Some(recorded_on) = &recipe.recorded_on
+    if let Some(recorded_on) = recipe.input_recorded_on()
         && let Ok(doc) = workspace::resolve(workspace, options.doc.as_deref())
         && !is_same_file(workspace, &doc, recorded_on)
     {
@@ -242,19 +280,13 @@ pub fn run_recipe(workspace: &mut dyn Workspace, recipe: &Recipe, options: &Repl
         }
         Err(error) => {
             let step = recipe.steps.first().map_or(0, |step| step.step);
-            RunReport { steps: Vec::new(), stopped: Some(Stopped { step, error }), warnings: Vec::new() }
+            RunReport { steps: Vec::new(), stopped: Some(Stopped { step, error }), ..RunReport::default() }
         }
     };
     warnings.append(&mut report.warnings);
     warnings.extend(crate::recipes::unknown_methods(workspace, recipe));
     report.warnings = warnings;
     report
-}
-
-/// The document the recipe's steps were recorded on, as its first step
-/// that names one names it.
-fn recorded_document(steps: &[RecipeStep]) -> Option<String> {
-    steps.iter().find_map(|step| step.params.get("doc").and_then(Value::as_str).filter(|doc| *doc != workspace::CURRENT).map(str::to_string))
 }
 
 /// Whether document `doc` is the file `identity` describes: the same size
@@ -276,16 +308,18 @@ fn is_same_file(workspace: &mut dyn Workspace, doc: &str, identity: &FileIdentit
     sha256.is_none_or(|sha256| sha256 == *recorded)
 }
 
-/// A run in progress: its options, its document, and what each step done
-/// so far was given and returned.
+/// A run in progress: its options, its document, the sheets its steps made,
+/// and what each step done so far was given and returned.
 struct Run<'a> {
     options: &'a ReplayOptions,
     run_doc: String,
-    /// The id the recorded document had, which the run's stands in for.
-    recorded_doc: Option<String>,
+    /// The run's input and the sheets its steps made.
+    sheets: RunSheets,
     /// Each step done, by number, as `{"params", "result", "job"?}`, `job`
     /// being the result of the job the step started, once finished.
     done: BTreeMap<u64, Value>,
+    /// The documents with an undo step open for the run's edits.
+    grouped: Vec<String>,
 }
 
 impl Run<'_> {
@@ -318,6 +352,12 @@ impl Run<'_> {
         if self.options.preview {
             return report;
         }
+        if let Some(refused) = method.as_ref().ok().and_then(|method| self.refuse_writing(step, method, &report.params)) {
+            report.outcome = Outcome::Error(refused);
+            return report;
+        }
+        let step_doc = report.params.get("doc").and_then(Value::as_str).unwrap_or(&self.run_doc).to_string();
+        self.open_undo_group(workspace, &step_doc);
         let before = workspace.journal().last_step();
         let outermost = workspace.journal().depth == 0;
         let called = api::call_as(workspace, &self.options.caller, &step.method, report.params.clone(), self.options.consent());
@@ -336,6 +376,7 @@ impl Run<'_> {
             done["job"] = job.result.clone().unwrap_or(Value::Null);
         }
         self.done.insert(step.step, done);
+        self.keep_sheets_made(workspace, step, &result);
         report.result = Some(result);
         report
     }
@@ -343,49 +384,126 @@ impl Run<'_> {
     /// Put the run's document in the step's params and resolve its anchors
     /// into `report.params`, noting each in `report.anchors`.
     ///
-    /// A step's `doc` that names the recorded document means the run's: a
-    /// step with none (when its method takes one), with "current", or with
-    /// the id the recipe's first step named. This is the one place that
-    /// rule is kept.
+    /// A step with no `doc` (when its method takes one), or with "current",
+    /// runs on the run's document; a `doc` anchor is resolved first, as the
+    /// other anchors are found in the document it names. This is the one
+    /// place that rule is kept.
     fn prepare(&self, workspace: &mut dyn Workspace, method: &MethodRef, report: &mut StepReport) -> Result<(), ApiError> {
         if report.params.is_null() {
             report.params = Value::Object(Default::default());
         }
-        // The document first: the other anchors are found in it.
+        if self.options.only_own_documents {
+            self.check_documents_named(report)?;
+        }
         if let Some(anchor) = report.params.get("doc").and_then(super::anchors::as_anchor) {
             self.resolve_into(workspace, report, "doc", &anchor, &self.run_doc.clone())?;
         }
         let takes_doc = method.takes_doc();
         if let Some(object) = report.params.as_object_mut() {
-            let named = object.get("doc").and_then(Value::as_str);
-            let means_run_doc = match named {
-                None => takes_doc && !object.contains_key("doc"),
-                Some(doc) => doc == workspace::CURRENT || self.recorded_doc.as_deref() == Some(doc),
+            let means_run_doc = match object.get("doc") {
+                None => takes_doc,
+                Some(doc) => doc.as_str() == Some(workspace::CURRENT),
             };
             if means_run_doc {
                 object.insert("doc".to_string(), Value::String(self.run_doc.clone()));
             }
         }
+        let waiting_for_doc = report.anchors.iter().find(|resolved| resolved.path == "doc").and_then(|resolved| resolved.pending.clone());
         let step_doc = report.params.get("doc").and_then(Value::as_str).map_or_else(|| self.run_doc.clone(), str::to_string);
-        for (path, anchor) in anchors_in(&report.params) {
+        // A doc still marked waits for its step; it was reported above.
+        for (path, anchor) in anchors_in(&report.params).into_iter().filter(|(path, _)| path != "doc") {
+            if let Some(waiting) = &waiting_for_doc
+                && !matches!(anchor, Anchor::Param { .. } | Anchor::Step { .. } | Anchor::Sheet { .. })
+            {
+                let pending = format!("found in {waiting}");
+                report.anchors.push(ResolvedAnchor { path, anchor, value: Value::Null, pending: Some(pending) });
+                continue;
+            }
             self.resolve_into(workspace, report, &path, &anchor, &step_doc)?;
         }
         Ok(())
+    }
+
+    /// Refuse a step whose params name a document by a literal id that is
+    /// neither the run's input nor a sheet the run made: a recipe names the
+    /// sheets its steps make with sheet anchors, and an id recorded in
+    /// another session names some other document here, or none.
+    fn check_documents_named(&self, report: &StepReport) -> Result<(), ApiError> {
+        let mut foreign = None;
+        visit_paths(&report.params, "", &mut |path, value| {
+            if super::anchors::as_anchor(value).is_some() {
+                return false;
+            }
+            if foreign.is_none()
+                && let Some(id) = value.as_str().filter(|text| is_document_id(text))
+                && !self.sheets.holds(id)
+            {
+                foreign = Some((path.to_string(), id.to_string()));
+            }
+            true
+        });
+        let Some((path, id)) = foreign else { return Ok(()) };
+        let message = format!(
+            "step {} ({}) names {id} at {path}, which is neither this run's input ({}) nor a sheet one of its steps made, so it does not run on some other document; a recipe names the sheet step N made as {}",
+            report.step, report.method, self.run_doc, r#"{"$anchor": {"sheet": {"step": N}}}"#
+        );
+        Err(ApiError::not_found(message).with_data(serde_json::json!({ "path": path, "doc": id })))
+    }
+
+    /// Why step `step` may not run, when it would write a file and the run
+    /// does not allow that.
+    fn refuse_writing(&self, step: &RecipeStep, method: &MethodRef, params: &Value) -> Option<ApiError> {
+        if self.options.allow_writes || !method.writes_file(params) {
+            return None;
+        }
+        let message = format!("step {} ({}) writes a file, which this run does not allow; theviewer replay runs such steps only with --allow-writes", step.step, step.method);
+        Some(ApiError::new(ErrorCode::ReadOnly, message))
+    }
+
+    /// Keep the sheets `step` made, as its result names them, under its
+    /// number and the label its `makes` gives, which the workspace notes
+    /// as the sheet's label too.
+    fn keep_sheets_made(&mut self, workspace: &mut dyn Workspace, step: &RecipeStep, result: &Value) {
+        let made: Vec<String> = super::sheets_made(result).into_iter().map(|sheet| sheet.doc).collect();
+        if let (Some(label), Some(first)) = (&step.makes, made.first()) {
+            self.sheets.labels.insert(label.clone(), first.clone());
+            if let Some(mut made_by) = workspace.lineage(first).and_then(|lineage| lineage.made_by) {
+                made_by.label = Some(label.clone());
+                workspace.note_made_by(first, made_by);
+            }
+        }
+        self.sheets.made.insert(step.step, made);
+    }
+
+    /// The sheets the run made, in the order made.
+    fn sheets_made(&self, workspace: &dyn Workspace) -> Vec<RunSheet> {
+        let labelled = |doc: &str| self.sheets.labels.iter().find(|(_, labelled)| labelled.as_str() == doc).map(|(label, _)| label.clone());
+        let mut sheets = Vec::new();
+        for (step, made) in &self.sheets.made {
+            for doc in made {
+                let Ok(info) = workspace::info(workspace, doc) else { continue };
+                sheets.push(RunSheet { step: *step, doc: doc.clone(), label: labelled(doc), name: info.name, len: info.len });
+            }
+        }
+        sheets
     }
 
     /// Resolve `anchor` at `path` of `report.params` on document `doc`, and
     /// put its value there. In a preview, a step anchor is left marked and
     /// reported as waiting for its step.
     fn resolve_into(&self, workspace: &mut dyn Workspace, report: &mut StepReport, path: &str, anchor: &Anchor, doc: &str) -> Result<(), ApiError> {
-        if self.options.preview
-            && let Anchor::Step { step, .. } = anchor
-            && !self.done.contains_key(step)
-        {
-            let pending = format!("found once step {step} has run");
-            report.anchors.push(ResolvedAnchor { path: path.to_string(), anchor: anchor.clone(), value: Value::Null, pending: Some(pending) });
-            return Ok(());
+        if self.options.preview {
+            let pending = match anchor {
+                Anchor::Step { step, .. } if !self.done.contains_key(step) => Some(format!("found once step {step} has run")),
+                Anchor::Sheet { sheet } if self.sheets.is_waiting_for(sheet) => Some(format!("{}, once it is made", sheet.describe())),
+                _ => None,
+            };
+            if let Some(pending) = pending {
+                report.anchors.push(ResolvedAnchor { path: path.to_string(), anchor: anchor.clone(), value: Value::Null, pending: Some(pending) });
+                return Ok(());
+            }
         }
-        let mut context = ResolveContext { workspace, doc: Some(doc.to_string()), steps: &self.done, parameters: &self.options.parameters };
+        let mut context = ResolveContext { workspace, doc: Some(doc.to_string()), steps: &self.done, parameters: &self.options.parameters, sheets: &self.sheets };
         let value = anchor.resolve(&mut context).map_err(|error| at_parameter(error, path))?;
         replace_at(&mut report.params, path, value.clone())?;
         report.anchors.push(ResolvedAnchor { path: path.to_string(), anchor: anchor.clone(), value, pending: None });
@@ -408,21 +526,28 @@ impl Run<'_> {
         }
     }
 
-    /// Open one undo step on the run's document for every edit the run
-    /// makes.
-    fn open_undo_group(&self, workspace: &mut dyn Workspace) {
+    /// Open one undo step on document `doc` for every edit the run makes
+    /// in it, unless one is open already.
+    fn open_undo_group(&mut self, workspace: &mut dyn Workspace, doc: &str) {
+        if self.grouped.iter().any(|grouped| grouped == doc) {
+            return;
+        }
         let label = self.options.caller.label("Recipe steps");
-        if let Some(document) = workspace.document_mut(&self.run_doc) {
+        if let Some(document) = workspace.document_mut(doc) {
             document.begin_labelled_group(label);
+            self.grouped.push(doc.to_string());
         }
     }
 
-    /// Close the run's undo step, and say the run's edits as the caller's.
-    fn close_undo_group(&self, workspace: &mut dyn Workspace) {
-        if let Some(document) = workspace.document_mut(&self.run_doc) {
-            document.end_group();
+    /// Close the run's undo step on each document it opened one on, and
+    /// say the run's edits as the caller's.
+    fn close_undo_groups(&self, workspace: &mut dyn Workspace) {
+        for doc in &self.grouped {
+            if let Some(document) = workspace.document_mut(doc) {
+                document.end_group();
+            }
+            workspace.publish_edits(doc, &self.options.caller.producer());
         }
-        workspace.publish_edits(&self.run_doc, &self.options.caller.producer());
     }
 }
 

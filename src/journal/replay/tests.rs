@@ -5,7 +5,7 @@ use serde_json::{Value, json};
 use super::*;
 use crate::api::test_support::{example_bytes, workspace_with};
 use crate::api::{HeadlessWorkspace, Workspace};
-use crate::journal::anchors::{FindingMatch, Needle, Part, SelectionWhich, marked};
+use crate::journal::anchors::{FindingMatch, Needle, Part, RunSheets, SelectionWhich, marked};
 use crate::journal::RecordedPlugin;
 use crate::journal::recipe::{ParameterType, RecipeParameter};
 
@@ -14,7 +14,7 @@ fn recipe_caller() -> Caller {
 }
 
 fn step(number: u64, method: &str, params: Value) -> RecipeStep {
-    RecipeStep { step: number, method: method.into(), params, note: None }
+    RecipeStep::new(number, method, params)
 }
 
 fn bytes_of(workspace: &mut HeadlessWorkspace) -> Vec<u8> {
@@ -26,7 +26,8 @@ fn bytes_of(workspace: &mut HeadlessWorkspace) -> Vec<u8> {
 /// Resolve `anchor` on the current document of `workspace`, with `steps`
 /// done and `parameters` given.
 fn resolve(workspace: &mut HeadlessWorkspace, anchor: Anchor, steps: &BTreeMap<u64, Value>, parameters: &BTreeMap<String, Value>) -> Result<Value, ApiError> {
-    let mut context = ResolveContext { workspace, doc: None, steps, parameters };
+    let sheets = RunSheets::on("doc-1");
+    let mut context = ResolveContext { workspace, doc: None, steps, parameters, sheets: &sheets };
     anchor.resolve(&mut context)
 }
 
@@ -272,15 +273,87 @@ fn a_run_stops_after_the_step_it_was_asked_to_go_through() {
 }
 
 #[test]
-fn the_recorded_document_s_id_means_the_run_s_document() {
+fn a_step_with_no_document_or_current_runs_on_the_run_s_document() {
     let mut workspace = workspace_with("old.bin", b"old!");
     workspace.add_document("new.bin", crate::document::Document::from_bytes(b"new!".to_vec()));
-    let steps = [step(1, "bytes.write", json!({"doc": "doc-7", "start": 0, "data": "4e"})), step(2, "bytes.write", json!({"doc": "current", "start": 1, "data": "45"}))];
+    let steps = [step(1, "bytes.write", json!({"start": 0, "data": "4e"})), step(2, "bytes.write", json!({"doc": "current", "start": 1, "data": "45"}))];
     let options = ReplayOptions { doc: Some("doc-1".into()), ..ReplayOptions::new(recipe_caller()) };
     let report = run(&mut workspace, &steps, &options);
     assert!(report.completed(), "{report:?}");
-    assert_eq!(workspace.document_mut("doc-1").unwrap().read_range(0, 4), b"NEd!", "doc-7 was the recorded document, and current means the run's");
-    assert_eq!(workspace.document_mut("doc-2").unwrap().read_range(0, 4), b"new!");
+    assert_eq!(workspace.document_mut("doc-1").unwrap().read_range(0, 4), b"NEd!");
+    assert_eq!(workspace.document_mut("doc-2").unwrap().read_range(0, 4), b"new!", "the current document is not the run's");
+}
+
+#[test]
+fn a_recipe_step_naming_a_document_the_run_did_not_make_fails_rather_than_editing_the_input() {
+    let mut workspace = workspace_with("capture.pcapng", b"\x0a\x0d\x0d\x0a");
+    workspace.add_document("unrelated.bin", crate::document::Document::from_bytes(b"other".to_vec()));
+    let recipe: Recipe = serde_json::from_value(json!({
+        "recipe": 1, "api_version": "1.x", "name": "Insert",
+        "steps": [{"step": 1, "method": "bytes.insert", "params": {"doc": "doc-3", "at": 0, "data": "aabb"}}]
+    }))
+    .unwrap();
+    let options = ReplayOptions { doc: Some("doc-1".into()), ..ReplayOptions::new(recipe_caller()) };
+    let report = run_recipe(&mut workspace, &recipe, &options);
+    let stopped = report.stopped.expect("doc-3 is not open here");
+    assert_eq!(stopped.error.code, ErrorCode::NotFound);
+    assert!(stopped.error.message.contains("step 1 (bytes.insert) names doc-3 at doc, which is neither this run's input (doc-1) nor a sheet one of its steps made"), "{}", stopped.error.message);
+    assert_eq!(workspace.document_mut("doc-1").unwrap().read_range(0, 4), b"\x0a\x0d\x0d\x0a", "the capture is untouched");
+
+    let open_elsewhere = Recipe { steps: vec![step(1, "bytes.insert", json!({"doc": "doc-2", "at": 0, "data": "aabb"}))], ..recipe };
+    let report = run_recipe(&mut workspace, &open_elsewhere, &options);
+    assert!(report.stopped.is_some(), "an open document the run did not make is not the recipe's either");
+    assert_eq!(workspace.document_mut("doc-2").unwrap().read_range(0, 5), b"other");
+}
+
+#[test]
+fn a_sheet_a_step_makes_is_named_by_later_steps_and_edited_as_one_undo_step_of_its_own() {
+    let mut workspace = workspace_with("container.bin", b"HEADpayload");
+    let steps = [
+        RecipeStep { makes: Some("payload".into()), ..step(1, "documents.derive", json!({"start": 4, "len": 7})) },
+        step(2, "bytes.write", json!({"doc": {"$anchor": {"sheet": {"step": 1}}}, "start": 0, "data": "50"})),
+        step(3, "bytes.write", json!({"doc": {"$anchor": {"sheet": "payload"}}, "start": 1, "data": "41"})),
+        step(4, "bytes.write", json!({"doc": {"$anchor": {"sheet": "input"}}, "start": 0, "data": "68"})),
+    ];
+    let report = run(&mut workspace, &steps, &ReplayOptions::new(recipe_caller()));
+    assert!(report.completed(), "{report:?}");
+    assert_eq!(report.steps[1].anchors[0].value, json!("doc-2"), "the sheet step 1 made");
+    assert_eq!(workspace.document_mut("doc-2").unwrap().read_range(0, 7), b"PAyload");
+    assert_eq!(workspace.document_mut("doc-1").unwrap().read_range(0, 4), b"hEAD");
+    assert_eq!(report.sheets, [RunSheet { step: 1, doc: "doc-2".into(), label: Some("payload".into()), name: "container.bin › 0x4+7".into(), len: 7 }]);
+    assert_eq!(workspace.lineage("doc-2").and_then(|lineage| lineage.label()), Some("payload".to_string()), "the workspace knows the label too");
+    let sheet = workspace.document_mut("doc-2").unwrap();
+    assert_eq!(sheet.undo_label(), Some("Recipe steps by recipe:Patch"), "the sheet's edits are one undo step");
+    sheet.undo();
+    assert_eq!(sheet.read_range(0, 7), b"payload");
+}
+
+#[test]
+fn a_preview_shows_a_sheet_anchor_waiting_for_the_step_that_makes_it() {
+    let mut workspace = workspace_with("container.bin", b"HEADpayload");
+    let steps = [step(1, "documents.derive", json!({"start": 4})), step(2, "search.find", json!({"doc": {"$anchor": {"sheet": {"step": 1}}}, "query": {"$anchor": {"param": "needle"}}}))];
+    let options = ReplayOptions { preview: true, parameters: BTreeMap::from([("needle".to_string(), json!("load"))]), ..ReplayOptions::new(recipe_caller()) };
+    let report = run(&mut workspace, &steps, &options);
+    assert!(report.completed(), "{report:?}");
+    assert_eq!(report.steps[1].anchors[0].pending.as_deref(), Some("the sheet step 1 made, once it is made"));
+    assert_eq!(report.steps[1].anchors[1].value, json!("load"), "a parameter does not wait");
+    assert_eq!(workspace.documents().len(), 1, "the preview made nothing");
+}
+
+#[test]
+fn a_step_that_writes_a_file_runs_only_when_the_run_allows_writing() {
+    let path = std::env::temp_dir().join(format!("theviewer-replay-writes-{}.bin", std::process::id()));
+    let mut workspace = workspace_with("a.bin", b"abcdef");
+    let steps = [step(1, "documents.export", json!({"start": 0, "len": 3, "path": path.display().to_string()}))];
+    let refused = run(&mut workspace, &steps, &ReplayOptions { allow_writes: false, ..ReplayOptions::new(recipe_caller()) });
+    let stopped = refused.stopped.expect("writing is not allowed");
+    assert_eq!(stopped.error.code, ErrorCode::ReadOnly);
+    assert!(stopped.error.message.contains("--allow-writes"), "{}", stopped.error.message);
+    assert!(!path.exists(), "nothing was written");
+    let allowed = run(&mut workspace, &steps, &ReplayOptions::new(recipe_caller()));
+    assert!(allowed.completed(), "{allowed:?}");
+    assert_eq!(std::fs::read(&path).unwrap(), b"abc");
+    std::fs::remove_file(path).ok();
 }
 
 #[test]

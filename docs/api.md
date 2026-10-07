@@ -1372,11 +1372,12 @@ A recipe of the journal's successful steps (or those chosen, with the steps they
 | --- | --- | --- | --- |
 | `api_version` | string | yes | The API version the steps were recorded against, by major version: "1.x". |
 | `description` | string | no |  |
+| `inputs` | object | no | The documents it runs on, by name, in format 2: `input` is the one given when it runs, which `{"sheet": "input"}` names. |
 | `name` | string | yes |  |
 | `parameters` | object | no | Values the person supplies when running it, by name, which `{"param": name}` anchors stand for. |
 | `plugins` | array of RecordedPlugin | no | The plugins loaded when it was recorded; running it warns when one is missing or has changed. |
-| `recipe` | integer | yes | The recipe format, 1. |
-| `recorded_on` | FileIdentity | no | The file it was recorded on, to say when another is the same. |
+| `recipe` | integer | yes | The recipe format: 1, or 2 for a recipe with sheet anchors, `makes` labels or `inputs`. |
+| `recorded_on` | FileIdentity | no | The file it was recorded on, to say when another is the same (in format 2, `inputs.input.recorded_on`). |
 | `steps` | array of RecipeStep | yes |  |
 
 ### search.find
@@ -4026,6 +4027,7 @@ What a recipe would do to a document, without changing anything: each step descr
 
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
+| `sheets` | array of RunSheet | no | The sheets the run made, in the order made. |
 | `steps` | array of StepReport | yes | Each step run (or previewed), in order. |
 | `stopped` | Stopped | no | Why the run stopped early, if it did. |
 | `warnings` | array of string | no | Things to know that did not stop it: a plugin missing or changed, a different API version, another file than the one recorded on. |
@@ -4049,6 +4051,7 @@ Run a recipe on a document, each step called as recipe:NAME with its anchors res
 
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
+| `sheets` | array of RunSheet | no | The sheets the run made, in the order made. |
 | `steps` | array of StepReport | yes | Each step run (or previewed), in order. |
 | `stopped` | Stopped | no | Why the run stopped early, if it did. |
 | `warnings` | array of string | no | Things to know that did not stop it: a plugin missing or changed, a different API version, another file than the one recorded on. |

@@ -394,7 +394,7 @@ fn going_back_by_replaying_stops_with_why_when_a_step_cannot_run_again() {
     let stopped = |_: &mut dyn Workspace, steps: &[RecipeStep], _: &ReplayOptions| RunReport {
         steps: Vec::new(),
         stopped: Some(Stopped { step: steps[0].step, error: ApiError::new(ErrorCode::Unavailable, "not built") }),
-        warnings: Vec::new(),
+        ..RunReport::default()
     };
     let error = with_runner(stopped, || go_back(&mut workspace, &Caller::Panel, 1)).unwrap_err();
     assert!(error.message.contains("running step 1 again failed: not built"), "{}", error.message);
@@ -433,7 +433,7 @@ fn playback_runs_one_step_at_a_time_each_recorded_as_a_step_of_its_own() {
 #[test]
 fn playback_stops_at_a_step_that_fails() {
     let mut workspace = workspace_with("a.bin", &[0u8; 8]);
-    let steps = vec![RecipeStep { step: 1, method: "bytes.write".into(), params: json!({"start": 7, "data": "0000"}), note: None }, RecipeStep { step: 2, method: "cursor.set".into(), params: json!({"offset": 1}), note: None }];
+    let steps = vec![RecipeStep::new(1, "bytes.write", json!({"start": 7, "data": "0000"})), RecipeStep::new(2, "cursor.set", json!({"offset": 1}))];
     let mut playback = Playback::new(steps, Caller::Panel, None);
     assert_eq!(with_runner(run_literally, || playback.play_next(&mut workspace)), Some(1));
     assert_eq!(playback.stopped().map(|error| error.code), Some(ErrorCode::OutOfRange));
