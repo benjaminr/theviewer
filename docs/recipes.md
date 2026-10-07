@@ -71,7 +71,7 @@ Each step is:
 | `step` | yes | The step's number: 1, 2, 3… in a recipe made from the journal, or any increasing numbers in one written by hand. Step anchors name steps by it. |
 | `method` | yes | The method to call, such as `packets.sets.create`, a plugin's (`acme.decode_frame`) included. |
 | `params` | no | Its parameters: literals, except where a value is marked as an anchor. |
-| `note` | no | What the step is for, in your words. |
+| `note` | no | What the step is for, in your words. A recipe made from the history fills it from the notes linked to the step (see [Making the recipe](#making-the-recipe)). |
 
 The JSON Schema of the file is the `recipe` parameter's in
 `api.describe` (`recipes.save` takes a recipe whole).
@@ -295,7 +295,14 @@ tab's *Save to my recipes* and *Save as recipe…*):
 - drops a `doc` that names the recorded document, so each step runs on the
   run's document;
 - records the API version, the plugins loaded and the file the first step
-  was about.
+  was about;
+- leaves out the notes written with `history.note` as steps, and puts each
+  note's text into the `note` of every step it is linked to, several notes
+  on one step joined by a blank line. A step the note cites as `#12` is
+  renumbered as the recipe numbers it, or written as "session step 12" when
+  the recipe does not hold it. A note linked to none of the recipe's steps
+  is left out: the recipe's `description` is what you give when you save
+  it.
 
 ## Running a recipe
 

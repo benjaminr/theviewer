@@ -4,6 +4,28 @@ All notable changes to theviewer are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Notes in the history.** Write what you are doing and why into the
+  History tab as you work: the box at its foot adds a note where you are
+  (`Cmd+Enter` or *Add note*), and each step's *Note* button starts one
+  about that step. A note is a card among the steps, with who wrote it and
+  when, and `#12` in it is a link that scrolls to step 12 and highlights it.
+  Notes can be edited and deleted from their cards, *Notes only* shows just
+  them, and *Export notes…* saves them as Markdown with the steps they cite.
+  A note changes nothing: it is never undone, played back or gone back
+  past.
+- `history.note`, `history.edit_note`, `history.delete_note` and
+  `history.export_notes` in the API. `history.list` and `history.entry`
+  give each note's text and linked steps, and on each step the notes
+  linked to it.
+- The MCP server lists `history_note` among its core tools and asks the
+  model to note its reasoning as it works.
+- A recipe made from the history carries the notes linked to each step in
+  that step's `note`.
+
 ## [0.3.1] - 2026-10-07
 
 ### Fixed

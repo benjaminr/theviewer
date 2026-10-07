@@ -6,6 +6,7 @@ back to an earlier point, watch them played again, or save them as a
 **recipe** to run on the next file.
 
 - [The History tab](#the-history-tab)
+- [Notes](#notes)
 - [Undoing a step and going back](#undoing-a-step-and-going-back)
 - [Playing steps back](#playing-steps-back)
 - [Recipes](#recipes)
@@ -32,11 +33,53 @@ Who took a step is shown as `panel` for you, `ask`, `plugin:NAME`,
 `mcp:CLIENT`, `cli` for `theviewer api`, or `recipe:NAME` for a recipe's
 run.
 
-The caller menu shows one caller's steps only, and *Show undone* hides or
-shows the steps that were undone.
+The caller menu shows one caller's steps only (*every caller* shows them
+all), *Show undone* hides or shows the steps that were undone, and *Notes
+only* shows just the notes.
 
 Click a step for its details: its parameters, its result, and how it would
 be undone. *Show bytes* selects the bytes it touched.
+
+## Notes
+
+Write down what you are doing and why as you go. A **note** goes into the
+history where you are, among the steps, so the reasoning sits beside the
+actions it explains.
+
+- Type it in the box at the foot of the History tab ("Note what you're
+  doing and why…") and press **Add note** or `Cmd+Enter`.
+- **Note** on a step (or *Write a note about it* in its menu) starts a note
+  with `#12 `, linking it to that step.
+- `#12` anywhere in a note links it to step 12. The steps must be in the
+  history; a note about something missing is refused, and its text stays in
+  the box.
+
+A note is shown as a card with a different background: who wrote it, the
+time, then the text, in which each `#12` is a link. Click it to scroll to
+step 12 and highlight it (the filters are cleared if they hide it). A step
+with notes about it shows a *note 14* link back to each.
+
+A note changes nothing. It is never undone, *Go back to here* and playback
+pass over it, and it is not a step of a recipe. *Edit* and *Delete* on its
+card change it or take it out; an edited note is marked *edited*, with
+when and by whom. Editing and deleting are not steps of their own.
+
+Ask, plugins and MCP clients write notes too, through `history.note`, and
+they are shown as theirs (`mcp:claude-code`). The MCP server asks a model
+to note its reasoning as it works, so you can follow what it was thinking.
+
+**Notes in recipes.** Saving the history as a recipe puts each note into
+the `note` of the steps it is linked to, with its `#12`s renumbered as the
+recipe numbers the steps. A note linked to no step of the recipe is left
+out.
+
+**Exporting.** *Export notes…* saves the notes as Markdown: a title naming
+the documents and when the session started, then each note in the order
+written, with the steps it cites (number, who took it and what it did).
+`history.export_notes` gives the same text to clients.
+
+The history, notes included, lasts as long as the session: it is not saved
+when you quit. Export the notes to keep them.
 
 ## Undoing a step and going back
 
@@ -128,7 +171,9 @@ you leave it empty), then:
   to that one.
 
 Only the steps in effect are saved: undone, failed and refused steps, moves
-along the history, and steps that only opened or saved files are left out.
+along the history, notes, and steps that only opened or saved files are
+left out. The notes linked to a step become its note in the recipe (see
+[Notes](#notes)).
 
 ## Running a recipe in the window
 
