@@ -40,6 +40,20 @@ pub enum Framing {
     LengthPrefixed { offset: usize, width: usize, big_endian: bool, adjustment: i64 },
     /// Every message is the same length.
     FixedSize { len: usize },
+    /// A sync word starts every message, and a length field at `offset`
+    /// (from the message's first byte) gives its length:
+    /// `message length = field value + adjustment`. A message that runs
+    /// over the next sync word is cut short there, and bytes between a
+    /// message and the next sync word are skipped.
+    SyncLength {
+        #[serde(with = "crate::ops::hex_bytes")]
+        #[schemars(with = "String")]
+        bytes: Vec<u8>,
+        offset: usize,
+        width: usize,
+        big_endian: bool,
+        adjustment: i64,
+    },
 }
 
 impl Framing {
@@ -60,7 +74,23 @@ impl Framing {
                 )
             }
             Framing::FixedSize { len } => format!("fixed-size messages of {len} bytes"),
+            Framing::SyncLength { bytes, offset, width, big_endian, adjustment } => format!(
+                "messages start with the sync word {}, and a u{} {} at offset {offset} gives their length = value{}",
+                show_bytes(bytes),
+                width * 8,
+                if *big_endian { "BE" } else { "LE" },
+                signed(*adjustment)
+            ),
         }
+    }
+}
+
+/// " + 3", " - 2" or nothing, for an adjustment.
+fn signed(adjustment: i64) -> String {
+    match adjustment {
+        0 => String::new(),
+        a if a > 0 => format!(" + {a}"),
+        a => format!(" - {}", a.unsigned_abs()),
     }
 }
 
@@ -103,6 +133,22 @@ const MIN_MESSAGES: usize = 4;
 /// How many times more often than chance a marker must occur.
 const DELIMITER_RATIO: f64 = 3.0;
 const SYNC_RATIO: f64 = 20.0;
+/// A chain of fewer messages than this is weighed down: a handful of
+/// messages explaining a whole stream is more likely a coincidence.
+const CONVINCING_MESSAGES: usize = 16;
+/// A chain whose longest message is more than this many times its median
+/// is weighed down: real messages are not that unlike one another.
+const LENGTH_SPREAD: f64 = 32.0;
+/// Sync word candidates a length field is looked for after.
+const SYNC_LENGTH_SOURCES: usize = 3;
+/// Share of messages whose length field must agree with the sync word's split.
+const SYNC_LENGTH_AGREEMENT: f64 = 0.8;
+/// Coverage at which a sync word is strong enough evidence to doubt a
+/// length chain that runs out of step with it.
+const STRONG_SYNC_COVERAGE: f64 = 0.9;
+/// The score such a sync word needs too, so a marker that only seems to
+/// cover the stream does not count.
+const STRONG_SYNC_SCORE: f64 = 0.7;
 
 /// Find likely framings, best first.
 pub fn detect_framing(bytes: &[u8], max_candidates: usize) -> Vec<FramingCandidate> {
@@ -112,9 +158,12 @@ pub fn detect_framing(bytes: &[u8], max_candidates: usize) -> Vec<FramingCandida
     }
     let mut candidates = Vec::new();
     candidates.extend(delimiter_candidates(sample));
-    candidates.extend(sync_candidates(sample));
+    let syncs = sync_candidates(sample);
+    candidates.extend(sync_length_candidates(sample, &syncs));
+    candidates.extend(syncs);
     candidates.extend(length_candidates(sample));
     candidates.extend(fixed_size_candidate(sample));
+    weigh_length_chains(sample, &mut candidates);
     candidates.retain(|c| c.messages >= MIN_MESSAGES && c.score > 0.0);
     candidates.sort_by(|a, b| b.score.total_cmp(&a.score));
     prefer_fixed_size(&mut candidates);
@@ -151,6 +200,94 @@ fn prefer_fixed_size(candidates: &mut Vec<FramingCandidate>) {
         let fixed = candidates.remove(index);
         candidates.insert(first_chain, fixed);
     }
+}
+
+/// Weigh down length-prefix chains that are probably coincidences: a few
+/// messages explaining the whole stream, messages of wildly different
+/// lengths, or messages that do not start with the sync word that starts
+/// nearly every message of the stream.
+fn weigh_length_chains(sample: &[u8], candidates: &mut [FramingCandidate]) {
+    let strong_sync: Option<Vec<u8>> = candidates
+        .iter()
+        .filter(|c| c.coverage >= STRONG_SYNC_COVERAGE && c.score >= STRONG_SYNC_SCORE && c.messages >= CONVINCING_MESSAGES)
+        .filter_map(|c| match &c.framing {
+            Framing::SyncWord { bytes } | Framing::SyncLength { bytes, .. } if bytes.len() >= 2 => Some((c.score, bytes.clone())),
+            _ => None,
+        })
+        .max_by(|a, b| a.0.total_cmp(&b.0))
+        .map(|(_, bytes)| bytes);
+    for candidate in candidates.iter_mut().filter(|c| matches!(c.framing, Framing::LengthPrefixed { .. })) {
+        let messages = split(sample, &candidate.framing, CHAIN_LIMIT);
+        if messages.is_empty() {
+            continue;
+        }
+        let count_weight = (messages.len() as f64 / CONVINCING_MESSAGES as f64).min(1.0);
+        let mut lengths: Vec<usize> = messages.iter().map(|m| m.len).collect();
+        lengths.sort_unstable();
+        let median = lengths[lengths.len() / 2].max(1) as f64;
+        let longest = *lengths.last().unwrap_or(&1) as f64;
+        let spread_weight = (LENGTH_SPREAD * median / longest).clamp(0.1, 1.0);
+        let step_weight = match &strong_sync {
+            Some(sync) => {
+                let in_step = messages.iter().filter(|m| sample[m.offset..].starts_with(sync)).count() as f64 / messages.len() as f64;
+                if in_step < STRONG_SYNC_COVERAGE { in_step.max(0.05) } else { 1.0 }
+            }
+            None => 1.0,
+        };
+        candidate.score *= count_weight * spread_weight * step_weight;
+    }
+}
+
+/// Framings of a sync word followed by a length field: for each of the
+/// best sync words, the length field (after the sync word) that gives the
+/// length of most of the messages the sync word cuts.
+fn sync_length_candidates(sample: &[u8], syncs: &[FramingCandidate]) -> Vec<FramingCandidate> {
+    let mut sources: Vec<&FramingCandidate> = syncs.iter().filter(|c| matches!(&c.framing, Framing::SyncWord { bytes } if bytes.len() >= 2)).collect();
+    sources.sort_by(|a, b| b.score.total_cmp(&a.score));
+    let mut found = Vec::new();
+    for source in sources.into_iter().take(SYNC_LENGTH_SOURCES) {
+        let Framing::SyncWord { bytes: marker } = &source.framing else { continue };
+        let messages = split(sample, &source.framing, CHAIN_LIMIT);
+        if messages.len() < MIN_MESSAGES {
+            continue;
+        }
+        let mut best: Option<(f64, Framing)> = None;
+        for offset in marker.len()..marker.len() + 6 {
+            // The wider field first, so it is kept when its low byte agrees as well.
+            for width in [2usize, 1] {
+                for big_endian in [true, false] {
+                    if width == 1 && !big_endian {
+                        continue;
+                    }
+                    let values = field_values(sample, &messages, offset, width, big_endian);
+                    if values.len() < MIN_MESSAGES || values.windows(2).all(|w| w[0].1 == w[1].1) {
+                        continue;
+                    }
+                    let mut differences: HashMap<i64, usize> = HashMap::new();
+                    for &(index, value) in &values {
+                        *differences.entry(messages[index].len as i64 - value as i64).or_insert(0) += 1;
+                    }
+                    let Some((&adjustment, &agreeing)) = differences.iter().max_by_key(|&(difference, count)| (*count, std::cmp::Reverse(difference.unsigned_abs()))) else { continue };
+                    let agreement = agreeing as f64 / messages.len() as f64;
+                    if agreement < SYNC_LENGTH_AGREEMENT || adjustment < (offset + width) as i64 - (u8::MAX as i64) || !(-64..=64).contains(&adjustment) {
+                        continue;
+                    }
+                    if best.as_ref().is_none_or(|(score, _)| agreement > *score) {
+                        best = Some((agreement, Framing::SyncLength { bytes: marker.clone(), offset, width, big_endian, adjustment }));
+                    }
+                }
+            }
+        }
+        if let Some((agreement, framing)) = best {
+            let cut = split(sample, &framing, CHAIN_LIMIT);
+            let covered: usize = cut.iter().map(|m| m.len).sum();
+            // The length field and the sync word agree: stronger evidence
+            // than either alone, so it can rank above both.
+            let confidence = agreement * (0.5 + 0.5 * header_structure(sample, &cut, &(0..marker.len()).collect::<Vec<_>>())).max(0.9);
+            found.push(candidate(framing, &cut, covered, sample.len(), confidence));
+        }
+    }
+    found
 }
 
 /// Positions where `needle` occurs, without overlaps.
@@ -443,6 +580,44 @@ pub fn split(bytes: &[u8], framing: &Framing, max_messages: usize) -> Vec<Messag
                 messages = (0..bytes.len() / len).take(max_messages).map(|i| Message { offset: i * len, len: *len }).collect();
             }
         }
+        Framing::SyncLength { bytes: marker, offset, width, big_endian, adjustment } => {
+            messages = sync_length_split(bytes, marker, (*offset, *width, *big_endian, *adjustment), max_messages);
+        }
+    }
+    messages
+}
+
+/// The first place at or after `from` where `marker` occurs.
+fn find_marker(bytes: &[u8], marker: &[u8], from: usize) -> Option<usize> {
+    if marker.is_empty() || from >= bytes.len() {
+        return None;
+    }
+    bytes[from..].windows(marker.len()).position(|window| window == marker).map(|at| from + at)
+}
+
+/// Messages that start at a sync word and are as long as their length
+/// field says: cut short at the next sync word when they run over it, and
+/// to the next sync word when the length cannot be read.
+fn sync_length_split(bytes: &[u8], marker: &[u8], (offset, width, big_endian, adjustment): (usize, usize, bool, i64), max_messages: usize) -> Vec<Message> {
+    let mut messages = Vec::new();
+    let mut position = find_marker(bytes, marker, 0);
+    while let Some(at) = position {
+        if messages.len() >= max_messages {
+            break;
+        }
+        let next_sync = find_marker(bytes, marker, at + marker.len());
+        let by_length = read_uint(bytes, at + offset, width, big_endian)
+            .map(|value| value as i64 + adjustment)
+            .filter(|&len| len >= (offset + width) as i64 && len as usize <= MAX_MESSAGE && at + len as usize <= bytes.len())
+            .map(|len| at + len as usize);
+        let end = match (by_length, next_sync) {
+            (Some(end), Some(next)) if end > next && end != bytes.len() && !bytes[end..].starts_with(marker) => next,
+            (Some(end), _) => end,
+            (None, Some(next)) => next,
+            (None, None) => bytes.len(),
+        };
+        messages.push(Message { offset: at, len: end - at });
+        position = if bytes[end..].starts_with(marker) { Some(end) } else { find_marker(bytes, marker, end) };
     }
     messages
 }
@@ -653,6 +828,14 @@ fn checksum_field(bytes: &[u8], messages: &[Message], body_starts: &[usize]) -> 
     None
 }
 
+/// Unrecognised bytes in a row, after a length field, before the header is
+/// taken to have ended; a type byte may follow an address or a sequence
+/// number the analysis cannot name.
+const HEADER_GAP: usize = 4;
+/// What a column of few values is called until it is chosen as the type.
+const ENUM_KIND: &str = "enum u8";
+const MESSAGE_TYPE_KIND: &str = "message type u8";
+
 /// Classify the first `max_prefix` positions of the messages, plus a trailer.
 pub fn analyse_fields(bytes: &[u8], messages: &[Message], max_prefix: usize) -> Vec<MessageField> {
     let messages: Vec<Message> = messages.iter().copied().filter(|m| m.offset.saturating_add(m.len) <= bytes.len()).collect();
@@ -662,6 +845,7 @@ pub fn analyse_fields(bytes: &[u8], messages: &[Message], max_prefix: usize) -> 
     let total = messages.len();
     let mut fields: Vec<MessageField> = Vec::new();
     let mut length_found: Option<(usize, i64)> = None;
+    let mut unrecognised = 0;
     let mut position = 0;
     while position < max_prefix {
         let values = position_values(bytes, &messages, position);
@@ -692,40 +876,60 @@ pub fn analyse_fields(bytes: &[u8], messages: &[Message], max_prefix: usize) -> 
             fields.push(field);
             continue;
         }
-        if let Some(field) = timestamp_field(bytes, &messages, position) {
+        let few_values = distinct.len() <= 16 && distinct.len() * 4 <= values.len();
+        // A big-endian timestamp's first byte barely changes; a byte of
+        // three or more values that recur is a type or an address, whatever
+        // the bytes after it look like.
+        if !(few_values && distinct.len() >= 3)
+            && let Some(field) = timestamp_field(bytes, &messages, position)
+        {
             position += field.len;
             fields.push(field);
+            unrecognised = 0;
             continue;
         }
-        if distinct.len() <= 16 && distinct.len() * 4 <= values.len() {
+        if few_values {
             let mut counts: Vec<(u8, usize)> = distinct.iter().map(|&v| (v, values.iter().filter(|&&x| x == v).count())).collect();
             counts.sort_by_key(|entry| std::cmp::Reverse(entry.1));
             fields.push(MessageField {
                 start: position,
                 len: 1,
-                kind: "message type u8".to_string(),
+                kind: ENUM_KIND.to_string(),
                 detail: format!("{} distinct values: {}", counts.len(), counts.iter().map(|(v, c)| format!("{v:#04x}×{c}")).collect::<Vec<_>>().join(", ")),
                 values: counts.iter().take(8).map(|(v, _)| format!("{v:#04x}")).collect(),
                 from_end: false,
             });
+            unrecognised = 0;
             position += 1;
             continue;
         }
-        // Past the recognisable header: with a length field, the rest is payload.
+        // Past the recognisable header: with a length field, a few
+        // unrecognised bytes are looked past for a type byte, then the rest
+        // is payload.
         if length_found.is_some() {
-            fields.push(MessageField {
-                start: position,
-                len: 0,
-                kind: "payload".to_string(),
-                detail: "variable length, given by the length field".to_string(),
-                values: Vec::new(),
-                from_end: false,
-            });
-            break;
+            unrecognised += 1;
+            if unrecognised > HEADER_GAP {
+                break;
+            }
         }
         merge_or_push(&mut fields, position, "variable", values[0]);
         position += 1;
     }
+    if length_found.is_some() {
+        while fields.last().is_some_and(|field| field.kind == "variable") {
+            fields.pop();
+        }
+        let start = fields.last().map_or(0, |field| field.start + field.len);
+        fields.push(MessageField {
+            start,
+            len: 0,
+            kind: "payload".to_string(),
+            detail: "variable length, given by the length field".to_string(),
+            values: Vec::new(),
+            from_end: false,
+        });
+    }
+    choose_message_type(bytes, &messages, &mut fields);
 
     let mut body_starts: Vec<usize> = vec![0, 1, 2, 3, 4];
     if let Some(first_variable) = fields.iter().find(|f| f.kind != "constant").map(|f| f.start) {
@@ -740,6 +944,34 @@ pub fn analyse_fields(bytes: &[u8], messages: &[Message], max_prefix: usize) -> 
         fields.push(field);
     }
     fields
+}
+
+/// Of the columns with few values, the one that best tells messages'
+/// lengths apart is the message type (each type has its length, where an
+/// address does not); the others stay enums.
+fn choose_message_type(bytes: &[u8], messages: &[Message], fields: &mut [MessageField]) {
+    let purity = |position: usize| {
+        let mut by_value: HashMap<u8, HashMap<usize, usize>> = HashMap::new();
+        let mut total = 0;
+        for message in messages.iter().filter(|m| m.len > position) {
+            *by_value.entry(bytes[message.offset + position]).or_default().entry(message.len).or_insert(0) += 1;
+            total += 1;
+        }
+        let agreeing: usize = by_value.values().map(|lengths| lengths.values().copied().max().unwrap_or(0)).sum();
+        agreeing as f64 / total.max(1) as f64
+    };
+    let chosen = fields
+        .iter()
+        .enumerate()
+        .filter(|(_, field)| field.kind == ENUM_KIND)
+        .map(|(index, field)| (index, purity(field.start)))
+        .fold(None::<(usize, f64)>, |best, (index, score)| match best {
+            Some((_, best_score)) if best_score >= score => best,
+            _ => Some((index, score)),
+        });
+    if let Some((index, _)) = chosen {
+        fields[index].kind = MESSAGE_TYPE_KIND.to_string();
+    }
 }
 
 /// Extend the previous field of the same kind, or start one.
@@ -846,16 +1078,22 @@ pub fn to_template(report: &ProtocolReport) -> Option<String> {
         "struct Message {".to_string(),
     ];
     let mut header_len = 0;
+    let mut names: Vec<String> = Vec::new();
     for field in &header {
         if field.kind == "payload" {
             break;
         }
         let role = field.kind.split_whitespace().next().unwrap_or("field");
-        let name = match role {
+        let mut name = match role {
             "message" => "message_type".to_string(),
             "sequence" => "sequence".to_string(),
             other => format!("{other}_{}", field.start),
         };
+        // Every column gets a name of its own, so a records table shows each.
+        if names.contains(&name) {
+            name = format!("{name}_{}", field.start);
+        }
+        names.push(name.clone());
         let declaration = match template_type(&field.kind) {
             Some(ty) if field.len <= 8 => format!("{name}: {ty}"),
             _ if field.kind == "constant" => {
@@ -889,8 +1127,22 @@ pub fn to_template(report: &ProtocolReport) -> Option<String> {
     }
     lines.push("}".to_string());
     lines.push(String::new());
+    if let Some(gap) = first_gap(&report.messages) {
+        lines.push(format!("// The messages are not back to back (the first gap is at {gap:#x} from the start), so"));
+        lines.push("// Message[until_end] stops there: to read every message, decode the messages as".to_string());
+        lines.push("// packets with this template (packets.decode_as, or Decode as in the Packets panel).".to_string());
+    }
     lines.push("root Message[until_end]".to_string());
     Some(lines.join("\n") + "\n")
+}
+
+/// Where the first message does not follow straight on from the one before
+/// (or the first does not start the stream), if anywhere.
+fn first_gap(messages: &[Message]) -> Option<usize> {
+    if messages.first().is_some_and(|first| first.offset != 0) {
+        return Some(0);
+    }
+    messages.windows(2).find(|pair| pair[0].offset + pair[0].len != pair[1].offset).map(|pair| pair[0].offset + pair[0].len)
 }
 
 #[cfg(test)]
@@ -952,7 +1204,7 @@ mod tests {
         let candidates = detect_framing(&stream, 5);
         let best = candidates.first().expect("a framing");
         assert!(
-            matches!(&best.framing, Framing::SyncWord { bytes } if bytes == &[0xAA, 0x55]) || matches!(best.framing, Framing::LengthPrefixed { .. }),
+            matches!(&best.framing, Framing::SyncWord { bytes } | Framing::SyncLength { bytes, .. } if bytes == &[0xAA, 0x55]) || matches!(best.framing, Framing::LengthPrefixed { .. }),
             "{candidates:?}"
         );
         assert!(best.coverage > 0.95, "{best:?}");
@@ -1025,6 +1277,65 @@ mod tests {
         assert!(candidates.iter().all(|c| c.coverage <= 0.5), "{candidates:?}");
         let report = analyse(&noise);
         assert!(report.framing.is_none() || report.framing.as_ref().is_some_and(|f| f.coverage <= 0.5));
+    }
+
+    /// Frames of A5 5A, a u8 length (of what follows it, less the CRC),
+    /// dst, src, a sequence number echoed by the reply, a type, a payload
+    /// whose length goes with the type, and two CRC bytes; a stray 0x00 now
+    /// and then, and a lead-in cut from the middle of a frame.
+    fn kiln_bus(frames: usize) -> Vec<u8> {
+        let mut state = 0x7777_1234u32;
+        let mut stream = vec![0x10, 0x00, 0x3C, 0x99, 0x01];
+        for index in 0..frames {
+            let (kind, payload_len) = [(0x01u8, 0usize), (0x81, 16), (0x10, 4), (0xA0, 1)][index % 4];
+            let (dst, src) = if kind & 0x80 != 0 { (0x01, 0x10 + (index % 3) as u8) } else { (0x10 + (index % 3) as u8, 0x01) };
+            let mut frame = vec![0xA5, 0x5A, (payload_len + 4) as u8, dst, src, (index / 2) as u8, kind];
+            for _ in 0..payload_len {
+                frame.push(xorshift(&mut state));
+            }
+            frame.extend([xorshift(&mut state), xorshift(&mut state)]);
+            stream.extend(frame);
+            if xorshift(&mut state) < 12 {
+                stream.push(0x00);
+            }
+        }
+        stream
+    }
+
+    #[test]
+    fn a_sync_word_with_a_length_field_after_it_ranks_above_coincidental_length_chains() {
+        let stream = kiln_bus(800);
+        let candidates = detect_framing(&stream, 8);
+        let best = candidates.first().expect("a framing");
+        assert_eq!(best.framing, Framing::SyncLength { bytes: vec![0xA5, 0x5A], offset: 2, width: 1, big_endian: true, adjustment: 5 }, "{:#?}", candidates.iter().map(|c| (c.framing.describe(), c.score, c.messages)).collect::<Vec<_>>());
+        assert_eq!(split(&stream, &best.framing, 10_000).len(), 800);
+        assert!(best.coverage > 0.98, "{best:?}");
+        for chain in candidates.iter().filter(|c| matches!(c.framing, Framing::LengthPrefixed { .. })) {
+            assert!(chain.score < best.score * 0.6, "a chain out of step with the sync word is weighed down: {chain:?}");
+        }
+    }
+
+    #[test]
+    fn the_type_byte_after_addresses_and_a_sequence_is_the_message_type_and_template_names_are_unique() {
+        let stream = kiln_bus(400);
+        let framing = Framing::SyncLength { bytes: vec![0xA5, 0x5A], offset: 2, width: 1, big_endian: true, adjustment: 5 };
+        let messages = split(&stream, &framing, 10_000);
+        let fields = analyse_fields(&stream, &messages, 32);
+        let kinds: Vec<(usize, &str)> = fields.iter().map(|f| (f.start, f.kind.as_str())).collect();
+        let types: Vec<usize> = fields.iter().filter(|f| f.kind.starts_with("message type")).map(|f| f.start).collect();
+        assert_eq!(types, vec![6], "{kinds:?}");
+        assert!(fields.iter().any(|f| f.start == 3 && f.kind == ENUM_KIND), "{kinds:?}");
+        assert!(fields.iter().any(|f| f.kind == "payload" && f.start == 7), "{kinds:?}");
+
+        let report = ProtocolReport { framing: None, messages: messages.clone(), fields, length_min: 7, length_max: 27, length_mean: 12.0, type_counts: Vec::new() };
+        let source = to_template(&report).expect("a template");
+        let names: Vec<&str> = source.lines().filter_map(|line| line.trim().split(':').next()).filter(|name| !name.is_empty() && !name.contains(' ') && !name.starts_with("//")).collect();
+        let mut unique = names.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(names.len(), unique.len(), "{source}");
+        assert!(source.contains("not back to back"), "until_end stopping at a gap is said: {source}");
+        assert!(Template::parse(&source).is_ok(), "{source}");
     }
 
     #[test]

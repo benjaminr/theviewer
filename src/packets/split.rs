@@ -98,14 +98,68 @@ pub struct LengthField {
     pub adjustment: i64,
     /// Longest frame believed; a longer length ends the chain.
     pub max_frame: usize,
+    /// Whether, and how, the chain finds its place again after a frame
+    /// that does not fit.
+    pub resync: Resync,
 }
 
 /// Longest frame believed by default.
 pub const DEFAULT_MAX_FRAME: usize = 64 * 1024;
+/// Longest sync word a length-field split resynchronises at.
+pub const MAX_SYNC_LEN: usize = 8;
+/// Frames looked at from the start to learn the sync word they share.
+const SYNC_LEARNING_FRAMES: usize = 16;
+/// Fewest times a learnt sync word must occur in the bytes to be believed.
+const SYNC_LEARNING_AGREEMENT: usize = 3;
 
 impl Default for LengthField {
     fn default() -> Self {
-        LengthField { offset: 0, encoding: LengthEncoding::U16, big_endian: true, counts: LengthCounts::AfterField, adjustment: 0, max_frame: DEFAULT_MAX_FRAME }
+        LengthField { offset: 0, encoding: LengthEncoding::U16, big_endian: true, counts: LengthCounts::AfterField, adjustment: 0, max_frame: DEFAULT_MAX_FRAME, resync: Resync::Off }
+    }
+}
+
+/// How a length-field split finds its place again when it loses it: at a
+/// length that cannot be right, a frame that runs past the end, or (with a
+/// sync word) a frame that does not start with the sync word.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Resync {
+    /// Stop at the first frame that does not fit.
+    #[default]
+    Off,
+    /// Resynchronise at the sync word the first frames share, in the bytes
+    /// before the length field, or (when they share none) at the next
+    /// place two plausible frames follow one another.
+    Learn,
+    /// Resynchronise at this sync word, which starts every frame.
+    Sync(SyncWord),
+}
+
+/// A sync word of up to [`MAX_SYNC_LEN`] bytes, kept by value so a length
+/// field stays `Copy`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SyncWord {
+    bytes: [u8; MAX_SYNC_LEN],
+    len: u8,
+}
+
+impl SyncWord {
+    /// A sync word of `bytes`, or `None` when it is empty or too long.
+    pub fn new(bytes: &[u8]) -> Option<SyncWord> {
+        if bytes.is_empty() || bytes.len() > MAX_SYNC_LEN {
+            return None;
+        }
+        let mut word = SyncWord { bytes: [0; MAX_SYNC_LEN], len: bytes.len() as u8 };
+        word.bytes[..bytes.len()].copy_from_slice(bytes);
+        Some(word)
+    }
+
+    pub fn as_slice(&self) -> &[u8] {
+        &self.bytes[..self.len as usize]
+    }
+
+    /// The bytes as spaced hex, such as "A5 5A".
+    pub fn describe(&self) -> String {
+        self.as_slice().iter().map(|byte| format!("{byte:02X}")).collect::<Vec<_>>().join(" ")
     }
 }
 
@@ -243,28 +297,209 @@ pub fn chain_frames(bytes: &[u8], field: &LengthField) -> (Vec<(usize, usize)>, 
     (frames, ChainEnd::DataEnded)
 }
 
-/// `bytes` (at document offset `base`) cut into frames by a length field.
+/// A chain of frames followed with resynchronisation: the frames, how the
+/// chain ended, and where it lost its place.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResyncedChain {
+    /// `(offset, len)` within the bytes of each frame.
+    pub frames: Vec<(usize, usize)>,
+    pub end: ChainEnd,
+    /// `(offset, len)` of each stretch skipped to find the place again.
+    pub lost: Vec<(usize, usize)>,
+    /// Frames cut short because the next one's sync word came first.
+    pub cut_short: usize,
+    /// The sync word used, given or learnt.
+    pub sync: Option<SyncWord>,
+}
+
+/// Follow a chain of frames as [`chain_frames`] does, but find the place
+/// again after a frame that does not fit, as `field.resync` says, rather
+/// than stopping there.
+///
+/// With a sync word, bytes that do not start with it are skipped to the
+/// next one, and a frame whose length runs over the next frame's sync word
+/// is cut short there (a frame cut off on the wire, say). Without one, a
+/// length that cannot be right is skipped a byte at a time to the next
+/// place where two plausible frames follow one another.
+pub fn chain_frames_resyncing(bytes: &[u8], field: &LengthField) -> ResyncedChain {
+    let sync = match field.resync {
+        Resync::Off => return no_resync(bytes, field),
+        Resync::Sync(word) => Some(word),
+        Resync::Learn => learn_sync(bytes, field),
+    };
+    let mut chain = ResyncedChain { frames: Vec::new(), end: ChainEnd::DataEnded, lost: Vec::new(), cut_short: 0, sync };
+    let sync = sync.as_ref().map(SyncWord::as_slice);
+    let mut position = 0usize;
+    while position < bytes.len() {
+        if chain.frames.len() >= MAX_PACKETS {
+            chain.end = ChainEnd::Capped;
+            break;
+        }
+        if let Some(sync) = sync
+            && !bytes[position..].starts_with(sync)
+        {
+            let next = find_bytes(bytes, sync, position + 1).unwrap_or(bytes.len());
+            chain.lost.push((position, next - position));
+            position = next;
+            continue;
+        }
+        let length = match field.frame_length(&bytes[position..]) {
+            Ok(length) if length <= bytes.len() - position => length,
+            Err(FrameProblem::FieldCutShort) if sync.is_none() => {
+                chain.end = ChainEnd::FieldCutShort { offset: position };
+                break;
+            }
+            // Too few bytes left for the field after a sync word, a length
+            // that cannot be right, or a frame that runs past the end.
+            _ => {
+                let next = match sync {
+                    Some(sync) => find_bytes(bytes, sync, position + 1),
+                    None => next_plausible_frame(bytes, field, position + 1),
+                }
+                .unwrap_or(bytes.len());
+                chain.lost.push((position, next - position));
+                position = next;
+                continue;
+            }
+        };
+        let mut length = length;
+        let next = position + length;
+        if let Some(sync) = sync
+            && next < bytes.len()
+            && !bytes[next..].starts_with(sync)
+            && let Some(inner) = find_bytes(&bytes[..next], sync, position + sync.len())
+        {
+            length = inner - position;
+            chain.cut_short += 1;
+        }
+        chain.frames.push((position, length));
+        position += length;
+    }
+    chain
+}
+
+/// [`chain_frames`] as a [`ResyncedChain`] that never lost its place.
+fn no_resync(bytes: &[u8], field: &LengthField) -> ResyncedChain {
+    let (frames, end) = chain_frames(bytes, field);
+    ResyncedChain { frames, end, lost: Vec::new(), cut_short: 0, sync: None }
+}
+
+/// The first place at or after `from` where `needle` occurs.
+fn find_bytes(bytes: &[u8], needle: &[u8], from: usize) -> Option<usize> {
+    if needle.is_empty() || from >= bytes.len() {
+        return None;
+    }
+    bytes[from..].windows(needle.len()).position(|window| window == needle).map(|at| from + at)
+}
+
+/// The first place at or after `from` where a frame with a plausible length
+/// fits, and either ends the bytes or is followed by another that does.
+fn next_plausible_frame(bytes: &[u8], field: &LengthField, from: usize) -> Option<usize> {
+    let fits = |at: usize| field.frame_length(bytes.get(at..)?).ok().filter(|&length| length <= bytes.len() - at);
+    (from..bytes.len()).find(|&at| fits(at).is_some_and(|length| at + length == bytes.len() || fits(at + length).is_some()))
+}
+
+/// The sync word the first frames share before their length field: the
+/// longest run of leading bytes (at most [`MAX_SYNC_LEN`], and at least two
+/// unless the field is at offset 1) that the first two frames start with
+/// and that occurs at least [`SYNC_LEARNING_AGREEMENT`] times in the bytes.
+pub fn learn_sync(bytes: &[u8], field: &LengthField) -> Option<SyncWord> {
+    let longest = field.offset.min(MAX_SYNC_LEN);
+    if longest == 0 {
+        return None;
+    }
+    let sample = &bytes[..bytes.len().min(field.max_frame.saturating_mul(SYNC_LEARNING_FRAMES))];
+    let (frames, _) = chain_frames(sample, field);
+    let starts: Vec<&[u8]> = frames.iter().take(SYNC_LEARNING_FRAMES).map(|&(offset, len)| &sample[offset..offset + len]).collect();
+    let first = starts.first()?;
+    let shortest = if longest == 1 { 1 } else { 2 };
+    (shortest..=longest.min(first.len())).rev().find_map(|len| {
+        let prefix = &first[..len];
+        let shared = starts.iter().take_while(|start| start.starts_with(prefix)).count();
+        (shared >= 2 && occurrences(bytes, prefix) >= SYNC_LEARNING_AGREEMENT).then(|| SyncWord::new(prefix)).flatten()
+    })
+}
+
+/// How many times `needle` occurs in `bytes`, without overlaps.
+fn occurrences(bytes: &[u8], needle: &[u8]) -> usize {
+    let mut count = 0;
+    let mut from = 0;
+    while let Some(at) = find_bytes(bytes, needle, from) {
+        count += 1;
+        from = at + needle.len();
+    }
+    count
+}
+
+/// `bytes` (at document offset `base`) cut into frames by a length field,
+/// finding the place again as `field.resync` says.
 pub fn split_by_length_field(bytes: &[u8], base: usize, field: &LengthField, link: LinkKind) -> Result<PacketSet, SourceError> {
     if bytes.is_empty() {
         return Err(SourceError::EmptyRange);
     }
-    let (frames, end) = chain_frames(bytes, field);
-    if frames.is_empty() {
-        let at_document = shift_chain_end(end, base);
-        return Err(SourceError::NoFrames { reason: format!("no frame could be read with a {}: {at_document}", field.describe()) });
+    let chain = chain_frames_resyncing(bytes, field);
+    if chain.frames.is_empty() {
+        let at_document = shift_chain_end(chain.end, base);
+        let lost = if chain.lost.is_empty() { String::new() } else { " (and no frame was found by resynchronising)".to_string() };
+        return Err(SourceError::NoFrames { reason: format!("no frame could be read with a {}: {at_document}{lost}", field.describe()) });
     }
-    let covered = frames.last().map_or(0, |&(offset, len)| offset + len);
-    let ending = shift_chain_end(end, base);
-    let mut set = PacketSet::new(
-        format!("length field at {base:#x}"),
-        format!("{} frames by a {} · {covered} of {} bytes · {ending}", frames.len(), field.describe(), bytes.len()),
-    );
-    set.capped = end == ChainEnd::Capped;
+    let covered: usize = chain.frames.iter().map(|&(_, len)| len).sum();
+    let mut description = format!("{} frames by a {}", chain.frames.len(), field.describe());
+    if let Some(sync) = chain.sync {
+        description.push_str(&format!(", resynchronising at {}", sync.describe()));
+    } else if field.resync != Resync::Off {
+        description.push_str(", resynchronising at plausible lengths");
+    }
+    description.push_str(&format!(" · {covered} of {} bytes", bytes.len()));
+    if !chain.lost.is_empty() {
+        let lost_bytes: usize = chain.lost.iter().map(|&(_, len)| len).sum();
+        let shown: Vec<String> = chain.lost.iter().take(LOST_STRETCHES_SHOWN).map(|&(offset, len)| format!("{len} at {:#x}", base + offset)).collect();
+        let more = if chain.lost.len() > LOST_STRETCHES_SHOWN { format!(" and {} more", chain.lost.len() - LOST_STRETCHES_SHOWN) } else { String::new() };
+        description.push_str(&format!(" · lost its place {} times, skipping {lost_bytes} bytes ({}{more})", chain.lost.len(), shown.join(", ")));
+    }
+    if chain.cut_short > 0 {
+        description.push_str(&format!(" · {} frames cut short by the next sync word", chain.cut_short));
+    }
+    match (chain.end, chain.lost.is_empty()) {
+        (ChainEnd::DataEnded, false) => description.push_str(" · the frames and the stretches skipped cover every byte"),
+        (end, _) => description.push_str(&format!(" · {}", shift_chain_end(end, base))),
+    }
+    if field.resync == Resync::Off
+        && let Some(warning) = drift_warning(bytes, base, field, &chain.frames)
+    {
+        description.push_str(&format!(" · {warning}"));
+    }
+    let mut set = PacketSet::new(format!("length field at {base:#x}"), description);
+    set.capped = chain.end == ChainEnd::Capped;
     set.recipe = Recipe::LengthField { start: base, len: bytes.len(), field: *field, link };
-    for (index, (offset, len)) in frames.into_iter().enumerate() {
+    for (index, (offset, len)) in chain.frames.into_iter().enumerate() {
         set.push(Packet::new(base + offset, len, link, format!("frame {index}")));
     }
     Ok(set)
+}
+
+/// Lost stretches named in a set's description.
+const LOST_STRETCHES_SHOWN: usize = 3;
+
+/// When the first frames share a sync word, some later frames do not
+/// start with it, and it occurs in the bytes more often than frames start
+/// with it, the chain has probably lost its place: say where, and how to
+/// find it again.
+fn drift_warning(bytes: &[u8], base: usize, field: &LengthField, frames: &[(usize, usize)]) -> Option<String> {
+    let sync = learn_sync(bytes, field)?;
+    let word = sync.as_slice();
+    let strays: Vec<usize> = frames.iter().enumerate().filter(|&(_, &(offset, _))| !bytes[offset..].starts_with(word)).map(|(index, _)| index).collect();
+    let &first = strays.first()?;
+    let starting = frames.len() - strays.len();
+    let found = occurrences(bytes, word);
+    if found <= starting {
+        return None;
+    }
+    Some(format!(
+        "{} occurs {found} times but starts only {starting} frames; frame {first} at {:#x} is the first not to start with it, so the split has probably lost its place there: give resync to find it again",
+        sync.describe(),
+        base + frames[first].0
+    ))
 }
 
 /// The same chain ending with its offset counted in the document.
@@ -280,9 +515,14 @@ fn shift_chain_end(end: ChainEnd, base: usize) -> ChainEnd {
 /// A protocol framing's length prefix as a length field, or `None` when the
 /// framing is not length-prefixed (or uses a width this rule cannot read).
 /// An adjustment that equals the end of the field becomes "counts the bytes
-/// after the field".
+/// after the field". A sync word before the length becomes the field's
+/// resynchronisation.
 pub fn length_field_from_framing(framing: &Framing) -> Option<LengthField> {
-    let Framing::LengthPrefixed { offset, width, big_endian, adjustment } = *framing else { return None };
+    let (offset, width, big_endian, adjustment, resync) = match framing {
+        Framing::LengthPrefixed { offset, width, big_endian, adjustment } => (*offset, *width, *big_endian, *adjustment, Resync::Off),
+        Framing::SyncLength { bytes, offset, width, big_endian, adjustment } => (*offset, *width, *big_endian, *adjustment, Resync::Sync(SyncWord::new(bytes)?)),
+        _ => return None,
+    };
     let encoding = match width {
         1 => LengthEncoding::U8,
         2 => LengthEncoding::U16,
@@ -291,7 +531,7 @@ pub fn length_field_from_framing(framing: &Framing) -> Option<LengthField> {
     };
     let field_end = (offset + width) as i64;
     let (counts, adjustment) = if adjustment >= field_end { (LengthCounts::AfterField, adjustment - field_end) } else { (LengthCounts::WholeFrame, adjustment) };
-    Some(LengthField { offset, encoding, big_endian, counts, adjustment, max_frame: DEFAULT_MAX_FRAME })
+    Some(LengthField { offset, encoding, big_endian, counts, adjustment, max_frame: DEFAULT_MAX_FRAME, resync })
 }
 
 // ---------------------------------------------------------------------------
@@ -574,6 +814,68 @@ mod tests {
         assert_eq!(split_by_length_field(&[], 0, &field, LinkKind::Unknown), Err(SourceError::EmptyRange));
     }
 
+    /// Frames of A5 5A, a u8 length counting what follows it, a byte and a
+    /// payload, with a stray zero byte after every `stray_every`th frame and
+    /// the bytes `lead_in` first.
+    fn sync_stream(frames: usize, stray_every: usize, lead_in: &[u8]) -> Vec<u8> {
+        let mut stream = lead_in.to_vec();
+        for index in 0..frames {
+            let payload_len = 3 + index % 5;
+            stream.extend([0xA5, 0x5A, (payload_len + 1) as u8, index as u8]);
+            stream.extend(std::iter::repeat_n(0x11 * (index % 3) as u8 + 1, payload_len));
+            if stray_every > 0 && index % stray_every == stray_every - 1 {
+                stream.push(0x00);
+            }
+        }
+        stream
+    }
+
+    fn sync_field(resync: Resync) -> LengthField {
+        LengthField { offset: 2, encoding: LengthEncoding::U8, resync, ..LengthField::default() }
+    }
+
+    #[test]
+    fn a_stray_byte_between_frames_loses_the_chain_unless_it_resynchronises() {
+        let stream = sync_stream(60, 7, &[]);
+        let lost = split_by_length_field(&stream, 0, &sync_field(Resync::Off), LinkKind::Unknown).expect("frames");
+        assert!(lost.len() < 60, "without resync the chain reads the stray byte as a frame's start");
+        assert!(lost.description.contains("lost its place") && lost.description.contains("A5 5A"), "and says so: {}", lost.description);
+
+        let found = split_by_length_field(&stream, 0, &sync_field(Resync::Learn), LinkKind::Unknown).expect("frames");
+        assert_eq!(found.len(), 60, "{}", found.description);
+        assert!(found.packets.iter().all(|packet| stream[packet.offset..].starts_with(&[0xA5, 0x5A])));
+        assert!(found.description.contains("resynchronising at A5 5A"), "{}", found.description);
+        assert!(found.description.contains("lost its place 8 times, skipping 8 bytes (1 at 0x"), "the stretches skipped are said: {}", found.description);
+        assert!(!found.description.contains("cover every byte ·") && found.description.contains("stretches skipped cover every byte"));
+    }
+
+    #[test]
+    fn a_given_sync_word_skips_a_lead_in_and_cuts_a_frame_cut_short_on_the_wire() {
+        let mut stream = sync_stream(10, 0, &[0x33, 0x01, 0xFF]);
+        // Frame 4 is cut off after six bytes, and the next frame follows at once.
+        let starts: Vec<usize> = (0..stream.len() - 1).filter(|&at| stream[at..].starts_with(&[0xA5, 0x5A])).collect();
+        let cut_at = starts[4] + 6;
+        stream.drain(cut_at..starts[5]);
+        let field = sync_field(Resync::Sync(SyncWord::new(&[0xA5, 0x5A]).unwrap()));
+        let set = split_by_length_field(&stream, 0x40, &field, LinkKind::Unknown).expect("frames");
+        assert_eq!(set.len(), 10, "{}", set.description);
+        assert_eq!((set.packets[0].offset, set.packets[4].len), (0x43, 6));
+        assert!(set.description.contains("3 at 0x40") && set.description.contains("1 frames cut short"), "{}", set.description);
+    }
+
+    #[test]
+    fn without_a_sync_word_an_implausible_length_is_skipped_to_the_next_plausible_frames() {
+        let mut stream = u16_be_payload_stream(&[b"ok", b"fine"]);
+        stream.extend_from_slice(&[0xFF, 0xFF, 0xFF]);
+        stream.extend(u16_be_payload_stream(&[b"again", b"and more"]));
+        let field = LengthField { offset: 1, max_frame: 1000, resync: Resync::Learn, ..LengthField::default() };
+        let set = split_by_length_field(&stream, 0, &field, LinkKind::Unknown).expect("frames");
+        assert_eq!(set.len(), 4, "{}", set.description);
+        let plain = LengthField { offset: 0, encoding: LengthEncoding::U8, counts: LengthCounts::WholeFrame, max_frame: 10, resync: Resync::Learn, ..LengthField::default() };
+        let set = split_by_length_field(&[3, 1, 2, 0xF0, 2, 9, 4, 0, 0, 0], 0, &plain, LinkKind::Unknown).expect("frames");
+        assert_eq!(ranges(&set), vec![(0, 3), (4, 2), (6, 4)], "{}", set.description);
+    }
+
     #[test]
     fn a_detected_length_prefix_becomes_a_length_field_counting_after_the_field() {
         let after = length_field_from_framing(&Framing::LengthPrefixed { offset: 1, width: 2, big_endian: true, adjustment: 3 }).expect("a field");
@@ -581,6 +883,9 @@ mod tests {
         let whole = length_field_from_framing(&Framing::LengthPrefixed { offset: 0, width: 1, big_endian: true, adjustment: 0 }).expect("a field");
         assert_eq!((whole.counts, whole.adjustment), (LengthCounts::WholeFrame, 0));
         assert_eq!(length_field_from_framing(&Framing::FixedSize { len: 8 }), None);
+        let synced = length_field_from_framing(&Framing::SyncLength { bytes: vec![0xA5, 0x5A], offset: 2, width: 1, big_endian: true, adjustment: 5 }).expect("a field");
+        assert_eq!((synced.counts, synced.adjustment), (LengthCounts::AfterField, 2));
+        assert_eq!(synced.resync, Resync::Sync(SyncWord::new(&[0xA5, 0x5A]).unwrap()), "the sync word comes along to find the place again");
     }
 
     #[test]
