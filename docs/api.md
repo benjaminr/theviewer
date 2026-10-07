@@ -126,6 +126,9 @@ Errors are `{code, message, data}`, with these codes:
 | [`crypto.repeated_blocks`](#cryptorepeated_blocks) | job | Start a search of a span (at most 16 MiB) for random-looking 8- and 16-byte blocks that repeat, the mark of ECB-mode encryption, as a job: the verdict, the best block size and alignment, the most repeated blocks and the repeats along the span are job.finished's result, and in the window they fill the Crypto panel. |
 | [`crypto.find_keys`](#cryptofind_keys) | job | Start a search of a span (the whole document by default, at most 64 MiB) for PEM blocks, DER certificates and keys, OpenSSH keys and random-looking runs that could be raw symmetric keys, as a job: what was found is job.finished's result, and in the window it fills the Crypto panel. |
 | [`crypto.attack`](#cryptoattack) | job | Start attacks on simple ciphers over a span (at most 1 MiB): rolling XOR, XOR with the previous byte, ADD/SUB with a constant or repeating key, bit rotation, XOR combined with ADD and, with a crib, crib dragging, as a job: the decodes that look most like text or structured data are job.finished's result, and in the window they fill the Crypto panel. |
+| [`compare.variation`](#comparevariation) | job | Start comparing a document with other files byte position by byte position, each from its own start offset, as a job: the regions that are constant, vary (and how many values) or move one way through the files like a counter are job.finished's result, and in the window they fill Compare. |
+| [`compare.correlate`](#comparecorrelate) | job | Start a search of a document and other files for fields whose values follow a number known for each file (a temperature, a setting), as a job: the fields, best fit first, with the fitted line, are job.finished's result, and in the window they fill Compare. |
+| [`compare.timeline`](#comparetimeline) | job | Start building the change timeline of the recording of a live source or watched file, as a job: where and how often it changed, snapshot by snapshot, is job.finished's result, and the window fills Compare with it; only the window records, so headless there is none. |
 | [`view.get_shape`](#viewget_shape) | read | The shape a document's bytes are drawn in: the pixel format, pixels per row, the offset of the first pixel, a bit shift and the bytes skipped after each row. |
 | [`view.set_shape`](#viewset_shape) | view | Change the shape a document's bytes are drawn in (the pixel format, pixels per row, the first pixel's offset and bit, the padding after each row); what is not given stays as it is. |
 | [`view.fold`](#viewfold) | view | Skip ranges of a document in its views (the raster and the hex dump) without deleting them; a marker shows where each was. |
@@ -1936,6 +1939,48 @@ Start attacks on simple ciphers over a span (at most 1 MiB): rolling XOR, XOR wi
 | `doc` | string | no | Document id, path or "current" (the default). |
 | `len` | integer | no | Bytes decoded, at most 1 MiB; to the end of the document (or 1 MiB) when omitted. |
 | `start` | integer | no | First offset of the suspect bytes (0 by default). |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `job` | string | yes | Follow it with jobs.status, or on job.progress and job.finished. |
+
+### compare.variation
+
+Start comparing a document with other files byte position by byte position, each from its own start offset, as a job: the regions that are constant, vary (and how many values) or move one way through the files like a counter are job.finished's result, and in the window they fill Compare.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `doc` | string | no | Document id, path or "current" (the default): the first file. |
+| `files` | array of CompareFileParam | yes | The other files, at most 31; the first 64 MiB of each is read. |
+| `start` | integer | no | Offset in the document that lines up with the files' starts (0 by default). |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `job` | string | yes | Follow it with jobs.status, or on job.progress and job.finished. |
+
+### compare.correlate
+
+Start a search of a document and other files for fields whose values follow a number known for each file (a temperature, a setting), as a job: the fields, best fit first, with the fitted line, are job.finished's result, and in the window they fill Compare.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `doc` | string | no | Document id, path or "current" (the default): the first file. |
+| `files` | array of CompareFileParam | yes | The other files, at most 63. |
+| `from` | integer | no | Where the search starts, from each file's start (0 by default); 256 KiB are searched. |
+| `start` | integer | no | Offset in the document that lines up with the files' starts (0 by default). |
+| `values` | array of number | yes | The number known for each file, the document's first: one more than the files. |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `job` | string | yes | Follow it with jobs.status, or on job.progress and job.finished. |
+
+### compare.timeline
+
+Start building the change timeline of the recording of a live source or watched file, as a job: where and how often it changed, snapshot by snapshot, is job.finished's result, and the window fills Compare with it; only the window records, so headless there is none.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `doc` | string | no | Document id, path or "current" (the default). |
 
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |

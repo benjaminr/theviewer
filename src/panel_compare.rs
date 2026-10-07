@@ -23,7 +23,7 @@ use crate::timeline::{self, Timeline};
 use crate::variation::{self, VariationReport};
 
 /// Largest part of each file read for comparison.
-const MAX_FILE_BYTES: usize = 64 * 1024 * 1024;
+pub(crate) const MAX_FILE_BYTES: usize = 64 * 1024 * 1024;
 /// Most bytes held across all added files.
 const MAX_TOTAL_BYTES: usize = 512 * 1024 * 1024;
 /// How often to look for finished work while something is pending.
@@ -67,6 +67,16 @@ pub struct CompareFile {
 /// Files read on a background thread: each one, or why it could not be read.
 type LoadedFiles = Vec<Result<CompareFile, String>>;
 
+/// Every file as (bytes, start offset), the document first.
+pub(crate) type CompareInputs = Vec<(Arc<[u8]>, usize)>;
+
+/// A finished variation run: the files it compared (for the region
+/// previews) and the summary, or why there is none.
+pub(crate) struct VariationRun {
+    pub inputs: CompareInputs,
+    pub report: Result<VariationReport, String>,
+}
+
 /// State of the Compare panel.
 #[derive(Default)]
 pub struct CompareState {
@@ -82,7 +92,7 @@ pub struct CompareState {
     loading: Option<Receiver<LoadedFiles>>,
     messages: Vec<String>,
 
-    variation_pending: Option<Receiver<Result<VariationReport, String>>>,
+    variation_pending: Option<Receiver<VariationRun>>,
     variation: Option<VariationReport>,
     /// The inputs of the last variation run, to preview a region's bytes.
     variation_inputs: Vec<(Arc<[u8]>, usize)>,
@@ -91,7 +101,7 @@ pub struct CompareState {
     correlation_pending: Option<Receiver<Result<CorrelationReport, String>>>,
     correlation: Option<CorrelationReport>,
 
-    timeline_pending: Option<Receiver<Timeline>>,
+    timeline_pending: Option<Receiver<Option<Timeline>>>,
     timeline: Option<Timeline>,
     timeline_texture: Option<TextureHandle>,
 }
@@ -144,7 +154,7 @@ pub fn show_compare(state: &mut CompareState, app: &mut ViewerApp, ui: &mut Ui) 
         CompareSection::Timeline => show_timeline(state, app, ui),
     };
     if let Some(offset) = jump {
-        app.jump_to_offset(offset);
+        app.jump_found(offset);
     }
 }
 
@@ -211,8 +221,13 @@ fn poll_background_work(state: &mut CompareState, ctx: &egui::Context) {
         None => {}
     }
     match take_finished(&mut state.variation_pending) {
-        Some(Ok(Ok(report))) => state.variation = Some(report),
-        Some(Ok(Err(message))) => state.messages.push(message),
+        Some(Ok(run)) => {
+            state.variation_inputs = run.inputs;
+            match run.report {
+                Ok(report) => state.variation = Some(report),
+                Err(message) => state.messages.push(message),
+            }
+        }
         Some(Err(_)) => state.messages.push(JOB_ENDED_EARLY.to_string()),
         None => {}
     }
@@ -223,10 +238,11 @@ fn poll_background_work(state: &mut CompareState, ctx: &egui::Context) {
         None => {}
     }
     match take_finished(&mut state.timeline_pending) {
-        Some(Ok(built)) => {
+        Some(Ok(Some(built))) => {
             state.timeline_texture = Some(heatmap_texture(ctx, &built));
             state.timeline = Some(built);
         }
+        Some(Ok(None)) => state.messages.push(JOB_ENDED_EARLY.to_string()),
         Some(Err(_)) => state.messages.push(JOB_ENDED_EARLY.to_string()),
         None => {}
     }
@@ -242,7 +258,7 @@ fn start_loading(state: &mut CompareState, paths: Vec<PathBuf>) {
 }
 
 /// Read up to [`MAX_FILE_BYTES`] of `path`.
-fn read_compare_file(path: &Path) -> Result<CompareFile, String> {
+pub(crate) fn read_compare_file(path: &Path) -> Result<CompareFile, String> {
     let name = path.file_name().map_or_else(|| path.display().to_string(), |name| name.to_string_lossy().into_owned());
     let file = File::open(path).map_err(|error| format!("Could not open {name}: {error}"))?;
     let mut bytes = Vec::new();
@@ -286,16 +302,65 @@ fn add_loaded_files(state: &mut CompareState, loaded: LoadedFiles) {
     state.forget_results();
 }
 
-/// The current document's bytes, capped like the added files.
-fn current_document_bytes(app: &mut ViewerApp) -> Arc<[u8]> {
-    app.document.read_range(0, MAX_FILE_BYTES).into()
+/// The files added, as `compare.*` takes them.
+fn files_param(state: &CompareState) -> serde_json::Value {
+    state.files.iter().map(|file| serde_json::json!({ "path": file.path.display().to_string(), "start": file.start })).collect()
 }
 
-/// Every file as (bytes, start offset), the current document first.
-fn comparison_inputs(state: &CompareState, app: &mut ViewerApp) -> Vec<(Arc<[u8]>, usize)> {
-    let mut inputs = vec![(current_document_bytes(app), state.current_start)];
-    inputs.extend(state.files.iter().map(|file| (Arc::clone(&file.bytes), file.start)));
-    inputs
+/// Where a job's result for the panel is sent, and where the panel waits for it.
+fn awaited<T>(pending: &mut Option<Receiver<T>>) -> mpsc::Sender<T> {
+    let (sender, receiver) = mpsc::channel();
+    *pending = Some(receiver);
+    sender
+}
+
+/// Wait for a run `compare.variation` started; returns where it is sent.
+pub(crate) fn await_variation(app: &mut ViewerApp) -> mpsc::Sender<VariationRun> {
+    app.note_tool_result(crate::dock::DockTab::Compare);
+    let state = &mut app.bench.panels.compare;
+    state.selected_region = None;
+    awaited(&mut state.variation_pending)
+}
+
+/// Wait for a search `compare.correlate` started; returns where it is sent.
+pub(crate) fn await_correlation(app: &mut ViewerApp) -> mpsc::Sender<Result<CorrelationReport, String>> {
+    app.note_tool_result(crate::dock::DockTab::Compare);
+    awaited(&mut app.bench.panels.compare.correlation_pending)
+}
+
+/// Wait for a timeline `compare.timeline` started; returns where it is sent.
+pub(crate) fn await_timeline(app: &mut ViewerApp) -> mpsc::Sender<Option<Timeline>> {
+    awaited(&mut app.bench.panels.compare.timeline_pending)
+}
+
+/// Summarise how the files vary, once they are read.
+pub(crate) fn summarise(inputs: Result<CompareInputs, String>) -> VariationRun {
+    match inputs {
+        Ok(inputs) => {
+            let slices: Vec<&[u8]> = inputs.iter().map(|(bytes, _)| &bytes[..]).collect();
+            let starts: Vec<usize> = inputs.iter().map(|(_, start)| *start).collect();
+            let report = variation::summarise_variation(&slices, &starts).map_err(|error| error.to_string());
+            VariationRun { inputs, report }
+        }
+        Err(message) => VariationRun { inputs: Vec::new(), report: Err(message) },
+    }
+}
+
+/// The fields of `inputs` that follow `outside`, searched from `from`.
+pub(crate) fn correlate(inputs: &[(Arc<[u8]>, usize)], outside: &[f64], from: usize) -> Result<CorrelationReport, String> {
+    let slices: Vec<&[u8]> = inputs.iter().map(|(bytes, _)| &bytes[..]).collect();
+    let starts: Vec<usize> = inputs.iter().map(|(_, start)| *start).collect();
+    let aligned = variation::apply_start_offsets(&slices, &starts).map_err(|error| error.to_string())?;
+    let range = from..from.saturating_add(correlation::DEFAULT_SEARCH_LEN);
+    correlation::find_correlated_fields(&aligned, outside, range).map_err(|error| error.to_string())
+}
+
+/// The changes the window's recording holds, or why there are none.
+pub(crate) fn recorded_changes(app: &ViewerApp) -> Result<timeline::RecordingChanges, String> {
+    let Some(recording) = &app.bench.recording else {
+        return Err("Nothing is being recorded. Turn on \"Record history\" in the Live tab first.".to_string());
+    };
+    timeline::collect_changes(recording, timeline::MAX_ROWS).map_err(|error| error.to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -375,19 +440,10 @@ pub(crate) fn refresh(state: &mut CompareState, app: &mut ViewerApp) {
     }
 }
 
+/// The person compares the files: `compare.variation`, carried out once
+/// the panel is drawn.
 fn start_variation(state: &mut CompareState, app: &mut ViewerApp) {
-    app.note_tool_result(crate::dock::DockTab::Compare);
-    let inputs = comparison_inputs(state, app);
-    state.variation_inputs = inputs.clone();
-    state.selected_region = None;
-    let (sender, receiver) = mpsc::channel();
-    thread::spawn(move || {
-        let slices: Vec<&[u8]> = inputs.iter().map(|(bytes, _)| &bytes[..]).collect();
-        let starts: Vec<usize> = inputs.iter().map(|(_, start)| *start).collect();
-        let result = variation::summarise_variation(&slices, &starts).map_err(|error| error.to_string());
-        let _ = sender.send(result);
-    });
-    state.variation_pending = Some(receiver);
+    app.perform_later("compare.variation", serde_json::json!({ "start": state.current_start, "files": files_param(state) }));
 }
 
 fn show_variation(state: &mut CompareState, app: &mut ViewerApp, ui: &mut Ui) -> Option<usize> {
@@ -506,23 +562,13 @@ fn parse_outside_values(state: &CompareState) -> Result<Vec<f64>, String> {
         .collect()
 }
 
+/// The person looks for fields following the values typed:
+/// `compare.correlate`, carried out once the panel is drawn. Values that
+/// are not numbers are said in the panel instead.
 fn start_correlation(state: &mut CompareState, app: &mut ViewerApp) -> Result<(), String> {
-    let outside = parse_outside_values(state)?;
-    app.note_tool_result(crate::dock::DockTab::Compare);
-    let inputs = comparison_inputs(state, app);
-    let from = state.correlation_from;
-    let (sender, receiver) = mpsc::channel();
-    thread::spawn(move || {
-        let result = (|| {
-            let slices: Vec<&[u8]> = inputs.iter().map(|(bytes, _)| &bytes[..]).collect();
-            let starts: Vec<usize> = inputs.iter().map(|(_, start)| *start).collect();
-            let aligned = variation::apply_start_offsets(&slices, &starts).map_err(|error| error.to_string())?;
-            let range = from..from.saturating_add(correlation::DEFAULT_SEARCH_LEN);
-            correlation::find_correlated_fields(&aligned, &outside, range).map_err(|error| error.to_string())
-        })();
-        let _ = sender.send(result);
-    });
-    state.correlation_pending = Some(receiver);
+    let values = parse_outside_values(state)?;
+    let params = serde_json::json!({ "start": state.current_start, "files": files_param(state), "values": values, "from": state.correlation_from });
+    app.perform_later("compare.correlate", params);
     Ok(())
 }
 
@@ -599,16 +645,12 @@ fn show_correlation(state: &mut CompareState, app: &mut ViewerApp, ui: &mut Ui) 
 // Timeline
 // ---------------------------------------------------------------------------
 
-fn start_timeline(state: &mut CompareState, app: &ViewerApp) -> Result<(), String> {
-    let Some(recording) = &app.bench.recording else {
-        return Err("Nothing is being recorded. Turn on \"Record history\" in the Live tab first.".to_string());
-    };
-    let changes = timeline::collect_changes(recording, timeline::MAX_ROWS).map_err(|error| error.to_string())?;
-    let (sender, receiver) = mpsc::channel();
-    thread::spawn(move || {
-        let _ = sender.send(timeline::build_timeline(&changes, timeline::MAX_COLUMNS));
-    });
-    state.timeline_pending = Some(receiver);
+/// The person builds the recording's change timeline: `compare.timeline`,
+/// carried out once the panel is drawn. Without a recording to build it
+/// from, the panel says why instead.
+fn start_timeline(app: &mut ViewerApp) -> Result<(), String> {
+    recorded_changes(app)?;
+    app.perform_later("compare.timeline", serde_json::json!({}));
     Ok(())
 }
 
@@ -619,7 +661,7 @@ fn show_timeline(state: &mut CompareState, app: &mut ViewerApp, ui: &mut Ui) -> 
         let label = if state.timeline.is_some() { "Refresh" } else { "Build timeline" };
         if ui.add_enabled(can_run, egui::Button::new(label)).clicked() {
             state.messages.clear();
-            if let Err(message) = start_timeline(state, app) {
+            if let Err(message) = start_timeline(app) {
                 state.messages.push(message);
             }
         }
@@ -837,15 +879,30 @@ mod tests {
         }
         app.bench.recording = Some(recording);
 
-        let mut state = CompareState { current_outside_value: "21.5".to_string(), ..Default::default() };
-        for (tenths, text) in [(240u16, "24"), (190, "19"), (302, "30.2")] {
-            state.files.push(CompareFile { bytes: Arc::from(capture(tenths)), ..named_file("capture.bin", text) });
+        let mut state = CompareState { current_outside_value: "21.5".to_string(), current_start: 0, ..Default::default() };
+        let mut paths = Vec::new();
+        for (index, (tenths, text)) in [(240u16, "24"), (190, "19"), (302, "30.2")].into_iter().enumerate() {
+            let path = std::env::temp_dir().join(format!("theviewer-compare-panel-{}-{index}.bin", std::process::id()));
+            std::fs::write(&path, capture(tenths)).unwrap();
+            state.files.push(CompareFile { path: path.clone(), bytes: Arc::from(capture(tenths)), ..named_file("capture.bin", text) });
+            paths.push(path);
         }
 
+        // Asked for while the panel is drawn, carried out before the next frame.
+        crate::actions::take_performed();
         start_variation(&mut state, &mut app);
         start_correlation(&mut state, &mut app).expect("valid outside values");
-        start_timeline(&mut state, &app).expect("recording has snapshots");
+        start_timeline(&mut app).expect("recording has snapshots");
+        app.bench.panels.compare = state;
+        app.perform_waiting_actions();
+        let performed = crate::actions::take_performed();
+        let files: Vec<serde_json::Value> = paths.iter().map(|path| serde_json::json!({"path": path.display().to_string(), "start": 0})).collect();
+        assert_eq!(performed[0], ("compare.variation".to_string(), serde_json::json!({"start": 0, "files": files})));
+        assert_eq!(performed[1], ("compare.correlate".to_string(), serde_json::json!({"start": 0, "files": files, "values": [21.5, 24.0, 19.0, 30.2], "from": 0})));
+        assert_eq!(performed[2], ("compare.timeline".to_string(), serde_json::json!({})));
+        let mut state = std::mem::take(&mut app.bench.panels.compare);
         draw_until_idle(&ctx, &mut state, &mut app);
+        paths.iter().for_each(|path| drop(std::fs::remove_file(path)));
         assert!(state.messages.is_empty(), "{:?}", state.messages);
 
         let variation = state.variation.as_ref().expect("variation result");
