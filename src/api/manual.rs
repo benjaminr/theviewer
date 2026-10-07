@@ -111,6 +111,17 @@ fn conventions() -> String {
 **Parameters are checked.** Parameters the method does not have, or of the wrong type, fail with `invalid_params` before anything runs. Omitted parameters count as `{{}}`.
 
 **Versions.** Each document has a version, which every edit increases. A method that edits takes `expect_version` and returns the new `version`: when the document has changed since the version given, the call fails with `version_conflict` and changes nothing.
+
+**Outputs.** A method that produces bytes (a decode, a transform, a node unpacked, packets' fields, a decryption) takes `output`, which says where they go; each such method's entry below lists the outputs it offers and its default, and `api.describe` gives them as `outputs`:
+
+| `output` | Where the bytes go | The result's `output` |
+| --- | --- | --- |
+| `"in_place"` | Over the bytes they came from, as one undoable edit, selected afterwards. | `{{version, len, ranges}}` |
+| `"new"`, `{{"new": {{"label": "payload", "name": …}}}}` | A new sheet, a document derived from the one read, with its lineage. A `label` names it: a recipe made from the session names the sheet by it. | `{{doc, label, len}}` |
+| `"return"`, `{{"return": {{"encoding": "text"}}}}` | The result, written as hex, base64 or text (the call's own `encoding` when the output names none). | `{{len, encoding, data}}` |
+| `{{"file": "/path/out.bin"}}` | A file, which needs leave to edit. | `{{path, len}}` |
+
+A call is recorded, undone and replayed as its output says, whatever the method's default: one with `output: "new"` makes a sheet, kept by recipes; one in place is a byte edit; bytes returned are a read; a file written is not repeated. So `result.output.doc` is where a later step finds the sheet a call made, and the bytes need not come back through the client to be opened again. The older shorthands stay: `transform.preview` (`transform.apply` returning), `codecs.open_decoded` (`codecs.decode` to a new sheet), `crypto.open_decrypted` (`crypto.decrypt` to a new sheet), `documents.export` (`documents.derive` to a file), `unpack.read` and `unpack.save` (`unpack.open` returning or to a file).
 "#
     )
 }
@@ -270,6 +281,9 @@ fn methods_section() -> String {
         let mcp = if is_core_tool(method.name) { "listed by default" } else { "through `api_call`, or with `--all-tools`" };
         let _ = writeln!(out, "**Effect:** `{}` · **MCP tool:** `{}`, {mcp}\n", effect_name(method.effect), crate::mcp::tools::tool_name(method.name));
         let _ = writeln!(out, "**History:** {}\n", history_of(method));
+        if let Some(outputs) = method.outputs {
+            let _ = writeln!(out, "**Output:** {}\n", outputs_of(outputs));
+        }
         let params = (method.params)().to_value();
         let result = (method.result)().to_value();
         out.push_str(&properties_table("Parameter", &params, "None."));
@@ -318,9 +332,15 @@ fn history_of(method: &Method) -> String {
         (Journalled::Step, Replay::Note) => "Journalled as a note where it is written: it changes nothing, so it is never undone, repeated, or undone by going back past it.".to_string(),
         (Journalled::Step, _) => step_history(method),
     };
+    if method.outputs.is_some_and(|outputs| outputs.allowed.len() > 1) {
+        sentence.push_str(" With another output, a call is treated as that output says.");
+    }
     match method.writes_file {
         WritesFile::No => {}
         WritesFile::Always => sentence.push_str(" Writes a file, so it needs leave to edit."),
+        WritesFile::WhenGiven(param) if param != super::OUTPUT_FILE && method.outputs.is_some_and(|outputs| outputs.allows(super::OutputKind::File)) => {
+            let _ = write!(sentence, " Writes a file when `{param}` or `{}` is given, which then needs leave to edit.", super::OUTPUT_FILE);
+        }
         WritesFile::WhenGiven(param) => {
             let _ = write!(sentence, " Writes a file when `{param}` is given, which then needs leave to edit.");
         }
@@ -345,6 +365,18 @@ fn step_history(method: &Method) -> String {
         }
     }
     format!("{}.", parts.join("; "))
+}
+
+/// Where a method's output can go, its default first: "`return` (the
+/// default), `new` or `in_place`, as `output` asks".
+fn outputs_of(outputs: super::Outputs) -> String {
+    let others: Vec<String> = outputs.allowed.iter().filter(|kind| **kind != outputs.default).map(|kind| format!("`{}`", kind.name())).collect();
+    let default = format!("`{}` (the default)", outputs.default.name());
+    match others.as_slice() {
+        [] => format!("{default} only"),
+        [one] => format!("{default} or {one}, as `output` asks; see [Outputs](#conventions)"),
+        [rest @ .., last] => format!("{default}, {} or {last}, as `output` asks; see [Outputs](#conventions)", rest.join(", ")),
+    }
 }
 
 /// How a step of `method` is undone, when that is worth saying.

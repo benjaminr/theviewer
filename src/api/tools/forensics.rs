@@ -6,8 +6,9 @@ use serde::{Deserialize, Serialize};
 
 use super::tool_jobs::{self, Summary};
 use crate::api::jobs::JobStartedResult;
+use crate::api::output::{self, Made, Output, Produced};
 use crate::api::workspace::{self, Workspace};
-use crate::api::{ApiError, Caller};
+use crate::api::{ApiError, Caller, OutputKind};
 use crate::embedfs::{EntryKind, Filesystem};
 use crate::panel_forensics::{self, BlockScan, FilesystemScan};
 
@@ -15,7 +16,7 @@ use crate::panel_forensics::{self, BlockScan, FilesystemScan};
 /// their namespace. A new method is added here, and only here.
 pub(super) const METHODS: &[crate::api::Method] = &[
     method!("forensics.find_filesystems", Job, caller find_filesystems, FilesystemsParams, JobStartedResult, "Start a search of the document (its first 256 MiB) for SquashFS, CramFS, JFFS2, UBI and FAT images (FAT at any 512-byte boundary, so inside a disk's partitions) as a job: each image found, with its files, deleted FAT entries included, is job.finished's result, and in the window they fill Forensics."),
-    method!("forensics.open_entry", View, open_entry, OpenEntryParams, workspace::SheetMade, "Open one file (or volume) of the filesystem image at an offset of the document as a derived document, by its path in the image; a deleted FAT file opens as recovered from its first cluster on.").makes_sheet(),
+    method!("forensics.open_entry", View, caller open_entry, OpenEntryParams, Made, "Open one file (or volume) of the filesystem image at an offset of the document as a derived document, by its path in the image; a deleted FAT file opens as recovered from its first cluster on. With output, return its bytes or write them to a file (which needs leave to edit) instead.").outputs(&[OutputKind::New, OutputKind::Return, OutputKind::File], OutputKind::New),
     method!("forensics.classify_blocks", Job, caller classify_blocks, ClassifyBlocksParams, JobStartedResult, "Start labelling every block of the document (its first 256 MiB) as padding, text, markup, machine code, compressed, random, raw image, PCM audio or table data as a job: the runs of one class, with the reason for each, are job.finished's result, and in the window they fill Forensics."),
 ];
 
@@ -55,6 +56,10 @@ pub struct OpenEntryParams {
     pub filesystem: u64,
     /// The file's path in the image, such as "etc/passwd".
     pub path: String,
+    /// Where the file's bytes go: "new" (the default; {"new": {"label": …}}
+    /// labels the sheet), "return", or {"file": path}, which needs leave to edit.
+    #[serde(default)]
+    pub output: Option<Output>,
 }
 
 /// Parameters of `forensics.classify_blocks`.
@@ -203,7 +208,8 @@ pub fn find_filesystems(workspace: &mut dyn Workspace, caller: &Caller, params: 
     ))
 }
 
-pub fn open_entry(workspace: &mut dyn Workspace, params: OpenEntryParams) -> Result<workspace::SheetMade, ApiError> {
+pub fn open_entry(workspace: &mut dyn Workspace, caller: &Caller, params: OpenEntryParams) -> Result<Made, ApiError> {
+    let output = output::chosen("forensics.open_entry", params.output)?;
     let span = tool_jobs::span(workspace, params.doc.as_deref(), params.filesystem, None, panel_forensics::SCAN_LIMIT, "the image")?;
     let filesystems = panel_forensics::filesystems_in(&tool_jobs::read(workspace, &span)?);
     let filesystem = filesystems
@@ -219,8 +225,8 @@ pub fn open_entry(workspace: &mut dyn Workspace, params: OpenEntryParams) -> Res
         return Err(ApiError::invalid_params(format!("'{}' is a {}, with nothing to open", entry.path, entry_kind(entry.kind))));
     }
     let name = format!("{} › {}@{:#x}/{}", workspace::info(workspace, &span.doc)?.name, filesystem.kind.label(), span.start, entry.path);
-    let id = workspace.open_derived(&span.doc, entry.data.as_ref().clone(), &name)?;
-    workspace::SheetMade::of(workspace, &id)
+    let delivered = output::deliver(workspace, caller, &span.doc, Produced::bytes(entry.data.as_ref().clone(), name), &output)?;
+    Made::of(workspace, delivered)
 }
 
 /// `forensics.classify_blocks`: read the document now and classify it on a thread.
@@ -280,6 +286,9 @@ mod tests {
         let opened = call(&mut workspace, "forensics.open_entry", json!({"filesystem": 4096, "path": "version"})).unwrap();
         assert_eq!((opened["name"].as_str(), opened["len"].as_u64()), (Some("firmware.bin › CramFS@0x1000/version"), Some(6)));
         assert_eq!(call(&mut workspace, "forensics.open_entry", json!({"doc": "doc-1", "filesystem": 4096, "path": "missing"})).unwrap_err().code, ErrorCode::NotFound);
+        let returned = call(&mut workspace, "forensics.open_entry", json!({"doc": "doc-1", "filesystem": 4096, "path": "motd", "output": {"return": {"encoding": "text"}}})).unwrap();
+        assert_eq!(returned["output"]["data"], "hello", "a file's bytes returned, with no sheet made");
+        assert!(returned.get("id").is_none());
     }
 
     #[test]

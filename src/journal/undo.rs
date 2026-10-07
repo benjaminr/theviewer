@@ -373,16 +373,16 @@ fn decoding_of(workspace: &dyn Workspace, set: &str) -> Option<Value> {
     Some(json!({"decoding": params}))
 }
 
-/// How a step of the method called `method` (whose effect was `effect`)
-/// is undone, as the method table declares it; a method not in the table
-/// is a plugin's.
-pub(super) fn undo_of(method: &str, effect: Effect) -> Undo {
-    api::method(method).map_or(Undo::registered(effect), |method| method.undo)
+/// How the step `entry` is undone, as the method table declares it for
+/// its params (a call whose output made a sheet is undone as one); a method
+/// not in the table is a plugin's.
+pub(super) fn undo_of(entry: &JournalEntry) -> Undo {
+    api::method(&entry.method).map_or(Undo::registered(entry.effect), |method| method.undo_for(&entry.params))
 }
 
 /// What `entry` changed, when its method reverses a change.
 pub(super) fn target_of(entry: &JournalEntry) -> Option<Target> {
-    match undo_of(&entry.method, entry.effect) {
+    match undo_of(entry) {
         Undo::Reverses(reverse) => reverse.target(&entry.params, entry.doc.as_deref(), &entry.caller),
         _ => None,
     }

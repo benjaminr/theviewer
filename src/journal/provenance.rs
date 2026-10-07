@@ -442,7 +442,7 @@ pub fn build_recipe(journal: &Journal, name: &str, steps: RecipeSteps<'_>) -> Re
             if let Some(missing) = steps.iter().find(|step| journal.entry(**step).is_none()) {
                 return Err(not_a_step(*missing));
             }
-            steps.iter().copied().filter(|step| journal.entry(*step).is_some_and(|entry| super::timeline::is_kept_by_recipes(&entry.method))).collect()
+            steps.iter().copied().filter(|step| journal.entry(*step).is_some_and(super::timeline::is_kept_by_recipes)).collect()
         }
     };
     let lineage = SheetLineage::of(journal);
@@ -497,7 +497,7 @@ impl SheetLineage {
                 let label = labels.get(nth).cloned().flatten();
                 lineage.made.insert(doc.clone(), Maker { step: entry.step, method: entry.method.clone(), parent: entry.doc.clone(), nth, label });
             }
-            if matches!(super::timeline::replay_of(&entry.method), super::timeline::Replay::OpensDocument { .. })
+            if matches!(super::timeline::replay_of_entry(entry), super::timeline::Replay::OpensDocument { .. })
                 && let Some(opened) = entry.result.as_ref().and_then(opened_id)
             {
                 lineage.opened.entry(opened).or_insert((entry.step, entry.method.clone()));

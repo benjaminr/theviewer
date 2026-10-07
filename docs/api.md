@@ -64,11 +64,7 @@ let head = api::call(&mut workspace, &Caller::Cli, "bytes.read", json!({"start":
 
 ## Conventions
 
-**Documents.** Each open document has an id: `doc-1`, `doc-2` and so on. A method about a document takes `doc`: an id, the path of an open document, or `"current"`, the window's document (headless, the one opened or made last). A document derived from another (a span opened on its own, a stream decompressed, an embedded file) is a document of its own, with its own id.
-
-**Focus.** An omitted `doc` means the caller's focus, filled in before the method runs, so the journal entry names the document. For the person at the window it is the document shown, and so it is for a plugin and for Ask, which act for the person. MCP clients, the command line and recipes keep their own: the current document when it first calls, then the document it opens (`documents.open`, `.new`, `.open_source`) or activates (`documents.activate`), or a new sheet it asks to focus (`output: {"new": {"focus": true}}`). Making a sheet (a derive, a node opened) does not move it, nor does naming a document in a call, so a client's calls without `doc` stay on the document it was working on. `documents.list` marks the caller's focus. `theviewer mcp --legacy-current` makes an omitted `doc` the current document for an MCP client, as before.
-
-**Anchors at call time.** Any parameter may be an anchor in place of a literal: `{"$anchor": …}`, or the shorthands `{"$var": "serial"}` (a variable bound with `vars.set`) and `{"$sheet": 7}` or `{"$sheet": "payload"}` (the sheet step 7 made, or the one labelled so). They are resolved against the session before the method runs (`doc`'s first), and the journal entry keeps both the values, in `params`, and the anchors, in `derived_from`, so a recipe made from it finds the values again on the next file. Step and pick anchors cite earlier steps by number; a read they cite becomes a step of the journal. The kinds of anchor are in [Recipes](recipes.md#anchors).
+**Documents.** Each open document has an id: `doc-1`, `doc-2` and so on. A method about a document takes `doc`: an id, the path of an open document, or `"current"`, which is also what an omitted `doc` means. `documents.list` lists the open documents. A document derived from another (a span opened on its own, a stream decompressed, an embedded file) is a document of its own, with its own id.
 
 **Spans** are `start` and `len` in bytes, counted from 0. A span must lie inside its document, or the call fails with `out_of_range`; an omitted `len` runs to the end of the document. Where several spans are given or returned, each is a pair `[start, len]`.
 
@@ -87,6 +83,17 @@ let head = api::call(&mut workspace, &Caller::Cli, "bytes.read", json!({"start":
 **Parameters are checked.** Parameters the method does not have, or of the wrong type, fail with `invalid_params` before anything runs. Omitted parameters count as `{}`.
 
 **Versions.** Each document has a version, which every edit increases. A method that edits takes `expect_version` and returns the new `version`: when the document has changed since the version given, the call fails with `version_conflict` and changes nothing.
+
+**Outputs.** A method that produces bytes (a decode, a transform, a node unpacked, packets' fields, a decryption) takes `output`, which says where they go; each such method's entry below lists the outputs it offers and its default, and `api.describe` gives them as `outputs`:
+
+| `output` | Where the bytes go | The result's `output` |
+| --- | --- | --- |
+| `"in_place"` | Over the bytes they came from, as one undoable edit, selected afterwards. | `{version, len, ranges}` |
+| `"new"`, `{"new": {"label": "payload", "name": …}}` | A new sheet, a document derived from the one read, with its lineage. A `label` names it: a recipe made from the session names the sheet by it. | `{doc, label, len}` |
+| `"return"`, `{"return": {"encoding": "text"}}` | The result, written as hex, base64 or text (the call's own `encoding` when the output names none). | `{len, encoding, data}` |
+| `{"file": "/path/out.bin"}` | A file, which needs leave to edit. | `{path, len}` |
+
+A call is recorded, undone and replayed as its output says, whatever the method's default: one with `output: "new"` makes a sheet, kept by recipes; one in place is a byte edit; bytes returned are a read; a file written is not repeated. So `result.output.doc` is where a later step finds the sheet a call made, and the bytes need not come back through the client to be opened again. The older shorthands stay: `transform.preview` (`transform.apply` returning), `codecs.open_decoded` (`codecs.decode` to a new sheet), `crypto.open_decrypted` (`crypto.decrypt` to a new sheet), `documents.export` (`documents.derive` to a file), `unpack.read` and `unpack.save` (`unpack.open` returning or to a file).
 
 ## Effects and permissions
 
@@ -170,20 +177,19 @@ A recipe step that starts a job waits for it (up to 10 minutes), and later steps
 
 ## Methods
 
-179 methods in 46 namespaces. The MCP column says which are listed as tools of their own by `theviewer mcp` (every one is with `--all-tools`; the rest are reached with `api_call`).
+175 methods in 45 namespaces. The MCP column says which are listed as tools of their own by `theviewer mcp` (every one is with `--all-tools`; the rest are reached with `api_call`).
 
 | Method | Effect | MCP | Summary |
 | --- | --- | --- | --- |
 | [`api.version`](#apiversion) | read |  | The API version: 1.0. Changes within a major version only add methods, optional parameters and result fields. |
 | [`api.describe`](#apidescribe) | read |  | Every method with its summary, effect, stability and the JSON schemas of its parameters and result. |
-| [`documents.list`](#documentslist) | read | core | The open documents, with their ids, names, paths, lengths and versions, and which is your focus: what an omitted doc means for you. |
+| [`documents.list`](#documentslist) | read | core | The open documents, with their ids, names, paths, lengths and versions. |
 | [`documents.info`](#documentsinfo) | read |  | One document's id, name, path, length, version and whether it has unsaved edits. |
 | [`documents.open`](#documentsopen) | view | core | Open a file by path, or an open document by id, and make it current; a file already open is made current again. In the window, a parent of the document shown is gone back to, closing what was derived from it; that, or opening another file, is refused while what it closes has unsaved edits, unless the person at the window discards them. |
-| [`documents.activate`](#documentsactivate) | view |  | Make an open document your focus, which an omitted doc means from then on; for the person at the window, show it (a parent of the document shown is gone back to, as documents.open does). |
 | [`documents.new`](#documentsnew) | view |  | Open a new, empty document and make it current; the window refuses while its document has unsaved edits, unless the person at the window discards them. |
 | [`documents.save`](#documentssave) | edit | core | Save a document over its file, or to a path, with every edit made so far. |
-| [`documents.derive`](#documentsderive) | view |  | Open bytes of a document (a span, several ranges one after another, or bytes given), or what a transform such as decompress or XOR makes of them, as a document of their own derived from it, and make it current; in the window, Back goes back to the parent. Returns the new document, and output. |
-| [`documents.export`](#documentsexport) | edit |  | Write a span of a document (or several ranges one after another) to a file, or what decompresses at a span's start; the document is left as it is. |
+| [`documents.derive`](#documentsderive) | view |  | Open bytes of a document (a span, several ranges one after another, bytes given, or ranges of several sheets joined with sources), or what a transform such as decompress or XOR makes of them, as a document of their own derived from it, and make it current; in the window, Back goes back to the parent. Returns the new document, and output; with output {"file": path} the bytes are written to a file instead, which needs leave to edit. |
+| [`documents.export`](#documentsexport) | edit |  | Write a span of a document (or several ranges one after another) to a file, or what decompresses at a span's start; the document is left as it is. A shorthand for documents.derive with output {"file": path}. |
 | [`documents.open_source`](#documentsopen_source) | view |  | Open a file, URL, block device, serial port (serial:PORT@BAUD) or a process's memory region (pid:PID@ADDRESS) as a new document. The window reads a URL, device or region in the background and opens it when it arrives, and pid:PID lists a process's regions in the Live tab; headless, the bytes are read before the call returns. |
 | [`bytes.read`](#bytesread) | read | core | Read a span of bytes, as hex by default, or as base64 or text; a span running past the end of the document is read to the end, and len says how many bytes came back. |
 | [`bytes.hexdump`](#byteshexdump) | read | core | A classic hex dump of a span, 16 bytes per line with an ASCII column, at most 1 MiB. |
@@ -196,13 +202,13 @@ A recipe step that starts a job waits for it (up to 10 minutes), and later steps
 | [`bits.write`](#bitswrite) | edit |  | Overwrite bits from any bit offset, most or least significant bit of each byte first, as one undoable step; the bits around them are kept. |
 | [`bits.scan_periods`](#bitsscan_periods) | job |  | Start a search of a span for bit periods (frames that are not a whole number of bytes) and the sync word of the strongest, comparing the bits with themselves at every lag, as a job: the periods and sync words are job.finished's result, and in the window they fill the Bits panel. |
 | [`bits.planes`](#bitsplanes) | job |  | Start splitting a span (at most 1 MiB) into its eight bit planes as a job, scoring how much shape each holds with rows of row_width bytes: the scores are job.finished's result, and in the window the planes fill the Bits panel. |
-| [`bits.open_plane`](#bitsopen_plane) | view |  | Open one bit plane of a span (at most 1 MiB) as a derived document: bit k of every byte, as a byte of 0 or 255. |
+| [`bits.open_plane`](#bitsopen_plane) | view |  | Open one bit plane of a span (at most 1 MiB) as a derived document: bit k of every byte, as a byte of 0 or 255; or, with output "return", return it. |
 | [`bits.detect_linecode`](#bitsdetect_linecode) | job |  | Start trying Manchester (both conventions), differential Manchester, 8b/10b and packed BCD at every bit alignment of a span (at most 64 KiB) as a job: the decodes, fewest invalid symbols first, and any BCD timestamps are job.finished's result, and in the window they fill the Bits panel. |
-| [`bits.decode_linecode`](#bitsdecode_linecode) | view |  | Decode a span (at most 64 KiB) from a line code at a bit offset and open the decoded bytes as a derived document. |
+| [`bits.decode_linecode`](#bitsdecode_linecode) | view |  | Decode a span (at most 64 KiB) from a line code at a bit offset and open the decoded bytes as a derived document; or, with output "return", return them. |
 | [`bits.rank_field`](#bitsrank_field) | read |  | Rank what a field of records holds (integers, floats, fixed point, timestamps, enums…) by how plausible its values are across the records. |
 | [`bits.find_length_fields`](#bitsfind_length_fields) | job |  | Start a search of a span (at most 256 KiB, one message or a run of records) for numbers that are distances, as a job: length prefixes, tag-length-value chains and offset tables, best first, are job.finished's result, and in the window they fill the Bits panel. |
-| [`transform.apply`](#transformapply) | edit | core | Apply an operation (XOR, invert, shift bits, swap byte order, number, compress, decompress and more) to every range of a selection, as one undoable step, and select what it produced. |
-| [`transform.preview`](#transformpreview) | read |  | What transform.apply would write into each range of a selection, without changing anything. |
+| [`transform.apply`](#transformapply) | edit | core | Apply an operation (XOR, invert, shift bits, swap byte order, number, compress, decompress and more) to every range of a selection: in place by default, as one undoable step, selecting what it produced; or, as output says, open what it makes as a new sheet (the ranges one after another), or return it. |
+| [`transform.preview`](#transformpreview) | read |  | What transform.apply would write into each range of a selection, without changing anything, range by range: a shorthand for transform.apply with output "return". |
 | [`history.undo`](#historyundo) | edit | core | Undo the document's last step, whoever made it, and put the cursor where it was. |
 | [`history.redo`](#historyredo) | edit |  | Redo the last step undone, and put the cursor where it was. |
 | [`history.transaction`](#historytransaction) | edit |  | Run several calls on one document as one undoable step; when one fails, every change the others made is reversed. |
@@ -217,9 +223,9 @@ A recipe step that starts a job waits for it (up to 10 minutes), and later steps
 | [`history.edit_note`](#historyedit_note) | read |  | Change a note's text and the steps it is linked to, in place; the note then says when and by whom it was edited. Only notes can be edited. |
 | [`history.delete_note`](#historydelete_note) | read |  | Take a note out of the history; the steps it was linked to no longer list it. Only notes can be deleted. |
 | [`history.export_notes`](#historyexport_notes) | read |  | The session's notes as Markdown, in the order written, each with the steps it cites (number, caller and description), returned or written to a path given (which needs leave to edit). |
-| [`history.suggest_anchors`](#historysuggest_anchors) | read |  | Anchors that could stand for a step's literals in a recipe: search matches, structure fields and findings at the same offset in its document as it is now, the selection an earlier step set, picks from lists earlier steps returned (strings, keys, candidates), and earlier steps' values equal to it, those that port to other files first. |
+| [`history.suggest_anchors`](#historysuggest_anchors) | read |  | Anchors that could stand for a step's literals in a recipe: search matches, structure fields and findings at the same offset in its document as it is now, the selection an earlier step set, and earlier steps' values equal to it, those that port to other files first. |
 | [`history.make_anchor`](#historymake_anchor) | read |  | Turn the literal at a path of a step's params into an anchor in its derived_from, so a recipe made from it finds the value when it runs; a read it cites becomes a step of the journal. |
-| [`history.make_parameter`](#historymake_parameter) | read |  | Turn the literal at a path of a step's params into a named recipe parameter, the person's to supply when the recipe runs, the literal its default (and the anchor that found it, if one did, its default_anchor). |
+| [`history.make_parameter`](#historymake_parameter) | read |  | Turn the literal at a path of a step's params into a named recipe parameter, the person's to supply when the recipe runs, the literal its default. |
 | [`history.clear_anchor`](#historyclear_anchor) | read |  | Clear the anchor at a path of a step's params, so a recipe made from it repeats the literal. |
 | [`history.recipe`](#historyrecipe) | read |  | A recipe of the journal's successful steps (or those chosen, with the steps they cite), each recorded provenance as an anchor, parameters declared, steps numbered from 1 and the recorded document left out. |
 | [`search.find`](#searchfind) | read | core | The next (or previous) occurrence of hex bytes, text, UTF-16 text or an integer from an offset. |
@@ -241,9 +247,9 @@ A recipe step that starts a job waits for it (up to 10 minutes), and later steps
 | [`templates.clear`](#templatesclear) | view |  | Withdraw the template pinned over a document: its records are no longer outlined, and it leaves template.applied. |
 | [`codecs.list`](#codecslist) | read |  | The codecs available for decoding, built in and from plugins. |
 | [`codecs.detect`](#codecsdetect) | read |  | The codecs whose header starts at an offset. |
-| [`codecs.decode`](#codecsdecode) | read |  | Decode (decompress) a span with a codec and return the output. |
+| [`codecs.decode`](#codecsdecode) | read |  | Decode (decompress) a span with any codec codecs.list lists, plugins' included, or the first built-in decompressor that decodes there: return the output by default, or, as output says, open it as a new sheet or put it in place of the bytes it decoded. |
 | [`codecs.probe`](#codecsprobe) | read | core | Try every built-in decompressor at the start of a span, headerless ones included, and list those that decode. |
-| [`codecs.open_decoded`](#codecsopen_decoded) | view |  | Decompress the stream starting at an offset, with the first codec that decodes there or the one named, and open what it holds as a document derived from this one; in the window, Back (or opening the parent by id) returns. |
+| [`codecs.open_decoded`](#codecsopen_decoded) | view |  | Decompress the stream starting at an offset, with the first codec that decodes there or the one named (any codecs.list lists), and open what it holds as a document derived from this one; in the window, Back (or opening the parent by id) returns. A shorthand for codecs.decode with output "new". |
 | [`packets.dissect_bytes`](#packetsdissect_bytes) | read | core | Dissect one packet, from a span or from hex bytes, into protocol layers and fields, a summary and its flow. |
 | [`packets.detect_frames`](#packetsdetect_frames) | read |  | Find the protocol a set of frames of unknown format is, by trying every frame decoder on them. |
 | [`packets.sets.create`](#packetssetscreate) | analysis | core | Take a set of packets from a document: a capture in it, a range cut into fixed records, by a length field, at a pattern or with the protocol framing, or the selection's ranges, with how to decode frames of unknown format; returns the set's id and what was worked out (the capture found, the framing), so the call can be made again exactly. |
@@ -254,14 +260,14 @@ A recipe step that starts a job waits for it (up to 10 minutes), and later steps
 | [`packets.decode_as`](#packetsdecode_as) | analysis |  | Choose the protocol a set's frames of unknown format are decoded as, or detection, and a template for frames no protocol reads. |
 | [`packets.export_pcap`](#packetsexport_pcap) | analysis |  | A set's packets (those a filter keeps) as a pcap file, returned or written to a path given (which needs leave to edit). |
 | [`packets.conversations`](#packetsconversations) | read |  | The conversations in a set (the packets a filter keeps): each pair of endpoints with its transport, packets and bytes each way, its first packet's index in the set, and a filter for it; in order of first packet, or sorted by packets, bytes or address. |
-| [`packets.follow_stream`](#packetsfollow_stream) | read |  | The payloads of a packet's conversation in order, each with its direction, and the stream as text. |
+| [`packets.follow_stream`](#packetsfollow_stream) | read |  | The payloads of a packet's conversation in order, each with its direction, and the stream as text; or, with output "new", the stream's bytes (one direction's, with direction) opened as a sheet derived from the set's document. |
 | [`packets.http_bodies`](#packetshttp_bodies) | analysis |  | The HTTP/1 requests and responses in a packet's TCP stream, each with its head and its body as meant: put together across segments, de-chunked, and decompressed by its Content-Encoding (gzip or deflate); the bodies are returned, or opened as documents of their own with open. |
 | [`packets.find_captures`](#packetsfind_captures) | read |  | The captures inside a span of a document (pcap, pcapng, snoop, Network Monitor or ERF, or one of these compressed with gzip), each with its offset, format, link type and packets, for packets.sets.create. |
 | [`packets.sets.add_packets`](#packetssetsadd_packets) | view |  | Add ranges of the document to a set as packets of their own, so packets can be gathered one at a time; the set then keeps its packets where they are. |
 | [`packets.sets.refresh`](#packetssetsrefresh) | view |  | Find a set's packets again, the way they were found, in another document (the current one by default), which the set then belongs to. |
 | [`packets.detect_length_field`](#packetsdetect_length_field) | read |  | Look for a length field that cuts a span into frames, with the protocol analysis's framing detection; returns it as packets.sets.create's length_field, or the best framing found instead. |
 | [`packets.endpoints`](#packetsendpoints) | read |  | The addresses in a set (the packets a filter keeps), busiest first or sorted by packets or address, with the packets and bytes each sent and received. |
-| [`packets.extract`](#packetsextract) | analysis |  | Some of a set's packets' bytes one after another, in the order given: whole, the same span of each, or each packet's own field by name (one label of a DNS name, say); returned or written to a path given (which needs leave to edit). |
+| [`packets.extract`](#packetsextract) | read |  | Some of a set's packets' bytes one after another, in the order given: whole, the same span of each, or each packet's own field by name (one label of a DNS name, say); returned, opened as a sheet derived from the set's document with output "new", or written to a file (path, or output {"file": path}, which needs leave to edit). |
 | [`packets.delete`](#packetsdelete) | edit |  | Remove packets from the document (their whole capture records, so a capture stays readable), as one undoable step. |
 | [`packets.fix_checksums`](#packetsfix_checksums) | edit |  | Recompute the IPv4 header, TCP and UDP checksums of some of a set's packets, as one undoable step. |
 | [`packets.apply`](#packetsapply) | edit |  | Invert, fill or XOR some of a set's packets, or the same field of each, as one undoable step. |
@@ -300,8 +306,8 @@ A recipe step that starts a job waits for it (up to 10 minutes), and later steps
 | [`crypto.repeated_blocks`](#cryptorepeated_blocks) | job |  | Start a search of a span (at most 16 MiB) for random-looking 8- and 16-byte blocks that repeat, the mark of ECB-mode encryption, as a job: the verdict, the best block size and alignment, the most repeated blocks and the repeats along the span are job.finished's result, and in the window they fill the Crypto panel. |
 | [`crypto.find_keys`](#cryptofind_keys) | job |  | Start a search of a span (the whole document by default, at most 64 MiB) for PEM blocks, DER certificates and keys, OpenSSH keys and random-looking runs that could be raw symmetric keys, as a job: what was found is job.finished's result, and in the window it fills the Crypto panel. |
 | [`crypto.attack`](#cryptoattack) | job |  | Start attacks on simple ciphers over a span (at most 1 MiB): rolling XOR, XOR with the previous byte, ADD/SUB with a constant or repeating key, bit rotation, XOR combined with ADD and, with a crib, crib dragging, as a job: the decodes that look most like text or structured data, each with the operation that transform.apply or documents.derive takes to apply it, and with a crib the key bytes it reveals, are job.finished's result, and in the window they fill the Crypto panel. |
-| [`crypto.decrypt`](#cryptodecrypt) | read |  | Decrypt a span with AES-128, AES-192 or AES-256 in ECB, CBC or CTR mode, with a key (and IV) given as hex, removing PKCS#7 padding, and return the plaintext; crypto.open_decrypted opens it as a document instead. |
-| [`crypto.open_decrypted`](#cryptoopen_decrypted) | view |  | Decrypt a span as crypto.decrypt does and open the plaintext as a document derived from this one; in the window, Back (or opening the parent by id) returns. |
+| [`crypto.decrypt`](#cryptodecrypt) | read |  | Decrypt a span with AES-128, AES-192 or AES-256 in ECB, CBC or CTR mode, with a key (and IV) given as hex, removing PKCS#7 padding, and return the plaintext; or, as output says, open it as a new sheet, put it in place of the ciphertext, or write it to a file (which needs leave to edit). |
+| [`crypto.open_decrypted`](#cryptoopen_decrypted) | view |  | Decrypt a span as crypto.decrypt does and open the plaintext as a document derived from this one; in the window, Back (or opening the parent by id) returns. A shorthand for crypto.decrypt with output "new". |
 | [`compare.variation`](#comparevariation) | job |  | Start comparing a document with other files byte position by byte position, each from its own start offset, as a job: the regions that are constant, vary (and how many values) or move one way through the files like a counter are job.finished's result, and in the window they fill Compare. |
 | [`compare.correlate`](#comparecorrelate) | job |  | Start a search of a document and other files for fields whose values follow a number known for each file (a temperature, a setting), as a job: the fields, best fit first, with the fitted line, are job.finished's result, and in the window they fill Compare. |
 | [`compare.timeline`](#comparetimeline) | job |  | Start building the change timeline of the recording of a live source or watched file, as a job: where and how often it changed, snapshot by snapshot, is job.finished's result, and the window fills Compare with it; only the window records, so headless there is none. |
@@ -312,12 +318,12 @@ A recipe step that starts a job waits for it (up to 10 minutes), and later steps
 | [`firmware.find_load_address`](#firmwarefind_load_address) | job |  | Start a search for the address a firmware image is loaded at (the address of offset 0, over the document's first 64 MiB) as a job: the bases that make most stored pointers land on the start of a string, as rbasefind does, are job.finished's result, and in the window they fill Firmware. |
 | [`firmware.vector_tables`](#firmwarevector_tables) | job |  | Start a search of a span (the whole document by default, at most 64 MiB) for ARM Cortex-M vector tables as a job: each table's stack pointer, handlers and the flash base they imply are job.finished's result, and in the window they fill Firmware. |
 | [`forensics.find_filesystems`](#forensicsfind_filesystems) | job |  | Start a search of the document (its first 256 MiB) for SquashFS, CramFS, JFFS2, UBI and FAT images (FAT at any 512-byte boundary, so inside a disk's partitions) as a job: each image found, with its files, deleted FAT entries included, is job.finished's result, and in the window they fill Forensics. |
-| [`forensics.open_entry`](#forensicsopen_entry) | view |  | Open one file (or volume) of the filesystem image at an offset of the document as a derived document, by its path in the image; a deleted FAT file opens as recovered from its first cluster on. |
+| [`forensics.open_entry`](#forensicsopen_entry) | view |  | Open one file (or volume) of the filesystem image at an offset of the document as a derived document, by its path in the image; a deleted FAT file opens as recovered from its first cluster on. With output, return its bytes or write them to a file (which needs leave to edit) instead. |
 | [`forensics.classify_blocks`](#forensicsclassify_blocks) | job |  | Start labelling every block of the document (its first 256 MiB) as padding, text, markup, machine code, compressed, random, raw image, PCM audio or table data as a job: the runs of one class, with the reason for each, are job.finished's result, and in the window they fill Forensics. |
 | [`unpack.run`](#unpackrun) | job |  | Start extracting the archives and compressed streams in the document (its first 256 MiB) recursively, like binwalk -e, as a job: the tree of what was found, each node with its kind, size and where its bytes came from, is job.finished's result, and in the window it fills the Unpacked tab and the Size map. |
-| [`unpack.open`](#unpackopen) | view |  | Open one node of the unpacked tree (by its path of child indices, as unpack.run gave it) as a derived document; the tree is that of tree_doc, by default the document unpack.run last ran on. |
-| [`unpack.read`](#unpackread) | read |  | Read the bytes of one node of the unpacked tree, by its path of child indices, as hex by default, or as base64 or text; the tree is that of tree_doc, by default the document unpack.run last ran on. |
-| [`unpack.save`](#unpacksave) | edit |  | Write the bytes of one node of the unpacked tree (by its path of child indices, as node) to a file; the document is left as it is. The tree is that of tree_doc, by default the document unpack.run last ran on. |
+| [`unpack.open`](#unpackopen) | view |  | Open one node of the unpacked tree (by its path of child indices, as unpack.run gave it) as a derived document; or, as output says, return its bytes or write them to a file (which needs leave to edit). |
+| [`unpack.read`](#unpackread) | read |  | Read the bytes of one node of the unpacked tree, by its path of child indices, as hex by default, or as base64 or text: a shorthand for unpack.open with output "return", which can also read part of the node. |
+| [`unpack.save`](#unpacksave) | edit |  | Write the bytes of one node of the unpacked tree (by its path of child indices, as node) to a file; the document is left as it is. A shorthand for unpack.open with output {"file": path}. |
 | [`characterise.profile_selection`](#characteriseprofile_selection) | job |  | Start compressing a sample of a span with deflate, bzip2, LZ4, zstd and an order-1 entropy coder as a job: the ratios and the verdict they give (encrypted or random, already compressed, lossy media or structured) are job.finished's result, and in the window they fill Characterise (analysis.compressibility is the quick read). |
 | [`characterise.profile_file`](#characteriseprofile_file) | job |  | Start profiling the compressibility of the whole document as a job, overall and for up to 64 segments sampled along it: the verdicts are job.finished's result, and in the window they fill Characterise with a strip of verdicts. |
 | [`characterise.streams`](#characterisestreams) | job |  | Start a search of the document (its first 256 MiB) for raw MP3/MP2 and AAC frames, H.264 and H.265 Annex B video and 16-bit PCM audio without a container as a job: the runs found are job.finished's result, and in the window they fill Characterise. |
@@ -350,9 +356,6 @@ A recipe step that starts a job waits for it (up to 10 minutes), and later steps
 | [`recipes.save`](#recipessave) | read |  | Save a recipe in ~/.config/theviewer/recipes/, given whole or made from steps of this session's journal, to run later on other files. |
 | [`recipes.preview`](#recipespreview) | read |  | What a recipe would do to a document, without changing anything: each step described with its anchors resolved on this file, and where the run would stop. |
 | [`recipes.run`](#recipesrun) | edit |  | Run a recipe on a document, each step called as recipe:NAME with its anchors resolved on this file, waiting for the jobs steps start; its edits undo as one step, and the first failure stops it with which step and why. |
-| [`vars.set`](#varsset) | analysis | core | Bind a value to a variable by name, so later calls can pass it as {"$var": name}: give the value as an anchor ({"$anchor": {"pick": …}}) to keep where it came from, and a recipe finds it again on the next file. Undone by putting back the value bound before. |
-| [`vars.list`](#varslist) | read |  | The session's variables, each with its value, the step that bound it and the anchor it was found by. |
-| [`vars.clear`](#varsclear) | analysis |  | Remove a variable's binding, or every variable's. |
 
 Each method's full JSON schemas are in `api.describe` (`theviewer api --describe`).
 
@@ -388,7 +391,7 @@ Parameters: None.
 
 ### documents.list
 
-The open documents, with their ids, names, paths, lengths and versions, and which is your focus: what an omitted doc means for you.
+The open documents, with their ids, names, paths, lengths and versions.
 
 **Effect:** `read` · **MCP tool:** `documents_list`, listed by default
 
@@ -415,7 +418,6 @@ One document's id, name, path, length, version and whether it has unsaved edits.
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `current` | boolean | yes | Whether this is the current document. |
-| `focus` | boolean | no | Whether it is the focus of the caller listing it: what an omitted `doc` means for that caller (`documents.list` says). |
 | `id` | string | yes | Stable id, such as "doc-1". |
 | `label` | string | no | A short name its maker gave it, such as "payload", which a recipe names it by. |
 | `len` | integer | yes | Length in bytes. |
@@ -443,33 +445,6 @@ Open a file by path, or an open document by id, and make it current; a file alre
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `current` | boolean | yes | Whether this is the current document. |
-| `focus` | boolean | no | Whether it is the focus of the caller listing it: what an omitted `doc` means for that caller (`documents.list` says). |
-| `id` | string | yes | Stable id, such as "doc-1". |
-| `label` | string | no | A short name its maker gave it, such as "payload", which a recipe names it by. |
-| `len` | integer | yes | Length in bytes. |
-| `made_by` | MadeBy | no | The step that made it, for a sheet made from another. |
-| `modified` | boolean | yes | Whether there are edits not saved. |
-| `name` | string | yes | File name, or the name of a derived document. |
-| `parent` | string | no | The document it was derived from, for a sheet made from another; none for one opened from a file, a source or new. |
-| `path` | string | no | Path on disk, for documents opened from a file. |
-| `version` | integer | yes | Incremented on every edit. |
-
-### documents.activate
-
-Make an open document your focus, which an omitted doc means from then on; for the person at the window, show it (a parent of the document shown is gone back to, as documents.open does).
-
-**Effect:** `view` · **MCP tool:** `documents_activate`, through `api_call`, or with `--all-tools`
-
-**History:** Journalled as a step; undone by changing back which document is current; not repeated: what it opened is open already.
-
-| Parameter | Type | Required | Description |
-| --- | --- | --- | --- |
-| `doc` | string | yes | Id or path of the open document to work on. |
-
-| Result field | Type | Required | Description |
-| --- | --- | --- | --- |
-| `current` | boolean | yes | Whether this is the current document. |
-| `focus` | boolean | no | Whether it is the focus of the caller listing it: what an omitted `doc` means for that caller (`documents.list` says). |
 | `id` | string | yes | Stable id, such as "doc-1". |
 | `label` | string | no | A short name its maker gave it, such as "payload", which a recipe names it by. |
 | `len` | integer | yes | Length in bytes. |
@@ -496,7 +471,6 @@ Open a new, empty document and make it current; the window refuses while its doc
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `current` | boolean | yes | Whether this is the current document. |
-| `focus` | boolean | no | Whether it is the focus of the caller listing it: what an omitted `doc` means for that caller (`documents.list` says). |
 | `id` | string | yes | Stable id, such as "doc-1". |
 | `label` | string | no | A short name its maker gave it, such as "payload", which a recipe names it by. |
 | `len` | integer | yes | Length in bytes. |
@@ -523,7 +497,6 @@ Save a document over its file, or to a path, with every edit made so far.
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `current` | boolean | yes | Whether this is the current document. |
-| `focus` | boolean | no | Whether it is the focus of the caller listing it: what an omitted `doc` means for that caller (`documents.list` says). |
 | `id` | string | yes | Stable id, such as "doc-1". |
 | `label` | string | no | A short name its maker gave it, such as "payload", which a recipe names it by. |
 | `len` | integer | yes | Length in bytes. |
@@ -536,11 +509,13 @@ Save a document over its file, or to a path, with every edit made so far.
 
 ### documents.derive
 
-Open bytes of a document (a span, several ranges one after another, or bytes given), or what a transform such as decompress or XOR makes of them, as a document of their own derived from it, and make it current; in the window, Back goes back to the parent. Returns the new document, and output.
+Open bytes of a document (a span, several ranges one after another, bytes given, or ranges of several sheets joined with sources), or what a transform such as decompress or XOR makes of them, as a document of their own derived from it, and make it current; in the window, Back goes back to the parent. Returns the new document, and output; with output {"file": path} the bytes are written to a file instead, which needs leave to edit.
 
 **Effect:** `view` · **MCP tool:** `documents_derive`, through `api_call`, or with `--all-tools`
 
-**History:** Journalled as a step; undone by changing back which document is current; kept by recipes, which make the sheet again and name it by this step; not repeated by going back or playback, as the sheet is open already.
+**History:** Journalled as a step; undone by changing back which document is current; kept by recipes, which make the sheet again and name it by this step; not repeated by going back or playback, as the sheet is open already. With another output, a call is treated as that output says. Writes a file when `output.file` is given, which then needs leave to edit.
+
+**Output:** `new` (the default) or `file`, as `output` asks; see [Outputs](#conventions)
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -549,28 +524,29 @@ Open bytes of a document (a span, several ranges one after another, or bytes giv
 | `encoding` | `"hex"` \| `"base64"` \| `"text"` | no | How `data` is written: hex (the default), base64 or text. |
 | `len` | integer | no | Bytes to open from `start`; to the end of the document when omitted. |
 | `name` | string | no | What to call the new document; the parent's name and the span when omitted. |
+| `output` | Output | no | Where the bytes go: "new" (the default; {"new": {"label": …}} labels the sheet, which a recipe then names it by) or {"file": path}, written to a file, which needs leave to edit. |
 | `ranges` | array of pair | no | Several spans as [start, len], opened one after another (a selection of several ranges, or several packets). |
+| `sources` | array of DeriveSource | no | Ranges of several documents, joined one after another in the order given (two halves of an archive, say), in place of start, ranges or data; the new sheet's parent is `doc` when given, else the first source's document. |
 | `start` | integer | no | Offset of the first byte to open. |
 | `transform` | Operation | no | An operation to apply to each span first, such as {"op": "decompress"} or {"op": "xor", "key": "5a"}. |
 
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `current` | boolean | yes | Whether this is the current document. |
-| `focus` | boolean | no | Whether it is the focus of the caller listing it: what an omitted `doc` means for that caller (`documents.list` says). |
-| `id` | string | yes | Stable id, such as "doc-1". |
+| `current` | boolean | no | Whether this is the current document. |
+| `id` | string | no | Stable id, such as "doc-1". |
 | `label` | string | no | A short name its maker gave it, such as "payload", which a recipe names it by. |
-| `len` | integer | yes | Length in bytes. |
+| `len` | integer | no | Length in bytes. |
 | `made_by` | MadeBy | no | The step that made it, for a sheet made from another. |
-| `modified` | boolean | yes | Whether there are edits not saved. |
-| `name` | string | yes | File name, or the name of a derived document. |
-| `output` | SheetOutput | yes | The sheet made, in the form every method that makes one gives. |
+| `modified` | boolean | no | Whether there are edits not saved. |
+| `name` | string | no | File name, or the name of a derived document. |
+| `output` | Delivered | yes | Where the output went: {doc, label, len} for a new sheet, {len, encoding, data} returned, {path, len} to a file. |
 | `parent` | string | no | The document it was derived from, for a sheet made from another; none for one opened from a file, a source or new. |
 | `path` | string | no | Path on disk, for documents opened from a file. |
-| `version` | integer | yes | Incremented on every edit. |
+| `version` | integer | no | Incremented on every edit. |
 
 ### documents.export
 
-Write a span of a document (or several ranges one after another) to a file, or what decompresses at a span's start; the document is left as it is.
+Write a span of a document (or several ranges one after another) to a file, or what decompresses at a span's start; the document is left as it is. A shorthand for documents.derive with output {"file": path}.
 
 **Effect:** `edit` · **MCP tool:** `documents_export`, through `api_call`, or with `--all-tools`
 
@@ -863,33 +839,35 @@ Start splitting a span (at most 1 MiB) into its eight bit planes as a job, scori
 
 ### bits.open_plane
 
-Open one bit plane of a span (at most 1 MiB) as a derived document: bit k of every byte, as a byte of 0 or 255.
+Open one bit plane of a span (at most 1 MiB) as a derived document: bit k of every byte, as a byte of 0 or 255; or, with output "return", return it.
 
 **Effect:** `view` · **MCP tool:** `bits_open_plane`, through `api_call`, or with `--all-tools`
 
-**History:** Journalled as a step; undone by changing back which document is current; kept by recipes, which make the sheet again and name it by this step; not repeated by going back or playback, as the sheet is open already.
+**History:** Journalled as a step; undone by changing back which document is current; kept by recipes, which make the sheet again and name it by this step; not repeated by going back or playback, as the sheet is open already. With another output, a call is treated as that output says.
+
+**Output:** `new` (the default) or `return`, as `output` asks; see [Outputs](#conventions)
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `bit` | integer | yes | Which bit, 0 (least significant) to 7. |
 | `doc` | string | no | Document id, path or "current" (the default): the parent. |
 | `len` | integer | no | Bytes, at most 1 MiB; to the end of the document (or 1 MiB) when omitted. |
+| `output` | Output | no | Where the plane goes: "new" (the default; {"new": {"label": …}} labels the sheet) or "return". |
 | `start` | integer | no | First offset (0 by default). |
 
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `current` | boolean | yes | Whether this is the current document. |
-| `focus` | boolean | no | Whether it is the focus of the caller listing it: what an omitted `doc` means for that caller (`documents.list` says). |
-| `id` | string | yes | Stable id, such as "doc-1". |
+| `current` | boolean | no | Whether this is the current document. |
+| `id` | string | no | Stable id, such as "doc-1". |
 | `label` | string | no | A short name its maker gave it, such as "payload", which a recipe names it by. |
-| `len` | integer | yes | Length in bytes. |
+| `len` | integer | no | Length in bytes. |
 | `made_by` | MadeBy | no | The step that made it, for a sheet made from another. |
-| `modified` | boolean | yes | Whether there are edits not saved. |
-| `name` | string | yes | File name, or the name of a derived document. |
-| `output` | SheetOutput | yes | The sheet made, in the form every method that makes one gives. |
+| `modified` | boolean | no | Whether there are edits not saved. |
+| `name` | string | no | File name, or the name of a derived document. |
+| `output` | Delivered | yes | Where the output went: {doc, label, len} for a new sheet, {len, encoding, data} returned, {path, len} to a file. |
 | `parent` | string | no | The document it was derived from, for a sheet made from another; none for one opened from a file, a source or new. |
 | `path` | string | no | Path on disk, for documents opened from a file. |
-| `version` | integer | yes | Incremented on every edit. |
+| `version` | integer | no | Incremented on every edit. |
 
 ### bits.detect_linecode
 
@@ -912,11 +890,13 @@ Start trying Manchester (both conventions), differential Manchester, 8b/10b and 
 
 ### bits.decode_linecode
 
-Decode a span (at most 64 KiB) from a line code at a bit offset and open the decoded bytes as a derived document.
+Decode a span (at most 64 KiB) from a line code at a bit offset and open the decoded bytes as a derived document; or, with output "return", return them.
 
 **Effect:** `view` · **MCP tool:** `bits_decode_linecode`, through `api_call`, or with `--all-tools`
 
-**History:** Journalled as a step; undone by changing back which document is current; kept by recipes, which make the sheet again and name it by this step; not repeated by going back or playback, as the sheet is open already.
+**History:** Journalled as a step; undone by changing back which document is current; kept by recipes, which make the sheet again and name it by this step; not repeated by going back or playback, as the sheet is open already. With another output, a call is treated as that output says.
+
+**Output:** `new` (the default) or `return`, as `output` asks; see [Outputs](#conventions)
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -925,13 +905,14 @@ Decode a span (at most 64 KiB) from a line code at a bit offset and open the dec
 | `doc` | string | no | Document id, path or "current" (the default): the parent. |
 | `len` | integer | no | Bytes decoded, at most 64 KiB; to the end of the document (or 64 KiB) when omitted. |
 | `order` | `"msb"` \| `"lsb"` | no | Which bit of each byte comes first: "msb" (the default) or "lsb". |
+| `output` | Output | no | Where the decoded bytes go: "new" (the default; {"new": {"label": …}} labels the sheet) or "return". |
 | `start` | integer | no | First offset decoded (0 by default). |
 
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `document` | DocumentInfo | yes | The derived document the decode was opened as. |
+| `document` | DocumentInfo | no | The derived document the decode was opened as, when it was. |
 | `errors` | integer | yes |  |
-| `output` | SheetOutput | yes | The sheet made, in the form every method that makes one gives. |
+| `output` | Delivered | yes | Where the decoded bytes went: {doc, label, len} for a new sheet, {len, encoding, data} returned. |
 | `symbols` | integer | yes | Symbols read, and the invalid ones among them. |
 
 ### bits.rank_field
@@ -975,30 +956,35 @@ Start a search of a span (at most 256 KiB, one message or a run of records) for 
 
 ### transform.apply
 
-Apply an operation (XOR, invert, shift bits, swap byte order, number, compress, decompress and more) to every range of a selection, as one undoable step, and select what it produced.
+Apply an operation (XOR, invert, shift bits, swap byte order, number, compress, decompress and more) to every range of a selection: in place by default, as one undoable step, selecting what it produced; or, as output says, open what it makes as a new sheet (the ranges one after another), or return it.
 
 **Effect:** `edit` · **MCP tool:** `transform_apply`, listed by default
 
-**History:** Journalled as a step; its bytes undo through the document's undo; repeated by going back, playback and recipes.
+**History:** Journalled as a step; its bytes undo through the document's undo; repeated by going back, playback and recipes. With another output, a call is treated as that output says.
+
+**Output:** `in_place` (the default), `new` or `return`, as `output` asks; see [Outputs](#conventions)
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `doc` | string | no | Document id, path or "current" (the default). |
+| `encoding` | `"hex"` \| `"base64"` \| `"text"` | no | With output "return", how the bytes are written: hex (the default), base64 or text. |
 | `expect_version` | integer | no | Fail with version_conflict, changing nothing, unless the document is at this version. |
 | `operation` | Operation | yes | What to do to each selected range, such as {"op": "xor", "key": "5a"}. |
+| `output` | Output | no | Where what it makes goes: "in_place" (the default), "new" (a sheet of the ranges' new bytes one after another; {"new": {"label": …}} names it) or "return". |
 | `selection` | Selection | no | What to change: a range, several ranges or a column of every record. The document's selection when omitted, or the byte at the cursor when nothing is selected. |
 
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `doc` | string | yes | Id of the document edited. |
-| `label` | string | yes | What the step is called in the undo history, such as "XOR by mcp:claude-code". |
-| `len` | integer | yes | The document's length after the edit. |
-| `ranges` | array of pair | yes | Where the new bytes are, as [start, len]: one range per range changed. |
-| `version` | integer | yes | The document's version after the edit; pass it as expect_version to the next. |
+| `doc` | string | no | Id of the document edited. |
+| `label` | string | no | What the step is called in the undo history, such as "XOR by mcp:claude-code". |
+| `len` | integer | no | The document's length after the edit. |
+| `output` | Delivered | yes | Where the output went: {version, len, ranges} in place, {doc, label, len} for a new sheet, {len, encoding, data} returned. |
+| `ranges` | array of pair | no | Where the new bytes are, as [start, len]: one range per range changed. |
+| `version` | integer | no | The document's version after the edit; pass it as expect_version to the next. |
 
 ### transform.preview
 
-What transform.apply would write into each range of a selection, without changing anything.
+What transform.apply would write into each range of a selection, without changing anything, range by range: a shorthand for transform.apply with output "return".
 
 **Effect:** `read` · **MCP tool:** `transform_preview`, through `api_call`, or with `--all-tools`
 
@@ -1311,7 +1297,7 @@ The session's notes as Markdown, in the order written, each with the steps it ci
 
 ### history.suggest_anchors
 
-Anchors that could stand for a step's literals in a recipe: search matches, structure fields and findings at the same offset in its document as it is now, the selection an earlier step set, picks from lists earlier steps returned (strings, keys, candidates), and earlier steps' values equal to it, those that port to other files first.
+Anchors that could stand for a step's literals in a recipe: search matches, structure fields and findings at the same offset in its document as it is now, the selection an earlier step set, and earlier steps' values equal to it, those that port to other files first.
 
 **Effect:** `read` · **MCP tool:** `history_suggest_anchors`, through `api_call`, or with `--all-tools`
 
@@ -1350,7 +1336,7 @@ Turn the literal at a path of a step's params into an anchor in its derived_from
 
 ### history.make_parameter
 
-Turn the literal at a path of a step's params into a named recipe parameter, the person's to supply when the recipe runs, the literal its default (and the anchor that found it, if one did, its default_anchor).
+Turn the literal at a path of a step's params into a named recipe parameter, the person's to supply when the recipe runs, the literal its default.
 
 **Effect:** `read` · **MCP tool:** `history_make_parameter`, through `api_call`, or with `--all-tools`
 
@@ -1789,19 +1775,22 @@ The codecs whose header starts at an offset.
 
 ### codecs.decode
 
-Decode (decompress) a span with a codec and return the output.
+Decode (decompress) a span with any codec codecs.list lists, plugins' included, or the first built-in decompressor that decodes there: return the output by default, or, as output says, open it as a new sheet or put it in place of the bytes it decoded.
 
 **Effect:** `read` · **MCP tool:** `codecs_decode`, through `api_call`, or with `--all-tools`
 
-**History:** Kept among the recent reads, which a later step can cite.
+**History:** Kept among the recent reads, which a later step can cite. With another output, a call is treated as that output says.
+
+**Output:** `return` (the default), `new` or `in_place`, as `output` asks; see [Outputs](#conventions)
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `codec` | string | yes | Codec id from codecs.list, such as "zlib" or "gzip". |
+| `codec` | string | no | Codec id from codecs.list, such as "zlib", "gzip" or a plugin's "base32"; the first built-in decompressor that decodes there when omitted. |
 | `doc` | string | no | Document id, path or "current" (the default). |
-| `encoding` | `"hex"` \| `"base64"` \| `"text"` | no | How to write the output: hex (the default), base64 or text. |
-| `len` | integer | no | Bytes of input, at most 16 MiB; to the end of the document when omitted. |
-| `max_output` | integer | no | Most bytes of output, at most 16 MiB (the default). |
+| `encoding` | `"hex"` \| `"base64"` \| `"text"` | no | How to write the output returned: hex (the default), base64 or text. |
+| `len` | integer | no | Bytes of input, at most 16 MiB returned (64 MiB to a new sheet or in place); to the end of the document when omitted. |
+| `max_output` | integer | no | Most bytes of output, at most 16 MiB returned (the default), 64 MiB to a new sheet or in place. |
+| `output` | Output | no | Where the output goes: "return" (the default), "new" (a sheet derived from this document; {"new": {"label": …, "name": …}} names it) or "in_place" (in place of the bytes it decoded, as one undoable edit). |
 | `start` | integer | yes | Offset of the encoded data. |
 
 | Result field | Type | Required | Description |
@@ -1810,8 +1799,9 @@ Decode (decompress) a span with a codec and return the output.
 | `complete` | boolean | yes | Whether the data ended cleanly. |
 | `consumed` | integer | yes | Input bytes the encoded data occupied. |
 | `consumed_exact` | boolean | yes | Whether `consumed` is exact rather than a buffered estimate. |
-| `data` | string | yes | The output, written as `encoding` says. |
+| `data` | string | no | The output, written as `encoding` says, when it was returned. |
 | `encoding` | `"hex"` \| `"base64"` \| `"text"` | yes | How bytes are written in JSON. |
+| `output` | Delivered | yes | Where the output went: {doc, label, len} for a new sheet, {version, len, ranges} in place, {len, encoding} returned (the bytes are `data`). |
 | `output_len` | integer | yes |  |
 | `truncated` | boolean | yes | Whether the output was cut at `max_output`. |
 
@@ -1836,21 +1826,23 @@ Try every built-in decompressor at the start of a span, headerless ones included
 
 ### codecs.open_decoded
 
-Decompress the stream starting at an offset, with the first codec that decodes there or the one named, and open what it holds as a document derived from this one; in the window, Back (or opening the parent by id) returns.
+Decompress the stream starting at an offset, with the first codec that decodes there or the one named (any codecs.list lists), and open what it holds as a document derived from this one; in the window, Back (or opening the parent by id) returns. A shorthand for codecs.decode with output "new".
 
 **Effect:** `view` · **MCP tool:** `codecs_open_decoded`, through `api_call`, or with `--all-tools`
 
 **History:** Journalled as a step; undone by changing back which document is current; kept by recipes, which make the sheet again and name it by this step; not repeated by going back or playback, as the sheet is open already.
 
+**Output:** `new` (the default) only
+
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `codec` | `"zlib"` \| `"gzip"` \| `"deflate"` \| `"bzip2"` \| `"xz"` \| `"lzma"` \| `"zstd"` \| `"lz4"` | no | The codec to decode with; the first that decodes there when omitted. |
+| `codec` | string | no | The codec to decode with, any codecs.list lists; the first built-in decompressor that decodes there when omitted. |
 | `doc` | string | no | Document id, path or "current" (the default): the parent. |
 | `start` | integer | yes | Offset where the compressed stream starts. |
 
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `codec` | `"zlib"` \| `"gzip"` \| `"deflate"` \| `"bzip2"` \| `"xz"` \| `"lzma"` \| `"zstd"` \| `"lz4"` | yes | The codec that decoded the stream. |
+| `codec` | string | yes | The codec that decoded the stream, such as "zlib". |
 | `complete` | boolean | yes | Whether the stream ended cleanly. |
 | `consumed` | integer | yes | Input bytes the stream occupied. |
 | `document` | DocumentInfo | yes | The document opened, now current. |
@@ -2102,20 +2094,25 @@ The conversations in a set (the packets a filter keeps): each pair of endpoints 
 
 ### packets.follow_stream
 
-The payloads of a packet's conversation in order, each with its direction, and the stream as text.
+The payloads of a packet's conversation in order, each with its direction, and the stream as text; or, with output "new", the stream's bytes (one direction's, with direction) opened as a sheet derived from the set's document.
 
 **Effect:** `read` · **MCP tool:** `packets_follow_stream`, through `api_call`, or with `--all-tools`
 
-**History:** Kept among the recent reads, which a later step can cite.
+**History:** Kept among the recent reads, which a later step can cite. With another output, a call is treated as that output says.
+
+**Output:** `return` (the default) or `new`, as `output` asks; see [Outputs](#conventions)
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `index` | integer | yes | The packet's index in the set. |
+| `direction` | `"a_to_b"` \| `"b_to_a"` | no | Only what one side sent: "a_to_b" (from the conversation's first endpoint to its second) or "b_to_a"; both when omitted. |
+| `index` | integer | yes | Any packet of the conversation, by its index in the set. |
+| `output` | Output | no | Where the stream goes: "return" (the default: its payloads in `parts` and as `text`) or "new" (its bytes, one after another, as a sheet derived from the set's document; {"new": {"label": …}} labels it). |
 | `set` | string | yes |  |
 
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `conversation` | ConversationEntry | no | The conversation followed; absent when the packet has no addresses and ports, and so nothing to follow. |
+| `output` | Delivered | yes | Where the stream went: {len} returned (its bytes are the parts'), or {doc, label, len} for a new sheet, whose parts then leave their data out and whose text is empty. |
 | `parts` | array of StreamPart | yes | The payloads in order, each with who sent it. |
 | `retransmissions` | integer | yes | TCP segments sent again and left out. |
 | `text` | string | yes | The whole stream as text, each direction's turns marked with the packet's index in the set (from 0, as `parts` give it). |
@@ -2264,11 +2261,13 @@ The addresses in a set (the packets a filter keeps), busiest first or sorted by 
 
 ### packets.extract
 
-Some of a set's packets' bytes one after another, in the order given: whole, the same span of each, or each packet's own field by name (one label of a DNS name, say); returned or written to a path given (which needs leave to edit).
+Some of a set's packets' bytes one after another, in the order given: whole, the same span of each, or each packet's own field by name (one label of a DNS name, say); returned, opened as a sheet derived from the set's document with output "new", or written to a file (path, or output {"file": path}, which needs leave to edit).
 
-**Effect:** `analysis` · **MCP tool:** `packets_extract`, through `api_call`, or with `--all-tools`
+**Effect:** `read` · **MCP tool:** `packets_extract`, through `api_call`, or with `--all-tools`
 
-**History:** Journalled as a step; nothing to undo: it wrote a file, which stays as written; not repeated: the file stays as written. Writes a file when `path` is given, which then needs leave to edit.
+**History:** Kept among the recent reads, which a later step can cite. With another output, a call is treated as that output says. Writes a file when `path` or `output.file` is given, which then needs leave to edit.
+
+**Output:** `return` (the default), `new` or `file`, as `output` asks; see [Outputs](#conventions)
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -2277,15 +2276,17 @@ Some of a set's packets' bytes one after another, in the order given: whole, the
 | `field_name` | string | no | Only this field of each packet, by the name a filter uses (`dns.qry.name`, `template.payload`), at each packet's own offset and length; packets without it give nothing. |
 | `indices` | array of integer | yes | The packets, by their index in the set, in the order wanted. |
 | `label` | integer | no | With `field_name`, only this label (from 0) of a DNS name, without its length byte: label 1 of `0001.MFRGG.t.example.com` is `MFRGG`. |
-| `path` | string | no | Write the bytes here instead of returning them; needs leave to edit, as writing a file does. |
+| `output` | Output | no | Where the bytes go: "return" (the default), "new" (a sheet derived from the set's document; {"new": {"label": …}} labels it) or {"file": path}, which needs leave to edit. |
+| `path` | string | no | Write the bytes here instead of returning them; needs leave to edit, as writing a file does. The same as output {"file": path}. |
 | `set` | string | yes |  |
 
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `count` | integer | yes | Packets taken. |
-| `data` | string | no | The bytes, when no path was given. |
+| `data` | string | no | The bytes, when they were returned. |
 | `len` | integer | yes | Bytes taken. |
-| `path` | string | no | Where they were written, when a path was given. |
+| `output` | Delivered | yes | Where the bytes went: {len, encoding} returned (the bytes are `data`), {doc, label, len} for a new sheet, {path, len} to a file. |
+| `path` | string | no | Where they were written, when they went to a file. |
 
 ### packets.delete
 
@@ -3097,32 +3098,36 @@ Start attacks on simple ciphers over a span (at most 1 MiB): rolling XOR, XOR wi
 
 ### crypto.decrypt
 
-Decrypt a span with AES-128, AES-192 or AES-256 in ECB, CBC or CTR mode, with a key (and IV) given as hex, removing PKCS#7 padding, and return the plaintext; crypto.open_decrypted opens it as a document instead.
+Decrypt a span with AES-128, AES-192 or AES-256 in ECB, CBC or CTR mode, with a key (and IV) given as hex, removing PKCS#7 padding, and return the plaintext; or, as output says, open it as a new sheet, put it in place of the ciphertext, or write it to a file (which needs leave to edit).
 
 **Effect:** `read` · **MCP tool:** `crypto_decrypt`, through `api_call`, or with `--all-tools`
 
-**History:** Kept among the recent reads, which a later step can cite.
+**History:** Kept among the recent reads, which a later step can cite. With another output, a call is treated as that output says. Writes a file when `output.file` is given, which then needs leave to edit.
+
+**Output:** `return` (the default), `new`, `in_place` or `file`, as `output` asks; see [Outputs](#conventions)
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `alg` | `"aes-128"` \| `"aes-192"` \| `"aes-256"` | no | Which AES: "aes-128", "aes-192" or "aes-256"; by default the one the key's length is for. |
 | `doc` | string | no | Document id, path or "current" (the default). |
-| `encoding` | `"hex"` \| `"base64"` \| `"text"` | no | How to write the plaintext: hex (the default), base64 or text. |
+| `encoding` | `"hex"` \| `"base64"` \| `"text"` | no | How to write the plaintext returned: hex (the default), base64 or text. |
 | `iv` | string | no | The IV as hex, 16 bytes, for CBC; for CTR, the initial counter block (nonce and counter), counted up big-endian. |
 | `key` | string | yes | The key, as hex: 16, 24 or 32 bytes. |
 | `len` | integer | no | Bytes of ciphertext, at most 16 MiB, whole 16-byte blocks for ECB and CBC; to the end of the document when omitted. |
 | `mode` | `"ecb"` \| `"cbc"` \| `"ctr"` | yes | "ecb", "cbc" or "ctr". |
+| `output` | Output | no | Where the plaintext goes: "return" (the default), "new" (a sheet derived from this document; {"new": {"label": …, "name": …}} names it), "in_place" (over the ciphertext) or {"file": path}. |
 | `padding` | `"pkcs7"` \| `"none"` | no | "pkcs7" or "none"; by default PKCS#7 for ECB and CBC and none for CTR. Padding that is not valid is left in place and said. |
 | `start` | integer | no | First offset of the ciphertext (0 by default). |
 
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `alg` | `"aes-128"` \| `"aes-192"` \| `"aes-256"` | yes | Which AES, named by its key size. |
-| `data` | string | yes | The plaintext, written as `encoding` says. |
+| `data` | string | no | The plaintext, written as `encoding` says, when it was returned. |
 | `encoding` | `"hex"` \| `"base64"` \| `"text"` | yes | How bytes are written in JSON. |
 | `entropy` | number | yes | Bits per byte of the plaintext: a right key brings it well under 8. |
 | `len` | integer | yes |  |
 | `mode` | `"ecb"` \| `"cbc"` \| `"ctr"` | yes | How the blocks are chained. |
+| `output` | Delivered | yes | Where the plaintext went: {len, encoding} returned (the bytes are `data`), {doc, label, len} for a new sheet, {version, len, ranges} in place, {path, len} to a file. |
 | `output_len` | integer | yes |  |
 | `padding` | `"pkcs7"` \| `"none"` | yes | What fills out the last block before encryption, removed after. |
 | `padding_invalid` | boolean | yes | Whether PKCS#7 padding was asked for and not found; the plaintext is then given whole, and the key, IV or mode is probably wrong. |
@@ -3131,11 +3136,13 @@ Decrypt a span with AES-128, AES-192 or AES-256 in ECB, CBC or CTR mode, with a 
 
 ### crypto.open_decrypted
 
-Decrypt a span as crypto.decrypt does and open the plaintext as a document derived from this one; in the window, Back (or opening the parent by id) returns.
+Decrypt a span as crypto.decrypt does and open the plaintext as a document derived from this one; in the window, Back (or opening the parent by id) returns. A shorthand for crypto.decrypt with output "new".
 
 **Effect:** `view` · **MCP tool:** `crypto_open_decrypted`, through `api_call`, or with `--all-tools`
 
 **History:** Journalled as a step; undone by changing back which document is current; kept by recipes, which make the sheet again and name it by this step; not repeated by going back or playback, as the sheet is open already.
+
+**Output:** `new` (the default) only
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -3348,32 +3355,34 @@ Start a search of the document (its first 256 MiB) for SquashFS, CramFS, JFFS2, 
 
 ### forensics.open_entry
 
-Open one file (or volume) of the filesystem image at an offset of the document as a derived document, by its path in the image; a deleted FAT file opens as recovered from its first cluster on.
+Open one file (or volume) of the filesystem image at an offset of the document as a derived document, by its path in the image; a deleted FAT file opens as recovered from its first cluster on. With output, return its bytes or write them to a file (which needs leave to edit) instead.
 
 **Effect:** `view` · **MCP tool:** `forensics_open_entry`, through `api_call`, or with `--all-tools`
 
-**History:** Journalled as a step; undone by changing back which document is current; kept by recipes, which make the sheet again and name it by this step; not repeated by going back or playback, as the sheet is open already.
+**History:** Journalled as a step; undone by changing back which document is current; kept by recipes, which make the sheet again and name it by this step; not repeated by going back or playback, as the sheet is open already. With another output, a call is treated as that output says. Writes a file when `output.file` is given, which then needs leave to edit.
+
+**Output:** `new` (the default), `return` or `file`, as `output` asks; see [Outputs](#conventions)
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `doc` | string | no | Document id, path or "current" (the default): the parent. |
 | `filesystem` | integer | yes | Document offset of the filesystem image, as forensics.find_filesystems gave it. |
+| `output` | Output | no | Where the file's bytes go: "new" (the default; {"new": {"label": …}} labels the sheet), "return", or {"file": path}, which needs leave to edit. |
 | `path` | string | yes | The file's path in the image, such as "etc/passwd". |
 
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `current` | boolean | yes | Whether this is the current document. |
-| `focus` | boolean | no | Whether it is the focus of the caller listing it: what an omitted `doc` means for that caller (`documents.list` says). |
-| `id` | string | yes | Stable id, such as "doc-1". |
+| `current` | boolean | no | Whether this is the current document. |
+| `id` | string | no | Stable id, such as "doc-1". |
 | `label` | string | no | A short name its maker gave it, such as "payload", which a recipe names it by. |
-| `len` | integer | yes | Length in bytes. |
+| `len` | integer | no | Length in bytes. |
 | `made_by` | MadeBy | no | The step that made it, for a sheet made from another. |
-| `modified` | boolean | yes | Whether there are edits not saved. |
-| `name` | string | yes | File name, or the name of a derived document. |
-| `output` | SheetOutput | yes | The sheet made, in the form every method that makes one gives. |
+| `modified` | boolean | no | Whether there are edits not saved. |
+| `name` | string | no | File name, or the name of a derived document. |
+| `output` | Delivered | yes | Where the output went: {doc, label, len} for a new sheet, {len, encoding, data} returned, {path, len} to a file. |
 | `parent` | string | no | The document it was derived from, for a sheet made from another; none for one opened from a file, a source or new. |
 | `path` | string | no | Path on disk, for documents opened from a file. |
-| `version` | integer | yes | Incremented on every edit. |
+| `version` | integer | no | Incremented on every edit. |
 
 ### forensics.classify_blocks
 
@@ -3411,37 +3420,38 @@ Start extracting the archives and compressed streams in the document (its first 
 
 ### unpack.open
 
-Open one node of the unpacked tree (by its path of child indices, as unpack.run gave it) as a derived document; the tree is that of tree_doc, by default the document unpack.run last ran on.
+Open one node of the unpacked tree (by its path of child indices, as unpack.run gave it) as a derived document; or, as output says, return its bytes or write them to a file (which needs leave to edit).
 
 **Effect:** `view` · **MCP tool:** `unpack_open`, through `api_call`, or with `--all-tools`
 
-**History:** Journalled as a step; undone by changing back which document is current; kept by recipes, which make the sheet again and name it by this step; not repeated by going back or playback, as the sheet is open already.
+**History:** Journalled as a step; undone by changing back which document is current; kept by recipes, which make the sheet again and name it by this step; not repeated by going back or playback, as the sheet is open already. With another output, a call is treated as that output says. Writes a file when `output.file` is given, which then needs leave to edit.
+
+**Output:** `new` (the default), `return` or `file`, as `output` asks; see [Outputs](#conventions)
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `doc` | string | no | Document id, path or "current": the document unpacked, as `tree_doc`, which it defaults to. |
+| `doc` | string | no | Document id, path or "current" (the default): the parent. |
+| `output` | Output | no | Where the node's bytes go: "new" (the default; {"new": {"label": …}} labels the sheet), "return", or {"file": path}, which needs leave to edit. |
 | `password` | string | no | The password unpack.run was given, when the tree was unpacked with one. |
 | `path` | array of integer | yes | Child indices from the root, such as [0, 2]; [] is the document itself. |
-| `tree_doc` | string | no | The document unpacked, whose tree the node is in; by default the one unpack.run last ran on, else `doc`. |
 
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `current` | boolean | yes | Whether this is the current document. |
-| `focus` | boolean | no | Whether it is the focus of the caller listing it: what an omitted `doc` means for that caller (`documents.list` says). |
-| `id` | string | yes | Stable id, such as "doc-1". |
+| `current` | boolean | no | Whether this is the current document. |
+| `id` | string | no | Stable id, such as "doc-1". |
 | `label` | string | no | A short name its maker gave it, such as "payload", which a recipe names it by. |
-| `len` | integer | yes | Length in bytes. |
+| `len` | integer | no | Length in bytes. |
 | `made_by` | MadeBy | no | The step that made it, for a sheet made from another. |
-| `modified` | boolean | yes | Whether there are edits not saved. |
-| `name` | string | yes | File name, or the name of a derived document. |
-| `output` | SheetOutput | yes | The sheet made, in the form every method that makes one gives. |
+| `modified` | boolean | no | Whether there are edits not saved. |
+| `name` | string | no | File name, or the name of a derived document. |
+| `output` | Delivered | yes | Where the output went: {doc, label, len} for a new sheet, {len, encoding, data} returned, {path, len} to a file. |
 | `parent` | string | no | The document it was derived from, for a sheet made from another; none for one opened from a file, a source or new. |
 | `path` | string | no | Path on disk, for documents opened from a file. |
-| `version` | integer | yes | Incremented on every edit. |
+| `version` | integer | no | Incremented on every edit. |
 
 ### unpack.read
 
-Read the bytes of one node of the unpacked tree, by its path of child indices, as hex by default, or as base64 or text; the tree is that of tree_doc, by default the document unpack.run last ran on.
+Read the bytes of one node of the unpacked tree, by its path of child indices, as hex by default, or as base64 or text: a shorthand for unpack.open with output "return", which can also read part of the node.
 
 **Effect:** `read` · **MCP tool:** `unpack_read`, through `api_call`, or with `--all-tools`
 
@@ -3449,13 +3459,12 @@ Read the bytes of one node of the unpacked tree, by its path of child indices, a
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `doc` | string | no | Document id, path or "current": the document unpacked, as `tree_doc`, which it defaults to. |
+| `doc` | string | no | Document id, path or "current" (the default). |
 | `encoding` | `"hex"` \| `"base64"` \| `"text"` | no | hex (the default), base64 or text. |
 | `len` | integer | no | Bytes read, at most 16 MiB; to the end of the node when omitted. |
 | `password` | string | no | The password unpack.run was given, when the tree was unpacked with one. |
 | `path` | array of integer | yes | Child indices from the root, such as [0, 2]. |
 | `start` | integer | no | First offset in the node's bytes (0 by default). |
-| `tree_doc` | string | no | The document unpacked, whose tree the node is in; by default the one unpack.run last ran on, else `doc`. |
 
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -3466,7 +3475,7 @@ Read the bytes of one node of the unpacked tree, by its path of child indices, a
 
 ### unpack.save
 
-Write the bytes of one node of the unpacked tree (by its path of child indices, as node) to a file; the document is left as it is. The tree is that of tree_doc, by default the document unpack.run last ran on.
+Write the bytes of one node of the unpacked tree (by its path of child indices, as node) to a file; the document is left as it is. A shorthand for unpack.open with output {"file": path}.
 
 **Effect:** `edit` · **MCP tool:** `unpack_save`, through `api_call`, or with `--all-tools`
 
@@ -3474,11 +3483,10 @@ Write the bytes of one node of the unpacked tree (by its path of child indices, 
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `doc` | string | no | Document id, path or "current": the document unpacked, as `tree_doc`, which it defaults to. |
+| `doc` | string | no | Document id, path or "current" (the default). |
 | `node` | array of integer | yes | The node's child indices from the root, such as [0, 2]. |
 | `password` | string | no | The password unpack.run was given, when the tree was unpacked with one. |
 | `path` | string | yes | The file to write. |
-| `tree_doc` | string | no | The document unpacked, whose tree the node is in; by default the one unpack.run last ran on, else `doc`. |
 
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -3986,7 +3994,6 @@ Open a recorded version of a document as a document derived from it; the window 
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `current` | boolean | yes | Whether this is the current document. |
-| `focus` | boolean | no | Whether it is the focus of the caller listing it: what an omitted `doc` means for that caller (`documents.list` says). |
 | `id` | string | yes | Stable id, such as "doc-1". |
 | `label` | string | no | A short name its maker gave it, such as "payload", which a recipe names it by. |
 | `len` | integer | yes | Length in bytes. |
@@ -4101,55 +4108,6 @@ Run a recipe on a document, each step called as recipe:NAME with its anchors res
 | `steps` | array of StepReport | yes | Each step run (or previewed), in order. |
 | `stopped` | Stopped | no | Why the run stopped early, if it did. |
 | `warnings` | array of string | no | Things to know that did not stop it: a plugin missing or changed, a different API version, another file than the one recorded on. |
-
-### vars.set
-
-Bind a value to a variable by name, so later calls can pass it as {"$var": name}: give the value as an anchor ({"$anchor": {"pick": …}}) to keep where it came from, and a recipe finds it again on the next file. Undone by putting back the value bound before.
-
-**Effect:** `analysis` · **MCP tool:** `vars_set`, listed by default
-
-**History:** Journalled as a step; undone by changing back the value bound to the variable; repeated by going back, playback and recipes.
-
-| Parameter | Type | Required | Description |
-| --- | --- | --- | --- |
-| `name` | string | yes | The variable's name: letters, digits, '_' or '-', such as "serial". |
-| `value` | any | yes | The value: any JSON, or an anchor that finds it, such as {"$anchor": {"pick": {"step": 7, "list": "job.strings", "where": {"text": {"regex": "^NC500-"}}, "field": "text"}}}. |
-
-| Result field | Type | Required | Description |
-| --- | --- | --- | --- |
-| `name` | string | yes |  |
-| `replaced` | any | no | The value it replaced, if it was bound before. |
-| `value` | any | yes | The value bound, its anchor resolved. |
-
-### vars.list
-
-The session's variables, each with its value, the step that bound it and the anchor it was found by.
-
-**Effect:** `read` · **MCP tool:** `vars_list`, through `api_call`, or with `--all-tools`
-
-**History:** Kept among the recent reads, which a later step can cite.
-
-Parameters: None.
-
-| Result field | Type | Required | Description |
-| --- | --- | --- | --- |
-| `variables` | array of Variable | yes |  |
-
-### vars.clear
-
-Remove a variable's binding, or every variable's.
-
-**Effect:** `analysis` · **MCP tool:** `vars_clear`, through `api_call`, or with `--all-tools`
-
-**History:** Journalled as a step; it has no inverse, so going back past it runs the session's steps again; repeated by going back, playback and recipes.
-
-| Parameter | Type | Required | Description |
-| --- | --- | --- | --- |
-| `name` | string | no | The variable to clear; every variable when omitted. |
-
-| Result field | Type | Required | Description |
-| --- | --- | --- | --- |
-| `cleared` | array of string | yes | The variables no longer bound. |
 
 ## Topics
 

@@ -21,8 +21,9 @@ use serde::{Deserialize, Serialize};
 
 use super::packets::DissectionResult;
 use super::values::{self, ByteEncoding, NoParams};
+use super::output::{self, Delivered, Output, Produced};
 use super::workspace::{self, Workspace};
-use super::{ApiError, Caller, ErrorCode};
+use super::{ApiError, Caller, ErrorCode, OutputKind};
 use crate::bus::topics::{FieldsGuessed, FramesDefined};
 use crate::bus::{Draft, Payload};
 use crate::document::Document;
@@ -44,14 +45,14 @@ pub(super) const METHODS: &[super::Method] = &[
     method!("packets.decode_as", Analysis, caller decode_as, DecodeAsParams, SetInfo, "Choose the protocol a set's frames of unknown format are decoded as, or detection, and a template for frames no protocol reads.").reverses(crate::api::Reverse::Decoding),
     method!("packets.export_pcap", Analysis, export_pcap, ExportParams, ExportResult, "A set's packets (those a filter keeps) as a pcap file, returned or written to a path given (which needs leave to edit).").writes_file(crate::api::WritesFile::WhenGiven("path")),
     method!("packets.conversations", Read, conversations, ConversationsParams, ConversationList, "The conversations in a set (the packets a filter keeps): each pair of endpoints with its transport, packets and bytes each way, its first packet's index in the set, and a filter for it; in order of first packet, or sorted by packets, bytes or address."),
-    method!("packets.follow_stream", Read, follow_stream, PacketParams, StreamResult, "The payloads of a packet's conversation in order, each with its direction, and the stream as text."),
+    method!("packets.follow_stream", Read, caller follow_stream, FollowStreamParams, StreamResult, "The payloads of a packet's conversation in order, each with its direction, and the stream as text; or, with output \"new\", the stream's bytes (one direction's, with direction) opened as a sheet derived from the set's document.").outputs(&[OutputKind::Return, OutputKind::New], OutputKind::Return),
     method!("packets.http_bodies", Analysis, http_bodies, HttpBodiesParams, HttpBodies, "The HTTP/1 requests and responses in a packet's TCP stream, each with its head and its body as meant: put together across segments, de-chunked, and decompressed by its Content-Encoding (gzip or deflate); the bodies are returned, or opened as documents of their own with open."),
     method!("packets.find_captures", Read, find_captures, FindCapturesParams, CaptureList, "The captures inside a span of a document (pcap, pcapng, snoop, Network Monitor or ERF, or one of these compressed with gzip), each with its offset, format, link type and packets, for packets.sets.create."),
     method!("packets.sets.add_packets", View, caller add_packets, AddPacketsParams, SetInfo, "Add ranges of the document to a set as packets of their own, so packets can be gathered one at a time; the set then keeps its packets where they are."),
     method!("packets.sets.refresh", View, caller refresh, RefreshParams, SetInfo, "Find a set's packets again, the way they were found, in another document (the current one by default), which the set then belongs to."),
     method!("packets.detect_length_field", Read, detect_length_field, SpanParams, LengthFieldFound, "Look for a length field that cuts a span into frames, with the protocol analysis's framing detection; returns it as packets.sets.create's length_field, or the best framing found instead."),
     method!("packets.endpoints", Read, endpoints, ConversationsParams, EndpointList, "The addresses in a set (the packets a filter keeps), busiest first or sorted by packets or address, with the packets and bytes each sent and received."),
-    method!("packets.extract", Analysis, editing::extract, ExtractParams, ExtractResult, "Some of a set's packets' bytes one after another, in the order given: whole, the same span of each, or each packet's own field by name (one label of a DNS name, say); returned or written to a path given (which needs leave to edit).").writes_file(crate::api::WritesFile::WhenGiven("path")),
+    method!("packets.extract", Read, caller editing::extract, ExtractParams, ExtractResult, "Some of a set's packets' bytes one after another, in the order given: whole, the same span of each, or each packet's own field by name (one label of a DNS name, say); returned, opened as a sheet derived from the set's document with output \"new\", or written to a file (path, or output {\"file\": path}, which needs leave to edit).").writes_file(crate::api::WritesFile::WhenGiven("path")).outputs(&[OutputKind::Return, OutputKind::New, OutputKind::File], OutputKind::Return),
     method!("packets.delete", Edit, caller editing::delete, IndicesParams, PacketEditResult, "Remove packets from the document (their whole capture records, so a capture stays readable), as one undoable step."),
     method!("packets.fix_checksums", Edit, caller editing::fix_checksums, IndicesParams, PacketEditResult, "Recompute the IPv4 header, TCP and UDP checksums of some of a set's packets, as one undoable step."),
     method!("packets.apply", Edit, caller editing::apply, ApplyParams, PacketEditResult, "Invert, fill or XOR some of a set's packets, or the same field of each, as one undoable step."),
@@ -92,6 +93,8 @@ pub(super) fn examples() -> Vec<(&'static str, serde_json::Value)> {
         ("packets.detect_length_field", json!({"start": 0, "len": 64})),
         ("packets.endpoints", json!({"set": "set-1"})),
         ("packets.extract", json!({"set": "set-1", "indices": [0, 1]})),
+        ("packets.extract", json!({"set": "set-1", "indices": [1, 0], "output": {"new": {"label": "two packets"}}})),
+        ("documents.open", json!({"doc": "doc-1"})),
         ("packets.columns.read", json!({"set": "set-1", "first": 0, "width": 2, "format": "csv"})),
         ("packets.columns.apply", json!({"set": "set-1", "first": 1, "width": 1, "indices": [0, 2], "op": "xor", "key": "ff"})),
         ("packets.columns.delete", json!({"set": "set-1", "first": 7, "width": 1, "indices": [1]})),
@@ -622,6 +625,40 @@ pub struct StreamPart {
     pub data: String,
 }
 
+/// Parameters of `packets.follow_stream`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FollowStreamParams {
+    pub set: String,
+    /// Any packet of the conversation, by its index in the set.
+    pub index: u64,
+    /// Only what one side sent: "a_to_b" (from the conversation's first
+    /// endpoint to its second) or "b_to_a"; both when omitted.
+    #[serde(default)]
+    pub direction: Option<StreamDirection>,
+    /// Where the stream goes: "return" (the default: its payloads in
+    /// `parts` and as `text`) or "new" (its bytes, one after another, as a
+    /// sheet derived from the set's document; {"new": {"label": …}} labels it).
+    #[serde(default)]
+    pub output: Option<Output>,
+}
+
+/// Which side of a conversation sent a payload.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum StreamDirection {
+    /// From the conversation's first endpoint to its second.
+    AToB,
+    /// From its second endpoint to its first.
+    BToA,
+}
+
+impl StreamDirection {
+    fn keeps(direction: Option<StreamDirection>, a_to_b: bool) -> bool {
+        direction.is_none_or(|direction| (direction == StreamDirection::AToB) == a_to_b)
+    }
+}
+
 /// The result of `packets.follow_stream`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct StreamResult {
@@ -637,6 +674,10 @@ pub struct StreamResult {
     pub retransmissions: u64,
     /// Whether the stream was longer than is kept.
     pub truncated: bool,
+    /// Where the stream went: {len} returned (its bytes are the parts'), or
+    /// {doc, label, len} for a new sheet, whose parts then leave their data
+    /// out and whose text is empty.
+    pub output: Delivered,
 }
 
 /// Parameters of `packets.http_bodies`.
@@ -1601,13 +1642,17 @@ pub fn http_bodies(workspace: &mut dyn Workspace, params: HttpBodiesParams) -> R
     Ok(HttpBodies { messages: bodies, note, outputs })
 }
 
-pub fn follow_stream(workspace: &mut dyn Workspace, params: PacketParams) -> Result<StreamResult, ApiError> {
-    with_set(workspace, &params.set, |stored, document| {
+pub fn follow_stream(workspace: &mut dyn Workspace, caller: &Caller, params: FollowStreamParams) -> Result<StreamResult, ApiError> {
+    let output = output::chosen("packets.follow_stream", params.output)?;
+    let direction = params.direction;
+    let (doc, mut result, bytes) = with_set(workspace, &params.set, |stored, document| {
         let index = packet_index(stored, params.index)?;
         decode(stored, document);
+        let doc = stored.info.doc.clone();
         let decoded = stored.decoded.as_ref().expect("decoded");
         let Some(flow) = decoded.dissections[index].flow else {
-            return Ok(StreamResult { conversation: None, parts: Vec::new(), text: String::new(), retransmissions: 0, truncated: false });
+            let empty = StreamResult { conversation: None, parts: Vec::new(), text: String::new(), retransmissions: 0, truncated: false, output: Delivered::default() };
+            return Ok((doc, empty, Vec::new()));
         };
         let key = flow.key();
         let payload_of = |index: usize, dissection: &Dissection| {
@@ -1621,13 +1666,27 @@ pub fn follow_stream(workspace: &mut dyn Workspace, params: PacketParams) -> Res
         let stream = packets::follow_stream(&key, members);
         let in_conversation = decoded.dissections.iter().enumerate().filter(|(_, dissection)| dissection.flow.is_some_and(|other| other.key() == key)).map(|(index, dissection)| (index, dissection.flow.as_ref(), lengths[&index]));
         let conversation = packets::flows::conversations_of(in_conversation).into_iter().next().map(|found| conversation_entry(&found));
-        let parts = stream
-            .segments
-            .iter()
-            .map(|segment| StreamPart { packet: segment.packet as u64, a_to_b: segment.a_to_b, data: crate::ops::to_compact_hex(&stream.bytes[segment.start..segment.start + segment.len]) })
-            .collect();
-        Ok(StreamResult { conversation, parts, text: stream.marked_text(0), retransmissions: stream.retransmissions as u64, truncated: stream.truncated })
-    })
+        let kept: Vec<_> = stream.segments.iter().filter(|segment| StreamDirection::keeps(direction, segment.a_to_b)).collect();
+        let mut bytes = Vec::new();
+        for segment in &kept {
+            bytes.extend_from_slice(&stream.bytes[segment.start..segment.start + segment.len]);
+        }
+        let parts = kept.iter().map(|segment| StreamPart { packet: segment.packet as u64, a_to_b: segment.a_to_b, data: crate::ops::to_compact_hex(&stream.bytes[segment.start..segment.start + segment.len]) }).collect();
+        let result = StreamResult { conversation, parts, text: stream.marked_text(0), retransmissions: stream.retransmissions as u64, truncated: stream.truncated, output: Delivered::default() };
+        Ok((doc, result, bytes))
+    })?;
+    if output.kind() == OutputKind::Return {
+        result.output = Delivered { len: bytes.len() as u64, ..Delivered::default() };
+        return Ok(result);
+    }
+    let first = result.parts.first().map_or(params.index, |part| part.packet);
+    let name = format!("{} › stream of packet {first}", workspace::info(workspace, &doc)?.name);
+    result.output = output::deliver(workspace, caller, &doc, Produced::bytes(bytes, name), &output)?;
+    for part in &mut result.parts {
+        part.data.clear();
+    }
+    result.text.clear();
+    Ok(result)
 }
 
 pub fn endpoints(workspace: &mut dyn Workspace, params: ConversationsParams) -> Result<EndpointList, ApiError> {
@@ -2047,6 +2106,42 @@ mod tests {
         assert!(unknown.message.contains("type"), "{}", unknown.message);
         let listed = call(&mut workspace, "packets.list", json!({"set": "set-1"})).unwrap();
         assert!(listed["packets"][1]["summary"]["info"].as_str().unwrap().contains("last=7"), "more than four fields reach the summary: {listed}");
+    }
+
+    #[test]
+    fn packets_fields_and_streams_open_as_sheets_of_the_set_s_document() {
+        let mut bytes = vec![0xEE; 16];
+        bytes.extend(dns_capture(2));
+        let mut workspace = workspace_with("traffic.bin", &bytes);
+        call(&mut workspace, "packets.sets.create", json!({"from": "capture"})).unwrap();
+        let returned = call(&mut workspace, "packets.extract", json!({"set": "set-1", "indices": [1, 0], "field_name": "dns.qry.name", "label": 0, "encoding": "hex"})).unwrap();
+        let labels = returned["data"].as_str().unwrap().to_string();
+        assert_eq!(returned["output"], json!({"len": returned["len"], "encoding": "hex"}), "returned as before, the bytes in data");
+        let made = call(&mut workspace, "packets.extract", json!({"set": "set-1", "indices": [1, 0], "field_name": "dns.qry.name", "label": 0, "output": {"new": {"label": "labels"}}})).unwrap();
+        assert_eq!((made["output"]["doc"].as_str(), made["output"]["label"].as_str(), made["data"].as_str()), (Some("doc-2"), Some("labels"), None));
+        assert_eq!(call(&mut workspace, "bytes.read", json!({"doc": "doc-2", "start": 0})).unwrap()["data"], labels.as_str());
+        assert_eq!(call(&mut workspace, "documents.info", json!({"doc": "doc-2"})).unwrap()["parent"], "doc-1", "the set's document is its parent");
+        let followed = call(&mut workspace, "packets.follow_stream", json!({"set": "set-1", "index": 0})).unwrap();
+        let payload = followed["parts"][0]["data"].as_str().unwrap().to_string();
+        let stream = call(&mut workspace, "packets.follow_stream", json!({"set": "set-1", "index": 0, "direction": "a_to_b", "output": "new"})).unwrap();
+        let a_to_b = followed["parts"][0]["a_to_b"].as_bool().unwrap();
+        let expected = if a_to_b { payload.as_str() } else { "" };
+        assert_eq!(stream["parts"][0]["data"].as_str().unwrap_or(""), "", "the bytes are in the sheet, not the result");
+        let sheet = stream["output"]["doc"].as_str().unwrap().to_string();
+        assert_eq!(call(&mut workspace, "bytes.read", json!({"doc": sheet, "start": 0})).unwrap()["data"], expected);
+    }
+
+    #[test]
+    fn packets_extracted_to_a_file_need_the_path_once() {
+        let mut workspace = workspace_with("traffic.bin", &dns_capture(2));
+        call(&mut workspace, "packets.sets.create", json!({"from": "capture"})).unwrap();
+        let path = std::env::temp_dir().join(format!("theviewer-extract-{}.bin", std::process::id())).display().to_string();
+        let written = call(&mut workspace, "packets.extract", json!({"set": "set-1", "indices": [0], "output": {"file": path}})).unwrap();
+        assert_eq!((written["path"].as_str(), written["output"]["path"].as_str()), (Some(path.as_str()), Some(path.as_str())));
+        assert_eq!(std::fs::read(&path).unwrap().len() as u64, written["len"].as_u64().unwrap());
+        std::fs::remove_file(&path).ok();
+        let twice = call(&mut workspace, "packets.extract", json!({"set": "set-1", "indices": [0], "path": path, "output": {"file": path}})).unwrap_err();
+        assert_eq!(twice.code, ErrorCode::InvalidParams);
     }
 
     #[test]

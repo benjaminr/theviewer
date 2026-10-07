@@ -4,20 +4,22 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use super::output::{self, Delivered, NewSheet, Output, Produced};
+use super::permissions::Caller;
 use super::values::{self, ByteEncoding, NoParams};
 use super::workspace::{self, Workspace};
-use super::{ApiError, MAX_CALL_BYTES};
-use crate::compress::{self, Codec};
-use crate::plugin::{CodecKind, CodecPlugin};
+use super::{ApiError, MAX_CALL_BYTES, OutputKind};
+use crate::compress::{self, Codec, Decompressed};
+use crate::plugin::{CodecKind, CodecPlugin, Registry};
 
 /// This module's methods, in the order `api.describe` lists them within
 /// their namespace. A new method is added here, and only here.
 pub(super) const METHODS: &[super::Method] = &[
     method!("codecs.list", Read, list, super::values::NoParams, CodecList, "The codecs available for decoding, built in and from plugins."),
     method!("codecs.detect", Read, detect, DetectParams, CodecList, "The codecs whose header starts at an offset."),
-    method!("codecs.decode", Read, decode, DecodeParams, DecodeResult, "Decode (decompress) a span with a codec and return the output."),
+    method!("codecs.decode", Read, caller decode, DecodeParams, DecodeResult, "Decode (decompress) a span with any codec codecs.list lists, plugins' included, or the first built-in decompressor that decodes there: return the output by default, or, as output says, open it as a new sheet or put it in place of the bytes it decoded.").outputs(&[OutputKind::Return, OutputKind::New, OutputKind::InPlace], OutputKind::Return),
     method!("codecs.probe", Read, probe, ProbeParams, ProbeResult, "Try every built-in decompressor at the start of a span, headerless ones included, and list those that decode."),
-    method!("codecs.open_decoded", View, open_decoded, OpenDecodedParams, OpenDecodedResult, "Decompress the stream starting at an offset, with the first codec that decodes there or the one named, and open what it holds as a document derived from this one; in the window, Back (or opening the parent by id) returns.").makes_sheet(),
+    method!("codecs.open_decoded", View, caller open_decoded, OpenDecodedParams, OpenDecodedResult, "Decompress the stream starting at an offset, with the first codec that decodes there or the one named (any codecs.list lists), and open what it holds as a document derived from this one; in the window, Back (or opening the parent by id) returns. A shorthand for codecs.decode with output \"new\".").makes_sheet(),
 ];
 
 /// An example call of each of [`METHODS`], run in order on a fresh
@@ -29,6 +31,8 @@ pub(super) fn examples() -> Vec<(&'static str, serde_json::Value)> {
         ("codecs.list", json!({})),
         ("codecs.detect", json!({"at": 0})),
         ("codecs.decode", json!({"start": 0, "codec": "zlib", "encoding": "text"})),
+        ("codecs.decode", json!({"start": 0, "codec": "zlib", "output": {"new": {"label": "hello"}}})),
+        ("documents.open", json!({"doc": "doc-1"})),
         ("codecs.probe", json!({"start": 0})),
         ("codecs.open_decoded", json!({"start": 0, "codec": "zlib"})),
     ]
@@ -40,6 +44,15 @@ pub(super) fn examples() -> Vec<(&'static str, serde_json::Value)> {
 pub(super) fn describe_call(_workspace: &mut dyn Workspace, method: &str, params: &serde_json::Value) -> Option<String> {
     match method {
         "codecs.open_decoded" => Some(format!("Open what decompresses at {:#x} as a document of its own", params.get("start")?.as_u64()?)),
+        "codecs.decode" => {
+            let start = params.get("start")?.as_u64()?;
+            let codec = params.get("codec").and_then(serde_json::Value::as_str).unwrap_or("the first codec that decodes there");
+            match params.get("output").and_then(output::kind_of)? {
+                OutputKind::InPlace => Some(format!("Replace what decodes as {codec} at {start:#x} with what it decodes to")),
+                OutputKind::New => Some(format!("Open what decodes as {codec} at {start:#x} as a document of its own")),
+                _ => None,
+            }
+        }
         _ => None,
     }
 }
@@ -82,17 +95,24 @@ pub struct DecodeParams {
     pub doc: Option<String>,
     /// Offset of the encoded data.
     pub start: u64,
-    /// Bytes of input, at most 16 MiB; to the end of the document when omitted.
+    /// Bytes of input, at most 16 MiB returned (64 MiB to a new sheet or in place); to the end of the document when omitted.
     #[serde(default)]
     pub len: Option<u64>,
-    /// Codec id from codecs.list, such as "zlib" or "gzip".
-    pub codec: String,
-    /// Most bytes of output, at most 16 MiB (the default).
+    /// Codec id from codecs.list, such as "zlib", "gzip" or a plugin's
+    /// "base32"; the first built-in decompressor that decodes there when omitted.
+    #[serde(default)]
+    pub codec: Option<String>,
+    /// Most bytes of output, at most 16 MiB returned (the default), 64 MiB to a new sheet or in place.
     #[serde(default)]
     pub max_output: Option<usize>,
-    /// How to write the output: hex (the default), base64 or text.
+    /// How to write the output returned: hex (the default), base64 or text.
     #[serde(default)]
     pub encoding: ByteEncoding,
+    /// Where the output goes: "return" (the default), "new" (a sheet derived
+    /// from this document; {"new": {"label": …, "name": …}} names it) or
+    /// "in_place" (in place of the bytes it decoded, as one undoable edit).
+    #[serde(default)]
+    pub output: Option<Output>,
 }
 
 /// The result of `codecs.decode`.
@@ -109,8 +129,11 @@ pub struct DecodeResult {
     pub truncated: bool,
     pub output_len: u64,
     pub encoding: ByteEncoding,
-    /// The output, written as `encoding` says.
-    pub data: String,
+    /// The output, written as `encoding` says, when it was returned.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<String>,
+    /// Where the output went: {doc, label, len} for a new sheet, {version, len, ranges} in place, {len, encoding} returned (the bytes are `data`).
+    pub output: Delivered,
 }
 
 /// Parameters of `codecs.probe`.
@@ -170,26 +193,86 @@ pub fn detect(workspace: &mut dyn Workspace, params: DetectParams) -> Result<Cod
     Ok(CodecList { codecs: registry.codecs_detecting(&bytes).into_iter().map(|codec| describe(codec.as_ref())).collect() })
 }
 
-pub fn decode(workspace: &mut dyn Workspace, params: DecodeParams) -> Result<DecodeResult, ApiError> {
+/// What a codec made of the bytes at an offset.
+struct Decoding {
+    /// The codec's id, such as "zlib" or "base32".
+    codec: String,
+    /// Its name for people, such as "zlib" or "LZ4".
+    label: String,
+    data: Vec<u8>,
+    consumed: usize,
+    consumed_exact: bool,
+    complete: bool,
+    truncated: bool,
+}
+
+impl Decoding {
+    fn of_built_in(found: Decompressed) -> Self {
+        Decoding {
+            codec: codec_id(found.codec),
+            label: found.codec.label().to_string(),
+            data: found.data,
+            consumed: found.consumed,
+            consumed_exact: found.consumed_exact,
+            complete: found.complete,
+            truncated: found.truncated,
+        }
+    }
+}
+
+/// A built-in codec's id, as JSON names it: "zlib", "lz4".
+fn codec_id(codec: Codec) -> String {
+    serde_json::to_value(codec).ok().and_then(|value| value.as_str().map(str::to_string)).unwrap_or_default()
+}
+
+/// The built-in codec with id `id`, if it is one.
+fn built_in(id: &str) -> Option<Codec> {
+    serde_json::from_value(serde_json::Value::String(id.to_string())).ok()
+}
+
+/// Decode `input` (the bytes at `start`) with the codec whose id is
+/// `codec`, any the registry holds, or the first built-in decompressor
+/// that decodes it.
+fn decode_with(registry: &Registry, input: &[u8], start: usize, codec: Option<&str>, max_output: usize) -> Result<Decoding, ApiError> {
+    let Some(id) = codec else {
+        let found = compress::probe(input, max_output).into_iter().next();
+        return found.map(Decoding::of_built_in).ok_or_else(|| ApiError::invalid_params(format!("nothing decodes at {start:#x} (tried gzip, zlib, bzip2, xz, zstd, LZ4, raw deflate and lzma); name a codec from codecs.list")));
+    };
+    let codec = registry.codec(id).ok_or_else(|| ApiError::not_found(format!("there is no codec '{id}'; codecs.list lists them")))?;
+    let decoded = codec.decode(input, max_output).map_err(|message| ApiError::invalid_params(format!("the bytes at {start:#x} do not decode as {}: {message}", codec.name())))?;
+    let label = built_in(id).map_or_else(|| codec.id().to_string(), |codec| codec.label().to_string());
+    Ok(Decoding { codec: codec.id().to_string(), label, data: decoded.data, consumed: decoded.consumed, consumed_exact: decoded.consumed_exact, complete: decoded.complete, truncated: decoded.truncated })
+}
+
+pub fn decode(workspace: &mut dyn Workspace, caller: &Caller, params: DecodeParams) -> Result<DecodeResult, ApiError> {
+    let output = output::chosen("codecs.decode", params.output)?;
+    let limit = if output.kind() == OutputKind::Return { MAX_CALL_BYTES } else { OPEN_DECODED_MAX };
+    let max_output = params.max_output.unwrap_or(limit);
+    values::check_size(max_output, limit, "max_output")?;
     let registry = workspace.registry();
-    let codec = registry.codec(&params.codec).ok_or_else(|| ApiError::not_found(format!("there is no codec '{}'; codecs.list lists them", params.codec)))?;
-    let max_output = output_limit(params.max_output)?;
-    let (_, document) = workspace::document(workspace, params.doc.as_deref())?;
+    let id = workspace::resolve(workspace, params.doc.as_deref())?;
+    let name = workspace::info(workspace, &id)?.name;
+    let (_, document) = workspace::document(workspace, Some(&id))?;
     let (start, len) = values::span_within(document.len(), params.start, params.len)?;
-    values::check_call_size(len)?;
+    values::check_size(len, limit, "the span")?;
     let input = document.read_range(start, len);
-    let decoded = codec
-        .decode(&input, max_output)
-        .map_err(|message| ApiError::invalid_params(format!("the bytes at {start:#x} do not decode as {}: {message}", codec.name())))?;
+    let decoding = decode_with(&registry, &input, start, params.codec.as_deref(), max_output)?;
+    let output_len = decoding.data.len() as u64;
+    let named = format!("{name} › {}@{start:#x}", decoding.label);
+    let action = format!("Decode {}", decoding.label);
+    let produced = Produced::replacing(start, decoding.consumed, decoding.data, named, action).encoded(params.encoding);
+    let mut delivered = output::deliver(workspace, caller, &id, produced, &output)?;
+    let data = delivered.data.take();
     Ok(DecodeResult {
-        codec: codec.id().to_string(),
-        consumed: decoded.consumed as u64,
-        consumed_exact: decoded.consumed_exact,
-        complete: decoded.complete,
-        truncated: decoded.truncated,
-        output_len: decoded.data.len() as u64,
-        encoding: params.encoding,
-        data: values::encode_bytes(&decoded.data, params.encoding),
+        codec: decoding.codec,
+        consumed: decoding.consumed as u64,
+        consumed_exact: decoding.consumed_exact,
+        complete: decoding.complete,
+        truncated: decoding.truncated,
+        output_len,
+        encoding: delivered.encoding.unwrap_or(params.encoding),
+        data,
+        output: delivered,
     })
 }
 
@@ -225,9 +308,9 @@ pub struct OpenDecodedParams {
     pub doc: Option<String>,
     /// Offset where the compressed stream starts.
     pub start: u64,
-    /// The codec to decode with; the first that decodes there when omitted.
+    /// The codec to decode with, any codecs.list lists; the first built-in decompressor that decodes there when omitted.
     #[serde(default)]
-    pub codec: Option<Codec>,
+    pub codec: Option<String>,
 }
 
 /// The result of `codecs.open_decoded`.
@@ -235,8 +318,8 @@ pub struct OpenDecodedParams {
 pub struct OpenDecodedResult {
     /// The document opened, now current.
     pub document: super::workspace::DocumentInfo,
-    /// The codec that decoded the stream.
-    pub codec: Codec,
+    /// The codec that decoded the stream, such as "zlib".
+    pub codec: String,
     /// Input bytes the stream occupied.
     pub consumed: u64,
     /// Whether the stream ended cleanly.
@@ -247,22 +330,30 @@ pub struct OpenDecodedResult {
     pub output: workspace::SheetOutput,
 }
 
-pub fn open_decoded(workspace: &mut dyn Workspace, params: OpenDecodedParams) -> Result<OpenDecodedResult, ApiError> {
+/// `codecs.open_decoded`: `codecs.decode` with output "new", from the
+/// offset to the end of the document. A built-in codec named is found as
+/// the decompressors probing there find it.
+pub fn open_decoded(workspace: &mut dyn Workspace, caller: &Caller, params: OpenDecodedParams) -> Result<OpenDecodedResult, ApiError> {
     let parent = workspace::resolve(workspace, params.doc.as_deref())?;
-    let name = workspace::info(workspace, &parent)?.name;
     let (_, document) = workspace::document(workspace, Some(&parent))?;
     let (start, available) = values::span_within(document.len(), params.start, None)?;
     if available == 0 {
         return Err(ApiError::invalid_params("nothing to decompress at the end of the document"));
     }
     let input = document.read_range(start, available.min(OPEN_DECODED_MAX));
-    let found = compress::probe(&input, OPEN_DECODED_MAX).into_iter().find(|found| params.codec.is_none_or(|codec| found.codec == codec));
-    let found = found.ok_or_else(|| match params.codec {
-        Some(codec) => ApiError::invalid_params(format!("nothing decodes as {} at {start:#x}", codec.label())),
-        None => ApiError::invalid_params(format!("nothing decodes at {start:#x} (tried gzip, zlib, bzip2, xz, zstd, LZ4, raw deflate and lzma)")),
-    })?;
-    let (codec, consumed, complete, truncated) = (found.codec, found.consumed as u64, found.complete, found.truncated);
-    let id = workspace.open_derived(&parent, found.data, &format!("{name} › {}@{start:#x}", codec.label()))?;
+    let decoding = match params.codec.as_deref().map(|id| (id, built_in(id))) {
+        Some((_, Some(codec))) => compress::probe(&input, OPEN_DECODED_MAX)
+            .into_iter()
+            .find(|found| found.codec == codec)
+            .map(Decoding::of_built_in)
+            .ok_or_else(|| ApiError::invalid_params(format!("nothing decodes as {} at {start:#x}", codec.label())))?,
+        Some((id, None)) => decode_with(&workspace.registry(), &input, start, Some(id), OPEN_DECODED_MAX)?,
+        None => decode_with(&workspace.registry(), &input, start, None, OPEN_DECODED_MAX)?,
+    };
+    let name = format!("{} › {}@{start:#x}", workspace::info(workspace, &parent)?.name, decoding.label);
+    let (codec, consumed, complete, truncated) = (decoding.codec, decoding.consumed as u64, decoding.complete, decoding.truncated);
+    let delivered = output::deliver(workspace, caller, &parent, Produced::bytes(decoding.data, name), &Output::New(NewSheet::default()))?;
+    let id = delivered.doc.expect("a new sheet");
     Ok(OpenDecodedResult { document: workspace::info(workspace, &id)?, codec, consumed, complete, truncated, output: workspace::SheetOutput::of(workspace, &id)? })
 }
 
@@ -276,12 +367,8 @@ pub fn describe_decoded(start: usize, result: &OpenDecodedResult) -> String {
     } else {
         ""
     };
-    format!(
-        "{} at {start:#x}: {} compressed to {} decompressed{note}",
-        result.codec.label(),
-        compress::human_bytes(result.consumed as usize),
-        compress::human_bytes(result.document.len as usize)
-    )
+    let label = built_in(&result.codec).map_or(result.codec.as_str(), |codec| codec.label());
+    format!("{label} at {start:#x}: {} compressed to {} decompressed{note}", compress::human_bytes(result.consumed as usize), compress::human_bytes(result.document.len as usize))
 }
 
 #[cfg(test)]
@@ -314,6 +401,65 @@ mod tests {
         let probed = call(&mut workspace, "codecs.probe", json!({"start": 4})).unwrap();
         assert_eq!(probed["streams"][0]["codec"], "zlib");
         assert_eq!(probed["streams"][0]["output_len"], 19);
+    }
+
+    /// A codec a plugin might add: text hex digits to the bytes they spell.
+    struct HexText;
+
+    impl crate::plugin::CodecPlugin for HexText {
+        fn id(&self) -> &str {
+            "hex_text"
+        }
+        fn name(&self) -> &str {
+            "Hex text"
+        }
+        fn kind(&self) -> crate::plugin::CodecKind {
+            crate::plugin::CodecKind::Encoding
+        }
+        fn detect(&self, _bytes: &[u8]) -> bool {
+            false
+        }
+        fn decode(&self, input: &[u8], _max_out: usize) -> Result<crate::plugin::Decoded, String> {
+            let digits: Vec<u8> = input.iter().copied().take_while(u8::is_ascii_hexdigit).collect();
+            let even = digits.len() / 2 * 2;
+            let data = crate::ops::parse_hex(std::str::from_utf8(&digits[..even]).unwrap()).ok_or("not hex digits")?;
+            Ok(crate::plugin::Decoded { data, consumed: even, consumed_exact: true, complete: true, truncated: false })
+        }
+        fn encode(&self, _data: &[u8]) -> Option<Result<Vec<u8>, String>> {
+            None
+        }
+    }
+
+    /// A workspace whose registry also holds [`HexText`], holding `bytes`.
+    fn with_plugin_codec(bytes: &[u8]) -> crate::api::HeadlessWorkspace {
+        let mut registry = crate::app::build_registry();
+        registry.add_codec(HexText);
+        let mut workspace = crate::api::HeadlessWorkspace::new(std::sync::Arc::new(registry));
+        workspace.add_document("notes.txt", crate::document::Document::from_bytes(bytes.to_vec()));
+        workspace
+    }
+
+    #[test]
+    fn a_plugin_s_codec_decodes_to_a_labelled_sheet_without_the_bytes_coming_back() {
+        let mut workspace = with_plugin_codec(b"key=68656c6c6f;");
+        let decoded = call(&mut workspace, "codecs.decode", json!({"start": 4, "codec": "hex_text", "output": {"new": {"label": "plain"}}})).unwrap();
+        assert_eq!(decoded["output"], json!({"doc": "doc-2", "label": "plain", "len": 5}));
+        assert!(decoded.get("data").is_none(), "nothing to send back in again");
+        assert_eq!((decoded["codec"].as_str(), decoded["consumed"].as_u64()), (Some("hex_text"), Some(10)));
+        assert_eq!(call(&mut workspace, "bytes.read", json!({"doc": "doc-2", "start": 0, "encoding": "text"})).unwrap()["data"], "hello");
+        let step = crate::api::Workspace::journal(&workspace).entries().last().unwrap().clone();
+        assert_eq!((step.method.as_str(), step.made.as_slice(), step.effect), ("codecs.decode", ["doc-2".to_string()].as_slice(), crate::api::Effect::View), "a step that made a sheet");
+        let opened = call(&mut workspace, "codecs.open_decoded", json!({"doc": "doc-1", "start": 4, "codec": "hex_text"})).unwrap();
+        assert_eq!((opened["codec"].as_str(), opened["document"]["name"].as_str()), (Some("hex_text"), Some("notes.txt › hex_text@0x4")), "the shorthand takes it too");
+    }
+
+    #[test]
+    fn the_first_codec_that_decodes_is_used_when_none_is_named() {
+        let mut bytes = b"head".to_vec();
+        bytes.extend(zlib(b"hello, hello, hello"));
+        let mut workspace = workspace_with("a.bin", &bytes);
+        let decoded = call(&mut workspace, "codecs.decode", json!({"start": 4, "encoding": "text"})).unwrap();
+        assert_eq!((decoded["codec"].as_str(), decoded["data"].as_str(), decoded["output"]["len"].as_u64()), (Some("zlib"), Some("hello, hello, hello"), Some(19)));
     }
 
     #[test]

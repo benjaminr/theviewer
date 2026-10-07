@@ -834,7 +834,7 @@ pub(crate) fn begin(workspace: &mut dyn Workspace, caller: &Caller, method: &Met
     }
     // Provenance given for this call is this call's, kept or not.
     let derived_from = journal.pending_provenance.take().unwrap_or_default();
-    let kept = method.journalled();
+    let kept = method.journalled_for(params);
     if kept == Journalled::Skip {
         return CallRecord::Unrecorded;
     }
@@ -844,7 +844,7 @@ pub(crate) fn begin(workspace: &mut dyn Workspace, caller: &Caller, method: &Met
         at: timestamp(SystemTime::now()),
         caller: caller.producer(),
         method: method.name().to_string(),
-        effect: method.effect(),
+        effect: method.effect_for(params),
         description: String::new(),
         params: kept_params,
         params_summarised,
@@ -874,7 +874,7 @@ pub(crate) fn begin(workspace: &mut dyn Workspace, caller: &Caller, method: &Met
         // A call merged into the last keeps what the last replaced.
         if !(method.merges_repeats() && workspace.journal().would_merge(&entry.method, &entry.caller, doc.as_deref())) {
             let limit = workspace.journal().limits.max_result_bytes;
-            entry.before = undo::state_before(workspace, method.undo(), doc.as_deref(), params).filter(|before| approximate_size(before) <= limit);
+            entry.before = undo::state_before(workspace, method.undo_for(params), doc.as_deref(), params).filter(|before| approximate_size(before) <= limit);
         }
         entry.doc = doc;
     }

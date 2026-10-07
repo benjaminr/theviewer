@@ -17,10 +17,11 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use super::output::{self, Delivered, Output, Piece, Produced};
 use super::permissions::Caller;
 use super::values::{self, ByteEncoding};
 use super::workspace::{self, DOCUMENT_PRODUCER, Workspace};
-use super::{ApiError, MAX_CALL_BYTES};
+use super::{ApiError, MAX_CALL_BYTES, OutputKind};
 use crate::bits::BitOrder;
 use crate::document::Document;
 use crate::selection::{self, Selection};
@@ -36,8 +37,8 @@ pub(super) const METHODS: &[super::Method] = &[
     method!("bytes.replace", Edit, caller replace, ReplaceParams, EditResult, "Replace a span of bytes with new bytes of any length, as one undoable step."),
     method!("bytes.move", Edit, caller move_bytes, MoveParams, EditResult, "Cut ranges out and put their bytes, one after another, at an offset counted before the cut, as one undoable step, and select them."),
     method!("bits.write", Edit, caller write_bits, BitsWriteParams, EditResult, "Overwrite bits from any bit offset, most or least significant bit of each byte first, as one undoable step; the bits around them are kept."),
-    method!("transform.apply", Edit, caller apply_transform, TransformParams, EditResult, "Apply an operation (XOR, invert, shift bits, swap byte order, number, compress, decompress and more) to every range of a selection, as one undoable step, and select what it produced."),
-    method!("transform.preview", Read, preview_transform, PreviewParams, PreviewResult, "What transform.apply would write into each range of a selection, without changing anything."),
+    method!("transform.apply", Edit, caller apply_transform, TransformParams, TransformResult, "Apply an operation (XOR, invert, shift bits, swap byte order, number, compress, decompress and more) to every range of a selection: in place by default, as one undoable step, selecting what it produced; or, as output says, open what it makes as a new sheet (the ranges one after another), or return it.").outputs(&[OutputKind::InPlace, OutputKind::New, OutputKind::Return], OutputKind::InPlace),
+    method!("transform.preview", Read, preview_transform, PreviewParams, PreviewResult, "What transform.apply would write into each range of a selection, without changing anything, range by range: a shorthand for transform.apply with output \"return\"."),
     method!("history.undo", Edit, caller undo, HistoryParams, HistoryResult, "Undo the document's last step, whoever made it, and put the cursor where it was.").moves_along_the_timeline(crate::api::Move::Undo),
     method!("history.redo", Edit, caller redo, HistoryParams, HistoryResult, "Redo the last step undone, and put the cursor where it was.").moves_along_the_timeline(crate::api::Move::Redo),
     method!("history.transaction", Edit, caller transaction, TransactionParams, TransactionResult, "Run several calls on one document as one undoable step; when one fails, every change the others made is reversed.").passes_anchors_on(),
@@ -59,6 +60,7 @@ pub(super) fn examples() -> Vec<(&'static str, serde_json::Value)> {
         ("bytes.move", json!({"ranges": [[0, 2]], "to": 6})),
         ("bits.write", json!({"bit_start": 3, "bits": "101"})),
         ("transform.apply", json!({"selection": {"range": [0, 4]}, "operation": {"op": "xor", "key": "5a"}})),
+        ("transform.apply", json!({"selection": {"range": [0, 4]}, "operation": {"op": "invert"}, "output": "return"})),
         ("history.undo", json!({})),
         ("history.redo", json!({})),
         ("history.transaction", json!({"calls": [{"method": "cursor.set", "params": {"offset": 2}}, {"method": "bytes.delete", "params": {"start": 0, "len": 1}}]})),
@@ -206,6 +208,14 @@ pub struct TransformParams {
     /// Fail with version_conflict, changing nothing, unless the document is at this version.
     #[serde(default)]
     pub expect_version: Option<u64>,
+    /// Where what it makes goes: "in_place" (the default), "new" (a sheet
+    /// of the ranges' new bytes one after another; {"new": {"label": …}} names
+    /// it) or "return".
+    #[serde(default)]
+    pub output: Option<Output>,
+    /// With output "return", how the bytes are written: hex (the default), base64 or text.
+    #[serde(default)]
+    pub encoding: ByteEncoding,
 }
 
 /// Parameters of `transform.preview`.
@@ -278,6 +288,17 @@ pub struct EditResult {
     pub label: String,
     /// Where the new bytes are, as [start, len]: one range per range changed.
     pub ranges: Vec<(u64, u64)>,
+}
+
+/// The result of `transform.apply`: the edit, when made in place, and
+/// where the output went.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct TransformResult {
+    /// In place: the edit, as every edit returns it.
+    #[serde(flatten, default, skip_serializing_if = "Option::is_none")]
+    pub edit: Option<EditResult>,
+    /// Where the output went: {version, len, ranges} in place, {doc, label, len} for a new sheet, {len, encoding, data} returned.
+    pub output: Delivered,
 }
 
 /// One range's new bytes, as `transform.preview` returns them.
@@ -354,7 +375,7 @@ fn count(what: &str, number: usize, unit: &str) -> String {
 /// `change` as one undo step named "`action` by caller", publish it as the
 /// caller's, and return the document's id and what `change` returned.
 /// Edits made before, by hand, are published first as the document's own.
-fn edit<R>(
+pub(super) fn edit<R>(
     workspace: &mut dyn Workspace,
     caller: &Caller,
     doc: Option<&str>,
@@ -597,11 +618,20 @@ pub fn check_inside(selection: &Selection, len: usize) -> Result<(), ApiError> {
     Ok(())
 }
 
-pub fn apply_transform(workspace: &mut dyn Workspace, caller: &Caller, params: TransformParams) -> Result<EditResult, ApiError> {
+pub fn apply_transform(workspace: &mut dyn Workspace, caller: &Caller, params: TransformParams) -> Result<TransformResult, ApiError> {
     let id = workspace::resolve(workspace, params.doc.as_deref())?;
     let (ranges, selected) = operation_ranges(workspace, &id, params.selection.as_ref())?;
     values::check_call_size(selection::total_bytes(&ranges))?;
+    let output = output::chosen("transform.apply", params.output)?;
     let operation = params.operation;
+    if output != Output::InPlace {
+        let made = transformed(workspace, &id, &ranges, &operation)?;
+        let name = format!("{} › {}", workspace::info(workspace, &id)?.name, operation.name());
+        let pieces = ranges.iter().zip(made).map(|(&range, bytes)| Piece { replaces: Some(range), bytes }).collect();
+        let produced = Produced { pieces, name, action: operation.name().to_string(), encoding: params.encoding };
+        let delivered = output::deliver(workspace, caller, &id, produced, &output)?;
+        return Ok(TransformResult { edit: None, output: delivered });
+    }
     let (id, changed, label) = edit(workspace, caller, Some(&id), params.expect_version, operation.name(), |document| {
         selection_menu::rewrite_ranges(document, &ranges, &operation).map_err(|message| ApiError::invalid_params(format!("{} failed: {message}", operation.name())))
     })?;
@@ -610,23 +640,27 @@ pub fn apply_transform(workspace: &mut dyn Workspace, caller: &Caller, params: T
     let len = workspace::info(workspace, &id)?.len as usize;
     let (cursor, selection) = selection_menu::selection_after_operation(selected, &operation, &changed, cursor, len);
     workspace.select(&id, cursor, selection, caller);
-    edit_result(workspace, id, label, changed)
+    let edit = edit_result(workspace, id, label, changed)?;
+    let delivered = Delivered { len: edit.ranges.iter().map(|&(_, len)| len).sum(), version: Some(edit.version), ranges: Some(edit.ranges.clone()), ..Delivered::default() };
+    Ok(TransformResult { edit: Some(edit), output: delivered })
 }
 
+/// What `operation` makes of each of `ranges` of document `id`, checked
+/// against the per-call limit.
+fn transformed(workspace: &mut dyn Workspace, id: &str, ranges: &[(usize, usize)], operation: &Operation) -> Result<Vec<Vec<u8>>, ApiError> {
+    let (_, document) = workspace::document(workspace, Some(id))?;
+    let made = selection_ops::transform_ranges(operation, document, ranges).map_err(|message| ApiError::invalid_params(format!("{} failed: {message}", operation.name())))?;
+    values::check_size(made.iter().map(Vec::len).sum(), MAX_CALL_BYTES, "what the operation makes")?;
+    Ok(made)
+}
+
+/// `transform.preview`: `transform.apply` with output "return", range by range.
 pub fn preview_transform(workspace: &mut dyn Workspace, params: PreviewParams) -> Result<PreviewResult, ApiError> {
     let id = workspace::resolve(workspace, params.doc.as_deref())?;
     let (ranges, _) = operation_ranges(workspace, &id, params.selection.as_ref())?;
     values::check_call_size(selection::total_bytes(&ranges))?;
-    let (_, document) = workspace::document(workspace, Some(&id))?;
-    let mut previews = Vec::with_capacity(ranges.len());
-    let mut returned = 0;
-    for (index, &(start, len)) in ranges.iter().enumerate() {
-        let bytes = document.read_range(start, len);
-        let changed = selection_ops::transform_range(&params.operation, &bytes, index).map_err(|message| ApiError::invalid_params(format!("{} failed: {message}", params.operation.name())))?;
-        returned += changed.len();
-        values::check_size(returned, MAX_CALL_BYTES, "the preview")?;
-        previews.push(PreviewRange { start: start as u64, len: len as u64, data: values::encode_bytes(&changed, params.encoding) });
-    }
+    let made = transformed(workspace, &id, &ranges, &params.operation)?;
+    let previews = ranges.iter().zip(made).map(|(&(start, len), changed)| PreviewRange { start: start as u64, len: len as u64, data: values::encode_bytes(&changed, params.encoding) }).collect();
     Ok(PreviewResult { doc: id, encoding: params.encoding, ranges: previews })
 }
 

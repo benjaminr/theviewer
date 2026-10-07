@@ -92,6 +92,7 @@ pub mod history;
 pub mod jobs;
 mod manual;
 pub mod numbers;
+pub mod output;
 pub mod packet_sets;
 pub mod packets;
 pub mod permissions;
@@ -189,6 +190,40 @@ pub struct Outputs {
 impl Outputs {
     /// A method that makes a new sheet, and nothing else.
     pub const NEW_SHEET: Outputs = Outputs { allowed: &[OutputKind::New], default: OutputKind::New };
+
+    /// Whether a call may send its output where `kind` says.
+    pub fn allows(&self, kind: OutputKind) -> bool {
+        self.allowed.contains(&kind)
+    }
+}
+
+/// The parameter that names the file a call writes with `output: {"file": …}`.
+pub const OUTPUT_FILE: &str = "output.file";
+
+impl OutputKind {
+    /// What a call whose output goes here does, and how going back,
+    /// playback and recipes treat it, and undo it: an edit in place is a
+    /// byte edit; a new sheet is made again by recipes and undone by
+    /// opening the document current before; bytes returned are a read; a
+    /// file written stays as written.
+    pub const fn treatment(self) -> (Effect, Replay, Undo) {
+        match self {
+            OutputKind::InPlace => (Effect::Edit, Replay::Step, Undo::for_effect(Effect::Edit)),
+            OutputKind::New => (Effect::View, Replay::MakesSheet, Undo::Reverses(Reverse::OpenDocument { derives: true })),
+            OutputKind::Return => (Effect::Read, Replay::Step, Undo::for_effect(Effect::Read)),
+            OutputKind::File => (Effect::Edit, Replay::WritesFile, Undo::Nothing(undo::WROTE_A_FILE)),
+        }
+    }
+
+    /// The JSON name, such as "in_place".
+    pub const fn name(self) -> &'static str {
+        match self {
+            OutputKind::InPlace => "in_place",
+            OutputKind::New => "new",
+            OutputKind::Return => "return",
+            OutputKind::File => "file",
+        }
+    }
 }
 
 /// A method's outputs as `api.describe` lists them.
@@ -357,6 +392,75 @@ impl Method {
         self
     }
 
+    /// Its output can go where `allowed` says, as a call's `output` asks
+    /// (see [`output`]), and goes where `default` says when none is asked
+    /// for. The method's effect, replay and undo are its default output's
+    /// (see [`OutputKind::treatment`]), and a call that asks for another is
+    /// treated as that one says: `output: "new"` makes a sheet, kept by
+    /// recipes; `"in_place"` is a byte edit; `"return"` a read; a `file`
+    /// needs leave to edit. Declared after [`Method::writes_file`] for a
+    /// method that also writes a file named by a parameter of its own.
+    pub const fn outputs(mut self, allowed: &'static [OutputKind], default: OutputKind) -> Self {
+        let (effect, replay, undo) = default.treatment();
+        if !matches!((self.effect, effect), (Effect::Read, Effect::Read) | (Effect::Edit, Effect::Edit) | (Effect::View, Effect::View)) {
+            panic!("a method's effect must be its default output's");
+        }
+        self.outputs = Some(Outputs { allowed, default });
+        self.journal = Journalled::for_effect(effect);
+        self.replay = replay;
+        self.undo = undo;
+        let mut index = 0;
+        while index < allowed.len() {
+            if matches!(allowed[index], OutputKind::File) && matches!(self.writes_file, WritesFile::No) {
+                self.writes_file = WritesFile::WhenGiven(OUTPUT_FILE);
+            }
+            index += 1;
+        }
+        self
+    }
+
+    /// Where a call with `params` sends its output: the `output` it asks
+    /// for, the file its own path parameter names, or the default. `None`
+    /// for a method without outputs.
+    pub fn output_kind(&self, params: &Value) -> Option<OutputKind> {
+        let outputs = self.outputs?;
+        if let Some(kind) = params.get("output").and_then(output::kind_of) {
+            return Some(kind);
+        }
+        match self.writes_file {
+            WritesFile::WhenGiven(param) if param != OUTPUT_FILE && is_given(params, param) => Some(OutputKind::File),
+            _ => Some(outputs.default),
+        }
+    }
+
+    /// How a call with `params` is treated: as its method declares, or, for
+    /// a call sending its output somewhere other than the default, as that
+    /// output's [`OutputKind::treatment`] says.
+    fn treatment_for(&self, params: &Value) -> (Effect, Journalled, Replay, Undo) {
+        match (self.outputs, self.output_kind(params)) {
+            (Some(outputs), Some(kind)) if kind != outputs.default => {
+                let (effect, replay, undo) = kind.treatment();
+                (effect, Journalled::for_effect(effect), replay, undo)
+            }
+            _ => (self.effect, self.journal, self.replay, self.undo),
+        }
+    }
+
+    /// The effect of a call with `params`.
+    pub fn effect_for(&self, params: &Value) -> Effect {
+        self.treatment_for(params).0
+    }
+
+    /// How going back, playback and recipes treat a call with `params`.
+    pub fn replay_for(&self, params: &Value) -> Replay {
+        self.treatment_for(params).2
+    }
+
+    /// How a call with `params` that changed no bytes is undone.
+    pub fn undo_for(&self, params: &Value) -> Undo {
+        self.treatment_for(params).3
+    }
+
     /// It writes a file, as `writes` says: that needs leave to edit, the
     /// file stays as written, and it is not repeated.
     pub const fn writes_file(mut self, writes: WritesFile) -> Self {
@@ -417,6 +521,12 @@ pub enum DocDefault {
     LeftOut,
     /// The document a function chooses, else the caller's focus.
     Chosen(ChooseDoc),
+}
+
+/// Whether `params` give a value, not null, at `path`, whose parts are
+/// joined with dots (`output.file`).
+fn is_given(params: &Value, path: &str) -> bool {
+    path.split('.').try_fold(params, |value, part| value.get(part)).is_some_and(|value| !value.is_null())
 }
 
 /// The namespace of a dotted method name.
@@ -519,6 +629,39 @@ impl MethodRef {
         }
     }
 
+    /// The effect of a call with `params`: the method's, or, for a call
+    /// whose `output` goes elsewhere than the default, that output's.
+    pub fn effect_for(&self, params: &Value) -> Effect {
+        match self {
+            MethodRef::Builtin(method) => method.effect_for(params),
+            MethodRef::Registered(method) => method.effect,
+        }
+    }
+
+    /// How the journal keeps a call with `params`.
+    pub fn journalled_for(&self, params: &Value) -> Journalled {
+        match self {
+            MethodRef::Builtin(method) => method.treatment_for(params).1,
+            MethodRef::Registered(method) => Journalled::for_effect(method.effect),
+        }
+    }
+
+    /// How going back, playback and recipes treat a step with `params`.
+    pub fn replay_for(&self, params: &Value) -> Replay {
+        match self {
+            MethodRef::Builtin(method) => method.replay_for(params),
+            MethodRef::Registered(_) => Replay::Step,
+        }
+    }
+
+    /// How a step with `params` that changed no bytes is undone.
+    pub fn undo_for(&self, params: &Value) -> Undo {
+        match self {
+            MethodRef::Builtin(method) => method.undo_for(params),
+            MethodRef::Registered(method) => Undo::registered(method.effect),
+        }
+    }
+
     /// How going back, playback and recipes treat a step of it; a
     /// plugin's steps are repeated.
     pub fn replay(&self) -> Replay {
@@ -542,14 +685,18 @@ impl MethodRef {
         matches!(self, MethodRef::Builtin(method) if method.merge)
     }
 
-    /// Whether a call with `params` writes a file.
+    /// Whether a call with `params` writes a file: always, when the
+    /// parameter that names it is given, or when its `output` is a file.
     pub fn writes_file(&self, params: &Value) -> bool {
         match self {
-            MethodRef::Builtin(method) => match method.writes_file {
-                WritesFile::No => false,
-                WritesFile::Always => true,
-                WritesFile::WhenGiven(param) => params.get(param).is_some_and(|path| !path.is_null()),
-            },
+            MethodRef::Builtin(method) => {
+                let declared = match method.writes_file {
+                    WritesFile::No => false,
+                    WritesFile::Always => true,
+                    WritesFile::WhenGiven(param) => is_given(params, param),
+                };
+                declared || method.output_kind(params) == Some(OutputKind::File)
+            }
             MethodRef::Registered(_) => false,
         }
     }
@@ -593,7 +740,7 @@ impl MethodRef {
     /// The effect whose leave a call with `params` needs: an edit's when it
     /// writes a file, otherwise its own.
     pub fn needs_leave_for(&self, params: &Value) -> Effect {
-        if self.writes_file(params) { Effect::Edit } else { self.effect() }
+        if self.writes_file(params) { Effect::Edit } else { self.effect_for(params) }
     }
 
     fn run(&self, workspace: &mut dyn Workspace, caller: &Caller, consent: Consent<'_>, params: Value) -> Result<Value, ApiError> {
@@ -1308,11 +1455,47 @@ mod tests {
         }
         for method in makers {
             assert!((method.result)().to_value()["properties"].get("output").is_some(), "{} gives output", method.name);
-            assert_eq!(method.outputs, Some(Outputs::NEW_SHEET), "{} says so in api.describe", method.name);
+            assert_eq!(method.outputs.map(|outputs| outputs.default), Some(OutputKind::New), "{} says so in api.describe", method.name);
         }
         for opener in ["documents.open", "documents.new", "documents.open_source"] {
             assert!(matches!(method(opener).unwrap().replay, Replay::OpensDocument { .. }), "{opener} opens an input, not a step");
         }
+    }
+
+    #[test]
+    fn a_call_is_kept_by_recipes_undone_and_allowed_as_its_output_says() {
+        let apply = method("transform.apply").unwrap();
+        assert_eq!((apply.effect_for(&json!({})), apply.replay_for(&json!({}))), (Effect::Edit, Replay::Step), "in place by default: a byte edit");
+        assert_eq!((apply.effect_for(&json!({"output": "new"})), apply.replay_for(&json!({"output": {"new": {"label": "plain"}}}))), (Effect::View, Replay::MakesSheet), "a new sheet is made again by recipes");
+        assert_eq!(apply.undo_for(&json!({"output": "new"})), Undo::Reverses(Reverse::OpenDocument { derives: true }));
+        assert_eq!(apply.effect_for(&json!({"output": "return"})), Effect::Read, "bytes returned are a read");
+        let decode = MethodRef::Builtin(method("codecs.decode").unwrap());
+        assert_eq!(decode.journalled_for(&json!({})), Journalled::Read, "a decode returned is a read, as ever");
+        assert_eq!(decode.journalled_for(&json!({"output": "new"})), Journalled::Step, "one that makes a sheet is a step");
+        assert_eq!(decode.needs_leave_for(&json!({"output": "in_place"})), Effect::Edit, "one in place edits");
+        let extract = MethodRef::Builtin(method("packets.extract").unwrap());
+        assert!(extract.writes_file(&json!({"path": "/tmp/x"})) && extract.writes_file(&json!({"output": {"file": "/tmp/x"}})), "a file named either way needs leave to edit");
+        assert_eq!(extract.replay_for(&json!({"path": "/tmp/x"})), Replay::WritesFile);
+        assert!(!extract.writes_file(&json!({})) && extract.replay_for(&json!({})) == Replay::Step, "returned, it is a read again");
+        let described = MethodRef::Builtin(method("codecs.decode").unwrap()).describe();
+        assert_eq!(serde_json::to_value(described.outputs).unwrap(), json!({"allowed": ["return", "new", "in_place"], "default": "return"}), "api.describe says where the output can go");
+    }
+
+    #[test]
+    fn a_client_without_leave_to_edit_may_have_bytes_returned_but_not_written() {
+        use crate::api::permissions::Policy;
+        let mut app = crate::app::ViewerApp::new(crate::app::Launch::default());
+        app.open_bytes(test_support::example_bytes(), "example.bin".to_string());
+        app.preferences.permissions.insert("mcp:claude-code".to_string(), Policy::Deny);
+        let client = Caller::Mcp("claude-code".into());
+        let returned = super::call(&mut app, &client, "codecs.decode", json!({"start": 0, "codec": "zlib", "encoding": "text"})).unwrap();
+        assert!(returned["data"].as_str().unwrap().starts_with("hello "));
+        let version = app.document.version();
+        for params in [json!({"start": 0, "codec": "zlib", "output": "in_place"}), json!({"start": 0, "codec": "zlib", "output": {"file": "/tmp/theviewer-never-written.bin"}})] {
+            assert_eq!(super::call(&mut app, &client, "codecs.decode", params.clone()).unwrap_err().code, ErrorCode::ReadOnly, "{params}");
+        }
+        assert_eq!(app.document.version(), version, "nothing was edited");
+        assert!(!std::path::Path::new("/tmp/theviewer-never-written.bin").exists());
     }
 
     #[test]

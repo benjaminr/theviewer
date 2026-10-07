@@ -13,18 +13,19 @@ use serde::{Deserialize, Serialize};
 
 use super::tool_jobs::{self, Summary, ToolSpan};
 use crate::api::jobs::JobStartedResult;
+use crate::api::output::{self, Made, Output, Produced};
 use crate::api::values::{self, ByteEncoding};
 use crate::api::workspace::{self, Workspace};
-use crate::api::{ApiError, Caller, ErrorCode, MAX_CALL_BYTES};
+use crate::api::{ApiError, Caller, ErrorCode, MAX_CALL_BYTES, OutputKind};
 use crate::unpack::{Limits, Node};
 
 /// This module's methods, in the order `api.describe` lists them within
 /// their namespace. A new method is added here, and only here.
 pub(super) const METHODS: &[crate::api::Method] = &[
     method!("unpack.run", Job, caller run, UnpackParams, JobStartedResult, "Start extracting the archives and compressed streams in the document (its first 256 MiB) recursively, like binwalk -e, as a job: the tree of what was found, each node with its kind, size and where its bytes came from, is job.finished's result, and in the window it fills the Unpacked tab and the Size map."),
-    method!("unpack.open", View, open, NodeParams, workspace::SheetMade, "Open one node of the unpacked tree (by its path of child indices, as unpack.run gave it) as a derived document; the tree is that of tree_doc, by default the document unpack.run last ran on.").makes_sheet().doc_defaults_to(tree_unpacked_last),
-    method!("unpack.read", Read, read, ReadNodeParams, NodeBytes, "Read the bytes of one node of the unpacked tree, by its path of child indices, as hex by default, or as base64 or text; the tree is that of tree_doc, by default the document unpack.run last ran on.").doc_defaults_to(tree_unpacked_last),
-    method!("unpack.save", Edit, caller save, SaveNodeParams, SavedNode, "Write the bytes of one node of the unpacked tree (by its path of child indices, as node) to a file; the document is left as it is. The tree is that of tree_doc, by default the document unpack.run last ran on.").writes_file(crate::api::WritesFile::Always).doc_defaults_to(tree_unpacked_last),
+    method!("unpack.open", View, caller open, NodeParams, Made, "Open one node of the unpacked tree (by its path of child indices, as unpack.run gave it) as a derived document; or, as output says, return its bytes or write them to a file (which needs leave to edit).").outputs(&[OutputKind::New, OutputKind::Return, OutputKind::File], OutputKind::New).doc_defaults_to(tree_unpacked_last),
+    method!("unpack.read", Read, read, ReadNodeParams, NodeBytes, "Read the bytes of one node of the unpacked tree, by its path of child indices, as hex by default, or as base64 or text: a shorthand for unpack.open with output \"return\", which can also read part of the node.").doc_defaults_to(tree_unpacked_last),
+    method!("unpack.save", Edit, caller save, SaveNodeParams, SavedNode, "Write the bytes of one node of the unpacked tree (by its path of child indices, as node) to a file; the document is left as it is. A shorthand for unpack.open with output {\"file\": path}.").writes_file(crate::api::WritesFile::Always).doc_defaults_to(tree_unpacked_last),
 ];
 
 /// What a call to one of this module's methods would do, in plain words.
@@ -80,6 +81,10 @@ pub struct NodeParams {
     /// with one.
     #[serde(default)]
     pub password: Option<String>,
+    /// Where the node's bytes go: "new" (the default; {"new": {"label": …}}
+    /// labels the sheet), "return", or {"file": path}, which needs leave to edit.
+    #[serde(default)]
+    pub output: Option<Output>,
 }
 
 /// Parameters of `unpack.read`.
@@ -277,12 +282,13 @@ fn node_at<'a>(tree: &'a Node, path: &[usize]) -> Result<&'a Node, ApiError> {
     tree.find(path).ok_or_else(|| ApiError::not_found(format!("the unpacked tree has no node at {path:?}; unpack.run lists them with their paths")))
 }
 
-pub fn open(workspace: &mut dyn Workspace, params: NodeParams) -> Result<workspace::SheetMade, ApiError> {
+pub fn open(workspace: &mut dyn Workspace, caller: &Caller, params: NodeParams) -> Result<Made, ApiError> {
+    let output = output::chosen("unpack.open", params.output)?;
     let (id, tree) = tree_of(workspace, tree_doc_of(params.tree_doc, params.doc).as_deref(), params.password.as_deref())?;
     let node = node_at(&tree, &params.path)?;
     let name = format!("{} › {}", workspace::info(workspace, &id)?.name, node.name);
-    let opened = workspace.open_derived(&id, node.data.to_vec(), &name)?;
-    workspace::SheetMade::of(workspace, &opened)
+    let delivered = output::deliver(workspace, caller, &id, Produced::bytes(node.data.to_vec(), name), &output)?;
+    Made::of(workspace, delivered)
 }
 
 pub fn read(workspace: &mut dyn Workspace, params: ReadNodeParams) -> Result<NodeBytes, ApiError> {
@@ -329,6 +335,21 @@ mod tests {
         let opened = call(&mut workspace, "unpack.open", json!({"path": [0]})).unwrap();
         assert_eq!(opened["len"], 300);
         assert!(opened["name"].as_str().unwrap().starts_with("example.bin › "));
+    }
+
+    #[test]
+    fn a_node_s_bytes_are_returned_or_written_with_output_as_read_and_save_do() {
+        let mut workspace = workspace_with("example.bin", &example_bytes());
+        let returned = call(&mut workspace, "unpack.open", json!({"path": [0], "output": {"return": {"encoding": "text"}}})).unwrap();
+        assert_eq!((returned["output"]["len"].as_u64(), returned["output"]["data"].as_str().map(|text| &text[..6])), (Some(300), Some("hello ")));
+        assert!(returned.get("id").is_none(), "no sheet was made");
+        let path = saved_path("output");
+        let written = call(&mut workspace, "unpack.open", json!({"path": [0], "output": {"file": path}})).unwrap();
+        assert_eq!(written["output"]["path"].as_str(), Some(path.as_str()));
+        assert_eq!(std::fs::read(&path).unwrap(), b"hello ".repeat(50));
+        std::fs::remove_file(path).ok();
+        let labelled = call(&mut workspace, "unpack.open", json!({"path": [0], "output": {"new": {"label": "greeting"}}})).unwrap();
+        assert_eq!((labelled["output"]["label"].as_str(), labelled["len"].as_u64()), (Some("greeting"), Some(300)));
     }
 
     #[test]

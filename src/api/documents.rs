@@ -6,9 +6,10 @@ use std::path::Path;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use super::output::{self, Made, Output, Produced};
 use super::values::{self, ByteEncoding, NoParams};
 use super::workspace::{self, DocumentInfo, Workspace};
-use super::ApiError;
+use super::{ApiError, OutputKind};
 use super::permissions::Caller;
 use crate::compress::{self, Codec};
 use crate::selection_ops::{self, Operation};
@@ -23,8 +24,8 @@ pub(super) const METHODS: &[super::Method] = &[
     method!("documents.activate", View, caller activate, ActivateParams, super::workspace::DocumentInfo, "Make an open document your focus, which an omitted doc means from then on; for the person at the window, show it (a parent of the document shown is gone back to, as documents.open does).").opens_document(false),
     method!("documents.new", View, caller new, NewParams, super::workspace::DocumentInfo, "Open a new, empty document and make it current; the window refuses while its document has unsaved edits, unless the person at the window discards them.").opens_document(false),
     method!("documents.save", Edit, save, SaveParams, super::workspace::DocumentInfo, "Save a document over its file, or to a path, with every edit made so far.").writes_file(crate::api::WritesFile::Always),
-    method!("documents.derive", View, derive, DeriveParams, super::workspace::SheetMade, "Open bytes of a document (a span, several ranges one after another, or bytes given), or what a transform such as decompress or XOR makes of them, as a document of their own derived from it, and make it current; in the window, Back goes back to the parent. Returns the new document, and output.").makes_sheet(),
-    method!("documents.export", Edit, export, ExportParams, ExportResult, "Write a span of a document (or several ranges one after another) to a file, or what decompresses at a span's start; the document is left as it is.").writes_file(crate::api::WritesFile::Always),
+    method!("documents.derive", View, caller derive, DeriveParams, super::output::Made, "Open bytes of a document (a span, several ranges one after another, bytes given, or ranges of several sheets joined with sources), or what a transform such as decompress or XOR makes of them, as a document of their own derived from it, and make it current; in the window, Back goes back to the parent. Returns the new document, and output; with output {\"file\": path} the bytes are written to a file instead, which needs leave to edit.").outputs(&[OutputKind::New, OutputKind::File], OutputKind::New),
+    method!("documents.export", Edit, export, ExportParams, ExportResult, "Write a span of a document (or several ranges one after another) to a file, or what decompresses at a span's start; the document is left as it is. A shorthand for documents.derive with output {\"file\": path}.").writes_file(crate::api::WritesFile::Always),
     method!("documents.open_source", View, caller open_source, OpenSourceParams, OpenSourceResult, "Open a file, URL, block device, serial port (serial:PORT@BAUD) or a process's memory region (pid:PID@ADDRESS) as a new document. The window reads a URL, device or region in the background and opens it when it arrives, and pid:PID lists a process's regions in the Live tab; headless, the bytes are read before the call returns.").opens_document(false),
 ];
 
@@ -41,6 +42,7 @@ pub(super) fn examples() -> Vec<(&'static str, serde_json::Value)> {
         ("documents.save", json!({"path": super::test_support::example_save_path().display().to_string()})),
         ("documents.export", json!({"start": 0, "len": 40, "path": std::env::temp_dir().join(format!("theviewer-api-examples-export-{}.bin", std::process::id())).display().to_string(), "decompress": true})),
         ("documents.derive", json!({"start": 0, "len": 32, "name": "zlib stream", "transform": {"op": "decompress"}})),
+        ("documents.derive", json!({"sources": [{"doc": "doc-1", "ranges": [[0, 4]]}, {"doc": "doc-2", "ranges": [[0, 6]]}], "output": {"new": {"label": "joined"}}})),
         ("documents.open_source", json!({"uri": super::test_support::example_file().display().to_string()})),
         ("documents.new", json!({"name": "scratch"})),
     ]
@@ -74,18 +76,23 @@ pub(super) fn describe_call(_workspace: &mut dyn Workspace, method: &str, params
         }
         "documents.derive" => {
             let params: DeriveParams = serde_json::from_value(params.clone()).ok()?;
-            let what = match (&params.ranges, &params.data, params.start) {
-                (Some(ranges), _, _) => format!("{} ranges", ranges.len()),
-                (_, Some(_), _) => "the bytes given".to_string(),
-                (_, _, Some(start)) => match params.len {
+            let what = match (&params.sources, &params.ranges, &params.data, params.start) {
+                (Some(sources), _, _, _) => format!("ranges of {} documents, joined,", sources.len()),
+                (_, Some(ranges), _, _) => format!("{} ranges", ranges.len()),
+                (_, _, Some(_), _) => "the bytes given".to_string(),
+                (_, _, _, Some(start)) => match params.len {
                     Some(len) => format!("{len} bytes from {start:#x}"),
                     None => format!("the bytes from {start:#x} to the end"),
                 },
                 _ => return None,
             };
+            let made = match &params.output {
+                Some(Output::File(path)) => format!("write them to {path}"),
+                _ => "open them as a document of their own".to_string(),
+            };
             match &params.transform {
-                Some(transform) => format!("Open {what}, after {}, as a document of their own", transform.name()),
-                None => format!("Open {what} as a document of their own"),
+                Some(transform) => format!("Take {what}, after {}, and {made}", transform.name()),
+                None => format!("Take {what} and {made}"),
             }
         }
         _ => return None,
@@ -160,7 +167,8 @@ pub struct NewParams {
 }
 
 /// Parameters of `documents.derive`: which bytes, given exactly one way
-/// (`start` and `len`, `ranges` or `data`), and what to make of them.
+/// (`start` and `len`, `ranges`, `data` or `sources`), what to make of
+/// them, and where they go.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct DeriveParams {
@@ -190,11 +198,39 @@ pub struct DeriveParams {
     /// An operation to apply to each span first, such as {"op": "decompress"} or {"op": "xor", "key": "5a"}.
     #[serde(default)]
     pub transform: Option<Operation>,
+    /// Ranges of several documents, joined one after another in the order
+    /// given (two halves of an archive, say), in place of start, ranges or
+    /// data; the new sheet's parent is `doc` when given, else the first
+    /// source's document.
+    #[serde(default)]
+    pub sources: Option<Vec<DeriveSource>>,
+    /// Where the bytes go: "new" (the default; {"new": {"label": …}} labels
+    /// the sheet, which a recipe then names it by) or {"file": path},
+    /// written to a file, which needs leave to edit.
+    #[serde(default)]
+    pub output: Option<Output>,
+}
+
+/// One document's part of what `documents.derive {sources}` joins.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DeriveSource {
+    /// Document id or path.
+    pub doc: String,
+    /// Its spans as [start, len], one after another; the whole document when omitted.
+    #[serde(default)]
+    pub ranges: Option<Vec<(u64, u64)>>,
 }
 
 /// The spans of bytes `params` names in document `id`, before any
 /// transform, and a few words for them to name the document by.
 fn derived_spans(workspace: &mut dyn Workspace, id: &str, params: &DeriveParams) -> Result<(Vec<Vec<u8>>, String), ApiError> {
+    if let Some(sources) = &params.sources {
+        if params.start.is_some() || params.len.is_some() || params.ranges.is_some() || params.data.is_some() {
+            return Err(ApiError::invalid_params("give the bytes to open one way: start (and len), ranges, data or sources"));
+        }
+        return joined_spans(workspace, sources);
+    }
     let (_, document) = workspace::document(workspace, Some(id))?;
     let document_len = document.len();
     match (params.start, &params.ranges, &params.data) {
@@ -215,9 +251,35 @@ fn derived_spans(workspace: &mut dyn Workspace, id: &str, params: &DeriveParams)
             values::check_call_size(bytes.len())?;
             Ok((vec![bytes], "bytes".to_string()))
         }
-        _ => Err(ApiError::invalid_params("give the bytes to open one way: start (and len), ranges, or data")),
+        _ => Err(ApiError::invalid_params("give the bytes to open one way: start (and len), ranges, data or sources")),
     }
 }
+
+/// The spans `sources` name, each source's in order, and a few words for
+/// them.
+fn joined_spans(workspace: &mut dyn Workspace, sources: &[DeriveSource]) -> Result<(Vec<Vec<u8>>, String), ApiError> {
+    if sources.is_empty() {
+        return Err(ApiError::invalid_params("sources names no documents; give at least one {doc, ranges}"));
+    }
+    let mut spans = Vec::new();
+    let mut total = 0;
+    for source in sources {
+        let (_, document) = workspace::document(workspace, Some(&source.doc))?;
+        let document_len = document.len();
+        let ranges = source.ranges.clone().unwrap_or_else(|| vec![(0, document_len as u64)]);
+        for (start, len) in ranges {
+            let (start, len) = values::span_within(document_len, start, Some(len))?;
+            total += len;
+            values::check_size(total, JOIN_LIMIT, "what sources joins")?;
+            spans.push(document.read_range(start, len));
+        }
+    }
+    let documents = if sources.len() == 1 { "1 document".to_string() } else { format!("{} documents", sources.len()) };
+    Ok((spans, format!("{documents} joined")))
+}
+
+/// Most bytes `documents.derive {sources}` joins.
+const JOIN_LIMIT: usize = 64 * 1024 * 1024;
 
 /// Parameters of `documents.export`.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -370,8 +432,12 @@ pub fn open_source(workspace: &mut dyn Workspace, caller: &Caller, params: OpenS
     Ok(OpenSourceResult { document: Some(workspace::info(workspace, &id)?), reading: false })
 }
 
-pub fn derive(workspace: &mut dyn Workspace, params: DeriveParams) -> Result<workspace::SheetMade, ApiError> {
-    let parent = workspace::resolve(workspace, params.doc.as_deref())?;
+pub fn derive(workspace: &mut dyn Workspace, caller: &Caller, params: DeriveParams) -> Result<Made, ApiError> {
+    let output = output::chosen("documents.derive", params.output.clone())?;
+    let parent = match (&params.doc, &params.sources) {
+        (None, Some(sources)) if !sources.is_empty() => workspace::resolve(workspace, Some(&sources[0].doc))?,
+        _ => workspace::resolve(workspace, params.doc.as_deref())?,
+    };
     let (spans, what) = derived_spans(workspace, &parent, &params)?;
     let mut bytes = Vec::with_capacity(spans.iter().map(Vec::len).sum());
     for (index, span) in spans.iter().enumerate() {
@@ -387,8 +453,8 @@ pub fn derive(workspace: &mut dyn Workspace, params: DeriveParams) -> Result<wor
         Some(name) => name,
         None => format!("{} › {what}", workspace::info(workspace, &parent)?.name),
     };
-    let id = workspace.open_derived(&parent, bytes, &name)?;
-    workspace::SheetMade::of(workspace, &id)
+    let delivered = output::deliver(workspace, caller, &parent, Produced::bytes(bytes, name), &output)?;
+    Made::of(workspace, delivered)
 }
 
 pub fn save(workspace: &mut dyn Workspace, params: SaveParams) -> Result<DocumentInfo, ApiError> {
@@ -568,6 +634,32 @@ mod tests {
         assert!(bytes_of(&mut workspace, "doc-2").starts_with("hello hello"));
         call(&mut workspace, "documents.derive", json!({"doc": "doc-1", "data": "0102", "transform": {"op": "xor", "key": "ff"}})).unwrap();
         assert_eq!(call(&mut workspace, "bytes.read", json!({"doc": "doc-3", "start": 0})).unwrap()["data"], "fefd");
+    }
+
+    #[test]
+    fn two_halves_open_as_one_sheet_joined_with_sources() {
+        let mut workspace = workspace_with("capture.bin", b"..PK\x03\x04front..");
+        call(&mut workspace, "documents.derive", json!({"data": "6261636b", "name": "back half"})).unwrap();
+        let joined = call(&mut workspace, "documents.derive", json!({"sources": [{"doc": "doc-1", "ranges": [[2, 9]]}, {"doc": "doc-2"}], "output": {"new": {"label": "archive"}}})).unwrap();
+        assert_eq!(joined["output"], json!({"doc": "doc-3", "label": "archive", "len": 13}));
+        assert_eq!(bytes_of(&mut workspace, "doc-3"), "PK\u{3}\u{4}frontback");
+        assert_eq!(joined["parent"], "doc-1", "the first source's document is its parent");
+        assert_eq!(joined["name"], "capture.bin › 2 documents joined");
+        let refused = call(&mut workspace, "documents.derive", json!({"start": 0, "sources": [{"doc": "doc-1"}]})).unwrap_err();
+        assert_eq!(refused.code, ErrorCode::InvalidParams, "one way only");
+        assert_eq!(call(&mut workspace, "documents.derive", json!({"sources": [{"doc": "doc-1", "ranges": [[10, 9]]}]})).unwrap_err().code, ErrorCode::OutOfRange);
+    }
+
+    #[test]
+    fn a_span_derived_to_a_file_is_written_and_opens_nothing() {
+        let mut workspace = workspace_with("fw.bin", b"0123456789");
+        let path = export_path("derived");
+        let written = call(&mut workspace, "documents.derive", json!({"ranges": [[8, 2], [0, 2]], "output": {"file": path}})).unwrap();
+        assert_eq!(written["output"], json!({"len": 4, "path": path}));
+        assert!(written.get("id").is_none(), "no sheet was made");
+        assert_eq!(std::fs::read(&path).unwrap(), b"8901");
+        assert_eq!(call(&mut workspace, "documents.list", json!({})).unwrap()["documents"].as_array().unwrap().len(), 1);
+        std::fs::remove_file(path).ok();
     }
 
     #[test]

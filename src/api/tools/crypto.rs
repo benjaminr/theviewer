@@ -11,9 +11,10 @@ use serde::{Deserialize, Serialize};
 
 use super::tool_jobs::{self, Summary, ToolSpan};
 use crate::api::jobs::JobStartedResult;
+use crate::api::output::{self, Delivered, NewSheet, Output, Produced};
 use crate::api::values::{self, ByteEncoding};
 use crate::api::workspace::{self, DocumentInfo, Workspace};
-use crate::api::{ApiError, Caller};
+use crate::api::{ApiError, Caller, OutputKind};
 use crate::block_cipher::{self, Algorithm, Decryption, Mode, Padding};
 use crate::blocks::BlockReport;
 use crate::ciphers::{AttackOptions, CipherCandidate, KeyFragment};
@@ -30,8 +31,8 @@ pub(super) const METHODS: &[crate::api::Method] = &[
     method!("crypto.repeated_blocks", Job, caller repeated_blocks, CryptoSpanParams, JobStartedResult, "Start a search of a span (at most 16 MiB) for random-looking 8- and 16-byte blocks that repeat, the mark of ECB-mode encryption, as a job: the verdict, the best block size and alignment, the most repeated blocks and the repeats along the span are job.finished's result, and in the window they fill the Crypto panel."),
     method!("crypto.find_keys", Job, caller find_keys, CryptoSpanParams, JobStartedResult, "Start a search of a span (the whole document by default, at most 64 MiB) for PEM blocks, DER certificates and keys, OpenSSH keys and random-looking runs that could be raw symmetric keys, as a job: what was found is job.finished's result, and in the window it fills the Crypto panel."),
     method!("crypto.attack", Job, caller attack, AttackParams, JobStartedResult, "Start attacks on simple ciphers over a span (at most 1 MiB): rolling XOR, XOR with the previous byte, ADD/SUB with a constant or repeating key, bit rotation, XOR combined with ADD and, with a crib, crib dragging, as a job: the decodes that look most like text or structured data, each with the operation that transform.apply or documents.derive takes to apply it, and with a crib the key bytes it reveals, are job.finished's result, and in the window they fill the Crypto panel."),
-    method!("crypto.decrypt", Read, decrypt, DecryptParams, DecryptResult, "Decrypt a span with AES-128, AES-192 or AES-256 in ECB, CBC or CTR mode, with a key (and IV) given as hex, removing PKCS#7 padding, and return the plaintext; crypto.open_decrypted opens it as a document instead."),
-    method!("crypto.open_decrypted", View, open_decrypted, OpenDecryptedParams, OpenDecryptedResult, "Decrypt a span as crypto.decrypt does and open the plaintext as a document derived from this one; in the window, Back (or opening the parent by id) returns.").makes_sheet(),
+    method!("crypto.decrypt", Read, caller decrypt, DecryptParams, DecryptResult, "Decrypt a span with AES-128, AES-192 or AES-256 in ECB, CBC or CTR mode, with a key (and IV) given as hex, removing PKCS#7 padding, and return the plaintext; or, as output says, open it as a new sheet, put it in place of the ciphertext, or write it to a file (which needs leave to edit).").outputs(&[OutputKind::Return, OutputKind::New, OutputKind::InPlace, OutputKind::File], OutputKind::Return),
+    method!("crypto.open_decrypted", View, caller open_decrypted, OpenDecryptedParams, OpenDecryptedResult, "Decrypt a span as crypto.decrypt does and open the plaintext as a document derived from this one; in the window, Back (or opening the parent by id) returns. A shorthand for crypto.decrypt with output \"new\".").makes_sheet(),
 ];
 
 /// An example call of each of [`METHODS`], run in order on a fresh
@@ -329,9 +330,14 @@ pub struct DecryptParams {
     /// "pkcs7" or "none"; by default PKCS#7 for ECB and CBC and none for CTR. Padding that is not valid is left in place and said.
     #[serde(default)]
     pub padding: Option<Padding>,
-    /// How to write the plaintext: hex (the default), base64 or text.
+    /// How to write the plaintext returned: hex (the default), base64 or text.
     #[serde(default)]
     pub encoding: ByteEncoding,
+    /// Where the plaintext goes: "return" (the default), "new" (a sheet
+    /// derived from this document; {"new": {"label": …, "name": …}} names
+    /// it), "in_place" (over the ciphertext) or {"file": path}.
+    #[serde(default)]
+    pub output: Option<Output>,
 }
 
 /// Parameters of `crypto.open_decrypted`.
@@ -366,7 +372,7 @@ pub struct OpenDecryptedParams {
 }
 
 impl OpenDecryptedParams {
-    /// The same decryption, as `crypto.decrypt` takes it.
+    /// The same decryption, as `crypto.decrypt` takes it, with output "new".
     fn as_decrypt(&self) -> DecryptParams {
         DecryptParams {
             doc: self.doc.clone(),
@@ -378,6 +384,7 @@ impl OpenDecryptedParams {
             iv: self.iv.clone(),
             padding: self.padding,
             encoding: ByteEncoding::Hex,
+            output: Some(Output::New(NewSheet { name: self.name.clone(), ..NewSheet::default() })),
         }
     }
 }
@@ -407,8 +414,11 @@ pub struct DecryptResult {
     #[serde(flatten)]
     pub done: DecryptionDone,
     pub encoding: ByteEncoding,
-    /// The plaintext, written as `encoding` says.
-    pub data: String,
+    /// The plaintext, written as `encoding` says, when it was returned.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<String>,
+    /// Where the plaintext went: {len, encoding} returned (the bytes are `data`), {doc, label, len} for a new sheet, {version, len, ranges} in place, {path, len} to a file.
+    pub output: Delivered,
 }
 
 /// The result of `crypto.open_decrypted`.
@@ -455,22 +465,25 @@ fn decrypt_span(workspace: &mut dyn Workspace, params: &DecryptParams) -> Result
     Ok((id, decrypted.bytes, done))
 }
 
-/// `crypto.decrypt`: decrypt a span and return the plaintext.
-pub fn decrypt(workspace: &mut dyn Workspace, params: DecryptParams) -> Result<DecryptResult, ApiError> {
-    let (_, plaintext, done) = decrypt_span(workspace, &params)?;
-    Ok(DecryptResult { done, encoding: params.encoding, data: values::encode_bytes(&plaintext, params.encoding) })
+/// `crypto.decrypt`: decrypt a span and send the plaintext where `output`
+/// says: returned by default.
+pub fn decrypt(workspace: &mut dyn Workspace, caller: &Caller, params: DecryptParams) -> Result<DecryptResult, ApiError> {
+    let output = output::chosen("crypto.decrypt", params.output.clone())?;
+    let (parent, plaintext, done) = decrypt_span(workspace, &params)?;
+    let name = format!("{} › {}-{}@{:#x}", workspace::info(workspace, &parent)?.name, done.alg.label(), done.mode.label(), done.start);
+    let action = format!("Decrypt {}-{}", done.alg.label(), done.mode.label());
+    let produced = Produced::replacing(done.start as usize, done.len as usize, plaintext, name, action).encoded(params.encoding);
+    let mut delivered = output::deliver(workspace, caller, &parent, produced, &output)?;
+    let data = delivered.data.take();
+    Ok(DecryptResult { done, encoding: delivered.encoding.unwrap_or(params.encoding), data, output: delivered })
 }
 
-/// `crypto.open_decrypted`: decrypt a span and open the plaintext as a
-/// document derived from the one it came from.
-pub fn open_decrypted(workspace: &mut dyn Workspace, params: OpenDecryptedParams) -> Result<OpenDecryptedResult, ApiError> {
-    let (parent, plaintext, done) = decrypt_span(workspace, &params.as_decrypt())?;
-    let name = match params.name {
-        Some(name) => name,
-        None => format!("{} › {}-{}@{:#x}", workspace::info(workspace, &parent)?.name, done.alg.label(), done.mode.label(), done.start),
-    };
-    let id = workspace.open_derived(&parent, plaintext, &name)?;
-    Ok(OpenDecryptedResult { document: workspace::info(workspace, &id)?, done, output: workspace::SheetOutput::of(workspace, &id)? })
+/// `crypto.open_decrypted`: `crypto.decrypt` with output "new", giving the
+/// document opened.
+pub fn open_decrypted(workspace: &mut dyn Workspace, caller: &Caller, params: OpenDecryptedParams) -> Result<OpenDecryptedResult, ApiError> {
+    let decrypted = decrypt(workspace, caller, params.as_decrypt())?;
+    let id = decrypted.output.doc.expect("a new sheet");
+    Ok(OpenDecryptedResult { document: workspace::info(workspace, &id)?, done: decrypted.done, output: workspace::SheetOutput::of(workspace, &id)? })
 }
 
 /// What a decryption gave, for the status bar: "AES-128-ECB: 304 bytes
@@ -682,6 +695,10 @@ mod tests {
         assert_eq!((opened["document"]["id"].as_str(), opened["document"]["name"].as_str(), opened["document"]["len"].as_u64()), (Some("doc-2"), Some("payload.enc › AES-128-ECB@0x4"), Some(16)));
         let read = call(&mut workspace, "bytes.read", json!({"doc": "doc-2", "start": 0, "len": 16})).unwrap();
         assert_eq!(read["data"], "6bc1bee22e409f96e93d7e117393172a");
+        let made = call(&mut workspace, "crypto.decrypt", json!({"doc": "doc-1", "start": 4, "mode": "ecb", "key": key, "padding": "none", "output": {"new": {"label": "plaintext"}}})).unwrap();
+        assert_eq!((made["output"]["doc"].as_str(), made["output"]["label"].as_str(), made["data"].as_str()), (Some("doc-3"), Some("plaintext"), None), "one method, with output");
+        call(&mut workspace, "crypto.decrypt", json!({"doc": "doc-1", "start": 4, "mode": "ecb", "key": key, "padding": "none", "output": "in_place"})).unwrap();
+        assert_eq!(call(&mut workspace, "bytes.read", json!({"doc": "doc-1", "start": 4, "len": 16})).unwrap()["data"], "6bc1bee22e409f96e93d7e117393172a", "the ciphertext replaced");
     }
 
     #[test]

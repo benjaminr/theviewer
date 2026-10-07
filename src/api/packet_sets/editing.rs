@@ -8,14 +8,13 @@
 //! `document.edited` as the caller's. Packets are named by their index in
 //! the set, never by a position in a filtered list.
 
-use std::path::Path;
-
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use super::super::values::{self, ByteEncoding};
-use super::super::workspace::{DOCUMENT_PRODUCER, Workspace};
-use super::super::{ApiError, Caller, ErrorCode};
+use super::super::output::{self, Delivered, Output, Produced};
+use super::super::values::ByteEncoding;
+use super::super::workspace::{self, DOCUMENT_PRODUCER, Workspace};
+use super::super::{ApiError, Caller};
 use super::{PACKET_READ_LIMIT, StoredSet, decode, packet_index, packet_indices, unknown_set, with_set};
 use crate::document::Document;
 use crate::packets::edit::{self, ByteOperation};
@@ -267,12 +266,17 @@ pub struct ExtractParams {
     #[serde(default)]
     pub label: Option<usize>,
     /// Write the bytes here instead of returning them; needs leave to edit,
-    /// as writing a file does.
+    /// as writing a file does. The same as output {"file": path}.
     #[serde(default)]
     pub path: Option<String>,
     /// How the returned bytes are written: base64 (the default) or hex.
     #[serde(default = "base64_by_default")]
     pub encoding: ByteEncoding,
+    /// Where the bytes go: "return" (the default), "new" (a sheet derived
+    /// from the set's document; {"new": {"label": …}} labels it) or
+    /// {"file": path}, which needs leave to edit.
+    #[serde(default)]
+    pub output: Option<Output>,
 }
 
 fn base64_by_default() -> ByteEncoding {
@@ -286,10 +290,13 @@ pub struct ExtractResult {
     pub count: u64,
     /// Bytes taken.
     pub len: u64,
-    /// The bytes, when no path was given.
+    /// The bytes, when they were returned.
     pub data: Option<String>,
-    /// Where they were written, when a path was given.
+    /// Where they were written, when they went to a file.
     pub path: Option<String>,
+    /// Where the bytes went: {len, encoding} returned (the bytes are `data`),
+    /// {doc, label, len} for a new sheet, {path, len} to a file.
+    pub output: Delivered,
 }
 
 /// What a change made inside its step.
@@ -621,14 +628,20 @@ fn dns_label(name: &[u8], wanted: usize) -> Option<(usize, usize)> {
     None
 }
 
-pub fn extract(workspace: &mut dyn Workspace, params: ExtractParams) -> Result<ExtractResult, ApiError> {
+pub fn extract(workspace: &mut dyn Workspace, caller: &Caller, params: ExtractParams) -> Result<ExtractResult, ApiError> {
+    let given = match (params.output.clone(), params.path.clone()) {
+        (Some(_), Some(_)) => return Err(ApiError::invalid_params("give the file as path or as output {\"file\": path}, not both")),
+        (None, Some(path)) => Some(Output::File(path)),
+        (output, None) => output,
+    };
+    let output = output::chosen("packets.extract", given)?;
     if params.field.is_some() && params.field_name.is_some() {
         return Err(ApiError::invalid_params("give the field as field (an offset and length) or as field_name, not both"));
     }
     if params.label.is_some() && params.field_name.is_none() {
         return Err(ApiError::invalid_params("label picks a label of the DNS name field_name names; give field_name too"));
     }
-    let (count, bytes) = with_set(workspace, &params.set, |stored, document| {
+    let (doc, count, bytes) = with_set(workspace, &params.set, |stored, document| {
         let chosen = packet_indices(stored, &params.indices)?;
         let field_name = match &params.field_name {
             Some(name) => {
@@ -652,18 +665,14 @@ pub fn extract(workspace: &mut dyn Workspace, params: ExtractParams) -> Result<E
                 bytes.extend(document.read_range(packet.offset + offset, len));
             }
         }
-        Ok((chosen.len(), bytes))
+        Ok((stored.info.doc.clone(), chosen.len(), bytes))
     })?;
-    match params.path {
-        Some(path) => {
-            std::fs::write(Path::new(&path), &bytes).map_err(|error| ApiError::new(ErrorCode::Unavailable, format!("could not write {path}: {error}")))?;
-            Ok(ExtractResult { count: count as u64, len: bytes.len() as u64, data: None, path: Some(path) })
-        }
-        None => {
-            values::check_call_size(bytes.len())?;
-            Ok(ExtractResult { count: count as u64, len: bytes.len() as u64, data: Some(values::encode_bytes(&bytes, params.encoding)), path: None })
-        }
-    }
+    let len = bytes.len() as u64;
+    let plural = if count == 1 { "" } else { "s" };
+    let name = format!("{} › {count} packet{plural} of {}", workspace::info(workspace, &doc)?.name, params.set);
+    let mut delivered = output::deliver(workspace, caller, &doc, Produced::bytes(bytes, name).encoded(params.encoding), &output)?;
+    let (data, path) = (delivered.data.take(), delivered.path.clone());
+    Ok(ExtractResult { count: count as u64, len, data, path, output: delivered })
 }
 
 #[cfg(test)]

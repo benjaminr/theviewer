@@ -114,15 +114,22 @@ pub fn replay_of(method: &str) -> Replay {
     api::method(method).map_or(Replay::Step, |method| method.replay)
 }
 
-/// Whether going back and playback repeat a step of `method`.
-fn is_replayed(method: &str) -> bool {
-    replay_of(method) == Replay::Step
+/// How going back, playback and recipes treat `entry`: as its method
+/// declares, or as the output it asked for says (a call with
+/// `output: "new"` makes a sheet; one in place is a step).
+pub fn replay_of_entry(entry: &JournalEntry) -> Replay {
+    api::method(&entry.method).map_or(Replay::Step, |method| method.replay_for(&entry.params))
 }
 
-/// Whether recipes keep a step of `method`: the steps going back and
-/// playback repeat, and those that make sheets.
-pub fn is_kept_by_recipes(method: &str) -> bool {
-    matches!(replay_of(method), Replay::Step | Replay::MakesSheet)
+/// Whether going back and playback repeat `entry`.
+fn is_replayed(entry: &JournalEntry) -> bool {
+    replay_of_entry(entry) == Replay::Step
+}
+
+/// Whether recipes keep `entry`: the steps going back and playback
+/// repeat, and those that make sheets.
+pub fn is_kept_by_recipes(entry: &JournalEntry) -> bool {
+    matches!(replay_of_entry(entry), Replay::Step | Replay::MakesSheet)
 }
 
 /// Where a step stands on the timeline.
@@ -234,11 +241,11 @@ impl Timeline {
             return;
         }
         let doc = entry.doc.clone().unwrap_or_default();
-        if replay_of(&entry.method) == Replay::Note {
+        if replay_of_entry(entry) == Replay::Note {
             self.statuses.insert(step, StepStatus::Note);
             return;
         }
-        let Replay::Move(kind) = replay_of(&entry.method) else {
+        let Replay::Move(kind) = replay_of_entry(entry) else {
             self.statuses.insert(step, StepStatus::Active);
             if entry.effect == Effect::Edit && entry.changed_document() {
                 self.edits.entry(doc.clone()).or_default().push(UndoGroup { steps: vec![step], label: edit_label(entry) });
@@ -367,7 +374,7 @@ impl RunAgain {
 /// (see [`undo_all_or_nothing`]).
 fn left_undone(entry: &JournalEntry) -> Vec<u64> {
     let Outcome::Error(error) = &entry.outcome else { return Vec::new() };
-    if !matches!(replay_of(&entry.method), Replay::Move(_)) {
+    if !matches!(replay_of_entry(entry), Replay::Move(_)) {
         return Vec::new();
     }
     let undone = error.data.as_ref().and_then(|data| data.get("undone")).and_then(Value::as_array);
@@ -517,7 +524,7 @@ fn inverse_for(journal: &Journal, entry: &JournalEntry) -> Inverse {
             None => Inverse::unavailable("the journal does not say which document it edited"),
         };
     }
-    match undo::undo_of(&entry.method, entry.effect) {
+    match undo::undo_of(entry) {
         Undo::Nothing(why) => Inverse::nothing(why),
         Undo::Irreversible => Inverse::unavailable(format!("{} has no inverse", entry.method)),
         Undo::Creates(resource) => match resource.made_by(entry) {
@@ -538,7 +545,7 @@ fn document_undo(doc: &str) -> Inverse {
 
 /// Whether `entry` changed its document's bytes as an undoable edit.
 fn is_byte_edit(entry: &JournalEntry) -> bool {
-    entry.outcome.is_ok() && entry.effect == Effect::Edit && entry.changed_document() && !matches!(replay_of(&entry.method), Replay::Move(_))
+    entry.outcome.is_ok() && entry.effect == Effect::Edit && entry.changed_document() && !matches!(replay_of_entry(entry), Replay::Move(_))
 }
 
 /// A later step in effect that changed what `entry` changed, or used what
@@ -549,7 +556,7 @@ fn later_change_of_the_same(journal: &Journal, entry: &JournalEntry) -> Option<u
     }
     let timeline = journal.timeline();
     let mut later = journal.since(entry.step).filter(|later| timeline.is_active(later.step));
-    match undo::undo_of(&entry.method, entry.effect) {
+    match undo::undo_of(entry) {
         Undo::Creates(resource) => {
             let made = resource.made_by(entry)?;
             later.find(|later| resource.is_used_by(made, later)).map(|later| later.step)
@@ -593,7 +600,7 @@ fn before_of(journal: &Journal, entry: &JournalEntry) -> Option<Value> {
     if entry.before.is_some() {
         return entry.before.clone();
     }
-    let Undo::Reverses(reverse) = undo::undo_of(&entry.method, entry.effect) else { return None };
+    let Undo::Reverses(reverse) = undo::undo_of(entry) else { return None };
     let target = undo::target_of(entry)?;
     let timeline = journal.timeline();
     let earlier = journal
@@ -606,7 +613,7 @@ fn before_of(journal: &Journal, entry: &JournalEntry) -> Option<Value> {
     match earlier {
         // A step undone left things as they were before it.
         Some(earlier) if matches!(timeline.status(earlier.step), Some(StepStatus::Undone { .. })) => before_of(journal, earlier),
-        Some(earlier) => match undo::undo_of(&earlier.method, earlier.effect) {
+        Some(earlier) => match undo::undo_of(earlier) {
             Undo::Reverses(earlier_reverse) => earlier_reverse.after(earlier),
             _ => None,
         },
@@ -685,7 +692,7 @@ fn putting_back(entry: &JournalEntry, calls: &[InverseCall]) -> Option<Vec<Inver
     if calls.iter().all(|call| call.method == UNDO) {
         return Some(calls.iter().rev().map(|call| InverseCall::new(REDO, call.params.clone())).collect());
     }
-    let Undo::Reverses(reverse) = undo::undo_of(&entry.method, entry.effect) else { return None };
+    let Undo::Reverses(reverse) = undo::undo_of(entry) else { return None };
     reverse.inverse(entry, reverse.after(entry)).into_calls().ok()
 }
 
@@ -952,7 +959,7 @@ fn run_steps(workspace: &mut dyn Workspace, steps: &[RecipeStep], options: &Repl
 /// order.
 fn replayable_entries(journal: &Journal, steps: std::ops::RangeInclusive<u64>) -> impl Iterator<Item = &JournalEntry> {
     let timeline = journal.timeline();
-    journal.entries().filter(move |entry| steps.contains(&entry.step) && timeline.is_active(entry.step) && is_replayed(&entry.method))
+    journal.entries().filter(move |entry| steps.contains(&entry.step) && timeline.is_active(entry.step) && is_replayed(entry))
 }
 
 /// [`replayable_entries`] as steps to run again, only those about document
@@ -1037,7 +1044,7 @@ impl Playback {
 pub fn entries_for_recipe(journal: &Journal, through: Option<u64>) -> Vec<&JournalEntry> {
     let timeline = journal.timeline();
     let through = through.unwrap_or(u64::MAX);
-    journal.entries().filter(|entry| entry.step <= through && timeline.is_active(entry.step) && is_kept_by_recipes(&entry.method)).collect()
+    journal.entries().filter(|entry| entry.step <= through && timeline.is_active(entry.step) && is_kept_by_recipes(entry)).collect()
 }
 
 /// A recipe called `name` of the history in effect up to `through`, made

@@ -357,6 +357,13 @@ pub fn preview_hex(bytes: &[u8]) -> String {
     format!("{} … ({} bytes)", ops::to_hex_string(&bytes[..PREVIEW_BYTES]), bytes.len())
 }
 
+/// The new bytes for each of `ranges` of `document`, in order, as
+/// [`transform_range`] makes them: what an operation would write, for
+/// `transform.preview` and for an output other than in place.
+pub fn transform_ranges(operation: &Operation, document: &mut crate::document::Document, ranges: &[(usize, usize)]) -> Result<Vec<Vec<u8>>, String> {
+    ranges.iter().enumerate().map(|(index, &(start, len))| transform_range(operation, &document.read_range(start, len), index)).collect()
+}
+
 /// The new bytes for one selected range. `index` counts the ranges from the
 /// first, so a counter numbers records.
 pub fn transform_range(operation: &Operation, bytes: &[u8], index: usize) -> Result<Vec<u8>, String> {
