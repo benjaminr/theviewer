@@ -3841,7 +3841,7 @@ There are two kinds of message. **Facts** are kept: the latest per topic, produc
 
 Every message has an envelope: `id` (such as `evt-12`), `topic`, `kind`, `producer`, `document`, `version` (the document version it describes), `span` (`{start, len}`, the bytes it is about), `confidence` (0 to 1), `key` (which of a producer's facts on a topic it is), `caused_by` (the message whose handling published it) and the `payload` below; `events.facts` and `events.poll` add `stale` and `retracted`. A chain of messages more than 8 reactions deep is dropped as a loop.
 
-Plugins may publish any topic but those the app itself publishes (`document.opened`, `document.closed`, `document.edited`, `cursor.moved`, `selection.changed`, `job.started` and `job.finished`), with a payload that must fit the topic's schema, and their own topics, `x.<plugin>.<name>`, with any payload.
+Plugins may publish any topic but those the app itself publishes (`document.opened`, `document.closed`, `document.edited`, `cursor.moved`, `selection.changed`, `job.started`, `job.progress`, `job.finished`, `journal.recorded` and `plugin.log`), with a payload that must fit the topic's schema, and their own topics, `x.<plugin>.<name>`, with any payload.
 
 | Topic | Kind | Description |
 | --- | --- | --- |

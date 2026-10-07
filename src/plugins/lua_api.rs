@@ -397,9 +397,37 @@ fn api_table(lua: &Lua, publish: Function) -> mlua::Result<Table> {
     Ok(table)
 }
 
-/// Topics plugins may not publish: what the app itself says happened.
+/// Topics plugins may not publish: what the app itself says happened, to
+/// the documents, the cursor and selection, its jobs, its journal and its
+/// plugins' log. Every topic is named, so a new one must be decided on.
 fn published_only_by_the_app(topic: Topic) -> bool {
-    matches!(topic, Topic::DocumentOpened | Topic::DocumentClosed | Topic::DocumentEdited | Topic::CursorMoved | Topic::SelectionChanged | Topic::JobStarted | Topic::JobFinished)
+    match topic {
+        Topic::DocumentOpened
+        | Topic::DocumentClosed
+        | Topic::DocumentEdited
+        | Topic::CursorMoved
+        | Topic::SelectionChanged
+        | Topic::JobStarted
+        | Topic::JobProgress
+        | Topic::JobFinished
+        | Topic::PluginLog
+        | Topic::JournalRecorded => true,
+        Topic::ViewJump
+        | Topic::PaneShow
+        | Topic::ViewPointed
+        | Topic::FindingsPublished
+        | Topic::StructureIdentified
+        | Topic::FieldsDecoded
+        | Topic::TemplateApplied
+        | Topic::RegionsMapped
+        | Topic::RecordWidthEstimated
+        | Topic::FramesDefined
+        | Topic::FieldsGuessed
+        | Topic::ProtocolIdentified
+        | Topic::ReferenceFocus
+        | Topic::TemplateApplyRequested
+        | Topic::Custom => false,
+    }
 }
 
 /// The payload of a message on `topic`, checked against the topic's type,
@@ -414,7 +442,7 @@ fn payload_for(binding: &Binding, topic: &str, payload: Value) -> Result<Payload
     }
     let known = Topic::named(topic).ok_or_else(|| format!("there is no topic '{topic}'; publish a built-in topic, or one of your own named {CUSTOM_PREFIX}{}.<name>", binding.namespace))?;
     if published_only_by_the_app(known) {
-        return Err(format!("{topic} is published by the app itself; change the document or the selection through theviewer.api instead"));
+        return Err(format!("{topic} is published by the app itself; change the document or the selection through theviewer.api, and log with theviewer.log, instead"));
     }
     serde_json::from_value(serde_json::json!({ "topic": topic, "payload": payload })).map_err(|error| format!("the payload does not fit {topic}: {error}; api.describe lists each topic's payload"))
 }
@@ -753,6 +781,27 @@ mod tests {
         assert!(fact.draft.caused_by.is_some(), "it says which message it answered");
         publish_frames(&mut app, &[(8, 2)]);
         assert!(logged(&app, LogLevel::Error).is_empty(), "{:?}", logged(&app, LogLevel::Error));
+    }
+
+    #[test]
+    fn a_plugin_cannot_publish_the_apps_jobs_journal_or_log() {
+        let mut app = app_with(&[0u8; 16]);
+        load(
+            &mut app,
+            "forger.lua",
+            r#"theviewer.subscribe("frames.defined", function(message, api)
+                for _, topic in ipairs({ "job.started", "job.progress", "job.finished", "journal.recorded", "plugin.log", "selection.changed" }) do
+                    local ok, err = pcall(api.publish, topic, {})
+                    theviewer.log(topic .. ": " .. tostring(ok) .. " " .. tostring(err))
+                end
+            end)"#,
+        );
+        publish_frames(&mut app, &[(0, 4)]);
+        let lines = logged(&app, LogLevel::Info);
+        assert_eq!(lines.len(), 6, "{lines:?}");
+        for line in &lines {
+            assert!(line.contains(": false invalid_params:") && line.contains("published by the app itself"), "{line}");
+        }
     }
 
     #[test]

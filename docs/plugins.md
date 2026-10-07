@@ -412,8 +412,9 @@ version. It works where the API does.
   or the call raises an `invalid_params` error saying what does not fit.
   The topics the app itself publishes are refused: `document.opened`,
   `document.closed`, `document.edited`, `cursor.moved`,
-  `selection.changed`, `job.started` and `job.finished`. Change the
-  document or the selection through `theviewer.api` instead.
+  `selection.changed`, `job.started`, `job.progress`, `job.finished`,
+  `journal.recorded` and `plugin.log`. Change the document or the
+  selection through `theviewer.api`, and log with `theviewer.log`, instead.
 - **The plugin's own topics** are `x.<plugin>.<name>` (lower-case letters,
   digits and underscores, the plugin's name as `theviewer.plugin` gave it),
   with any payload. Other plugins can subscribe to them, and so can the
