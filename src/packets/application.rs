@@ -212,6 +212,15 @@ fn dns_type_name(record_type: u16) -> String {
     }
 }
 
+/// A record type as a field shows it: its name with its number, "TXT (16)",
+/// so a filter finds it by either.
+fn dns_type_value(record_type: u16) -> String {
+    match dns_type_name(record_type) {
+        unnamed if unnamed.starts_with("type ") => record_type.to_string(),
+        name => format!("{name} ({record_type})"),
+    }
+}
+
 /// Read a possibly compressed name at `start`. Returns the name and how many
 /// bytes it takes up at `start` (a pointer counts as its two bytes).
 pub fn read_dns_name(message: &[u8], start: usize) -> Option<(String, usize)> {
@@ -291,7 +300,7 @@ pub fn dissect_dns(message: &[u8]) -> Option<AppLayer> {
         questions.push(
             Field::new(format!("Question {index}"), at, len, format!("{name} {} class {class}", dns_type_name(record_type))).with_children(vec![
                 Field::new("Query name", at, name_len, name.clone()),
-                Field::new("Query type", at + name_len, 2, dns_type_name(record_type)),
+                Field::new("Query type", at + name_len, 2, dns_type_value(record_type)),
                 Field::new("Query class", at + name_len + 2, 2, class.to_string()),
             ]),
         );
@@ -427,7 +436,7 @@ fn dns_record(message: &[u8], at: usize, section: DnsSection, index: usize) -> O
     let description = format!("{} {value}", dns_type_name(record_type));
     let field = Field::new(label, at, len, format!("{name} {description} TTL {ttl}")).with_children(vec![
         Field::new("Name", at, name_len, name),
-        Field::new("Type", fixed, 2, dns_type_name(record_type)),
+        Field::new("Type", fixed, 2, dns_type_value(record_type)),
         Field::new("Class", fixed + 2, 2, class.to_string()),
         Field::new("Time to live", fixed + 4, 4, format!("{ttl} s")),
         Field::new("Data length", fixed + 8, 2, data_len.to_string()),

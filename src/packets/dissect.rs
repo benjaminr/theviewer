@@ -36,8 +36,10 @@ const MAX_IPV6_EXTENSIONS: usize = 8;
 const ARP_FIXED_LEN: usize = 8;
 /// Bytes of a data field shown as hex.
 const DATA_PREVIEW_BYTES: usize = 24;
-/// Leaf values of a template decode shown in the packet's info.
-const TEMPLATE_INFO_VALUES: usize = 4;
+/// Leaf values of a template decode shown in the packet's info, enough for
+/// the fields of a typical frame header and its type to be seen (and found
+/// by a text filter).
+const TEMPLATE_INFO_VALUES: usize = 12;
 
 const ETHERTYPE_IPV4: u16 = 0x0800;
 const ETHERTYPE_ARP: u16 = 0x0806;

@@ -1401,6 +1401,25 @@ pub(crate) fn select_in_document(state: &mut PacketsState, app: &mut ViewerApp, 
     app.status = Finding::new("packet", "packets", Category::Protocol, start, len.max(1)).title(title).description();
 }
 
+/// Packets dissected to learn the template's field names for the filter.
+const KNOWN_FIELDS_SAMPLE: usize = 32;
+
+/// The field names the packets can have beyond the notes' own: the
+/// template's (from the first packets) and any field of a protocol tshark
+/// decoded.
+fn known_fields(state: &PacketsState) -> packets::filter::KnownFields {
+    let mut known = packets::filter::KnownFields::default();
+    for row in &state.rows {
+        known.tshark_protocols.extend(row.tshark_protocols.iter().map(|protocol| protocol.to_lowercase()));
+    }
+    if state.raw.template.is_some() {
+        for (index, row) in state.rows.iter().enumerate().take(KNOWN_FIELDS_SAMPLE) {
+            known.add(&packets::dissect_with(state.bytes.packet(index), row.link, &state.raw));
+        }
+    }
+    known
+}
+
 /// Bring the filter up to date with the rows.
 pub(crate) fn refresh_filter(state: &mut PacketsState) {
     let key = (state.filter_text.clone(), state.rows_generation);
@@ -1412,12 +1431,13 @@ pub(crate) fn refresh_filter(state: &mut PacketsState) {
         state.visible.clear();
         return;
     };
-    match packets::parse_filter(&state.filter_text) {
+    let parsed = packets::parse_filter(&state.filter_text).and_then(|filter| if filter.asks_for_fields() { filter.resolve(&known_fields(state)) } else { Ok(filter) });
+    match parsed {
         Ok(filter) => {
             state.filter_error = None;
             // Rows keep no fields, so a packet is dissected again, once, only
             // when a term asks for a field by its Wireshark name.
-            let asks_for_fields = filter.terms.iter().any(|term| matches!(term, packets::filter::Term::Field { .. }));
+            let asks_for_fields = filter.asks_for_fields();
             let state_now: &PacketsState = state;
             state.visible = (0..state_now.rows.len())
                 .filter(|&index| {
