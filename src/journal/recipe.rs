@@ -160,6 +160,7 @@ mod tests {
             result_summarised: false,
             derived_from: Default::default(),
             merged: 0,
+            before: None,
         }
     }
 

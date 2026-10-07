@@ -67,12 +67,12 @@ Errors are `{code, message, data}`, with these codes:
 | [`cursor.get`](#cursorget) | read | The cursor's offset in a document. |
 | [`cursor.set`](#cursorset) | view | Move the cursor to an offset, selecting nothing. |
 | [`findings.query`](#findingsquery) | read | Run the detectors over a span and list what they recognise (signatures, compressed streams, counters, timestamps, text, structures), filtered by category, confidence and producer. |
-| [`findings.publish`](#findingspublish) | read | Publish findings about a document on the bus as the caller's, for the views, Findings and every other tool to show; they replace the caller's earlier ones under the same key. |
-| [`findings.retract`](#findingsretract) | read | Withdraw the findings the caller published under a key. |
+| [`findings.publish`](#findingspublish) | analysis | Publish findings about a document on the bus as the caller's, for the views, Findings and every other tool to show; they replace the caller's earlier ones under the same key. |
+| [`findings.retract`](#findingsretract) | analysis | Withdraw the findings the caller published under a key. |
 | [`structure.parse`](#structureparse) | read | Parse the structure starting exactly at an offset (executables, images, archives, captures, ASN.1, filesystems) into a field tree, best match first. |
 | [`structure.parsers`](#structureparsers) | read | The structure parsers available, built in and from plugins. |
 | [`templates.list`](#templateslist) | read | The binary templates available: the built-in ones and the user's own. |
-| [`templates.apply`](#templatesapply) | read | Apply a binary template, by name or as source text, at an offset and return its field tree and records; with pin, also show it as the template tool does. |
+| [`templates.apply`](#templatesapply) | analysis | Apply a binary template, by name or as source text, at an offset and return its field tree and records; with pin, also show it as the template tool does. |
 | [`templates.infer`](#templatesinfer) | read | Propose a template struct from several example records, from what varies between them; with pin, also apply it at the first record and show it as the template tool does. |
 | [`templates.clear`](#templatesclear) | view | Withdraw the template pinned over a document: its records are no longer outlined, and it leaves template.applied. |
 | [`codecs.list`](#codecslist) | read | The codecs available for decoding, built in and from plugins. |
@@ -82,12 +82,13 @@ Errors are `{code, message, data}`, with these codes:
 | [`codecs.open_decoded`](#codecsopen_decoded) | view | Decompress the stream starting at an offset, with the first codec that decodes there or the one named, and open what it holds as a document derived from this one; in the window, Back (or opening the parent by id) returns. |
 | [`packets.dissect_bytes`](#packetsdissect_bytes) | read | Dissect one packet, from a span or from hex bytes, into protocol layers and fields, a summary and its flow. |
 | [`packets.detect_frames`](#packetsdetect_frames) | read | Find the protocol a set of frames of unknown format is, by trying every frame decoder on them. |
-| [`packets.sets.create`](#packetssetscreate) | read | Take a set of packets from a document: a capture in it, a range cut into fixed records, by a length field, at a pattern or with the protocol framing, or the selection's ranges, with how to decode frames of unknown format; returns the set's id and what was worked out (the capture found, the framing), so the call can be made again exactly. |
+| [`packets.sets.create`](#packetssetscreate) | analysis | Take a set of packets from a document: a capture in it, a range cut into fixed records, by a length field, at a pattern or with the protocol framing, or the selection's ranges, with how to decode frames of unknown format; returns the set's id and what was worked out (the capture found, the framing), so the call can be made again exactly. |
+| [`packets.sets.remove`](#packetssetsremove) | analysis | Forget a packet set: its id stops working and it leaves packets.sets.list. Its document is not changed. |
 | [`packets.sets.list`](#packetssetslist) | read | The packet sets made, with their ids, documents, sources, packet counts and decoding. |
 | [`packets.list`](#packetslist) | read | A set's packets the display filter keeps, a page at a time: each one's index, offset, length, summary columns, protocols and addresses. |
 | [`packets.dissect`](#packetsdissect) | read | Dissect one packet of a set into protocol layers and fields, as the set decodes frames of unknown format. |
-| [`packets.decode_as`](#packetsdecode_as) | read | Choose the protocol a set's frames of unknown format are decoded as, or detection, and a template for frames no protocol reads. |
-| [`packets.export_pcap`](#packetsexport_pcap) | read | A set's packets (those a filter keeps) as a pcap file, returned or written to a path given (which needs leave to edit). |
+| [`packets.decode_as`](#packetsdecode_as) | analysis | Choose the protocol a set's frames of unknown format are decoded as, or detection, and a template for frames no protocol reads. |
+| [`packets.export_pcap`](#packetsexport_pcap) | analysis | A set's packets (those a filter keeps) as a pcap file, returned or written to a path given (which needs leave to edit). |
 | [`packets.conversations`](#packetsconversations) | read | The conversations in a set (the packets a filter keeps): each pair of endpoints with its transport, packets and bytes each way, and a filter for it. |
 | [`packets.follow_stream`](#packetsfollow_stream) | read | The payloads of a packet's conversation in order, each with its direction, and the stream as text. |
 | [`packets.find_captures`](#packetsfind_captures) | read | The captures inside a span of a document (pcap, pcapng, snoop, Network Monitor or ERF, or one of these compressed with gzip), each with its offset, format, link type and packets, for packets.sets.create. |
@@ -95,7 +96,7 @@ Errors are `{code, message, data}`, with these codes:
 | [`packets.sets.refresh`](#packetssetsrefresh) | view | Find a set's packets again, the way they were found, in another document (the current one by default), which the set then belongs to. |
 | [`packets.detect_length_field`](#packetsdetect_length_field) | read | Look for a length field that cuts a span into frames, with the protocol analysis's framing detection; returns it as packets.sets.create's length_field, or the best framing found instead. |
 | [`packets.endpoints`](#packetsendpoints) | read | The addresses in a set (the packets a filter keeps), busiest first, with the packets and bytes each sent and received. |
-| [`packets.extract`](#packetsextract) | read | Some of a set's packets' bytes one after another, returned or written to a path given (which needs leave to edit). |
+| [`packets.extract`](#packetsextract) | analysis | Some of a set's packets' bytes one after another, returned or written to a path given (which needs leave to edit). |
 | [`packets.delete`](#packetsdelete) | edit | Remove packets from the document (their whole capture records, so a capture stays readable), as one undoable step. |
 | [`packets.fix_checksums`](#packetsfix_checksums) | edit | Recompute the IPv4 header, TCP and UDP checksums of some of a set's packets, as one undoable step. |
 | [`packets.apply`](#packetsapply) | edit | Invert, fill or XOR some of a set's packets, or the same field of each, as one undoable step. |
@@ -121,7 +122,7 @@ Errors are `{code, message, data}`, with these codes:
 | [`events.poll`](#eventspoll) | read | The messages (facts and events) published after a cursor, oldest first, optionally of some topics only; pass back next to keep up. |
 | [`jobs.list`](#jobslist) | read | The background jobs tools and callers started (the last 100): what each does, who started it, whether it is running, how far it has got and how it ended. |
 | [`jobs.status`](#jobsstatus) | read | One job's state, progress and outcome, and once it has finished, the result of a job a method started. |
-| [`jobs.cancel`](#jobscancel) | read | Ask a running job to stop; it ends as cancelled, without a result, as soon as it notices. |
+| [`jobs.cancel`](#jobscancel) | analysis | Ask a running job to stop; it ends as cancelled, without a result, as soon as it notices. |
 | [`statistics.analyse`](#statisticsanalyse) | job | Start the Statistics tool's measure of a span (at most 64 MiB) as a job: the ent randomness tests with a verdict, the byte histogram, entropy and compressibility along the span and the most repeated byte sequences are job.finished's result, and in the window they fill the Statistics tab. |
 | [`strings.find`](#stringsfind) | job | Start the Strings tool's search of a span (at most 64 MiB) for runs of text at least min_chars long in the encodings chosen, as a job: the strings found (at most 200000), each with its offset, length, encoding, text and what it looks like (a URL, a path, a key…), are job.finished's result, and in the window they fill the Strings tab. |
 | [`xor.recover_keys`](#xorrecover_keys) | read | Recover single-byte and repeating XOR keys for a span (at most 1 MiB) by letter frequency, index of coincidence and the key showing through zero padding, best first, with a preview of each decode and the likely key lengths; transform.apply with {"op": "xor"} applies one. |
@@ -757,11 +758,12 @@ One step of the journal, or one recent read, in full.
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `at` | string | yes | When the call was made, UTC, such as "2026-10-06T14:02:11Z". |
+| `before` | any | no | What the step replaced, for its inverse (see [`timeline::state_before`]): the view shape, bookmarks or selection as they were before it ran, when the timeline models the method. |
 | `caller` | string | yes | Who called: `panel`, `plugin:sync.lua`, `ask`, `mcp:claude-code`, `cli` or `recipe:Telemetry frames`. |
 | `derived_from` | object | no | Where parameters' values came from, by parameter path: the anchors a recipe made from this step uses in place of the literals. |
 | `description` | string | yes | What the call did in plain words, the same text the confirmation window shows: "XOR 128 selected bytes with 5A". Empty for a read not promoted into the journal. |
 | `doc` | string | no | The document the call was about: the one its `doc` named, or the current one. |
-| `effect` | `"read"` \| `"edit"` \| `"view"` \| `"job"` | yes | What calling a method does. |
+| `effect` | `"read"` \| `"edit"` \| `"view"` \| `"job"` \| `"analysis"` | yes | What calling a method does. |
 | `merged` | integer | no | How many earlier calls of the same setter this one replaced. |
 | `method` | string | yes | The method called, such as `packets.sets.create`. |
 | `outcome` | Outcome | yes | How a recorded call ended. |
@@ -1211,6 +1213,18 @@ Take a set of packets from a document: a capture in it, a range cut into fixed r
 | `set` | string | yes | The set's id, such as "set-1", for the other packet methods. |
 | `template` | boolean | yes | Whether a template decodes frames no protocol reads. |
 | `template_name` | string | no | The template's name when it was chosen by name, or "protocol" for the one the protocol analysis suggested. |
+
+### packets.sets.remove
+
+Forget a packet set: its id stops working and it leaves packets.sets.list. Its document is not changed.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `set` | string | yes | The set's id, from packets.sets.create. |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `set` | string | yes |  |
 
 ### packets.sets.list
 

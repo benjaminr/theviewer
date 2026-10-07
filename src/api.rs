@@ -117,6 +117,13 @@ pub enum Effect {
     View,
     /// Starts long-running work and returns a job to follow.
     Job,
+    /// Changes the session's analysis, but no bytes and nothing on screen:
+    /// packet sets and how they decode, published findings, pinned
+    /// templates, jobs cancelled, files written from analysis results. It is
+    /// journalled and replayed like an edit, and allowed without asking like
+    /// a read (a method that also writes a file checks for leave to edit
+    /// itself).
+    Analysis,
 }
 
 /// Whether a method's name, parameters and results are settled.

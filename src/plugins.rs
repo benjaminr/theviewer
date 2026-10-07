@@ -678,7 +678,8 @@ fn install_api(lua: &Lua, state: Weak<ScriptState>) -> mlua::Result<()> {
             let effect = match get_string(&spec, "effect").as_deref() {
                 None | Some("read") => Effect::Read,
                 Some("edit") => Effect::Edit,
-                Some(other) => return Err(mlua::Error::RuntimeError(format!("a method's effect is \"read\" or \"edit\", not '{other}'"))),
+                Some("analysis") => Effect::Analysis,
+                Some(other) => return Err(mlua::Error::RuntimeError(format!("a method's effect is \"read\", \"analysis\" or \"edit\", not '{other}'"))),
             };
             let params = lua_api::params_schema(&spec.get::<Value>("params")?).map_err(|problem| mlua::Error::RuntimeError(format!("{name}: {problem}")))?;
             let result = match spec.get::<Value>("result")? {

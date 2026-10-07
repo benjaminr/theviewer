@@ -167,6 +167,11 @@ pub struct JournalEntry {
     /// How many earlier calls of the same setter this one replaced.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub merged: u32,
+    /// What the step replaced, for its inverse (see
+    /// [`timeline::state_before`]): the view shape, bookmarks or selection
+    /// as they were before it ran, when the timeline models the method.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub before: Option<Value>,
 }
 
 fn is_false(value: &bool) -> bool {
@@ -275,6 +280,10 @@ pub struct Journal {
     dropped: Dropped,
     /// Rough bytes held by `entries`.
     bytes: usize,
+    /// Parameters the person named while making steps portable, with their
+    /// descriptions and types, kept until a recipe is built (see
+    /// [`provenance`]).
+    parameters: BTreeMap<String, recipe::RecipeParameter>,
 }
 
 impl Default for Journal {
@@ -289,6 +298,11 @@ impl Journal {
         Self::with_limits(JournalLimits::default())
     }
 
+    /// Parameters named while making steps portable, by name.
+    pub fn parameters(&self) -> &BTreeMap<String, recipe::RecipeParameter> {
+        &self.parameters
+    }
+
     pub fn with_limits(limits: JournalLimits) -> Self {
         Journal {
             limits,
@@ -301,6 +315,7 @@ impl Journal {
             pending_provenance: None,
             dropped: Dropped::default(),
             bytes: 0,
+            parameters: BTreeMap::new(),
         }
     }
 
@@ -541,6 +556,7 @@ pub(crate) struct Begun {
     doc: Option<String>,
     version_before: Option<u64>,
     derived_from: DerivedFrom,
+    before: Option<Value>,
 }
 
 /// Start recording a call to `method` by `caller`, before it runs.
@@ -557,8 +573,10 @@ pub(crate) fn begin(workspace: &mut dyn Workspace, caller: &Caller, method: &str
     if let Some(id) = doc.as_deref() {
         note_document(workspace, id);
     }
-    // Reads are described only if they are promoted: most never are.
+    // Reads are described only if they are promoted: most never are, and
+    // only steps can be undone, so only they keep what they replaced.
     let description = if effect == Effect::Read { String::new() } else { describe(workspace, method, params) };
+    let before = if effect == Effect::Read { None } else { timeline::state_before(workspace, method, params) };
     let (params, params_summarised) = bounded(params, limits.max_params_bytes);
     CallRecord::Outermost(Box::new(Begun {
         at: timestamp(SystemTime::now()),
@@ -571,6 +589,7 @@ pub(crate) fn begin(workspace: &mut dyn Workspace, caller: &Caller, method: &str
         doc,
         version_before,
         derived_from,
+        before,
     }))
 }
 
@@ -612,6 +631,7 @@ pub(crate) fn finish(workspace: &mut dyn Workspace, record: CallRecord, result: 
         result_summarised,
         derived_from: begun.derived_from,
         merged: 0,
+        before: begun.before,
     };
     if is_read {
         workspace.journal_mut().keep_read(entry);

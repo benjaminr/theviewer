@@ -134,7 +134,7 @@ impl FileContext {
 /// the tool list already is) and saving, which is the person's to do.
 /// Methods that change only the view are not offered.
 fn offered_to_ask(method: &api::MethodRef) -> bool {
-    matches!(method.effect(), api::Effect::Read | api::Effect::Edit) && api::namespace_of(method.name()) != "api" && method.name() != "documents.save"
+    matches!(method.effect(), api::Effect::Read | api::Effect::Edit | api::Effect::Analysis) && api::namespace_of(method.name()) != "api" && method.name() != "documents.save"
 }
 
 /// One tool offered to the model: the API method behind it and how the
@@ -804,7 +804,7 @@ mod tests {
         let tools = tools.as_array().unwrap();
         let offered = api::METHODS
             .iter()
-            .filter(|method| matches!(method.effect, api::Effect::Read | api::Effect::Edit) && method.namespace() != "api" && method.name != "documents.save")
+            .filter(|method| matches!(method.effect, api::Effect::Read | api::Effect::Edit | api::Effect::Analysis) && method.namespace() != "api" && method.name != "documents.save")
             .count();
         assert_eq!(tools.len(), offered);
         for tool in tools {

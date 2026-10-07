@@ -2626,8 +2626,8 @@ mod tests {
             tshark_view::ask_to_decode(state, app, None);
             tshark_view::ask_to_decode(state, app, Some(2));
         });
-        let asked: Vec<serde_json::Value> = app.actions_after_drawing.iter().map(|(_, params)| params.clone()).collect();
+        let asked: Vec<serde_json::Value> = app.actions_after_drawing.iter().map(|(_, params, _)| params.clone()).collect();
         assert_eq!(asked, [serde_json::json!({ "set": "set-1", "mode": "fill_gaps", "indices": [1, 3] }), serde_json::json!({ "set": "set-1", "mode": "fill_gaps", "indices": [2] })]);
-        assert!(app.actions_after_drawing.iter().all(|(method, _)| method == "packets.tshark_decode"));
+        assert!(app.actions_after_drawing.iter().all(|(method, _, _)| method == "packets.tshark_decode"));
     }
 }

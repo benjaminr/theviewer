@@ -57,13 +57,19 @@ impl ViewerApp {
     /// placeholder and be lost. The result is not returned; a failure is
     /// said on the status bar.
     pub fn perform_later(&mut self, method: &str, params: Value) {
-        self.actions_after_drawing.push((method.to_string(), params));
+        self.perform_later_derived(method, params, crate::journal::DerivedFrom::new());
+    }
+
+    /// [`ViewerApp::perform_later`] for a call whose parameters came from
+    /// earlier results, as [`ViewerApp::perform_derived`] records them.
+    pub fn perform_later_derived(&mut self, method: &str, params: Value, derived_from: crate::journal::DerivedFrom) {
+        self.actions_after_drawing.push((method.to_string(), params, derived_from));
     }
 
     /// Carry out the actions [`ViewerApp::perform_later`] kept, in order.
     pub(crate) fn perform_waiting_actions(&mut self) {
-        for (method, params) in std::mem::take(&mut self.actions_after_drawing) {
-            let _ = self.perform(&method, params);
+        for (method, params, derived_from) in std::mem::take(&mut self.actions_after_drawing) {
+            let _ = self.perform_derived(&method, params, derived_from);
         }
     }
 

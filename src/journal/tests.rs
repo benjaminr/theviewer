@@ -218,6 +218,7 @@ fn a_journal_entry_is_written_as_the_design_shows_and_reads_back() {
         result_summarised: false,
         derived_from: DerivedFrom::from([("start".to_string(), Anchor::Step { step: 12, path: "result.matches[0].offset".into() })]),
         merged: 0,
+        before: None,
     };
     let written = serde_json::to_value(&entry).unwrap();
     assert_eq!(written["derived_from"], json!({"start": {"step": 12, "path": "result.matches[0].offset"}}));

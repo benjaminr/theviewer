@@ -439,7 +439,7 @@ mod tests {
         let names: Vec<&str> = found["methods"].as_array().unwrap().iter().map(|method| method["name"].as_str().unwrap()).collect();
         assert!(names.contains(&"packets.export_pcap"), "{found}");
         let export = found["methods"].as_array().unwrap().iter().find(|method| method["name"] == "packets.export_pcap").unwrap();
-        assert_eq!(export["effect"], "read");
+        assert_eq!(export["effect"], "analysis");
         assert!(export.get("tool").is_none(), "not a tool of its own: it is called with api_call");
         let insert = search(&mut workspace, json!({ "query": "bytes_insert" }));
         assert_eq!(insert["methods"][0]["name"], "bytes.insert", "a tool name finds its method");

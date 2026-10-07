@@ -367,7 +367,7 @@ pub struct ViewerApp {
     pub status: String,
     /// Actions asked for while a panel's state was lent out to draw it,
     /// carried out at the start of the next frame (see `perform_later`).
-    pub(crate) actions_after_drawing: Vec<(String, serde_json::Value)>,
+    pub(crate) actions_after_drawing: Vec<(String, serde_json::Value, crate::journal::DerivedFrom)>,
     pub hex_top_row: usize,
     /// Rows the hex dump showed last frame, so the raster can outline them
     /// and cursor reveals know how much fits.

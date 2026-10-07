@@ -18,7 +18,7 @@ pub(super) const METHODS: &[super::Method] = &[
     method!("structure.parse", Read, parse, ParseParams, ParseResult, "Parse the structure starting exactly at an offset (executables, images, archives, captures, ASN.1, filesystems) into a field tree, best match first."),
     method!("structure.parsers", Read, parsers, super::values::NoParams, ParsersResult, "The structure parsers available, built in and from plugins."),
     method!("templates.list", Read, list_templates, super::values::NoParams, TemplateList, "The binary templates available: the built-in ones and the user's own."),
-    method!("templates.apply", Read, apply_template, ApplyParams, ApplyResult, "Apply a binary template, by name or as source text, at an offset and return its field tree and records; with pin, also show it as the template tool does."),
+    method!("templates.apply", Analysis, apply_template, ApplyParams, ApplyResult, "Apply a binary template, by name or as source text, at an offset and return its field tree and records; with pin, also show it as the template tool does."),
     method!("templates.infer", Read, infer_template, InferParams, InferResult, "Propose a template struct from several example records, from what varies between them; with pin, also apply it at the first record and show it as the template tool does."),
     method!("templates.clear", View, clear_template, ClearParams, ClearResult, "Withdraw the template pinned over a document: its records are no longer outlined, and it leaves template.applied."),
 ];
