@@ -558,7 +558,8 @@ fn a_plugin_s_method_is_repeated_and_leaves_nothing_kept_to_undo_it_by() {
 #[test]
 fn a_method_s_declarations_say_how_its_steps_are_journalled_undone_and_repeated() {
     let declared = |name: &str| api::method(name).unwrap();
-    assert_eq!(declared("documents.derive").replay, Replay::OpensDocument { derives: true });
+    assert_eq!(declared("documents.derive").replay, Replay::MakesSheet);
+    assert_eq!(declared("sources.view_version").replay, Replay::OpensDocument { derives: true }, "a recorded version is of this session only");
     assert_eq!(declared("documents.derive").undo, Undo::Reverses(crate::api::Reverse::OpenDocument { derives: true }));
     assert_eq!(declared("history.go_back").replay, Replay::Move(Move::GoBack));
     assert_eq!((declared("recipes.save").replay, declared("history.save_recipe").replay), (Replay::WritesFile, Replay::WritesFile), "both write files");

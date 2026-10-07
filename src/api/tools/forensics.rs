@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use super::tool_jobs::{self, Summary};
 use crate::api::jobs::JobStartedResult;
-use crate::api::workspace::{self, DocumentInfo, Workspace};
+use crate::api::workspace::{self, Workspace};
 use crate::api::{ApiError, Caller};
 use crate::embedfs::{EntryKind, Filesystem};
 use crate::panel_forensics::{self, BlockScan, FilesystemScan};
@@ -15,7 +15,7 @@ use crate::panel_forensics::{self, BlockScan, FilesystemScan};
 /// their namespace. A new method is added here, and only here.
 pub(super) const METHODS: &[crate::api::Method] = &[
     method!("forensics.find_filesystems", Job, caller find_filesystems, FilesystemsParams, JobStartedResult, "Start a search of the document (its first 256 MiB) for SquashFS, CramFS, JFFS2, UBI and FAT images (FAT at any 512-byte boundary, so inside a disk's partitions) as a job: each image found, with its files, deleted FAT entries included, is job.finished's result, and in the window they fill Forensics."),
-    method!("forensics.open_entry", View, open_entry, OpenEntryParams, DocumentInfo, "Open one file (or volume) of the filesystem image at an offset of the document as a derived document, by its path in the image; a deleted FAT file opens as recovered from its first cluster on.").opens_document(true),
+    method!("forensics.open_entry", View, open_entry, OpenEntryParams, workspace::SheetMade, "Open one file (or volume) of the filesystem image at an offset of the document as a derived document, by its path in the image; a deleted FAT file opens as recovered from its first cluster on.").makes_sheet(),
     method!("forensics.classify_blocks", Job, caller classify_blocks, ClassifyBlocksParams, JobStartedResult, "Start labelling every block of the document (its first 256 MiB) as padding, text, markup, machine code, compressed, random, raw image, PCM audio or table data as a job: the runs of one class, with the reason for each, are job.finished's result, and in the window they fill Forensics."),
 ];
 
@@ -203,7 +203,7 @@ pub fn find_filesystems(workspace: &mut dyn Workspace, caller: &Caller, params: 
     ))
 }
 
-pub fn open_entry(workspace: &mut dyn Workspace, params: OpenEntryParams) -> Result<DocumentInfo, ApiError> {
+pub fn open_entry(workspace: &mut dyn Workspace, params: OpenEntryParams) -> Result<workspace::SheetMade, ApiError> {
     let span = tool_jobs::span(workspace, params.doc.as_deref(), params.filesystem, None, panel_forensics::SCAN_LIMIT, "the image")?;
     let filesystems = panel_forensics::filesystems_in(&tool_jobs::read(workspace, &span)?);
     let filesystem = filesystems
@@ -220,7 +220,7 @@ pub fn open_entry(workspace: &mut dyn Workspace, params: OpenEntryParams) -> Res
     }
     let name = format!("{} › {}@{:#x}/{}", workspace::info(workspace, &span.doc)?.name, filesystem.kind.label(), span.start, entry.path);
     let id = workspace.open_derived(&span.doc, entry.data.as_ref().clone(), &name)?;
-    workspace::info(workspace, &id)
+    workspace::SheetMade::of(workspace, &id)
 }
 
 /// `forensics.classify_blocks`: read the document now and classify it on a thread.

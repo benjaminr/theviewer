@@ -1153,6 +1153,22 @@ mod tests {
     }
 
     #[test]
+    fn every_method_that_makes_a_sheet_names_it_in_its_result_s_output() {
+        let makers: Vec<&Method> = METHODS.iter().filter(|method| method.replay == Replay::MakesSheet).collect();
+        let names: Vec<&str> = makers.iter().map(|method| method.name).collect();
+        for expected in ["documents.derive", "codecs.open_decoded", "bits.open_plane", "bits.decode_linecode", "unpack.open", "forensics.open_entry", "crypto.open_decrypted"] {
+            assert!(names.contains(&expected), "{expected} makes a sheet");
+        }
+        for method in makers {
+            assert!((method.result)().to_value()["properties"].get("output").is_some(), "{} gives output", method.name);
+            assert_eq!(method.outputs, Some(Outputs::NEW_SHEET), "{} says so in api.describe", method.name);
+        }
+        for opener in ["documents.open", "documents.new", "documents.open_source"] {
+            assert!(matches!(method(opener).unwrap().replay, Replay::OpensDocument { .. }), "{opener} opens an input, not a step");
+        }
+    }
+
+    #[test]
     fn the_schema_check_notices_values_that_do_not_fit() {
         let schema = (method("bytes.read").unwrap().params)();
         assert!(fits_schema(&schema, &json!({"start": 0})).is_ok());

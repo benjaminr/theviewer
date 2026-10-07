@@ -110,6 +110,45 @@ impl Lineage {
     }
 }
 
+/// A sheet a call made, as every such call's result gives it under
+/// `output` (or, for a call that may make several, `outputs`): one stable
+/// place for later steps to find it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct SheetOutput {
+    /// The new document's id, such as "doc-4".
+    pub doc: String,
+    /// The short name it was given, if any, which a recipe names it by.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// Its length in bytes.
+    pub len: u64,
+}
+
+impl SheetOutput {
+    /// The output naming the open document `id`.
+    pub fn of(workspace: &dyn Workspace, id: &str) -> Result<SheetOutput, ApiError> {
+        let info = info(workspace, id)?;
+        Ok(SheetOutput { doc: info.id, label: info.label, len: info.len })
+    }
+}
+
+/// The result of a method that opens one sheet and describes it: the new
+/// document, as `documents.info` gives it, and `output`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct SheetMade {
+    #[serde(flatten)]
+    pub document: DocumentInfo,
+    /// The sheet made, in the form every method that makes one gives.
+    pub output: SheetOutput,
+}
+
+impl SheetMade {
+    /// The open document `id`, just made.
+    pub fn of(workspace: &dyn Workspace, id: &str) -> Result<SheetMade, ApiError> {
+        Ok(SheetMade { document: info(workspace, id)?, output: SheetOutput::of(workspace, id)? })
+    }
+}
+
 /// Where the cursor and selection are in a document, and what the view
 /// knows about its layout.
 #[derive(Clone, Debug, Default, PartialEq)]

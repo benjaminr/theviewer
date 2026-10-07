@@ -36,7 +36,7 @@ use crate::templates::Template;
 /// This module's methods, in the order `api.describe` lists them within
 /// their namespace. A new method is added here, and only here.
 pub(super) const METHODS: &[super::Method] = &[
-    method!("packets.sets.create", Analysis, caller create, CreateParams, SetInfo, "Take a set of packets from a document: a capture in it, a range cut into fixed records, by a length field, at a pattern or with the protocol framing, or the selection's ranges, with how to decode frames of unknown format; returns the set's id and what was worked out (the capture found, the framing), so the call can be made again exactly.").creates(crate::api::Resource { result_field: "set", param: "set", remover: "packets.sets.remove" }),
+    method!("packets.sets.create", Analysis, caller create, CreateParams, CreatedSet, "Take a set of packets from a document: a capture in it, a range cut into fixed records, by a length field, at a pattern or with the protocol framing, or the selection's ranges, with how to decode frames of unknown format; returns the set's id and what was worked out (the capture found, the framing), so the call can be made again exactly.").creates(crate::api::Resource { result_field: "set", param: "set", remover: "packets.sets.remove" }),
     method!("packets.sets.remove", Analysis, remove_set, SetParams, RemovedSet, "Forget a packet set: its id stops working and it leaves packets.sets.list. Its document is not changed."),
     method!("packets.sets.list", Read, list_sets, super::values::NoParams, SetList, "The packet sets made, with their ids, documents, sources, packet counts and decoding."),
     method!("packets.list", Read, list, ListParams, PacketList, "A set's packets the display filter keeps, a page at a time, in capture order or sorted by a field, and de-duplicated by a field if asked: each one's index, offset, length, summary columns, protocols and addresses."),
@@ -690,6 +690,9 @@ pub struct HttpBodies {
     pub messages: Vec<HttpBody>,
     /// Why there are none, when there are none.
     pub note: Option<String>,
+    /// The sheets the bodies were opened as, with `open`, in order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub outputs: Vec<workspace::SheetOutput>,
 }
 
 /// Parameters of `packets.find_captures`.
@@ -1056,7 +1059,25 @@ fn open_gunzipped(workspace: &mut dyn Workspace, doc: &str, start: Option<u64>) 
     Ok((derived, notes))
 }
 
-pub fn create(workspace: &mut dyn Workspace, caller: &Caller, params: CreateParams) -> Result<SetInfo, ApiError> {
+/// The result of `packets.sets.create`: the set, and the sheet a
+/// compressed capture was opened as, with `gunzip`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct CreatedSet {
+    #[serde(flatten)]
+    pub set: SetInfo,
+    /// The sheet the decompressed capture was opened as, with `gunzip`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<workspace::SheetOutput>,
+}
+
+pub fn create(workspace: &mut dyn Workspace, caller: &Caller, params: CreateParams) -> Result<CreatedSet, ApiError> {
+    let gunzipped = params.gunzip;
+    let set = create_set(workspace, caller, params)?;
+    let output = if gunzipped { Some(workspace::SheetOutput::of(workspace, &set.doc)?) } else { None };
+    Ok(CreatedSet { set, output })
+}
+
+fn create_set(workspace: &mut dyn Workspace, caller: &Caller, params: CreateParams) -> Result<SetInfo, ApiError> {
     let mut doc = workspace::resolve(workspace, params.doc.as_deref())?;
     if let Some(source) = &params.template {
         Template::parse(source).map_err(|error| ApiError::invalid_params(format!("the template does not parse: {error}")))?;
@@ -1549,7 +1570,7 @@ pub fn http_bodies(workspace: &mut dyn Workspace, params: HttpBodiesParams) -> R
         Ok((stored.info.doc.clone(), messages))
     })?;
     let Some(messages) = messages else {
-        return Ok(HttpBodies { messages: Vec::new(), note: Some(format!("packet {} is not part of a TCP conversation", params.index)) });
+        return Ok(HttpBodies { messages: Vec::new(), note: Some(format!("packet {} is not part of a TCP conversation", params.index)), outputs: Vec::new() });
     };
     let note = messages.is_empty().then(|| "no HTTP/1 request or response starts in the stream".to_string());
     if !params.open {
@@ -1576,7 +1597,8 @@ pub fn http_bodies(workspace: &mut dyn Workspace, params: HttpBodiesParams) -> R
             notes: message.notes,
         });
     }
-    Ok(HttpBodies { messages: bodies, note })
+    let outputs = bodies.iter().filter_map(|body| body.doc.as_deref()).map(|doc| workspace::SheetOutput::of(workspace, doc)).collect::<Result<_, _>>()?;
+    Ok(HttpBodies { messages: bodies, note, outputs })
 }
 
 pub fn follow_stream(workspace: &mut dyn Workspace, params: PacketParams) -> Result<StreamResult, ApiError> {

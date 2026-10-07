@@ -17,7 +17,7 @@ pub(super) const METHODS: &[super::Method] = &[
     method!("codecs.detect", Read, detect, DetectParams, CodecList, "The codecs whose header starts at an offset."),
     method!("codecs.decode", Read, decode, DecodeParams, DecodeResult, "Decode (decompress) a span with a codec and return the output."),
     method!("codecs.probe", Read, probe, ProbeParams, ProbeResult, "Try every built-in decompressor at the start of a span, headerless ones included, and list those that decode."),
-    method!("codecs.open_decoded", View, open_decoded, OpenDecodedParams, OpenDecodedResult, "Decompress the stream starting at an offset, with the first codec that decodes there or the one named, and open what it holds as a document derived from this one; in the window, Back (or opening the parent by id) returns.").opens_document(true),
+    method!("codecs.open_decoded", View, open_decoded, OpenDecodedParams, OpenDecodedResult, "Decompress the stream starting at an offset, with the first codec that decodes there or the one named, and open what it holds as a document derived from this one; in the window, Back (or opening the parent by id) returns.").makes_sheet(),
 ];
 
 /// An example call of each of [`METHODS`], run in order on a fresh
@@ -243,6 +243,8 @@ pub struct OpenDecodedResult {
     pub complete: bool,
     /// Whether the output was cut at 64 MiB.
     pub truncated: bool,
+    /// The sheet made, in the form every method that makes one gives.
+    pub output: workspace::SheetOutput,
 }
 
 pub fn open_decoded(workspace: &mut dyn Workspace, params: OpenDecodedParams) -> Result<OpenDecodedResult, ApiError> {
@@ -261,7 +263,7 @@ pub fn open_decoded(workspace: &mut dyn Workspace, params: OpenDecodedParams) ->
     })?;
     let (codec, consumed, complete, truncated) = (found.codec, found.consumed as u64, found.complete, found.truncated);
     let id = workspace.open_derived(&parent, found.data, &format!("{name} › {}@{start:#x}", codec.label()))?;
-    Ok(OpenDecodedResult { document: workspace::info(workspace, &id)?, codec, consumed, complete, truncated })
+    Ok(OpenDecodedResult { document: workspace::info(workspace, &id)?, codec, consumed, complete, truncated, output: workspace::SheetOutput::of(workspace, &id)? })
 }
 
 /// What `codecs.open_decoded` did, for the status bar: "zlib at 0x10: 2 KiB

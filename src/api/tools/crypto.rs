@@ -31,7 +31,7 @@ pub(super) const METHODS: &[crate::api::Method] = &[
     method!("crypto.find_keys", Job, caller find_keys, CryptoSpanParams, JobStartedResult, "Start a search of a span (the whole document by default, at most 64 MiB) for PEM blocks, DER certificates and keys, OpenSSH keys and random-looking runs that could be raw symmetric keys, as a job: what was found is job.finished's result, and in the window it fills the Crypto panel."),
     method!("crypto.attack", Job, caller attack, AttackParams, JobStartedResult, "Start attacks on simple ciphers over a span (at most 1 MiB): rolling XOR, XOR with the previous byte, ADD/SUB with a constant or repeating key, bit rotation, XOR combined with ADD and, with a crib, crib dragging, as a job: the decodes that look most like text or structured data, each with the operation that transform.apply or documents.derive takes to apply it, and with a crib the key bytes it reveals, are job.finished's result, and in the window they fill the Crypto panel."),
     method!("crypto.decrypt", Read, decrypt, DecryptParams, DecryptResult, "Decrypt a span with AES-128, AES-192 or AES-256 in ECB, CBC or CTR mode, with a key (and IV) given as hex, removing PKCS#7 padding, and return the plaintext; crypto.open_decrypted opens it as a document instead."),
-    method!("crypto.open_decrypted", View, open_decrypted, OpenDecryptedParams, OpenDecryptedResult, "Decrypt a span as crypto.decrypt does and open the plaintext as a document derived from this one; in the window, Back (or opening the parent by id) returns.").opens_document(true),
+    method!("crypto.open_decrypted", View, open_decrypted, OpenDecryptedParams, OpenDecryptedResult, "Decrypt a span as crypto.decrypt does and open the plaintext as a document derived from this one; in the window, Back (or opening the parent by id) returns.").makes_sheet(),
 ];
 
 /// An example call of each of [`METHODS`], run in order on a fresh
@@ -418,6 +418,8 @@ pub struct OpenDecryptedResult {
     pub document: DocumentInfo,
     #[serde(flatten)]
     pub done: DecryptionDone,
+    /// The sheet made, in the form every method that makes one gives.
+    pub output: workspace::SheetOutput,
 }
 
 /// Read and decrypt the span `params` names: the parent document's id, the
@@ -468,7 +470,7 @@ pub fn open_decrypted(workspace: &mut dyn Workspace, params: OpenDecryptedParams
         None => format!("{} › {}-{}@{:#x}", workspace::info(workspace, &parent)?.name, done.alg.label(), done.mode.label(), done.start),
     };
     let id = workspace.open_derived(&parent, plaintext, &name)?;
-    Ok(OpenDecryptedResult { document: workspace::info(workspace, &id)?, done })
+    Ok(OpenDecryptedResult { document: workspace::info(workspace, &id)?, done, output: workspace::SheetOutput::of(workspace, &id)? })
 }
 
 /// What a decryption gave, for the status bar: "AES-128-ECB: 304 bytes

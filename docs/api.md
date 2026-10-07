@@ -177,7 +177,7 @@ A recipe step that starts a job waits for it (up to 10 minutes), and later steps
 | [`documents.open`](#documentsopen) | view | core | Open a file by path, or an open document by id, and make it current; a file already open is made current again. In the window, a parent of the document shown is gone back to, closing what was derived from it; that, or opening another file, is refused while what it closes has unsaved edits, unless the person at the window discards them. |
 | [`documents.new`](#documentsnew) | view |  | Open a new, empty document and make it current; the window refuses while its document has unsaved edits, unless the person at the window discards them. |
 | [`documents.save`](#documentssave) | edit | core | Save a document over its file, or to a path, with every edit made so far. |
-| [`documents.derive`](#documentsderive) | view |  | Open bytes of a document (a span, several ranges one after another, or bytes given), or what a transform such as decompress or XOR makes of them, as a document of their own derived from it, and make it current; in the window, Back goes back to the parent. |
+| [`documents.derive`](#documentsderive) | view |  | Open bytes of a document (a span, several ranges one after another, or bytes given), or what a transform such as decompress or XOR makes of them, as a document of their own derived from it, and make it current; in the window, Back goes back to the parent. Returns the new document, and output. |
 | [`documents.export`](#documentsexport) | edit |  | Write a span of a document (or several ranges one after another) to a file, or what decompresses at a span's start; the document is left as it is. |
 | [`documents.open_source`](#documentsopen_source) | view |  | Open a file, URL, block device, serial port (serial:PORT@BAUD) or a process's memory region (pid:PID@ADDRESS) as a new document. The window reads a URL, device or region in the background and opens it when it arrives, and pid:PID lists a process's regions in the Live tab; headless, the bytes are read before the call returns. |
 | [`bytes.read`](#bytesread) | read | core | Read a span of bytes, as hex by default, or as base64 or text; a span running past the end of the document is read to the end, and len says how many bytes came back. |
@@ -498,11 +498,11 @@ Save a document over its file, or to a path, with every edit made so far.
 
 ### documents.derive
 
-Open bytes of a document (a span, several ranges one after another, or bytes given), or what a transform such as decompress or XOR makes of them, as a document of their own derived from it, and make it current; in the window, Back goes back to the parent.
+Open bytes of a document (a span, several ranges one after another, or bytes given), or what a transform such as decompress or XOR makes of them, as a document of their own derived from it, and make it current; in the window, Back goes back to the parent. Returns the new document, and output.
 
 **Effect:** `view` · **MCP tool:** `documents_derive`, through `api_call`, or with `--all-tools`
 
-**History:** Journalled as a step; undone by changing back which document is current; not repeated: what it opened is open already.
+**History:** Journalled as a step; undone by changing back which document is current; kept by recipes, which make the sheet again and name it by this step; not repeated by going back or playback, as the sheet is open already.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -524,6 +524,7 @@ Open bytes of a document (a span, several ranges one after another, or bytes giv
 | `made_by` | MadeBy | no | The step that made it, for a sheet made from another. |
 | `modified` | boolean | yes | Whether there are edits not saved. |
 | `name` | string | yes | File name, or the name of a derived document. |
+| `output` | SheetOutput | yes | The sheet made, in the form every method that makes one gives. |
 | `parent` | string | no | The document it was derived from, for a sheet made from another; none for one opened from a file, a source or new. |
 | `path` | string | no | Path on disk, for documents opened from a file. |
 | `version` | integer | yes | Incremented on every edit. |
@@ -827,7 +828,7 @@ Open one bit plane of a span (at most 1 MiB) as a derived document: bit k of eve
 
 **Effect:** `view` · **MCP tool:** `bits_open_plane`, through `api_call`, or with `--all-tools`
 
-**History:** Journalled as a step; undone by changing back which document is current; not repeated: what it opened is open already.
+**History:** Journalled as a step; undone by changing back which document is current; kept by recipes, which make the sheet again and name it by this step; not repeated by going back or playback, as the sheet is open already.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -845,6 +846,7 @@ Open one bit plane of a span (at most 1 MiB) as a derived document: bit k of eve
 | `made_by` | MadeBy | no | The step that made it, for a sheet made from another. |
 | `modified` | boolean | yes | Whether there are edits not saved. |
 | `name` | string | yes | File name, or the name of a derived document. |
+| `output` | SheetOutput | yes | The sheet made, in the form every method that makes one gives. |
 | `parent` | string | no | The document it was derived from, for a sheet made from another; none for one opened from a file, a source or new. |
 | `path` | string | no | Path on disk, for documents opened from a file. |
 | `version` | integer | yes | Incremented on every edit. |
@@ -874,7 +876,7 @@ Decode a span (at most 64 KiB) from a line code at a bit offset and open the dec
 
 **Effect:** `view` · **MCP tool:** `bits_decode_linecode`, through `api_call`, or with `--all-tools`
 
-**History:** Journalled as a step; undone by changing back which document is current; not repeated: what it opened is open already.
+**History:** Journalled as a step; undone by changing back which document is current; kept by recipes, which make the sheet again and name it by this step; not repeated by going back or playback, as the sheet is open already.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -889,6 +891,7 @@ Decode a span (at most 64 KiB) from a line code at a bit offset and open the dec
 | --- | --- | --- | --- |
 | `document` | DocumentInfo | yes | The derived document the decode was opened as. |
 | `errors` | integer | yes |  |
+| `output` | SheetOutput | yes | The sheet made, in the form every method that makes one gives. |
 | `symbols` | integer | yes | Symbols read, and the invalid ones among them. |
 
 ### bits.rank_field
@@ -1796,7 +1799,7 @@ Decompress the stream starting at an offset, with the first codec that decodes t
 
 **Effect:** `view` · **MCP tool:** `codecs_open_decoded`, through `api_call`, or with `--all-tools`
 
-**History:** Journalled as a step; undone by changing back which document is current; not repeated: what it opened is open already.
+**History:** Journalled as a step; undone by changing back which document is current; kept by recipes, which make the sheet again and name it by this step; not repeated by going back or playback, as the sheet is open already.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -1810,6 +1813,7 @@ Decompress the stream starting at an offset, with the first codec that decodes t
 | `complete` | boolean | yes | Whether the stream ended cleanly. |
 | `consumed` | integer | yes | Input bytes the stream occupied. |
 | `document` | DocumentInfo | yes | The document opened, now current. |
+| `output` | SheetOutput | yes | The sheet made, in the form every method that makes one gives. |
 | `truncated` | boolean | yes | Whether the output was cut at 64 MiB. |
 
 ### packets.dissect_bytes
@@ -1897,6 +1901,7 @@ Take a set of packets from a document: a capture in it, a range cut into fixed r
 | `link` | `"ethernet"` \| `"raw_ip"` \| `"linux_sll"` \| `"linux_sll2"` \| `"bsd_loopback"` \| `"open_bsd_loopback"` \| `"ppp"` \| `"ppp_hdlc"` \| `"ieee80211"` \| `"radiotap"` \| `"unknown"` | no | The link every packet is read as, when one was chosen. |
 | `name` | string | yes | Such as "pcap capture at 0x40". |
 | `notes` | array of string | no | What the person should know about how the set was taken, such as a decompressed capture cut short. |
+| `output` | SheetOutput | no | The sheet the decompressed capture was opened as, with `gunzip`. |
 | `ranges` | array of pair | yes | Where the packets were taken from, as [start, len], once worked out (a capture found, the selection's ranges). |
 | `set` | string | yes | The set's id, such as "set-1", for the other packet methods. |
 | `template` | boolean | yes | Whether a template decodes frames no protocol reads. |
@@ -2094,6 +2099,7 @@ The HTTP/1 requests and responses in a packet's TCP stream, each with its head a
 | --- | --- | --- | --- |
 | `messages` | array of HttpBody | yes | The messages in the order they start. |
 | `note` | string | no | Why there are none, when there are none. |
+| `outputs` | array of SheetOutput | no | The sheets the bodies were opened as, with `open`, in order. |
 
 ### packets.find_captures
 
@@ -3088,7 +3094,7 @@ Decrypt a span as crypto.decrypt does and open the plaintext as a document deriv
 
 **Effect:** `view` · **MCP tool:** `crypto_open_decrypted`, through `api_call`, or with `--all-tools`
 
-**History:** Journalled as a step; undone by changing back which document is current; not repeated: what it opened is open already.
+**History:** Journalled as a step; undone by changing back which document is current; kept by recipes, which make the sheet again and name it by this step; not repeated by going back or playback, as the sheet is open already.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -3109,6 +3115,7 @@ Decrypt a span as crypto.decrypt does and open the plaintext as a document deriv
 | `entropy` | number | yes | Bits per byte of the plaintext: a right key brings it well under 8. |
 | `len` | integer | yes |  |
 | `mode` | `"ecb"` \| `"cbc"` \| `"ctr"` | yes | How the blocks are chained. |
+| `output` | SheetOutput | yes | The sheet made, in the form every method that makes one gives. |
 | `output_len` | integer | yes |  |
 | `padding` | `"pkcs7"` \| `"none"` | yes | What fills out the last block before encryption, removed after. |
 | `padding_invalid` | boolean | yes | Whether PKCS#7 padding was asked for and not found; the plaintext is then given whole, and the key, IV or mode is probably wrong. |
@@ -3304,7 +3311,7 @@ Open one file (or volume) of the filesystem image at an offset of the document a
 
 **Effect:** `view` · **MCP tool:** `forensics_open_entry`, through `api_call`, or with `--all-tools`
 
-**History:** Journalled as a step; undone by changing back which document is current; not repeated: what it opened is open already.
+**History:** Journalled as a step; undone by changing back which document is current; kept by recipes, which make the sheet again and name it by this step; not repeated by going back or playback, as the sheet is open already.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -3321,6 +3328,7 @@ Open one file (or volume) of the filesystem image at an offset of the document a
 | `made_by` | MadeBy | no | The step that made it, for a sheet made from another. |
 | `modified` | boolean | yes | Whether there are edits not saved. |
 | `name` | string | yes | File name, or the name of a derived document. |
+| `output` | SheetOutput | yes | The sheet made, in the form every method that makes one gives. |
 | `parent` | string | no | The document it was derived from, for a sheet made from another; none for one opened from a file, a source or new. |
 | `path` | string | no | Path on disk, for documents opened from a file. |
 | `version` | integer | yes | Incremented on every edit. |
@@ -3365,7 +3373,7 @@ Open one node of the unpacked tree (by its path of child indices, as unpack.run 
 
 **Effect:** `view` · **MCP tool:** `unpack_open`, through `api_call`, or with `--all-tools`
 
-**History:** Journalled as a step; undone by changing back which document is current; not repeated: what it opened is open already.
+**History:** Journalled as a step; undone by changing back which document is current; kept by recipes, which make the sheet again and name it by this step; not repeated by going back or playback, as the sheet is open already.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -3382,6 +3390,7 @@ Open one node of the unpacked tree (by its path of child indices, as unpack.run 
 | `made_by` | MadeBy | no | The step that made it, for a sheet made from another. |
 | `modified` | boolean | yes | Whether there are edits not saved. |
 | `name` | string | yes | File name, or the name of a derived document. |
+| `output` | SheetOutput | yes | The sheet made, in the form every method that makes one gives. |
 | `parent` | string | no | The document it was derived from, for a sheet made from another; none for one opened from a file, a source or new. |
 | `path` | string | no | Path on disk, for documents opened from a file. |
 | `version` | integer | yes | Incremented on every edit. |

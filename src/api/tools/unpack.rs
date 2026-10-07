@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use super::tool_jobs::{self, Summary, ToolSpan};
 use crate::api::jobs::JobStartedResult;
 use crate::api::values::{self, ByteEncoding};
-use crate::api::workspace::{self, DocumentInfo, Workspace};
+use crate::api::workspace::{self, Workspace};
 use crate::api::{ApiError, Caller, ErrorCode, MAX_CALL_BYTES};
 use crate::unpack::{Limits, Node};
 
@@ -17,7 +17,7 @@ use crate::unpack::{Limits, Node};
 /// their namespace. A new method is added here, and only here.
 pub(super) const METHODS: &[crate::api::Method] = &[
     method!("unpack.run", Job, caller run, UnpackParams, JobStartedResult, "Start extracting the archives and compressed streams in the document (its first 256 MiB) recursively, like binwalk -e, as a job: the tree of what was found, each node with its kind, size and where its bytes came from, is job.finished's result, and in the window it fills the Unpacked tab and the Size map."),
-    method!("unpack.open", View, open, NodeParams, DocumentInfo, "Open one node of the unpacked tree (by its path of child indices, as unpack.run gave it) as a derived document.").opens_document(true),
+    method!("unpack.open", View, open, NodeParams, workspace::SheetMade, "Open one node of the unpacked tree (by its path of child indices, as unpack.run gave it) as a derived document.").makes_sheet(),
     method!("unpack.read", Read, read, ReadNodeParams, NodeBytes, "Read the bytes of one node of the unpacked tree, by its path of child indices, as hex by default, or as base64 or text."),
     method!("unpack.save", Edit, caller save, SaveNodeParams, SavedNode, "Write the bytes of one node of the unpacked tree (by its path of child indices, as node) to a file; the document is left as it is.").writes_file(crate::api::WritesFile::Always),
 ];
@@ -236,12 +236,12 @@ fn node_at<'a>(tree: &'a Node, path: &[usize]) -> Result<&'a Node, ApiError> {
     tree.find(path).ok_or_else(|| ApiError::not_found(format!("the unpacked tree has no node at {path:?}; unpack.run lists them with their paths")))
 }
 
-pub fn open(workspace: &mut dyn Workspace, params: NodeParams) -> Result<DocumentInfo, ApiError> {
+pub fn open(workspace: &mut dyn Workspace, params: NodeParams) -> Result<workspace::SheetMade, ApiError> {
     let (id, tree) = tree_of(workspace, params.doc.as_deref(), params.password.as_deref())?;
     let node = node_at(&tree, &params.path)?;
     let name = format!("{} › {}", workspace::info(workspace, &id)?.name, node.name);
     let opened = workspace.open_derived(&id, node.data.to_vec(), &name)?;
-    workspace::info(workspace, &opened)
+    workspace::SheetMade::of(workspace, &opened)
 }
 
 pub fn read(workspace: &mut dyn Workspace, params: ReadNodeParams) -> Result<NodeBytes, ApiError> {

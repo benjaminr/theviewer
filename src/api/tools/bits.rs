@@ -18,9 +18,9 @@ use crate::panel_bits::{self, LengthFieldsResult, LineCodeResult, PeriodsResult,
 pub(super) const METHODS: &[crate::api::Method] = &[
     method!("bits.scan_periods", Job, caller scan_periods, ScanPeriodsParams, JobStartedResult, "Start a search of a span for bit periods (frames that are not a whole number of bytes) and the sync word of the strongest, comparing the bits with themselves at every lag, as a job: the periods and sync words are job.finished's result, and in the window they fill the Bits panel."),
     method!("bits.planes", Job, caller planes, PlanesParams, JobStartedResult, "Start splitting a span (at most 1 MiB) into its eight bit planes as a job, scoring how much shape each holds with rows of row_width bytes: the scores are job.finished's result, and in the window the planes fill the Bits panel."),
-    method!("bits.open_plane", View, open_plane, OpenPlaneParams, DocumentInfo, "Open one bit plane of a span (at most 1 MiB) as a derived document: bit k of every byte, as a byte of 0 or 255.").opens_document(true),
+    method!("bits.open_plane", View, open_plane, OpenPlaneParams, workspace::SheetMade, "Open one bit plane of a span (at most 1 MiB) as a derived document: bit k of every byte, as a byte of 0 or 255.").makes_sheet(),
     method!("bits.detect_linecode", Job, caller detect_linecode, LineCodeParams, JobStartedResult, "Start trying Manchester (both conventions), differential Manchester, 8b/10b and packed BCD at every bit alignment of a span (at most 64 KiB) as a job: the decodes, fewest invalid symbols first, and any BCD timestamps are job.finished's result, and in the window they fill the Bits panel."),
-    method!("bits.decode_linecode", View, decode_linecode, DecodeLineCodeParams, DecodedDocument, "Decode a span (at most 64 KiB) from a line code at a bit offset and open the decoded bytes as a derived document.").opens_document(true),
+    method!("bits.decode_linecode", View, decode_linecode, DecodeLineCodeParams, DecodedDocument, "Decode a span (at most 64 KiB) from a line code at a bit offset and open the decoded bytes as a derived document.").makes_sheet(),
     method!("bits.rank_field", Read, rank_field, RankFieldParams, RankedField, "Rank what a field of records holds (integers, floats, fixed point, timestamps, enums…) by how plausible its values are across the records."),
     method!("bits.find_length_fields", Job, caller find_length_fields, LengthFieldsParams, JobStartedResult, "Start a search of a span (at most 256 KiB, one message or a run of records) for numbers that are distances, as a job: length prefixes, tag-length-value chains and offset tables, best first, are job.finished's result, and in the window they fill the Bits panel."),
 ];
@@ -352,6 +352,8 @@ pub struct DecodedDocument {
     /// Symbols read, and the invalid ones among them.
     pub symbols: usize,
     pub errors: usize,
+    /// The sheet made, in the form every method that makes one gives.
+    pub output: workspace::SheetOutput,
 }
 
 /// Parameters of `bits.rank_field`.
@@ -497,7 +499,7 @@ pub fn planes(workspace: &mut dyn Workspace, caller: &Caller, params: PlanesPara
     ))
 }
 
-pub fn open_plane(workspace: &mut dyn Workspace, params: OpenPlaneParams) -> Result<DocumentInfo, ApiError> {
+pub fn open_plane(workspace: &mut dyn Workspace, params: OpenPlaneParams) -> Result<workspace::SheetMade, ApiError> {
     if params.bit > 7 {
         return Err(ApiError::invalid_params(format!("bit {} is not one of a byte's, 0 to 7", params.bit)));
     }
@@ -505,7 +507,7 @@ pub fn open_plane(workspace: &mut dyn Workspace, params: OpenPlaneParams) -> Res
     let plane = crate::bits::bit_plane(&tool_jobs::read(workspace, &span)?, params.bit);
     let name = format!("{} › bit plane {}@{:#x}", workspace::info(workspace, &span.doc)?.name, params.bit, span.start);
     let id = workspace.open_derived(&span.doc, plane, &name)?;
-    workspace::info(workspace, &id)
+    workspace::SheetMade::of(workspace, &id)
 }
 
 /// `bits.detect_linecode`: read the span now and try every code on a thread.
@@ -535,7 +537,7 @@ pub fn decode_linecode(workspace: &mut dyn Workspace, params: DecodeLineCodePara
     let name = format!("{} › {}+{}@{:#x}", workspace::info(workspace, &span.doc)?.name, code.label(), params.bit_offset, span.start);
     let (symbols, errors) = (decoded.symbols, decoded.errors);
     let id = workspace.open_derived(&span.doc, decoded.bytes, &name)?;
-    Ok(DecodedDocument { document: workspace::info(workspace, &id)?, symbols, errors })
+    Ok(DecodedDocument { document: workspace::info(workspace, &id)?, symbols, errors, output: workspace::SheetOutput::of(workspace, &id)? })
 }
 
 pub fn rank_field(workspace: &mut dyn Workspace, params: RankFieldParams) -> Result<RankedField, ApiError> {

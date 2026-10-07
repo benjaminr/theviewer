@@ -22,7 +22,7 @@ pub(super) const METHODS: &[super::Method] = &[
     method!("documents.open", View, caller open, OpenParams, super::workspace::DocumentInfo, "Open a file by path, or an open document by id, and make it current; a file already open is made current again. In the window, a parent of the document shown is gone back to, closing what was derived from it; that, or opening another file, is refused while what it closes has unsaved edits, unless the person at the window discards them.").opens_document(false),
     method!("documents.new", View, caller new, NewParams, super::workspace::DocumentInfo, "Open a new, empty document and make it current; the window refuses while its document has unsaved edits, unless the person at the window discards them.").opens_document(false),
     method!("documents.save", Edit, save, SaveParams, super::workspace::DocumentInfo, "Save a document over its file, or to a path, with every edit made so far.").writes_file(crate::api::WritesFile::Always),
-    method!("documents.derive", View, derive, DeriveParams, super::workspace::DocumentInfo, "Open bytes of a document (a span, several ranges one after another, or bytes given), or what a transform such as decompress or XOR makes of them, as a document of their own derived from it, and make it current; in the window, Back goes back to the parent.").opens_document(true),
+    method!("documents.derive", View, derive, DeriveParams, super::workspace::SheetMade, "Open bytes of a document (a span, several ranges one after another, or bytes given), or what a transform such as decompress or XOR makes of them, as a document of their own derived from it, and make it current; in the window, Back goes back to the parent. Returns the new document, and output.").makes_sheet(),
     method!("documents.export", Edit, export, ExportParams, ExportResult, "Write a span of a document (or several ranges one after another) to a file, or what decompresses at a span's start; the document is left as it is.").writes_file(crate::api::WritesFile::Always),
     method!("documents.open_source", View, caller open_source, OpenSourceParams, OpenSourceResult, "Open a file, URL, block device, serial port (serial:PORT@BAUD) or a process's memory region (pid:PID@ADDRESS) as a new document. The window reads a URL, device or region in the background and opens it when it arrives, and pid:PID lists a process's regions in the Live tab; headless, the bytes are read before the call returns.").opens_document(false),
 ];
@@ -360,7 +360,7 @@ pub fn open_source(workspace: &mut dyn Workspace, caller: &Caller, params: OpenS
     Ok(OpenSourceResult { document: Some(workspace::info(workspace, &id)?), reading: false })
 }
 
-pub fn derive(workspace: &mut dyn Workspace, params: DeriveParams) -> Result<DocumentInfo, ApiError> {
+pub fn derive(workspace: &mut dyn Workspace, params: DeriveParams) -> Result<workspace::SheetMade, ApiError> {
     let parent = workspace::resolve(workspace, params.doc.as_deref())?;
     let (spans, what) = derived_spans(workspace, &parent, &params)?;
     let mut bytes = Vec::with_capacity(spans.iter().map(Vec::len).sum());
@@ -378,7 +378,7 @@ pub fn derive(workspace: &mut dyn Workspace, params: DeriveParams) -> Result<Doc
         None => format!("{} › {what}", workspace::info(workspace, &parent)?.name),
     };
     let id = workspace.open_derived(&parent, bytes, &name)?;
-    workspace::info(workspace, &id)
+    workspace::SheetMade::of(workspace, &id)
 }
 
 pub fn save(workspace: &mut dyn Workspace, params: SaveParams) -> Result<DocumentInfo, ApiError> {
@@ -516,6 +516,19 @@ mod tests {
         let to_end = call(&mut workspace, "documents.derive", json!({"doc": "doc-1", "start": 7})).unwrap();
         assert_eq!(to_end["len"], 3, "an omitted len runs to the end");
         assert_eq!(bytes_of(&mut workspace, "doc-1"), "0123456789", "the parent is left as it was");
+    }
+
+    #[test]
+    fn a_derived_sheet_remembers_its_parent_and_the_step_that_made_it() {
+        let mut workspace = workspace_with("fw.bin", b"0123456789");
+        let derived = call(&mut workspace, "documents.derive", json!({"start": 2, "len": 3})).unwrap();
+        assert_eq!(derived["output"], json!({"doc": "doc-2", "len": 3}), "one place names the sheet made");
+        let step = crate::api::Workspace::journal(&workspace).entries().last().unwrap().clone();
+        assert_eq!((step.method.as_str(), step.doc.as_deref(), step.made.as_slice()), ("documents.derive", Some("doc-1"), ["doc-2".to_string()].as_slice()));
+        let info = call(&mut workspace, "documents.info", json!({"doc": "doc-2"})).unwrap();
+        assert_eq!(info["parent"], "doc-1");
+        assert_eq!(info["made_by"], json!({"step": step.step, "method": "documents.derive", "params": {"start": 2, "len": 3}, "span": [[2, 3]]}));
+        assert!(call(&mut workspace, "documents.info", json!({"doc": "doc-1"})).unwrap().get("parent").is_none(), "the file is a root");
     }
 
     #[test]
@@ -734,6 +747,17 @@ mod tests {
             assert_eq!(take_performed(), [("documents.save".to_string(), json!({}))]);
             assert_eq!(std::fs::read(&path).unwrap(), b"Abc");
             std::fs::remove_file(path).ok();
+        }
+
+        #[test]
+        fn the_window_records_where_a_derived_sheet_came_from_and_shows_it_as_before() {
+            let mut app = app_with(b"outer");
+            let outer = app.document_id();
+            let derived = call(&mut app, &Caller::Panel, "documents.derive", json!({"start": 1, "len": 3})).unwrap();
+            let inner = derived["output"]["doc"].as_str().unwrap().to_string();
+            assert_eq!((app.document_id(), app.parents.len()), (inner.clone(), 1), "the sheet is shown with its parent waiting behind it, as ever");
+            let info = call(&mut app, &Caller::Panel, "documents.info", json!({"doc": inner})).unwrap();
+            assert_eq!((info["parent"].as_str(), info["made_by"]["method"].as_str()), (Some(outer.as_str()), Some("documents.derive")));
         }
 
         #[test]

@@ -63,6 +63,7 @@ use serde::{Deserialize, Serialize, Serializer};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
+use crate::api::workspace::{MadeBy, SheetOutput};
 use crate::api::{self, ApiError, Caller, Effect, MethodRef, Workspace};
 use crate::bus::topics::JournalRecorded;
 use crate::bus::{Draft, Payload};
@@ -828,15 +829,42 @@ pub(crate) fn finish(workspace: &mut dyn Workspace, record: CallRecord, result: 
         return;
     }
     entry.version_after = entry.doc.as_deref().and_then(|id| workspace.version(id));
+    let mut made = Vec::new();
     match result {
         Ok(value) => {
             (entry.result, entry.result_summarised) = kept_result(workspace, value);
             entry.note = notes::written_by(&entry.method, &entry.params, value);
+            made = sheets_made(value);
+            entry.made = made.iter().map(|sheet| sheet.doc.clone()).collect();
         }
         Err(error) => entry.outcome = Outcome::Error(error.clone()),
     }
+    let (method, params) = (entry.method.clone(), entry.params.clone());
     let step = workspace.journal_mut().record(*entry);
+    for sheet in made {
+        let made_by = MadeBy { step: Some(step), method: method.clone(), params: params.clone(), span: span_of(&params), label: sheet.label };
+        workspace.note_made_by(&sheet.doc, made_by);
+    }
     publish(workspace, step);
+}
+
+/// The sheets a call's result says it made: its `output`, or each of its
+/// `outputs`, in order. Every method that makes a sheet names it so.
+pub fn sheets_made(result: &Value) -> Vec<SheetOutput> {
+    let one = result.get("output").filter(|output| output.get("doc").is_some()).cloned().into_iter();
+    let several = result.get("outputs").and_then(Value::as_array).into_iter().flatten().cloned();
+    one.chain(several).filter_map(|output| serde_json::from_value(output).ok()).collect()
+}
+
+/// The ranges of its parent a sheet was made from, where the call that made
+/// it names them: `ranges`, or `start` and `len`.
+fn span_of(params: &Value) -> Option<Vec<(u64, u64)>> {
+    if let Some(ranges) = params.get("ranges") {
+        return serde_json::from_value(ranges.clone()).ok();
+    }
+    let start = params.get("start")?.as_u64()?;
+    let len = params.get("len")?.as_u64()?;
+    Some(vec![(start, len)])
 }
 
 /// A call's result as the journal keeps it, and whether it is a summary.
