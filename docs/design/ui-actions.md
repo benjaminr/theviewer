@@ -1,11 +1,16 @@
 # Every action through the API: the inventory
 
-Status: phase 6 of `shared-knowledge-and-api.md`; the foundation is built, and
-the four areas below convert the rest.
+Status: built in 0.3.0. This document records the phase 6 inventory of
+`shared-knowledge-and-api.md` and the briefs the four areas worked from.
+Methods marked NEW were added in phase 6, except
+`sources.open_process_region` (process regions open through
+`documents.open_source` with `pid:PID@ADDRESS`) and the optional
+`search.find_and_select`, which were not; effects are as planned, and a
+fifth effect, `analysis`, was added later. `docs/api.md` is the current
+list of methods and their effects.
 
-Phase 6 makes every action the person takes in the window a method call made
-as `Caller::Panel`, so phase 7 can journal it, replay it and turn an analysis
-into a recipe. This document lists every action in the window, the method
+Phase 6 made every action the person takes in the window a method call made
+as `Caller::Panel`, which phase 7 journals, replays and turns into recipes. This document lists every action in the window, the method
 that expresses it, and the area that converts it. It ends with a brief for
 each area's work.
 

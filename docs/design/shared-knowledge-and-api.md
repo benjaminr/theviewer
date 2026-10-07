@@ -1,6 +1,11 @@
 # Shared knowledge, one data API, and MCP
 
-Status: accepted; being built in the phases below.
+Status: phases 1 to 7 built in 0.3.0 (API 1.0); attaching an MCP client to
+the running window is not built. This document records the design and the
+plan it was built to; where it describes something as to come, it was so
+when written. The current reference is `docs/api.md` (generated from the
+method table), with `docs/mcp.md`, `docs/plugins.md` and
+`docs/recipes.md`.
 
 ## Why
 
@@ -144,8 +149,8 @@ The app is a frame loop over one `ViewerApp`, and documents are read with
 
 ### The document edit log
 
-`Document` keeps only a version counter today. It gains a bounded log of
-edits `{version, at, removed, inserted}`, which is what `document.edited`
+`Document` kept only a version counter when this was written. It now
+keeps a bounded log of edits `{version, at, removed, inserted}`, which is what `document.edited`
 publishes. Facts and selections can be mapped forward through it: a finding
 at 0x9000 moves to 0x9004 after a 4-byte insert at 0x100, rather than being
 recomputed or lost.
@@ -215,7 +220,7 @@ Each method is declared once:
 pub struct Method {
     pub name: &'static str,           // "bytes.read"
     pub summary: &'static str,
-    pub effect: Effect,               // Read, Edit, View (UI only), Job
+    pub effect: Effect,               // Read, Edit, View (UI only), Job, Analysis (added: changes the analysis, no bytes)
     pub stability: Stability,         // Stable, Experimental
     pub params: fn() -> Schema,       // JSON Schema of the params struct
     pub result: fn() -> Schema,
@@ -244,7 +249,7 @@ callers go through `run`.
 
 ### Methods
 
-Grouped by namespace, with the effect of each. Most wrap existing functions.
+Grouped by namespace, with the effect of each. Most wrap existing functions. This is the table as proposed; several names changed and many methods were added while building it, so `docs/api.md` is the list as built.
 
 | Namespace | Methods | Effect | Built on |
 | --- | --- | --- | --- |
@@ -335,7 +340,8 @@ its document.
 
 Panels call the typed Rust functions behind each method, and publish and
 subscribe on the bus. The palette, menus, shortcuts and context menu become
-thin callers of methods. Today each of them is wired separately.
+thin callers of methods. When this was written each of them was wired separately; phase 6 made
+each a method call as `Caller::Panel` (`ViewerApp::perform`).
 
 ### Lua plugins
 
@@ -368,7 +374,8 @@ theviewer.register_method{
 - **Subscription handlers** run on the plugin's own thread with the existing
   instruction and memory budgets. They receive a read-only `api` unless the
   plugin declares `edits = true` and the user has allowed it in Settings.
-- **Methods a plugin registers** appear under `plugins` with their schema.
+- **Methods a plugin registers** are named `<plugin>.<name>` (the plugin's
+declared name or its file's stem), with their schema.
   They become Ask tools and MCP tools automatically. This is how "expose all
   plugins through MCP" works without per-plugin glue.
 - **Detectors and parsers stay pure** (window in, findings out), because they
@@ -444,8 +451,9 @@ and the reference notes; `theviewer://doc/{id}/packets/{set}` came with
 packet sets in phase 5. The server drains its headless workspace's bus
 after every request and on a quarter-second timer, running plugins'
 handlers as the window does, and maps what was delivered to resource
-updates. `plugins.reload` is not a method yet; instead the server reloads a
-plugin directory whose scripts changed, and announces the new tool list.
+updates. The server reloads a plugin
+directory whose scripts changed (`plugins.reload` came later, for the
+window), and announces the new tool list.
 Requests are handled in turn on one thread, so cancellation stops only a
 request not yet started, or a listen stream.
 
@@ -600,14 +608,15 @@ A recipe is a saved journal, `*.theviewer-recipe.json`:
   caller. Before anything changes it shows a preview: what each step will do
   to this file, and which anchors resolved where.
 - **Failure:** a step that fails, or an anchor that does not resolve, stops
-  the run. The person can skip the step, fix it or stop, and edits so far
-  undo as one step.
+  the run. As built, the run stops there, saying which step and why,
+  and its edits undo as one step.
 - **Places to run one:**
   - the History tab ("Save as recipe…", "Run recipe…"), with playback at a
     chosen speed or one step at a time;
   - `theviewer replay RECIPE FILE… [--param key=value] [--save | --out DIR]`
     for batches, writing a JSON report per file;
-  - the API, as `recipes.run`, `recipes.list` and `recipes.describe`, and so
+  - the API, as `recipes.run`, `recipes.list` and `recipes.describe` (as
+    built, also `recipes.save` and `recipes.preview`), and so
     Ask and MCP too.
 - **Saving and sharing:** recipes live in `~/.config/theviewer/recipes/` and
   can be shared as files. A recipe names the API version and the plugins it

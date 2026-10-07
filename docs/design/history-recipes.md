@@ -1,7 +1,10 @@
 # History, playback and recipes: the plan
 
-Status: phase 7 of `shared-knowledge-and-api.md` (§4). The foundation is
-built; three areas build the rest in parallel, as briefed below.
+Status: built in 0.3.0. This document records the plan for phase 7 of
+`shared-knowledge-and-api.md` (§4), the foundation as built and the briefs
+the three areas worked from; where it says a thing is stubbed or still to
+do, that was so when it was written. The recipe format and how recipes run
+are documented in `docs/recipes.md`, the methods in `docs/api.md`.
 
 Phase 6 made every action the person takes a method call. Phase 7 records
 those calls in a **journal**, which gives history, undo across analysis
@@ -109,16 +112,17 @@ gives back the `Caller`.
   recipe step's `params` may be `{"$anchor": ANCHOR}`: an object with that
   one key. Everything else is a literal, so a literal object that looks
   like an anchor stays a literal. In `derived_from`, anchors are bare.
-  - `ParamValue::{Literal, Anchor}` with `from_json` and `to_json`;
   - `marked(anchor)`, `as_anchor(value)` and `anchors_in(params)` (with
     paths);
   - `parse_path`, `value_at` and `replace_at` for paths such as
     `matches[0].offset`. A step anchor's path starts at its entry, so it
     begins with `result.` or `params.`.
 - **`Anchor::resolve(&self, &mut ResolveContext) -> Result<Value,
-  ApiError>`** is a stub that returns `unavailable`. `ResolveContext` holds
-  the workspace, the run's document, the earlier steps of the run by
-  number as `{"params", "result"}`, and the parameters given.
+  ApiError>`** resolves an anchor (a stub returning `unavailable` when
+  this was written). `ResolveContext` holds the workspace, the run's
+  document, the earlier steps of the run by number as `{"params",
+  "result"}` (and `"job"`, for a step whose job the run waited for), and
+  the parameters given.
 - **`Recipe`**, the `*.theviewer-recipe.json` file (`RECIPE_FORMAT` 1,
   `RECIPE_EXTENSION`):
   - `{recipe, api_version: "1.x", name, description, parameters: {name:
@@ -129,8 +133,7 @@ gives back the `Caller`.
   - `Recipe::from_journal(name, &session, entries)` makes literal steps of
     the successful entries in step order, with the session's plugins and
     the first step's document as `recorded_on`.
-- **The replay entry point**, stubbed (it stops at the first step as
-  `unavailable`):
+- **The replay entry point** (a stub when this was written):
 
   ```rust
   pub fn journal::replay::run(workspace: &mut dyn Workspace, steps: &[RecipeStep], options: &ReplayOptions) -> RunReport
@@ -144,7 +147,7 @@ gives back the `Caller`.
     anchors: [{path, anchor, value}], outcome, result?, journal_step?}],
     stopped?: {step, error}, warnings}`, with `completed()`.
 
-### Methods (`src/api/history.rs`, effect read)
+### Methods (`src/api/history.rs`)
 
 - `history.list {since?, limit?, include_reads?}` returns `{entries, next,
   last_step, revision, dropped}`. Pass `next` back as `since`.
@@ -152,15 +155,19 @@ gives back the `Caller`.
 - `history.session` returns the header.
 
 `history.undo`, `history.redo` and `history.transaction` stay in
-`src/api/edits.rs`.
+`src/api/edits.rs`. The areas added `history.inverse`, `history.undo_step`,
+`history.go_back` and `history.save_recipe` (`history.rs`), and
+`history.suggest_anchors`, `history.make_anchor`,
+`history.make_parameter`, `history.clear_anchor` and `history.recipe`
+(`provenance.rs`).
 
 ### Also
 
 - `documents.export` takes `ranges`, like `documents.derive`. The
   Selection menu's "Extract to file…" calls it through
   `save_dialog_then_call`, and `FileAction::SaveBytes` is gone.
-- Empty modules are declared for each area, so no area edits a `mod` line
-  or the method table:
+- Each area had modules of its own (declared empty at first, so no area
+  edited a `mod` line or the method table):
   - `src/panel_history.rs` and `src/journal/timeline.rs` (A);
   - `src/recipes.rs` and `src/api/recipes.rs` (B);
   - `src/journal/provenance.rs` and `src/api/provenance.rs` (C).
@@ -246,7 +253,7 @@ gives back the `Caller`.
   - `src/recipes.rs`: saving and loading in `~/.config/theviewer/recipes/`,
     listing, and plugin and version checks;
   - `src/api/recipes.rs`: `recipes.list`, `recipes.describe`,
-    `recipes.run` and `recipes.save`;
+    `recipes.run` and `recipes.save` (and, as built, `recipes.preview`);
   - the `replay` lines in `src/main.rs`:
     `theviewer replay RECIPE FILE… [--param key=value] [--save | --out
     DIR]`, writing a `RunReport` as JSON for each file.
@@ -279,8 +286,10 @@ gives back the `Caller`.
 - **Your files:**
   - `src/journal/provenance.rs`;
   - `src/api/provenance.rs`: methods in the `history` namespace, such as
-    `history.set_anchor {step, path, anchor}` and
-    `history.make_parameter {step, path, name}`;
+    `history.make_anchor {step, path, anchor}` (planned as
+    `history.set_anchor`) and `history.make_parameter {step, path, name}`;
+    as built, also `history.clear_anchor`, `history.suggest_anchors` and
+    `history.recipe`;
   - the call sites that pass `derived_from`. A call site changes from
     `perform` to `perform_derived`, or from `api::call` to
     `api::call_derived`. These are the only lines you change in other
