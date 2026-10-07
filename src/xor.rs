@@ -168,7 +168,9 @@ pub fn recover_keys(bytes: &[u8], max_key_len: usize, top: usize) -> Vec<XorCand
     candidates.push((vec![most_common], format!("single byte; the most common byte ({most_common:#04x}) becomes 0x00")));
 
     // Multi-byte keys, column by column, for the most likely lengths.
-    for (len, _) in guess_key_lengths(bytes, max_key_len).into_iter().filter(|&(len, _)| len >= 2).take(LENGTHS_TO_SOLVE) {
+    let lengths = guess_key_lengths(bytes, max_key_len);
+    let key_period = lengths.iter().map(|&(len, _)| len).find(|&len| len >= 2);
+    for (len, _) in lengths.into_iter().filter(|&(len, _)| len >= 2).take(LENGTHS_TO_SOLVE) {
         let key: Vec<u8> = (0..len)
             .map(|column| solve_column(&bytes.iter().skip(column).step_by(len).copied().collect::<Vec<u8>>()))
             .collect();
@@ -190,13 +192,26 @@ pub fn recover_keys(bytes: &[u8], max_key_len: usize, top: usize) -> Vec<XorCand
             }
             let decoded = apply(bytes, &key, 0);
             let (text, zeros, printable) = evaluate(&decoded);
+            let echo = key_period.map_or(0.0, |period| key_echo(&decoded, period));
             let preview: String = decoded.iter().take(64).map(|&b| if (0x20..0x7F).contains(&b) { b as char } else { '.' }).collect();
-            Some(XorCandidate { key, score: text.max(zeros), printable_fraction: printable, preview, reason })
+            Some(XorCandidate { key, score: (text * (1.0 - echo)).max(zeros), printable_fraction: printable, preview, reason })
         })
         .collect();
     ranked.sort_by(|a, b| b.score.total_cmp(&a.score).then(a.key.len().cmp(&b.key.len())));
     ranked.truncate(top);
     ranked
+}
+
+/// Share of `decoded` that repeats `period` bytes later without being a run
+/// of one value: a repeating key showing through zeros. Zeros XORed with
+/// "MODBUS" under a key that only flips case read "modbusmodbus", letters
+/// but not text, so that much of a candidate's text score does not count.
+fn key_echo(decoded: &[u8], period: usize) -> f64 {
+    if decoded.len() <= period {
+        return 0.0;
+    }
+    let echoes = decoded.windows(period + 1).filter(|window| window[0] == window[period] && window[0] != window[1]).count();
+    echoes as f64 / (decoded.len() - period) as f64
 }
 
 /// Shortest repeating unit of `key` ("ABAB" becomes "AB").
@@ -304,6 +319,21 @@ impatiently. You want to tell me, and I have no objection to hearing it. This wa
         let found = recover_keys(&cipher, 32, 5);
         assert_eq!(found[0].key, key.to_vec(), "{found:?}");
         assert_eq!(apply(&cipher, &found[0].key, 0), plain);
+    }
+
+    #[test]
+    fn a_word_key_over_mostly_zeros_beats_a_single_byte_that_only_changes_its_case() {
+        // Zeros XORed with "MODBUS" read "MODBUSMODBUS…"; a single-byte key
+        // flipping its case reads "modbusmodbus…", which looks like letters
+        // but is the key repeating, not text.
+        // A dark picture: a bit over half zeros, the rest dim pixel values.
+        let mut plain = b"BM6\xeb\x00\x00\x00\x00\x00\x006\x00\x00\x00(\x00".to_vec();
+        plain.extend(std::iter::repeat_n(0u8, 480));
+        plain.extend(noise(9000, 9).into_iter().map(|byte| if byte < 140 { 0 } else { byte % 40 }));
+        let cipher = apply(&plain, b"MODBUS", 0);
+        let found = recover_keys(&cipher, 32, 5);
+        assert_eq!(found[0].key, b"MODBUS".to_vec(), "{found:?}");
+        assert!(found[0].preview.starts_with("BM6"), "{}", found[0].preview);
     }
 
     #[test]
