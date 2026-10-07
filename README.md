@@ -5,37 +5,41 @@
 **See the structure in any file.** theviewer draws a file's bytes as pixels,
 so headers, tables, text, images and compressed data show up as shapes you
 can recognise. Set the width to the record size and the data lines up into
-columns. Then inspect, analyse and edit it.
+columns. Then inspect, analyse and edit it: dissect the packets inside, read
+what each field means and which RFC defines it, and save the steps as a
+recipe to run on the next file.
 
 It is built for reverse-engineering file formats, firmware images, captures
 and logs, and it stays fast on files of many gigabytes.
 
-![theviewer showing a firmware-like file: record columns in the raster view, the inspector, findings, hex dump and a plain-language report](docs/images/overview.png)
+![theviewer showing firmware.bin at 64 bytes per row: the raster view with the file map above it, the inspector, findings and hex dump beside it, and the report naming each part of the file below](docs/images/overview.png)
 
-<sub>A firmware-like file at 64 bytes per row. Each column of colour is one
-field of a 64-byte record. The report at the bottom names what the file
-contains and where.</sub>
+<sub>A firmware image at 64 bytes per row. The report at the bottom names
+what the file contains and where; every offset is a link.</sub>
 
 ## Contents
 
 - [Install](#install)
 - [A quick tour](#a-quick-tour)
 - [What it can do](#what-it-can-do)
-- [The tools](#the-tools)
-- [Ask Claude about a file](#ask-claude-about-a-file)
-- [Who may change the file](#who-may-change-the-file)
-- [Use theviewer from Claude Code and other MCP clients](#use-theviewer-from-claude-code-and-other-mcp-clients)
-- [Recipes: run an analysis again on other files](#recipes-run-an-analysis-again-on-other-files)
-- [Make it yours](#make-it-yours)
+- [The user guide](#the-user-guide)
 - [Keyboard shortcuts](#keyboard-shortcuts)
-- [Command line](#command-line)
-- [Extending it](#extending-it)
-- [Development](#development)
 - [Licence](#licence)
 
 ## Install
 
-You need a Rust toolchain ([rustup](https://rustup.rs)). Then:
+**macOS on Apple silicon.** Download `theviewer-VERSION-macos-arm64.tar.gz`
+from the [releases page](https://github.com/benjaminr/theviewer/releases),
+then:
+
+```sh
+tar -xzf theviewer-0.3.0-macos-arm64.tar.gz
+xattr -d com.apple.quarantine theviewer-0.3.0-macos-arm64/theviewer   # the binary is not signed
+./theviewer-0.3.0-macos-arm64/theviewer path/to/file.bin
+```
+
+**From source, anywhere else.** You need a Rust toolchain
+([rustup](https://rustup.rs)). Then:
 
 ```sh
 git clone https://github.com/benjaminr/theviewer
@@ -45,7 +49,8 @@ cargo build --release
 ```
 
 You can also drop a file onto the window, or press `Cmd+O`. Video playback
-uses `ffmpeg` if it is installed; everything else is built in.
+uses `ffmpeg` if it is installed, and the packet viewer can use Wireshark's
+`tshark` if you ask it to; everything else is built in.
 
 ## A quick tour
 
@@ -58,560 +63,133 @@ uses `ffmpeg` if it is installed; everything else is built in.
    `]`.
 3. **Read what is there.** Click any pixel. The *Inspector* shows that byte
    as every common number type, and the field tree of any structure it
-   recognises (a PNG chunk, an ELF header, a ZIP entry and so on). The
-   *Findings* list shows everything detected nearby: counters, timestamps,
-   text, signatures and compressed streams. *Report* describes the whole
-   file in plain sentences, each linked to its bytes.
+   recognises. *Findings* lists everything detected nearby: counters,
+   timestamps, text, signatures and compressed streams. *Report* describes
+   the whole file in plain sentences, each linked to its bytes.
 4. **Dig into the records.** *Columns* profiles each byte position across
-   the records, finds counters, timestamps, constants and text, and turns
-   them into a template you can apply in one click.
+   the records and turns what it finds into a template you can apply in one
+   click.
 
    ![The Columns tool under the raster view: one bar per byte position, coloured by kind, with the fields it found listed below](docs/images/columns.png)
 
-5. **Open what is inside.** Images, audio, video and compressed streams
-   buried in the file can be opened where they sit. Put the cursor on one
-   and press `Cmd+Enter` to view or play it, or `Cmd+D` to decompress.
+5. **Open the packets.** In a capture or a stream of messages, the
+   *Packets* tab beside the view lists the packets and dissects each one,
+   layer by layer. Filter them with Wireshark's field names, such as
+   `dns.qry.name~example`, or split frames out of any file.
 
-   ![An embedded PNG opened in the media viewer, with its header highlighted in the hex dump](docs/images/media.png)
+   ![The Network capture layout: the packet list with a DNS packet dissected, the Reference tab and the hex dump](docs/images/packets.png)
 
-6. **Edit it.** Type hex over a byte, insert, delete, fill, shift bits or
-   move a block. Everything can be undone, and `Cmd+S` saves safely through
-   a temporary file.
+6. **Learn what the bytes mean.** The *Reference* tab names every format
+   around the cursor (*pcap capture › Ethernet II › IPv4 › UDP › DNS*),
+   draws its header, explains each field, and links the RFC section that
+   defines it.
+
+   ![The Reference tab with the cursor in a DNS message: the header drawn as an RFC-style diagram above a table of the fields](docs/images/reference.png)
+
+7. **Open what is inside.** Images, audio, video and compressed streams
+   buried in the file open where they sit. Put the cursor on one and press
+   `Cmd+Enter` to view or play it, or `Cmd+D` to decompress.
+8. **Edit it, and keep the steps.** Type hex over a byte, or XOR, fill,
+   shift or move a selection. Everything can be undone, and `Cmd+S` saves
+   safely through a temporary file. The *History* tab lists every step;
+   save them as a recipe and run it on the next file.
 
 Press `Cmd+K` at any time for the command palette, which lists every action
 with its shortcut, or right-click a byte for the actions that apply to it.
+The **Layout** menu has a layout for each kind of work: network captures,
+file formats, firmware, bit streams, forensics and comparing files.
 
 ## What it can do
 
-**See the data**
-- Twelve pixel formats, from 1-bit to 32-bit colour, plus *Byte class*,
-  which colours zeros, text, control bytes and high bytes differently.
-  Six colour palettes.
-- Numeric heatmaps of 16- and 32-bit integers and 32-bit floats in either
-  byte order, scaled automatically to the visible values (1st to 99th
-  percentile) and centred on zero for signed types.
-- Zoomed out below 1×, the view colours each part by what it is (report
-  regions, or block class and entropy) rather than showing noise.
-- Any width, row padding, and a starting offset down to the bit.
-- A hex dump and value inspector that follow the cursor.
-- A legend bar above the view (and a condensed one over the hex dump) that
-  always says how the pixels are coloured and lists every highlight drawn:
-  the selection, cursor, search matches, bookmarks, pattern kinds,
-  structure fields, and findings pinned by each tool. Click a layer to hide
-  or show it; point at one to pick out exactly its highlights.
-- Hilbert and Morton (Z-order) curve layouts that show structure without
-  choosing a width, coloured by bytes, entropy, region type or byte class,
-  and arrows from values that look like offsets to the bytes they point at.
-- Optional pattern highlights over the view and hex dump (`H`).
-- Zoomed right in, template fields are outlined and named, and *View › Show
-  values inside pixels* writes each byte's hex value inside its pixel. It is
-  off by default; Settings can turn it on for every start.
-- Zoomed in far enough, every pixel shows its value in hex, and template
-  and structure fields are outlined and named.
-- A row difference (XOR or subtract the row above) that turns the constant
-  fields of fixed-size records dark so the fields that change stand out.
+**View and edit**
+- Twelve pixel formats from 1-bit to 32-bit colour, *Byte class*, numeric
+  heatmaps of 16- and 32-bit values, and six palettes.
+- Any width, row padding and origin down to the bit; Hilbert and Morton
+  curve layouts; a row difference that makes changing fields stand out.
+- Range, column (`Alt`+drag) and multi-range selections, shared by the
+  raster, the hex dump and the packet viewer.
+- One *Selection* menu everywhere: XOR, add, fill, invert, shift and rotate
+  bits, swap byte order, number records, move, copy as a C array or
+  Base64, compress, and more, as one undo step.
+- Unlimited undo on files of any size; skip bytes out of the view without
+  deleting them; open embedded images, audio, video and compressed streams
+  where they sit.
 
-**Understand it**
-- A period scan that suggests record sizes.
-- ARM Cortex-M vector tables, with the stack pointer, reset and fault handlers, and the flash address the image was built for.
-- Detection of counters, timestamps, offset tables, float arrays, text,
-  padding, file signatures and compressed streams.
-- A catalogue of about 600 file signatures, from Apache Tika's database
-  plus a curated set covering firmware, filesystems, bytecode, ROMs and
-  protocols.
-- Field trees for executables (ELF, PE, Mach-O), images (PNG, JPEG, GIF,
-  BMP), archives (ZIP, tar, ar, cpio), packet captures, DER and X.509
-  certificates, partition tables and filesystems, and schemaless formats
-  such as Protocol Buffers, CBOR and MessagePack.
+**Find structure**
+- Record-width detection, a plain-language report, and about 600 file
+  signatures.
+- Field trees for executables, images, archives, captures, certificates,
+  disks and schemaless formats.
+- Segments, *Find more like this* and feature tracks; column profiles;
+  a template language; learning a new format from a few samples.
 
-**Open and extract**
-- gzip, zlib, raw deflate, bzip2, xz, lzma, zstd and LZ4 streams are found,
-  checked by test decompression, and can be opened as a new document or
-  decompressed in place. A selection can be compressed back.
-- Images (PNG, JPEG, GIF including animation, BMP, WebP, TIFF, ICO), audio
-  (WAV, MP3, FLAC, Ogg Vorbis, AAC, M4A, AIFF, CAF) and video (MP4, MOV,
-  WebM, Matroska, AVI, MPEG-TS, FLV, Ogg Theora) play inside the app.
-- Any selection, stream or embedded file can be saved to disk or copied as
-  hex.
+**Packets and protocols**
+- pcap, pcapng, snoop, Network Monitor and ERF captures, gzipped or not,
+  found anywhere in a file; frames split out by width, length field or
+  pattern.
+- Dissectors from Ethernet and IP to DNS, DHCP, SNMP, Modbus/TCP, MQTT,
+  S7comm, SMB and RTP; frames of unknown format detected and
+  decoded as the protocol they are.
+- Filters with Wireshark field names, conversations and streams, editing
+  with checksums fixed, pcap export, and optional decoding with tshark.
 
-**Edit**
-- Select a range, a column of every record (`Alt`+drag), or several
-  ranges at once (`Cmd`+click findings, packets or search matches, or
-  *All matches* in the Find box). *Multi-select* in the toolbar (or `M`)
-  turns on a mode where plain clicks and drags add sections and clicking a
-  section takes it out again; Esc clears them and leaves the mode. The
-  raster, the hex dump and the packet viewer show and change the same
-  selection.
-- Overwrite or insert hex, delete, fill, invert, reverse, mirror bits, shift
-  a selection's bits across byte boundaries, and move blocks.
-- One *Selection* menu, in the right-click menus of the view and the hex
-  dump, the findings list, the packet viewer and the small toolbar that
-  floats beside a selection: insert before or after, delete, fill, invert,
-  XOR, add or subtract a key, reverse, mirror, shift or rotate bits, swap
-  byte order, number records as a counter, move, duplicate, copy as hex, a
-  C array or Base64, extract, open as a document, compress and decompress.
-  Each works on a range, on every record of a column and on every range of
-  a multi-range selection, as one undo step.
-- *Skip* folds bytes out of the view and the hex dump without deleting
-  them; a marker shows where they were, and clicking it shows them again.
-- Unlimited undo, on files of any size: edits are recorded, not copied.
-- Bookmarks and the view settings are saved beside the file, in
-  `name.theviewer.toml`, so you can pick up where you left off.
+**Learn as you go**
+- Reference notes on about 260 formats and protocols: what each field
+  means, an RFC-style header diagram, and the specification it comes from.
+- The RFC section itself, fetched when you click.
+- Wireshark's display-filter name for each protocol and field, and a
+  guess at undissected payloads from the port.
+- Your own notes, in the same form.
 
-## The tools
+**Analysis tools**
+- 29 tool tabs, among them dot plot, trigram cube, size map, image finder,
+  bit planes and line codes, statistics, compressibility and text
+  encoding, strings, XOR and cipher attacks, crypto constants, checksums
+  and a CRC solver, disassembly, firmware load address, unpacking,
+  forensics, diff and comparing many files.
 
-Open a tool from the *Tools* menu, the command palette, or *Analyse* in the
-right-click menu. Each one is a panel you can dock anywhere.
+**History and recipes**
+- Every step by everyone, in the History tab: undo any step, go back to
+  one, or play them back.
+- Recipes with anchors (the nth match, a structure field, a finding) and
+  parameters, so they work on files where things sit elsewhere.
 
-| Tool | What it does |
-| --- | --- |
-| **Report** | A plain-language overview of the whole file, with every sentence linked to its bytes, and a coloured map of the file above the view. |
-| **Reference** | Explains the format at the cursor (see below). |
-| **Structure map** | *Segments* splits the file into regions of one kind (text, tables, code, compressed, padding…) with boundaries on the real edges, groups similar regions into types and colours them on a strip and the file map. *Find more like this* scores every part of the file against the selection and highlights the matches. *Feature tracks* draws entropy, compressibility, printable and zero bytes, the mix of byte kinds and the best record width at each point along the file; *Use width here* applies that width. |
-| **Dot plot** | The file compared with itself on a grid: repeated sections show as diagonal lines and uniform regions as blocks, so structure shows without choosing a width. Click a point to jump to either copy. |
-| **Trigrams** | A rotatable 3D cloud of byte triples. Text, machine code, tables and compressed data each make a recognisable shape, a sharper fingerprint than byte pairs. Points are coloured by the region type they come from (from segmentation or the report); hovering a type in the legend highlights its points and its regions on a strip of the file under the cube, and its tick box shows or hides it. Plot the whole file with a selection to see where the selection's bytes sit against the rest. Click a point to jump into a region of its type. |
-| **Size map** | Nested rectangles sized by what takes up the space: the report's regions, or the unpacked contents with archives and filesystems inside each other. Click to jump or open; right-click to zoom into a container. |
-| **Images** | Finds uncompressed pictures, fonts, splash screens and framebuffers by trying widths and pixel formats across the file; click a result to show it in the view at the right width and format. |
-| **Columns** | For a table of fixed-size records: a profile of each byte position (constant, counter, timestamp, a few values, text, random) and the fields it adds up to. One click applies them as a template. |
-| **Protocol** | For captures, serial logs and streams of messages: finds the framing (sync words, delimiters, length prefixes or fixed size), splits the messages, and identifies types, sequence numbers, lengths, timestamps and checksums. *Align messages* groups messages into types and lines them up, so constant, counting and length fields line up even when messages differ in length. |
-| **Packets** | A packet list for captures and message streams. Load the protocol framing's messages, a pcap or pcapng capture found inside the file, the selection as one packet, or any range split into frames by a fixed width, a length field inside each frame (u8, u16, u32 or LEB128, with auto-detection) or a byte pattern with `??` wildcards. Show them as a list, or as a *Raster* or *Hex* grid with one packet per row so fields line up in columns. Each packet is dissected (Ethernet, VLAN, ARP, IPv4, IPv6, ICMP, TCP, UDP, DNS, HTTP, NTP, Modbus/TCP, MQTT, SNMP, DHCP, TFTP, TPKT/COTP/S7comm, NetBIOS/SMB, RTP/RTCP; frames of unknown format as the protocol they are detected or chosen as, else by a template or the protocol tool's field guesses), with conversations, endpoints and *Follow stream*. Filter with terms such as `udp port:53 len>60 hex:DEADBEEF`, or by Wireshark field names: `ip.ttl==64`, `tcp.dstport>=1024`, `dns.qry.name~example` (`~` means contains) or a bare `ip.ttl` for packets that have the field. These reach our own fields through the Wireshark names in the reference notes, and tshark's fields directly once packets are decoded with it. Export the shown packets as a pcap file Wireshark opens. |
-| **Bits** | For data that is not byte-aligned or not plain binary: finds frame lengths in bits (such as a 37-bit radio frame) and their sync words; shows each bit plane as an image; decodes Manchester, differential Manchester, NRZI, 8b/10b, Gray code and BCD, picking the decoder and bit offset automatically; guesses what the field at the cursor holds (integer, float, fixed-point or a timestamp, and which byte order); and finds length prefixes, tag-length-value chains and offset tables. |
-| **Template** | Describe a structure in a small language, such as `struct Chunk { id: char[4]  len: u32  data: bytes[len] }`, and see it decoded as a tree and a table. It can also propose a template from a few selected records. See [docs/templates.md](docs/templates.md). |
-| **Statistics** | Byte histogram, randomness tests (entropy, chi-square, serial correlation, Monte Carlo π) with a plain verdict, a byte-pair fingerprint, entropy along the file, and the most repeated sequences. |
-| **Characterise** | *Compressibility* compresses the selection or the whole file with several codecs and reads the pattern: encrypted or random, already compressed, lossy media, or structured data. *Media streams* finds raw MP3, AAC, H.264, H.265 and PCM audio with no container, to play or extract. *Text* identifies the character encoding (UTF-8 and UTF-16, Windows-1252, Shift-JIS, EUC-JP, GBK, Big5, EUC-KR, KOI8-R, EBCDIC) and the language. |
-| **Strings** | ASCII, UTF-8 and UTF-16 strings, tagged when they look like URLs, paths, IP addresses, UUIDs, versions or keys. |
-| **XOR** | Recovers single-byte and repeating XOR keys. Preview the result or apply it as an edit. |
-| **Crypto** | Finds well-known crypto and compression constants (AES tables, SHA and MD5 constants, CRC tables, Blowfish, DES, ChaCha, curve primes, Base64 alphabets), which show where a firmware does its cryptography. Spots ECB-style encryption from repeated cipher blocks; finds PEM and DER certificates and keys, OpenSSH keys and likely raw keys; and tries rolling XOR, ADD, rotation and combined ciphers, or drags a known plaintext such as `PK\x03\x04` across the data to reveal the key. Decodes open as a document or apply as an edit. |
-| **Firmware** | For a raw firmware image: which processor the code is for (judged by disassembling samples for each architecture), the address it was built to load at (by matching pointers to the strings they point to), and any ARM Cortex-M vector table. |
-| **Learn** | Give it a few samples of an unknown format and it finds what they share (magic bytes, fixed fields, a length field), then writes a catalogue entry so the format is recognised from now on, and a template for its header. *Fuzzy match* compares files by ssdeep-compatible fuzzy hash and finds fragments they share. |
-| **Disassembly** | x86, ARM, RISC-V, MIPS and PowerPC, with the architecture read from executable headers or guessed, and branch targets you can follow. |
-| **Unpacked** | Extracts ZIP, tar, compressed streams and embedded filesystems (SquashFS, CramFS, JFFS2 and UBI volumes) recursively into a tree you can browse, open or save. |
-| **Forensics** | Lists the embedded filesystems in the file with their files, and classifies every block (padding, text, markup, machine code, compressed, random, raw image, audio, tables) as a coloured strip, for carving fragments that have no headers. |
-| **Checksums** | CRC-32, Adler-32, MD5, SHA-1, SHA-256 and simple sums of a selection, and *Find the checksum*, which works out which stored value checks which bytes. *Solve a custom CRC* takes several messages with their stored checksums and works out the CRC's width, polynomial, initial value, reflection and final XOR, naming the standard algorithm when there is one. |
-| **Diff** | Compares with another file, finding inserted and deleted bytes rather than only changed ones, and scrolls both together. |
-| **Compare** | Many files at once (captures, firmware versions, saved states): which byte ranges stay constant, vary or count up across them; which fields follow a value you enter for each file, such as a temperature or a setting; and, for a live recording, a timeline of which bytes changed when. |
-| **Live** | Opens a URL, a serial port (`serial:/dev/cu.usbserial@115200`), a block device (`/dev/rdisk2`, needs sudo) or process memory (`pid:1234`, Linux only). Can watch a file as it grows and record its history. |
-| **Ask** | Ask Claude about the file (see below). *Characterise* has Claude run the analysis tools and describe the whole file. |
-| **Workspace** | What the tools have learnt about the file and published for each other, and what just happened (see below). |
+**Automate**
+- `--report` and `--json` for scripts; `theviewer api` runs any of the
+  data API's methods from the shell.
+- `theviewer mcp` serves files to Claude Code and other MCP clients.
+- `theviewer replay` runs a recipe over many files.
+- Lua plugins that add detectors, parsers and methods, and *Ask*, which
+  answers questions about the file with Claude. You decide what each may
+  change.
 
-**Every view keeps up with edits.** Segments, an applied template, record
-columns, checksums and a small trigram cloud work themselves out again a
-moment after the last edit (pinned segments follow). Tools whose results
-take longer (the report and file map, dot plot, statistics, strings, XOR,
-unpacked tree, image finder, protocol analysis, diff and comparison) show
-*Out of date* with a *Refresh* button instead, and their tab is marked
-with •, so nothing stale is shown without saying so.
+## The user guide
 
-**What the tools share.** Tools publish what they learn on a shared
-workspace bus, so others can use it without being on screen: the scan's
-and pinned findings, the structure at the cursor and applied templates, the
-report's regions, the record width the period scan found, frames from the
-protocol tool or *Packets*, the protocol frames turn out to be (detected,
-guessed from a port, or named by tshark), background jobs starting and
-finishing, plugin log lines, and every edit, cursor move and selection.
-*Columns* takes its record length from the published width, *Packets*
-follows the selection and takes the protocol tool's messages and field
-guesses, *Alignment* takes the same messages, *Reference* reads the layers
-of the packet chosen in *Packets*, the views colour by the report's regions
-and outline any template applied, all even while the tools are hidden.
-Background jobs (scans, the report, unpacking, protocol analysis,
-dissection, tshark and more) each have an id, report their progress and can
-be cancelled from a plugin or a client as well as from their tool. The *Workspace* tab lists what is known, by
-topic and by whom, dimming what describes the file before its last edit
-(what an edit did not touch moves with it instead); clicking a span selects
-those bytes, and *why* shows what led to a fact. Below is a log of recent
-events, filtered by topic. The same facts and events can be read through
-the data API (`events.facts` and `events.poll`; see [docs/api.md](docs/api.md)).
+The [user guide](docs/guide/README.md) covers each part in full:
 
-**The packet viewer follows the document.** Selecting a packet or a field in
-*Packets* selects its bytes in the view, and moving the cursor in the view
-into a packet selects that packet and the field under the cursor. Edit a
-packet in its hex dump or by typing a new value for a field (ports, lengths,
-addresses, flags), then *Fix checksums* to recompute the IPv4, TCP and UDP
-checksums. Several packets can be selected with Shift or Cmd click and
-deleted (a capture's records go with them, so it stays readable), saved,
-opened as a document, or inverted, filled or XORed, whole or one field in
-each. Every change is an ordinary edit you can undo, and the list is found
-and dissected again a moment after any edit, wherever it was made. Open it
-from *Tools › Packet viewer*, *Open in packet viewer* in the Protocol tab,
-the message alignment and the findings list, or *Packets* in the
-right-click menu.
+- [Viewing and editing](docs/guide/viewing-and-editing.md): formats, width
+  and zoom, selections and the byte operations, compressed streams and
+  media.
+- [Finding structure](docs/guide/finding-structure.md): width detection,
+  Findings, Report, Structure map, Columns, Templates and Learn.
+- [Packets](docs/guide/packets.md): captures, splitting frames, *Decode
+  frames as*, filters, editing, tshark and export.
+- [Reference notes](docs/guide/reference-notes.md): the Reference tab,
+  RFCs, Wireshark names and your own notes.
+- [The tools](docs/guide/tools.md): every tool tab, in brief.
+- [Layouts and the workspace](docs/guide/layouts-and-workspace.md):
+  recommended and saved layouts, and what the tools share.
+- [History and recipes](docs/guide/history-and-recipes.md): undo, go back,
+  playback, and recipes in the window and from the shell.
+- [Ask Claude, and who may change the file](docs/guide/ask-and-permissions.md).
+- [Command line](docs/guide/command-line.md): every option and subcommand.
+- [Settings and files](docs/guide/settings-and-files.md): settings, where
+  things are saved, and adding your own formats and plugins.
 
-**Packets as rows.** *Split into frames* cuts the selection or the whole
-document by a fixed width, a length field (where it sits, its width and byte
-order, whether it counts the whole frame, the bytes after it or the payload
-after a header, plus a constant; *Auto-detect* fills these in from the
-protocol tool), or a pattern such as `AA 55 ?? 01`, `0D 0A` or `"GET "` that
-starts each frame, ends it, or sits between frames. The frame count and the
-shortest, mean and longest lengths are shown. *Raster* draws each packet as
-one row of pixels (byte class or a palette, any pixel size, hex inside the
-pixels when zoomed in if you want it); *Hex* writes the same rows as hex
-with ASCII beside them. Rows can be lined up on a pattern or on the packet's
-end, and a strip above the columns marks each byte offset as constant,
-counter, few values, text or random. Click a byte to select it in the view;
-drag across packets to select a block (a range of packets by a range of
-byte offsets), or click the ruler (or Alt-click) to select whole columns,
-then invert, fill, XOR, add to, set, number, byte-swap, copy (hex or CSV)
-or delete those bytes in every packet of the selection at once, as one
-undoable edit. Once the frames are decoded as a protocol, hovering a column
-or a byte names the field it holds (*Transaction ID (DNS)*), and a selection
-of columns lists the fields it spans.
-
-**Decode frames as.** Frames split from the file, taken from the protocol
-framing or added from the selection carry no link type and no ports, so
-nothing says what they are. The packet viewer finds out: it tries each of
-its decoders (Ethernet, raw IP, DNS, DNS with a TCP length prefix, SNMP,
-NTP, Modbus/TCP, MQTT, TLS records, DHCP, TFTP, TPKT with COTP and S7comm,
-the NetBIOS session service with SMB, RTP, RTCP and HTTP) on up to 64
-frames spread through the set, and decodes the frames as the one that reads
-at least 80% of them (and at least two) from first byte to nearly the last.
-A decoder that only reads a short prefix of each frame does not count, the
-looser protocols (MQTT, NTP, TFTP, RTP) must also show values real traffic
-has and are never taken from a single frame, and a set of one frame is
-taken only when it is read to its last byte; when nothing fits, the frames
-keep their field guesses. The status line above the list says what
-happened, such as *decoded as DNS (detected, 61 of 64 sampled)*. The
-*Decode frames as* choice overrides it for the set: *Auto*, any protocol by
-name, *Field guesses*, or a template. A frame the chosen protocol does not
-read falls back to the template or field guesses with a note, and the
-status line counts how many were read and what detection would have picked.
-Decoded frames are listed, filtered and explained like the same protocol
-on its port: `dns.qry.name~example` finds DNS messages split from a file.
-Turn off *Detect the protocol of split frames* in Settings to start every
-set on its field guesses instead; *Detect now* in the choice then runs
-detection for that set. The Protocol tab also says when the messages its
-framing found are a protocol the packet viewer dissects.
-
-**More protocols with Wireshark's tshark (optional).** When Wireshark is
-installed, *Decode with tshark* in *Packets* hands the shown packets (or,
-from the detail view, one packet) to its command-line dissector, tshark, and
-adds the layers it decodes where ours stop: a Kerberos, LDAP or X11 packet
-that we list as UDP or TCP payload gains its own layer, with every field at its
-exact bytes, so pointing at or clicking a field selects it in the view and
-the *Reference* tab follows it like any other layer. Such layers carry a
-small *tshark* tag; the packet list shows tshark's protocol, and
-`proto:dhcp` filters by any protocol tshark named. *Use tshark for
-everything* shows tshark's layers in place of ours. tshark runs on this
-computer only, always with `-n` (no name lookups), on a temporary pcap of
-the packets, in the background with a time limit and a *Cancel* button. It
-never runs unless you click the button or turn on *Use tshark when installed*
-in Settings, where you can also say where tshark is when it is not found on
-the `PATH` or in the usual install locations. Results are dropped when the
-document is edited.
-
-**Reference: what the bytes at the cursor mean.** The *Reference* tab lists
-every known format enclosing the cursor, outermost first, as a path you can
-click: inside a DNS packet of a capture it reads *pcap capture › Ethernet II
-› IPv4 › UDP › DNS*. For the chosen format it shows how the data is
-organised, which formats it carries, and the specifications that define it,
-linked to the RFC or document section. Below that are an RFC-style diagram
-of the header (32 bits a row, each field a box over its bytes) and a table
-of this instance's fields with offset, length, current value and what the
-field means; pointing at a row or box outlines its bytes in the view, and
-clicking selects them. The same explanations appear when hovering fields in
-the Inspector's structure tree and in *Packets*, whose *Reference* buttons
-open the tab on that format, and picking a layer in *Packets* turns the tab
-to it. The notes are written for this project and built into the app (in
-`reference/network.toml` and `reference/files.toml`). *Show §3.1* fetches
-that section of the RFC from the RFC Editor, only when you click it, and
-keeps the text in `~/.cache/theviewer/rfc` so it is read from there next
-time. *Ask* is sent the notes on the formats at the cursor too, and can look
-up any other format's notes, by name or by port (`udp/67`, or just `502`).
-
-When a packet's payload is not dissected, the tab still names what it
-probably is, from the port (or the EtherType, or the IP protocol number)
-the notes list for each protocol: an SSH packet's encrypted payload on TCP
-port 22 shows as *SSH banner?*, with the reason on hover. The question mark
-marks it as a guess: there is no field table, only the notes on what that
-port usually carries, and when several protocols share the port the others
-are offered beside it.
-
-*Browse all…* lists every note under its group (Link layer, Transport,
-Images, Archives and so on), with a search box that matches names, keys and
-summaries, or ports: `udp/67` or `502` finds what runs there.
-
-**Wireshark names.** The notes give each protocol and field its Wireshark
-display-filter name where Wireshark has one: the IPv4 notes say
-*Wireshark: `ip`*, and the *Time to live* field `ip.ttl`. The names appear
-under a note's heading, in a column of the field table and in field
-tooltips, and clicking one copies it for a Wireshark or tshark filter. The
-search box finds notes by them too (`dhcp`, `ip.ttl`), and the checker below
-verifies every name against the installed tshark. Only the names are taken
-from Wireshark; the notes' own text is written for this project.
-
-**Your own notes.** Put TOML files in `~/.config/theviewer/reference/`, in
-the same form as the built-in ones; they are read at startup, and *Reload
-your notes* in the *Browse all* list reads them again. An entry with the
-`id` of a built-in one replaces it; any other is added. A file that cannot
-be read is skipped, and the list says which and why. A minimal entry:
-
-```toml
-[[format]]
-id = "telemetry"
-name = "Lab telemetry"
-keys = ["Telemetry"]
-group = "Industrial control"
-ports = ["udp/9999"]
-summary = "Readings from the bench rig."
-organisation = "A 2-byte sensor id, then a 4-byte big-endian reading."
-
-[[format.specs]]
-document = "Rig manual 2.1"
-title = "Bench rig telemetry"
-url = "https://example.com/rig-manual.pdf"
-```
-
-**Checking the citations.** `cargo run --bin check_reference` checks every
-built-in note against its sources: each cited RFC exists, has the title
-given and is not obsoleted (a warning), each cited section is found in the
-RFC's text, each port is registered with the IANA to something like the
-protocol (a warning), every link is https, and every Wireshark name is one
-that `tshark -G protocols` or `tshark -G fields` lists. The RFC Editor's
-index, the IANA registry and RFC text are kept in `~/.cache/theviewer/rfc`,
-and tshark's names in `~/.cache/theviewer/wireshark`; `-- --offline` uses
-only what is kept there, and without tshark or kept names the Wireshark
-names are skipped with a note. Errors make it exit non-zero.
-
-Also in the menus: *Plot selection* draws bytes as a time series, histogram,
-scatter or frequency spectrum, and *Play selection as audio* plays any bytes
-as sound.
-
-## Ask Claude about a file
-
-*Ask* (`Cmd+L`) lets you ask questions such as "what format is this?" or
-"which field is the length?". Claude (`claude-opus-5-5`) sees the cursor,
-the selection, nearby findings and the bytes around them, and can read,
-search and parse more of the file itself, and run the analysis tools: the
-file overview, segmentation, statistics, compressibility, text encoding,
-processor detection and the reference notes on formats. *Characterise* asks it to work through them and
-describe the whole file. Offsets in its answers are links, and templates it
-writes can be applied with one click. When you ask it to change something
-("XOR the selection with 5A", "fix the length field"), it can edit too, with
-the same operations you have: each change waits for you to allow it (see
-below), is one undo step, and is labelled in the Edit menu as Ask's, such as
-*Undo XOR by ask*.
-
-Ask is off until you add an Anthropic API key in **Settings** (`Cmd+,`).
-On macOS the key is kept in your Keychain; elsewhere in
-`~/.config/theviewer/credentials`, readable only by you. The
-`ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` environment variables, or an
-`ant auth login` session, also work. Nothing is sent anywhere unless you ask
-a question.
-
-## Who may change the file
-
-You edit freely. Plugins, Ask and other clients of the data API can always
-read, but what they may change is up to you: **Settings › Permissions**
-lists each one (Ask, every plugin that declared it edits, and any client
-that has asked before) with three choices, *Always allow*, *Always ask* and
-*Never allow*. A client not seen before is asked about.
-
-When a client set to ask wants to change the document or the selection, a
-window says who it is and what the change is, in plain words: "Ask wants to
-change the document: XOR 128 selected bytes with 5A", or "Overwrite 4 bytes
-at 0x40 with DE AD BE EF". *Allow once* makes the change, *Always allow this
-client* makes it and stops asking, and *Deny* refuses it, which the client
-is told. Nothing waits on the window: you can keep working, and a request
-nobody answers is refused after two minutes. Several requests are answered
-in the order they came.
-
-Every change a client makes is one undo step, labelled with what it did and
-who did it ("Overwrite 4 bytes by plugin:acme_telemetry.lua"), so *Undo*
-always takes it back. A client can also say which version of the file it
-expects, so a change based on bytes that have changed since is refused
-instead of applied. On the command line (`theviewer api`) and through the
-MCP server (`theviewer mcp`, below) every call is allowed: the files are the
-ones you named.
-
-## Use theviewer from Claude Code and other MCP clients
-
-`theviewer mcp FILE…` serves the files you name over the
-[Model Context Protocol](https://modelcontextprotocol.io) on standard input
-and output, without a window, so Claude Code, Claude Desktop and other MCP
-clients can inspect and edit them. Add it to Claude Code with:
-
-```sh
-claude mcp add theviewer -- /path/to/theviewer mcp /path/to/firmware.bin
-```
-
-For Claude Desktop, add it to `claude_desktop_config.json`:
-
-```json
-{
-  "mcpServers": {
-    "theviewer": {
-      "command": "/path/to/theviewer",
-      "args": ["mcp", "/path/to/firmware.bin"]
-    }
-  }
-}
-```
-
-What the client gets:
-
-- **Tools:** the core methods of the data API ([docs/api.md](docs/api.md)),
-  with dots made underscores: `analysis_overview`, `findings_query`,
-  `structure_parse`, `templates_apply`, `bytes_read`, `bytes_hexdump`,
-  `search_find`, `packets_sets_create`, `bytes_write`, `transform_apply`,
-  `history_undo` and a few more, plus every method your plugins register.
-  The rest of the API's methods are a search away: `api_search` finds them
-  by words in their names and summaries, `api_describe` gives one's
-  parameters and `api_call` calls it. That keeps the tool list a client
-  holds in its model's context to about a quarter of the size;
-  `--all-tools` lists every method as a tool instead. Each tool says
-  whether it only reads or changes the file.
-- **Resources:** `theviewer://doc/{id}` (a document's info),
-  `theviewer://doc/{id}/bytes/{start}-{end}` (up to 1 MiB of bytes; add
-  `?encoding=hex` for a hex dump), `theviewer://doc/{id}/findings` (what the
-  detectors recognise and what tools and plugins published),
-  `theviewer://doc/{id}/facts` (everything the workspace bus knows about
-  it), `theviewer://doc/{id}/packets/{set}` (the packets of a set the
-  client made with `packets_sets_create`) and `theviewer://reference/{id}`
-  (the notes on a format or protocol). A client subscribed to one is told
-  when an edit, a plugin or a new decoding changes it.
-- **Packet sets:** `packets_sets_create` takes packets from a capture in
-  the file, a range split into fixed records, by a length field or at a
-  pattern, the selection, or the protocol framing; `packets_dissect`, and
-  through `api_call` `packets.list` (with the Packets panel's filter
-  language), `packets.decode_as`, `packets.conversations`,
-  `packets.follow_stream` and `packets.export_pcap`, work on it.
-- **Jobs:** `analysis_overview_job` maps a large file in the background and
-  returns a job id at once; `jobs_status` gives its progress and, once done,
-  the report, and `jobs.list` and `jobs.cancel` cover every background job.
-- **Prompts:** *Triage this file*, *Find the record structure* and
-  *Explain the packet*, which walk the model through the tools.
-
-**What it may change.** Only the files you named, and any the client opens
-with `documents_open`; every call is allowed, without asking, because they
-are your files given to your client. Each edit is one undo step labelled
-with the client ("Overwrite 2 bytes by mcp:claude-code"), so `history_undo`
-takes it back, and nothing is written to disk until the client calls
-`documents_save`. Plugins load from the usual places (`plugins/` and
-`~/.config/theviewer/plugins/`), or from the directories given with
-`--plugins DIR`; editing a script while the server runs reloads it, and the
-client is told the tools changed. Plugins' log lines go to the client as log
-messages, and every log goes to standard error.
-
-The server speaks the current MCP revision, 2026-07-28 (per-request
-metadata, `server/discover`, `subscriptions/listen`), and the earlier
-revisions that begin with `initialize` (2025-11-25, 2025-06-18, 2025-03-26
-and 2024-11-05), so current and older clients both work. Attaching to the
-running window instead is planned.
-
-## Recipes: run an analysis again on other files
-
-Every step you take, by hand or through Ask, a plugin or an MCP client, is
-a call of the data API. A **recipe** saves a run of those calls in a
-`*.theviewer-recipe.json` file under `~/.config/theviewer/recipes/`, so you
-can repeat the analysis on the next file. You can share the file with
-others.
-
-- **Anchors keep it portable.** An offset that suits one file is wrong for
-  the next, so a step's value can be an anchor that is found when the step
-  runs:
-  - the nth match of some bytes or text;
-  - a field of a parsed structure (`png`, `IHDR.width`);
-  - the nth finding of a category;
-  - what is selected;
-  - a value an earlier step returned;
-  - a parameter you give when you run it.
-
-  Each is written `{"$anchor": …}` in a step's parameters.
-- **Run one in the window** with *File › Run recipe…* or the palette. Pick
-  the recipe and fill in its parameters. Then press *Preview*: it shows each
-  step on this file and where its anchors landed, and changes nothing.
-  *Run* then does it all without asking about each step, because you have
-  seen the preview. One *Undo* takes all of its edits back, as
-  "Recipe steps by recipe:NAME".
-- **Run one over many files** from the command line:
-
-  ```sh
-  theviewer replay "Telemetry frames" capture-*.bin --param key=5a --out decoded/ --json
-  ```
-
-  Each file opens in a workspace of its own. You get a report per file:
-  what each step did, or where and why it stopped. With `--json` the
-  report is JSON. With `--save` each changed file is saved over itself, and
-  with `--out DIR` into DIR. A file the recipe stopped on is not saved, and
-  then the exit code is non-zero.
-- **From Ask and MCP clients** use `recipes.list`, `recipes.describe`,
-  `recipes.save` (whole, or from steps of this session's journal),
-  `recipes.preview` and `recipes.run` ([docs/api.md](docs/api.md)).
-  `recipes.run` is an edit, so Settings › Permissions applies to it.
-  The confirmation window lists its steps, and each step is still checked
-  against that client's policy.
-- **Warnings.** A recipe names the API version and the plugins it was
-  recorded with. Running it warns you if a plugin is missing or has changed,
-  if a method is unknown, or if the file is not the one it was recorded on.
-
-## Make it yours
-
-**Arrange the panels.** The main view's tab is **Bits**, with **Packets**
-beside it, so the bytes and the packets they hold are one click apart.
-Every panel can be moved:
-
-- **Split or stack:** drag a panel's tab to the edge of another panel to put
-  it beside that one, or onto its tab bar to stack it there.
-- **Float:** drag it out of the window.
-- **Collapse or close:** the arrow collapses a panel and the cross closes it.
-  *View › Panels* brings a closed panel back.
-- **Tools:** `Cmd+J` folds all the tools away.
-
-Panels with many tabs wrap them onto extra rows.
-
-**Pick a layout for the job.** The **Layout** menu has a recommended layout
-for each kind of analysis. Each one opens only the tools that work needs, so
-the tab bars stay short; any other tool is still in *Tools* and
-*View › Panels*.
-
-| Layout | Opens with |
-| --- | --- |
-| Overview | Report, Reference, structure and size maps, strings, statistics; inspector, findings and hex |
-| Network capture | Packets in front, with Reference, Protocol, strings and Live, and the hex |
-| File structure | Inspector and Reference beside the view; Template, structure map, columns, Unpacked and Learn |
-| Firmware and code | Firmware, Disassembly, strings, Crypto, Unpacked, Images and Checksums |
-| Signals and bit streams | Bits, the period chart, Columns, Trigrams, Dot plot, Statistics and XOR |
-| Forensics and carving | Forensics, Images, Unpacked, strings and the size map, with Findings in front |
-| Compare files | Compare and Diff |
-| Focus on the view | Just the view, the hex and the inspector |
-
-When a file opens as a capture, an executable, a disk image or another
-known format, the status bar offers the layout made for it; **Switch** opens
-it. *Layout › Suggest a layout for each file* turns the offers off.
-
-**Keep your own layouts.** Arrange the panels, type a name under **Yours** in
-the Layout menu and press **Save**. Each saved layout has **Update** (replace
-it with the current arrangement), **Rename** and **Delete** (press twice).
-**Last session** brings back the arrangement as it was when theviewer last
-closed, and *Layout › When theviewer opens* chooses what a new window starts
-with: the last session (the default), a recommended layout or one of yours.
-
-**Arrange the toolbar.** The toolbar's groups pack themselves into as few
-rows as the window allows. Drag a group by its caption to change their
-order (drop it below the last row to move it to the end); the groups still
-fill each row before starting the next. *Layout › Arrange toolbar
-automatically* goes back to the automatic order.
-
-**Choose the defaults.** In **Settings** (`Cmd+,`), choose what a new window
-starts with:
-
-- pattern highlights, and which kinds to show;
-- whether the findings list is open;
-- pixel format, palette, width and zoom;
-- whether to detect the width when a file opens.
-
-A file's own saved view and command-line options still take precedence.
-
-**Where things are saved**
-
-| File | Holds |
-| --- | --- |
-| `~/.config/theviewer/layout.json` | Panel arrangement as the last session left it |
-| `~/.config/theviewer/layouts/` | Layouts you saved by name |
-| `~/.config/theviewer/toolbar.json` | Toolbar order, if you rearranged it |
-| `~/.config/theviewer/preferences.json` | Startup defaults |
-| `~/.config/theviewer/credentials` | API key (not on macOS, which uses the Keychain) |
-| `name.theviewer.toml`, beside each file | Bookmarks and the view settings for that file |
+For building on theviewer: the [data API](docs/api.md),
+[plugins](docs/plugins.md), [templates](docs/templates.md), the
+[MCP server](docs/mcp.md), the [recipe format](docs/recipes.md) and
+[development](docs/development.md).
 
 ## Keyboard shortcuts
 
@@ -629,6 +207,7 @@ the full list.
 | `0`–`9` `A`–`F` | Type hex at the cursor |
 | `Ins` | Switch between overwrite and insert |
 | Arrow keys | Move by a pixel or a row (`Shift` extends the selection) |
+| `PgUp` `PgDn` `Home` `End` | Move by a page, or to either end |
 | `Alt`+drag | Select a column: the same bytes in every record (raster or hex) |
 | `Cmd`+click, `Cmd`+drag | Add a search match, finding, packet or range to the selection |
 | Drag a selection | Move its bytes to the caret (`Esc` cancels); drag its first or last byte to resize it |
@@ -636,7 +215,6 @@ the full list.
 | `I` | Insert bytes before, after or at the cursor |
 | `S` | Skip the selection: fold it out of the views |
 | `M` | Multi-select mode: plain clicks and drags add sections |
-| `PgUp` `PgDn` `Home` `End` | Move by a page, or to either end |
 | `Delete` `Backspace` | Delete the selection or byte |
 | `Cmd+C` `Cmd+X` `Cmd+V` `Cmd+A` | Copy as hex, cut, paste, select all |
 | `[` `]` | Width −1 / +1 (`Shift` for 16) |
@@ -653,148 +231,6 @@ the full list.
 | `Cmd+,` | Settings |
 | `Esc` | Clear the selection |
 | `?` | Shortcut window |
-
-## Command line
-
-```sh
-theviewer firmware.bin --format rgb8 --width 320 --offset 0x1000 --zoom 2
-theviewer records.dat --detect
-theviewer capture.bin --tool protocol --layout network
-theviewer dump.bin --tool packets          # load the first capture, else the message framing
-theviewer firmware.bin --report          # print the report, no window
-theviewer firmware.bin --json > report.json
-theviewer api bytes.read '{"start": 0, "len": 16}' firmware.bin   # one data API call, printed as JSON
-theviewer api --save bytes.write '{"start": 0, "data": "7f454c46"}' firmware.bin   # edit and save in one command
-theviewer api --describe                 # every API method with its schemas
-theviewer mcp firmware.bin               # serve it to an MCP client on stdin and stdout
-theviewer replay "Telemetry frames" a.bin b.bin --json   # run a saved recipe on each file
-```
-
-| Option | Effect |
-| --- | --- |
-| `--format NAME` | Pixel format: `bit1` `bit1lsb` `nibble4` `gray8` `class` `rgb565` `gray16le` `gray16be` `rgb8` `bgr8` `rgba8` `bgra8`, or a numeric heatmap: `u16le` `u16be` `i16le` `i16be` `u32le` `u32be` `i32le` `i32be` `f32le` `f32be` |
-| `--palette NAME` | Palette for single-channel formats: `grey` `viridis` `inferno` `ocean` `amber` `diverging` |
-| `--width PIXELS` | Pixels per row |
-| `--offset BYTES` | Byte shown at the top left (decimal or `0x` hex) |
-| `--cursor BYTES` | Where the cursor starts |
-| `--zoom FACTOR` | Pixel scale, such as `2` or `0.5` |
-| `--detect` | Look for the record width straight away |
-| `--open` | Open the image, audio or video at the cursor |
-| `--tool NAME` | Open a tool: `report` `ask` `template` `columns` `protocol` `packets` `statistics` `strings` `xor` `checksums` `disassembly` `unpacked` `diff` `live` |
-| `--layout NAME` | Start with a layout for this session: `overview` `network` `structure` `firmware` `signals` `forensics` `compare` `focus`, or the name of one you saved. The last session's arrangement is left as it is. |
-| `--report` | Print the file's report as text and exit, without opening a window |
-| `--json` | Print the report as JSON and exit: the summary, regions, likely record widths and confident findings, for scripts and CI |
-| `api METHOD ['{JSON}'] [FILE]` | Run one method of the data API on FILE and print its JSON result; an error is printed as JSON on stderr with a non-zero exit code. `api --describe` lists every method. The methods are described in [docs/api.md](docs/api.md) |
-| `mcp [--plugins DIR]… [--all-tools] [--output-schemas] [FILE…]` | Serve the files over MCP on standard input and output until the client closes it; see [above](#use-theviewer-from-claude-code-and-other-mcp-clients). `--plugins` loads plugins from DIR instead of the usual directories. `--all-tools` lists every API method as a tool, not only the core ones with `api_search`, `api_describe` and `api_call` to reach the rest, which makes the tool list a client keeps in its model's context about four times the size. `--output-schemas` lists each tool's result schema as well, which roughly doubles it |
-| `replay RECIPE FILE… [--param KEY=VALUE]… [--save \| --out DIR] [--json]` | Run a recipe on each FILE. RECIPE is a recipe saved in `~/.config/theviewer/recipes/`, by name, or the path of a recipe file. A report is printed per file, as JSON with `--json`. `--save` saves each changed file over itself, and `--out` saves it into DIR. The exit code is non-zero if the recipe stopped on any file; see [Recipes](#recipes-run-an-analysis-again-on-other-files) |
-
-## Extending it
-
-Everything that recognises, parses or decodes bytes is a plugin, and the
-built-in ones use the same interfaces as yours.
-
-- **Signatures:** add TOML files to `~/.config/theviewer/catalog/`. The
-  format, with offsets, masks, nested conditions and length rules, is the
-  one used in `catalog/curated.toml`.
-- **Templates:** describe structures in the template language; see
-  [docs/templates.md](docs/templates.md).
-- **Lua plugins:** scripts can add detectors, parsers, codecs and actions
-  through a small sandboxed API, call every method of the data API, react
-  to what other tools publish on the workspace bus and publish what they
-  learn, and register methods of their own that Ask, the command line and
-  MCP clients can call; see [docs/plugins.md](docs/plugins.md) and the examples in
-  `plugins/`. *View › Reload plugins* picks up changes.
-  An error in a plugin, even in a background scan, is shown in the status
-  bar, and every line a plugin logs is in the *Workspace* tab.
-- **Rust:** implement `Detector`, `Parser` or `CodecPlugin` from
-  `src/plugin.rs` and register it in the `Registry`.
-
-## Development
-
-```sh
-cargo test                  # unit tests, plus headless UI tests
-cargo clippy --all-targets
-cargo run --bin render_logo -- assets/logo.png   # redraw the logo
-```
-
-`tests/ui.rs` and `tests/tools.rs` drive the real application without a
-window, using `egui_kittest`. They click, drag and type through the view,
-the toolbar, every tool, the panel layouts and the settings, so a change
-that breaks an interaction fails a test. They use a temporary key store,
-never your Keychain. The tshark test is skipped when tshark is not installed.
-
-**A corpus of real captures.** `capture_corpus` tests the packet code against
-Wireshark's sample captures and against tshark:
-
-```sh
-cargo run --release --bin capture_corpus -- fetch   # download the samples
-cargo run --release --bin capture_corpus -- run     # read, dissect, compare, report
-```
-
-`fetch` downloads the captures linked from
-[wiki.wireshark.org/SampleCaptures](https://wiki.wireshark.org/SampleCaptures)
-(about 600 files, at most 50 MB each and 1.5 GB in all, one at a time with a
-pause between them, backing off when the wiki asks) into
-`~/.cache/theviewer/corpus/` (or `$THEVIEWER_CORPUS_DIR`), unpacks gzip,
-bzip2, xz, zip and tar files, and records each file's URL, size and SHA-256
-in `manifest.json`. Run again, it fetches only what is missing. The sample
-captures carry no licence statement, so they stay in that cache: the tool
-refuses a directory inside the source tree, nothing in the repository reads
-them, and the tests use captures built by hand.
-
-`run` reads the first 2,000 packets of every capture with our readers and
-dissectors, filters, flows, pcap export, the Reference stack and the
-detectors, catching and recording any panic with its file and packet, and
-listing slow files. When tshark is installed it decodes the same packets and
-compares them with ours: the innermost protocol, each layer's start and
-length, and each field both name (mapped by hand in `corpus/compare.rs`),
-then counts which protocols tshark found that we do not decode and whether
-the reference notes name them by filter name, port, EtherType or IP
-protocol. Reports go to the cache's `report/` directory: `summary.md`,
-`coverage.csv`, `mismatches.csv` and `failures.csv`. They hold counts,
-protocol filter names and our own layer and field names, never tshark's
-text.
-
-<details>
-<summary><strong>How the code is organised</strong></summary>
-
-| Module | Responsibility |
-| --- | --- |
-| `document.rs` | Piece table over a memory-mapped file plus an append-only edit buffer: cheap edits on any size, undo and redo with named steps, and safe saving. |
-| `raster.rs` | Turns bytes into pixels for a format, palette and row stride, in parallel. |
-| `view.rs` `hex.rs` | The raster view (texture caching, scrolling, zoom, selection) and the inspector and hex dump. |
-| `app.rs` | Application state, shortcuts, editing commands, toolbar, menus and background analysis. |
-| `analysis.rs` `structure.rs` | Period scan, column entropy and the entropy map; the period chart. |
-| `patterns.rs` | Pattern recognisers and how overlapping findings are resolved. |
-| `plugin.rs` | The plugin traits, `Finding`, `Field`, `Category` and the `Registry`. |
-| `catalog.rs` | The signature catalogue and its matching engine. |
-| `parsers/` | Structure parsers for executables, images, archives, captures, ASN.1, disks and serialisation formats. |
-| `plugins.rs` `plugins/` | The sandboxed Lua plugin host, and what scripts reach the data API and the bus through. |
-| `compress.rs` `unpack.rs` | Stream detection, bounded decompression and compression; recursive extraction. |
-| `media.rs` `player.rs` | Media detection and decoding; the image, audio and video viewer. |
-| `explain.rs` `hilbert.rs` `region_colours.rs` | The whole-file report and map; the Hilbert and Morton curve layouts; colours by region, block class and entropy. |
-| `columns.rs` `protocol.rs` `templates.rs` | Record profiling, protocol analysis, and the template language. |
-| `packets.rs` `packets/` `panel_packets.rs` `panel_packets_view.rs` `panel_packets_grid.rs` `panel_packets_tshark.rs` | Packet sources (framing, pcap and pcapng, splits by width, length field or pattern), packets laid out as rows with column operations, dissection, conversations and streams, the filter language, pcap export and in-place editing, decoding with tshark; the packet viewer panel. |
-| `corpus.rs` `corpus/` `bin/capture_corpus.rs` | The developer tool that fetches sample captures and compares our dissection with tshark's. |
-| `stats.rs` `strings.rs` `xor.rs` | Statistics and randomness tests, strings, XOR key recovery. |
-| `disasm.rs` `pointers.rs` `checksums.rs` `diff.rs` | Disassembly, the pointer graph, checksums, file comparison. |
-| `sources.rs` `plot.rs` | Live sources, watching and recording; plots and bytes as audio. |
-| `analysis_tools.rs` `analysis_stats.rs` `analysis_tabs.rs` `dock.rs` `workbench.rs` | The tool panels and the state behind them. |
-| `assistant.rs` | *Ask*: a streaming Claude API client with tools, on a background thread. |
-| `api.rs` `api/` | The data API: one table of methods with JSON schemas, run against the window or a headless workspace; Ask's tools, `theviewer api` and [docs/api.md](docs/api.md) come from it. |
-| `mcp.rs` `mcp/` | `theviewer mcp`: a hand-written, synchronous MCP server over stdio; tools from the method table, resources and subscriptions from the bus, prompts. |
-| `journal/replay.rs` `journal/anchors.rs` `journal/recipe.rs` `recipes.rs` `recipes/` `api/recipes.rs` | Running steps again: the recipe runner and anchors, the recipe file, recipes on disk, `theviewer replay`, "Run recipe…" and `recipes.*`. |
-| `api/permissions.rs` `confirmations.rs` | Who is calling the API and what each client may change; the window that asks you about a change. |
-| `layout.rs` `layouts.rs` `packing.rs` | Dockable panels; recommended and saved layouts; toolbar packing and reordering. |
-| `legend.rs` | The legend bar: the colouring in effect and each highlight layer, with toggles. |
-| `freshness.rs` | Which document version each tool's result describes; refreshing cheap views after edits and marking the rest out of date. |
-| `selection.rs` `selection_ops.rs` `selection_menu.rs` `selection_drag.rs` `folds.rs` | Range, column and multi-range selections; the byte operations on them; the Selection menu and floating toolbar; moving, resizing and nudging by hand; skipped (folded) ranges. |
-| `search.rs` `bookmarks.rs` `findings.rs` `commands.rs` | Search, bookmarks and the sidecar file, the findings list, the command palette. |
-| `settings.rs` `preferences.rs` `config.rs` | The settings window and API key storage; startup defaults; where settings live. |
-| `theme.rs` `logo.rs` | Colours and shared widgets; the logo, drawn in code. |
-| `vendor/egui_dock` | egui_dock 0.21.1 with one addition, wrapping tab bars (`TabBarStyle::wrap_tabs`). |
-
-</details>
 
 ## Licence
 
