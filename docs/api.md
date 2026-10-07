@@ -70,6 +70,8 @@ Errors are `{code, message, data}`, with these codes:
 | [`structure.parsers`](#structureparsers) | read | The structure parsers available, built in and from plugins. |
 | [`templates.list`](#templateslist) | read | The binary templates available: the built-in ones and the user's own. |
 | [`templates.apply`](#templatesapply) | read | Apply a binary template, by name or as source text, at an offset and return its field tree and records; with pin, also show it as the template tool does. |
+| [`templates.infer`](#templatesinfer) | read | Propose a template struct from several example records, from what varies between them; with pin, also apply it at the first record and show it as the template tool does. |
+| [`templates.clear`](#templatesclear) | view | Withdraw the template pinned over a document: its records are no longer outlined, and it leaves template.applied. |
 | [`codecs.list`](#codecslist) | read | The codecs available for decoding, built in and from plugins. |
 | [`codecs.detect`](#codecsdetect) | read | The codecs whose header starts at an offset. |
 | [`codecs.decode`](#codecsdecode) | read | Decode (decompress) a span with a codec and return the output. |
@@ -147,6 +149,18 @@ Errors are `{code, message, data}`, with these codes:
 | [`characterise.profile_selection`](#characteriseprofile_selection) | job | Start compressing a sample of a span with deflate, bzip2, LZ4, zstd and an order-1 entropy coder as a job: the ratios and the verdict they give (encrypted or random, already compressed, lossy media or structured) are job.finished's result, and in the window they fill Characterise (analysis.compressibility is the quick read). |
 | [`characterise.profile_file`](#characteriseprofile_file) | job | Start profiling the compressibility of the whole document as a job, overall and for up to 64 segments sampled along it: the verdicts are job.finished's result, and in the window they fill Characterise with a strip of verdicts. |
 | [`characterise.streams`](#characterisestreams) | job | Start a search of the document (its first 256 MiB) for raw MP3/MP2 and AAC frames, H.264 and H.265 Annex B video and 16-bit PCM audio without a container as a job: the runs found are job.finished's result, and in the window they fill Characterise. |
+| [`columns.profile`](#columnsprofile) | read | Profile the byte columns of fixed-size records from an offset (each column's kind, entropy and values) and group them into likely fields; in the window the Columns tool shows it. |
+| [`protocol.analyse`](#protocolanalyse) | job | Start finding how a span is framed into messages (sync words, delimiters, length prefixes, fixed size) and what their header fields are, as a background job; the framing, messages and fields are job.finished's result and are published on frames.defined and fields.guessed. |
+| [`protocol.choose_framing`](#protocolchoose_framing) | view | Split a span into messages with a framing (one protocol.analyse offered, or any other) and work out their fields again; the messages are published on frames.defined, and in the window the Protocol tool shows them. |
+| [`report.run`](#reportrun) | job | Start explaining the whole document in plain words and mapping its regions, as a background job; the report and regions are job.finished's result and are published on regions.mapped, and in the window the Report tool and the file map show them. |
+| [`structure_map.segment`](#structure_mapsegment) | job | Start splitting the document into stretches of uniform character, grouped into types (text, tables, compressed, padding…), as a background job; the segments are job.finished's result, and in the window the Structure map shows them. |
+| [`structure_map.find_similar`](#structure_mapfind_similar) | job | Start finding every part of the document whose statistics resemble a span, as a background job; the regions at or above the threshold are job.finished's result, and in the window the Structure map lists them. |
+| [`structure_map.tracks`](#structure_maptracks) | job | Start measuring entropy, compressibility, byte kinds and the local record width along the document, as a background job; the tracks are job.finished's result, and in the window the Structure map draws them. |
+| [`learn.format`](#learnformat) | job | Start learning what the document and sample files of the same format share (a magic number, header fields) as a background job; a signature for the catalogue and a template draft are job.finished's result, and in the window the Learn tool shows them. |
+| [`learn.save_catalogue`](#learnsave_catalogue) | edit | Write a learned signature to a new file in the user's catalogue folder, never over another, and load it. |
+| [`learn.fuzzy_compare`](#learnfuzzy_compare) | job | Start hashing files with ssdeep and scoring how like the document each is, 0 to 100, as a background job; the scores are job.finished's result, and in the window the Learn tool lists them. |
+| [`learn.fragments`](#learnfragments) | job | Start finding the blocks of the document that also occur in a file, as a background job; the shared fragments are job.finished's result, and in the window the Learn tool lists them. |
+| [`alignment.run`](#alignmentrun) | job | Start clustering messages into probable types and aligning each type byte by byte, marking columns as constant, counter, length or variable, as a background job; the messages are a span cut into rows, or else those the protocol analysis published on frames.defined. The clusters are job.finished's result, and in the window the Alignment tool shows them. |
 | [`view.get_shape`](#viewget_shape) | read | The shape a document's bytes are drawn in: the pixel format, pixels per row, the offset of the first pixel, a bit shift and the bytes skipped after each row. |
 | [`view.set_shape`](#viewset_shape) | view | Change the shape a document's bytes are drawn in (the pixel format, pixels per row, the first pixel's offset and bit, the padding after each row); what is not given stays as it is. |
 | [`view.fold`](#viewfold) | view | Skip ranges of a document in its views (the raster and the hex dump) without deleting them; a marker shows where each was. |
@@ -945,6 +959,37 @@ Apply a binary template, by name or as source text, at an offset and return its 
 | `structure` | Finding | yes | The whole parse, with its field tree in document offsets. |
 | `total_records` | integer | yes | Records in all. |
 | `warnings` | array of string | yes | Problems met while applying, each with its template line. |
+
+### templates.infer
+
+Propose a template struct from several example records, from what varies between them; with pin, also apply it at the first record and show it as the template tool does.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `doc` | string | no | Document id, path or "current" (the default). |
+| `len` | integer | yes | Bytes of example records, several of them. |
+| `pin` | boolean | no | Also apply the struct at `start` and pin it, as templates.apply with pin does. |
+| `record_len` | integer | no | Bytes per record; guessed from what repeats when omitted. |
+| `start` | integer | yes | First offset of the example records. |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `record_len` | integer | yes |  |
+| `records` | integer | yes | Example records it was inferred from. |
+| `source` | string | yes | The struct proposed, as template source for templates.apply. |
+
+### templates.clear
+
+Withdraw the template pinned over a document: its records are no longer outlined, and it leaves template.applied.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `doc` | string | no | Document id, path or "current" (the default). |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `cleared` | boolean | yes | Whether a template was pinned there. |
+| `doc` | string | yes | Id of the document. |
 
 ### codecs.list
 
@@ -2261,6 +2306,187 @@ Start a search of the document (its first 256 MiB) for raw MP3/MP2 and AAC frame
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `doc` | string | no | Document id, path or "current" (the default). |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `job` | string | yes | Follow it with jobs.status, or on job.progress and job.finished. |
+
+### columns.profile
+
+Profile the byte columns of fixed-size records from an offset (each column's kind, entropy and values) and group them into likely fields; in the window the Columns tool shows it.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `doc` | string | no | Document id, path or "current" (the default). |
+| `len` | integer | no | Bytes of records to profile, every record counting (a selection); when omitted, the records run from `start` until they stop looking alike. |
+| `record_len` | integer | yes | Bytes per record, 1 to 65536. |
+| `start` | integer | no | Offset of the first record. |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `columns` | array of ColumnResult | yes |  |
+| `fields` | array of FieldResult | yes |  |
+| `record_len` | integer | yes |  |
+| `records` | integer | yes | Records profiled. |
+| `start` | integer | yes |  |
+| `template` | string | yes | The fields as a template, to apply with templates.apply. |
+
+### protocol.analyse
+
+Start finding how a span is framed into messages (sync words, delimiters, length prefixes, fixed size) and what their header fields are, as a background job; the framing, messages and fields are job.finished's result and are published on frames.defined and fields.guessed.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `doc` | string | no | Document id, path or "current" (the default). |
+| `len` | integer | no | Bytes in the stream, at most 16 MiB; to the end of the document when omitted. |
+| `start` | integer | no | First offset of the stream (0 by default). |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `job` | string | yes | Follow it with jobs.status, or on job.progress and job.finished. |
+
+### protocol.choose_framing
+
+Split a span into messages with a framing (one protocol.analyse offered, or any other) and work out their fields again; the messages are published on frames.defined, and in the window the Protocol tool shows them.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `doc` | string | no | Document id, path or "current" (the default). |
+| `framing` | Framing | yes | How the stream is cut into messages, as protocol.analyse gives it. |
+| `len` | integer | no | Bytes in the stream, at most 16 MiB; to the end of the document when omitted. |
+| `start` | integer | no | First offset of the stream (0 by default). |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `candidates` | array of FramingResult | yes | The framings found, best first. |
+| `decodes_as` | string | no | The protocol the messages read as, such as "DNS", when they do. |
+| `fields` | array of MessageField | yes | The header fields found by aligning the messages. |
+| `framing` | FramingResult | no | The framing the messages were split with; absent when none was found. |
+| `len` | integer | yes |  |
+| `length_max` | integer | yes |  |
+| `length_mean` | number | yes |  |
+| `length_min` | integer | yes |  |
+| `messages` | array of pair | yes | Each message as [start, len], in document offsets. |
+| `start` | integer | yes |  |
+| `template` | string | no | The fields as a template, when there are any. |
+| `type_counts` | array of pair | yes | Messages per value of the message type field, when one was found. |
+
+### report.run
+
+Start explaining the whole document in plain words and mapping its regions, as a background job; the report and regions are job.finished's result and are published on regions.mapped, and in the window the Report tool and the file map show them.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `doc` | string | no | Document id, path or "current" (the default). |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `job` | string | yes | Follow it with jobs.status, or on job.progress and job.finished. |
+
+### structure_map.segment
+
+Start splitting the document into stretches of uniform character, grouped into types (text, tables, compressed, padding…), as a background job; the segments are job.finished's result, and in the window the Structure map shows them.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `doc` | string | no | Document id, path or "current" (the default). |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `job` | string | yes | Follow it with jobs.status, or on job.progress and job.finished. |
+
+### structure_map.find_similar
+
+Start finding every part of the document whose statistics resemble a span, as a background job; the regions at or above the threshold are job.finished's result, and in the window the Structure map lists them.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `doc` | string | no | Document id, path or "current" (the default). |
+| `histogram_weight` | number | no | 0 compares statistics only, 1 the coarse byte histogram only (0.5 by default). |
+| `len` | integer | yes |  |
+| `start` | integer | yes | The span to find more like. |
+| `threshold` | number | no | Similarity a region needs, 0 to 1 (0.6 by default). |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `job` | string | yes | Follow it with jobs.status, or on job.progress and job.finished. |
+
+### structure_map.tracks
+
+Start measuring entropy, compressibility, byte kinds and the local record width along the document, as a background job; the tracks are job.finished's result, and in the window the Structure map draws them.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `doc` | string | no | Document id, path or "current" (the default). |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `job` | string | yes | Follow it with jobs.status, or on job.progress and job.finished. |
+
+### learn.format
+
+Start learning what the document and sample files of the same format share (a magic number, header fields) as a background job; a signature for the catalogue and a template draft are job.finished's result, and in the window the Learn tool shows them.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `doc` | string | no | Document id, path or "current" (the default): the first sample. |
+| `paths` | array of string | yes | The other samples, files of the same format. |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `job` | string | yes | Follow it with jobs.status, or on job.progress and job.finished. |
+
+### learn.save_catalogue
+
+Write a learned signature to a new file in the user's catalogue folder, never over another, and load it.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | string | yes | Catalogue id the file is named after, such as "user/learned-51584631". |
+| `toml` | string | yes | The catalogue entry, as learn.format gives it. |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `path` | string | yes | The file written. |
+
+### learn.fuzzy_compare
+
+Start hashing files with ssdeep and scoring how like the document each is, 0 to 100, as a background job; the scores are job.finished's result, and in the window the Learn tool lists them.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `doc` | string | no | Document id, path or "current" (the default): what the files are compared with. |
+| `paths` | array of string | yes | The files to compare. |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `job` | string | yes | Follow it with jobs.status, or on job.progress and job.finished. |
+
+### learn.fragments
+
+Start finding the blocks of the document that also occur in a file, as a background job; the shared fragments are job.finished's result, and in the window the Learn tool lists them.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `block` | integer | no | Block size in bytes, 16 to 65536 (512 by default); shared runs are found a whole block at a time. |
+| `doc` | string | no | Document id, path or "current" (the default). |
+| `path` | string | yes | The file to look in. |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `job` | string | yes | Follow it with jobs.status, or on job.progress and job.finished. |
+
+### alignment.run
+
+Start clustering messages into probable types and aligning each type byte by byte, marking columns as constant, counter, length or variable, as a background job; the messages are a span cut into rows, or else those the protocol analysis published on frames.defined. The clusters are job.finished's result, and in the window the Alignment tool shows them.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `doc` | string | no | Document id, path or "current" (the default). |
+| `len` | integer | no | Bytes of rows; needed with `start`. |
+| `row_width` | integer | no | Bytes per row; needed with `start`. |
+| `start` | integer | no | Messages laid out one per row: the first row's offset. When omitted, the messages the protocol analysis published on frames.defined. |
+| `threshold` | number | no | Similarity, 0.1 to 0.95, above which clusters merge; higher splits more (0.5 by default). |
 
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |

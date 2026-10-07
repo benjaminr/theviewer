@@ -452,7 +452,7 @@ fn show_toolbar(state: &mut TrigramState, app: &mut ViewerApp, ui: &mut Ui) {
         ui.horizontal(|ui| {
             ui.label(RichText::new("The report has not been run, so there are no regions to label with.").small().color(theme::TEXT_DIM));
             if ui.small_button("Run the report").clicked() {
-                app.start_report();
+                app.explain_file();
             }
         });
     }

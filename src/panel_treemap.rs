@@ -126,7 +126,7 @@ fn show_regions(state: &mut TreemapState, app: &mut ViewerApp, ui: &mut Ui) -> O
     if app.mapped_regions.is_empty() {
         ui.horizontal(|ui| {
             if ui.button("Explain this file").clicked() {
-                app.start_report();
+                app.explain_file();
             }
             if app.report_running() {
                 ui.spinner();
