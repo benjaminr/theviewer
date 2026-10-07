@@ -300,7 +300,14 @@ pub fn dissect_dns(message: &[u8]) -> Option<AppLayer> {
     if !questions.is_empty() {
         fields.push(Field::new("Question section", DNS_HEADER_LEN, at - DNS_HEADER_LEN, format!("{} questions", questions.len())).with_children(questions));
     }
+    // Past the questions not read, the records would be read from the
+    // wrong place, so they are left out as the record sections leave out
+    // what follows a section not read in full.
+    let questions_read_all = counts[0] as usize <= DNS_MAX_RECORDS;
     for (section, count) in [(DnsSection::Answer, counts[1]), (DnsSection::Authority, counts[2]), (DnsSection::Additional, counts[3])] {
+        if !questions_read_all {
+            break;
+        }
         let section_start = at;
         let mut records = Vec::new();
         for index in 0..(count as usize).min(DNS_MAX_RECORDS) {
@@ -887,6 +894,20 @@ mod tests {
 
     fn field<'a>(layer: &'a AppLayer, name: &str) -> &'a Field {
         layer.fields.iter().find(|f| f.name == name).unwrap_or_else(|| panic!("no field {name} in {:?}", layer.fields))
+    }
+
+    #[test]
+    fn questions_past_the_most_read_are_not_taken_for_answers() {
+        // 33 questions and one answer: the 33rd question is not read, so
+        // nothing after it is read as an answer.
+        let mut message = vec![0x12, 0x34, 0x81, 0x80, 0, 33, 0, 1, 0, 0, 0, 0];
+        for _ in 0..33 {
+            message.extend_from_slice(&[1, b'a', 0, 0, 1, 0, 1]);
+        }
+        message.extend_from_slice(&[0xC0, 12, 0, 1, 0, 1, 0, 0, 0, 60, 0, 4, 10, 0, 0, 1]);
+        let layer = dissect_dns(&message).expect("DNS");
+        assert_eq!(field(&layer, "Question section").children.len(), DNS_MAX_RECORDS);
+        assert!(layer.fields.iter().all(|f| f.name != "Answer section"), "{:?}", layer.fields.iter().map(|f| &f.name).collect::<Vec<_>>());
     }
 
     #[test]
