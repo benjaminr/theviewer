@@ -762,7 +762,7 @@ fn act(state: &mut ReferenceState, app: &mut ViewerApp, action: Action) {
             // Stay on this format while the cursor moves into the field.
             state.wanted = state.chosen_entry().map(|entry| entry.key.clone());
             let finding = Finding::new("field", "reference", Category::Structure, start, len.max(1)).title(name);
-            app.select_pattern(&finding);
+            app.select_finding(&finding);
         }
         Action::FetchRfc { reference_id, number, section } => request_rfc(state, &reference_id, number, section),
         Action::HideRfc => state.rfc = None,
@@ -1275,6 +1275,19 @@ fn paint_ruler(painter: &egui::Painter, rect: Rect, left: f32, byte_width: f32) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_field_clicked_in_the_reference_tab_is_the_person_s_selection_through_the_api() {
+        let mut app = ViewerApp::new(crate::app::Launch::default());
+        app.open_bytes(vec![0; 64], "test.bin".to_string());
+        app.run_bus();
+        crate::actions::take_performed();
+        let mut state = ReferenceState::default();
+        act(&mut state, &mut app, Action::SelectBytes { start: 4, len: 2, name: "magic".to_string() });
+        assert_eq!(crate::actions::take_performed(), [("selection.set".to_string(), serde_json::json!({ "selection": { "range": [4, 2] }, "cursor": 6 }))]);
+        assert_eq!((app.selection(), app.cursor), (Some((4, 2)), 6));
+        assert!(app.status.contains("magic"), "the status bar names the field: {}", app.status);
+    }
 
     #[test]
     fn the_reference_tab_takes_up_a_format_asked_for_on_the_bus_even_while_hidden() {

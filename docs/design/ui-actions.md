@@ -118,7 +118,7 @@ Owns `src/api/edits.rs`, `src/api/selection.rs` and `src/api/search.rs`.
 | Find field, mode, LE | toolbar Find, Cmd+F, palette `view.search` | none (become `search.*` params) | V |
 | Select a field in the structure tree | `hex.rs show_field` | `selection.set` | J |
 | Inspector number rows | `hex.rs show_inspector` | `numbers.decode` (read; there is no number editing) | V |
-| Select a finding / Cmd+click it | Findings list, context menu "Select this finding" (`select_pattern`) | `selection.set` | J |
+| Select a finding / Cmd+click it | Findings list, context menu "Select this finding" (`select_finding`; also the stream at the cursor, Reference fields and Structure map segments) | `selection.set` | J |
 | Typing a value into a Selection menu field | key, fill, counter and move fields | none (params of the operation) | V |
 
 **New methods (A):**
@@ -645,7 +645,7 @@ Every built-in palette command (`src/commands.rs`), with the area that owns it a
   `cut`, `insert_from_fields`/`insert_bytes_at_cursor`, `move_target`,
   `toggle_bit_at_cursor`, `undo`, `redo`, `select_all`, `move_cursor_by`,
   `set_cursor` callers in `handle_shortcuts`, `find_next`,
-  `find_previous`, `select_all_matches` and `select_pattern`.
+  `find_previous`, `select_all_matches` and `select_pattern` (now `select_finding`, with `reveal_finding` only bringing it into view).
 - **Do not convert** `set_cursor`, `restore_selection` or `set_selection`
   themselves. The API's own `cursor.set` and `selection.set` use them.
   Convert their callers that are the person's actions.
@@ -701,7 +701,7 @@ Every built-in palette command (`src/commands.rs`), with the area that owns it a
   - in `src/workbench.rs`, the Report, Template and Unpacked tabs;
   - the Ask panel's link and template-offer handling in `src/dock.rs`;
   - `src/findings.rs`, except its bookmark rows (D) and its selection
-    rows. Those call A's `select_pattern`, which A converts.
+    rows. Those call A's `select_finding`, which A converts.
 - **Each tool's run becomes a job method.** Its params are the explicit
   span (`start`, `len`) and the tool's options, never the live selection
   read inside the method. Each tool keeps its default span (selection,

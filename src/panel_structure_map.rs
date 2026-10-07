@@ -179,7 +179,7 @@ fn apply(state: &StructureMapState, app: &mut ViewerApp, action: Action) {
     match action {
         Action::Select { start, len, title } => {
             let finding = Finding::new("structure-map:selection", FINDING_SOURCE, Category::Custom, start, len.max(1)).title(title);
-            app.select_pattern(&finding);
+            app.select_finding(&finding);
         }
         Action::Jump(offset) => app.go_to_offset(offset),
         Action::SetWidth(width) => app.change_width(width),
@@ -901,5 +901,15 @@ mod tests {
         apply(&state, &mut app, Action::SetWidth(48));
         assert_eq!(take_performed(), [("cursor.set".to_string(), json!({"offset": 0x100})), ("view.set_shape".to_string(), json!({"width": 48}))]);
         assert_eq!((app.cursor, app.shape.width), (0x100, 48));
+    }
+
+    #[test]
+    fn a_segment_clicked_in_the_structure_map_is_the_person_s_selection_through_the_api() {
+        let mut app = app_with(&zeros_then_text());
+        let state = StructureMapState::default();
+        apply(&state, &mut app, Action::Select { start: 0x200, len: 0x40, title: "Zeros".to_string() });
+        assert_eq!(take_performed(), [("selection.set".to_string(), json!({ "selection": { "range": [0x200, 0x40] }, "cursor": 0x240 }))]);
+        assert_eq!(app.selection(), Some((0x200, 0x40)));
+        assert!(app.status.contains("Zeros"), "the status bar names the segment: {}", app.status);
     }
 }

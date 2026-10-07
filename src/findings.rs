@@ -205,7 +205,7 @@ pub fn show_findings_panel(app: &mut ViewerApp, ui: &mut Ui) {
         app.toggle_selection_range(finding.start, len);
     }
     if let Some(finding) = decompress {
-        app.select_pattern(&finding);
+        app.select_finding(&finding);
         app.toggle_compressed_view();
     }
     if let Some(finding) = play {

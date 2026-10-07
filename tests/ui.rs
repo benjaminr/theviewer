@@ -480,7 +480,7 @@ fn pattern_highlights_find_the_counter_and_can_be_selected() {
 
     // Selecting a pattern selects exactly its bytes.
     let chosen = counter.clone();
-    harness.state_mut().select_pattern(&chosen);
+    harness.state_mut().select_finding(&chosen);
     steps(&mut harness, 2);
     assert_eq!(harness.state().selection(), Some((chosen.start, chosen.len)));
 

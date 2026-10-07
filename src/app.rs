@@ -2508,10 +2508,11 @@ impl ViewerApp {
         }
     }
 
-    /// Select exactly the verified stream under the cursor.
+    /// Select exactly the verified stream under the cursor, as
+    /// `selection.set`.
     pub fn select_stream_at_cursor(&mut self) {
         if let Some(stream) = self.compressed_stream_at_cursor() {
-            self.select_pattern(&stream);
+            self.select_finding(&stream);
         } else {
             self.status = "The cursor is not inside a recognised compressed stream".to_string();
         }
@@ -2834,13 +2835,11 @@ impl ViewerApp {
         self.patterns_in(offset, offset + 1).min_by_key(|pattern| (pattern.len, pattern.category))
     }
 
-    /// Select a finding's bytes and bring them into view.
-    pub fn select_pattern(&mut self, pattern: &Finding) {
-        let (start, end) = (pattern.start, pattern.end().min(self.document.len()));
-        self.clear_secondary_selection();
-        self.anchor = Some(start);
-        self.cursor = end;
-        self.pending_low_nibble = false;
+    /// Bring a finding the person has just selected into view, saying on
+    /// the status bar what it is. It changes no selection: `select_finding`
+    /// selects the finding through `selection.set` first.
+    pub(crate) fn reveal_finding(&mut self, pattern: &Finding) {
+        let start = pattern.start.min(self.document.len());
         if let Some(row) = self.raster_row_of(start)
             && (row < self.top_row || row >= self.top_row + self.visible_rows)
         {
@@ -4214,5 +4213,20 @@ mod tests {
         assert_eq!(app.shape.width, MAX_WIDTH, "a width past the limit is brought inside it");
         let shape = crate::api::call(&mut app, &crate::api::Caller::Panel, "view.get_shape", json!({})).unwrap();
         assert_eq!(shape["shape"]["width"], MAX_WIDTH);
+    }
+
+    #[test]
+    fn selecting_the_stream_at_the_cursor_is_the_person_s_selection_through_the_api() {
+        let mut app = app_with(&[0u8; 256]);
+        app.patterns = vec![Finding::new("gzip", "test", Category::Compressed, 0x20, 0x30).title("gzip stream")];
+        app.select_stream_at_cursor();
+        assert_eq!(take_performed(), [], "the cursor is not inside the stream");
+        assert_eq!(app.status, "The cursor is not inside a recognised compressed stream");
+
+        app.cursor = 0x28;
+        app.select_stream_at_cursor();
+        assert_eq!(take_performed(), [("selection.set".to_string(), json!({ "selection": { "range": [0x20, 0x30] }, "cursor": 0x50 }))]);
+        assert_eq!((app.selection(), app.cursor), (Some((0x20, 0x30)), 0x50));
+        assert!(app.status.contains("gzip stream"), "the status bar names the stream: {}", app.status);
     }
 }

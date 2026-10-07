@@ -194,11 +194,12 @@ impl ViewerApp {
     }
 
     /// The person selects a finding's bytes (the Findings list, the
-    /// context menu), as `selection.set`, and brings them into view.
+    /// context menu, the stream at the cursor, a field a tool shows), as
+    /// `selection.set`, and brings them into view.
     pub fn select_finding(&mut self, finding: &Finding) {
         let (start, end) = (finding.start.min(self.document.len()), finding.end().min(self.document.len()));
         if self.select_as_person(Some(Selection::Range(start, end - start)), end) {
-            self.select_pattern(finding);
+            self.reveal_finding(finding);
         }
     }
 
