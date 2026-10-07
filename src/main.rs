@@ -28,16 +28,17 @@ const EXIT_FAILURE: i32 = 1;
 const USAGE: &str = "\
 usage: theviewer [FILE] [--format NAME] [--palette NAME] [--width PIXELS] [--offset BYTES] [--cursor BYTES] [--zoom FACTOR] [--detect] [--open] [--tool NAME] [--layout NAME]
        theviewer FILE --report | --json
-       theviewer api [--save] METHOD ['{JSON PARAMS}'] [FILE]
+       theviewer api [--save] [--plugins DIR]... METHOD ['{JSON PARAMS}'] [FILE]
        theviewer api --describe
        theviewer mcp [--plugins DIR]... [--all-tools] [--output-schemas] [FILE...]
-       theviewer replay RECIPE FILE... [--param KEY=VALUE]... [--save | --out DIR] [--json]
+       theviewer replay RECIPE FILE... [--param KEY=VALUE]... [--save | --out DIR] [--save-sheets DIR] [--allow-writes] [--plugins DIR]... [--json]
 
   --report   print a plain-text report of FILE without opening a window
   --json     print the same report as JSON, for scripts and CI
   api        run one data API method on FILE without opening a window and print its JSON
              result; --save then saves FILE with the method's edits (use history.transaction
-             for several edits); --describe prints every method with its schemas (see docs/api.md)
+             for several edits); --describe prints every method with its schemas (see docs/api.md);
+             --plugins loads plugins from DIR instead of ./plugins and ~/.config/theviewer/plugins
   mcp        serve the files over the Model Context Protocol on standard input and output,
              for Claude Code and other MCP clients; --plugins loads plugins from DIR instead
              of ./plugins and ~/.config/theviewer/plugins; it lists the core methods and the
@@ -48,8 +49,10 @@ usage: theviewer [FILE] [--format NAME] [--palette NAME] [--width PIXELS] [--off
   replay     run a saved recipe (by name, from ~/.config/theviewer/recipes, or a
              .theviewer-recipe.json path) on each FILE, printing what each step did per file;
              --param gives a recipe parameter; --save saves each file the recipe ran to its end
-             over itself, --out saves it into DIR instead; --json prints the reports as JSON;
-             exits non-zero when the recipe stopped on any file
+             over itself, --out saves it into DIR instead; --save-sheets saves each sheet a run
+             made into DIR; --allow-writes lets steps that write files run; --plugins loads plugins
+             from DIR instead of the usual places; --json prints the reports as JSON; exits
+             non-zero when the recipe stopped on any file
 
   --format   one of: bit1 bit1lsb nibble4 gray8 class rgb565 gray16le gray16be rgb8 bgr8 rgba8 bgra8
              or a numeric heatmap: u16le u16be i16le i16be u32le u32be i32le i32be f32le f32be
@@ -157,6 +160,13 @@ fn parse_launch() -> Result<Asked<(Launch, Option<HeadlessOutput>)>, String> {
 fn run_api(args: &[String]) -> i32 {
     let save = args.iter().any(|arg| arg == "--save");
     let args: Vec<String> = args.iter().filter(|arg| *arg != "--save").cloned().collect();
+    let (args, plugin_dirs) = match take_plugin_dirs(&args) {
+        Ok(taken) => taken,
+        Err(message) => {
+            eprintln!("{message}\n\n{USAGE}");
+            return EXIT_USAGE;
+        }
+    };
     let (method, rest) = match args.as_slice() {
         // The methods plugins register are listed with the rest.
         [flag] if flag == "--describe" => ("api.describe", &[][..]),
@@ -177,7 +187,7 @@ fn run_api(args: &[String]) -> i32 {
             return EXIT_USAGE;
         }
     };
-    match call_headless(method, params, file.map(Path::new), save) {
+    match call_headless(method, params, file.map(Path::new), save, plugin_dirs.as_deref()) {
         Ok(result) => {
             print_out(&format!("{}\n", serde_json::to_string_pretty(&result).unwrap_or_default()));
             0
@@ -189,11 +199,42 @@ fn run_api(args: &[String]) -> i32 {
     }
 }
 
+/// `args` without each `--plugins DIR`, and the folders they named, if any.
+fn take_plugin_dirs(args: &[String]) -> Result<(Vec<String>, Option<Vec<PathBuf>>), String> {
+    let mut kept = Vec::new();
+    let mut dirs: Option<Vec<PathBuf>> = None;
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
+        if arg == "--plugins" {
+            let dir = args.next().ok_or("--plugins needs a directory")?;
+            dirs.get_or_insert_with(Vec::new).push(PathBuf::from(dir));
+        } else {
+            kept.push(arg.clone());
+        }
+    }
+    Ok((kept, dirs))
+}
+
+/// The Lua plugins from `dirs`, or from the usual places when none are
+/// given, as `theviewer mcp --plugins` loads them.
+fn plugin_host(dirs: Option<&[PathBuf]>) -> app::SharedLuaHost {
+    let Some(dirs) = dirs else { return app::load_plugin_host().0 };
+    let mut host = theviewer::plugins::LuaHost::new();
+    for dir in dirs {
+        for report in host.load_dir(dir) {
+            if let Err(error) = report.result {
+                eprintln!("theviewer: plugin {} failed to load: {error}", report.name);
+            }
+        }
+    }
+    Arc::new(std::sync::Mutex::new(host))
+}
+
 /// Run one API method in a workspace holding just `file`, if given; with
 /// `save`, then save the edits it made over the file, as one more call.
-fn call_headless(method: &str, params: &str, file: Option<&Path>, save: bool) -> Result<serde_json::Value, ApiError> {
+fn call_headless(method: &str, params: &str, file: Option<&Path>, save: bool, plugin_dirs: Option<&[PathBuf]>) -> Result<serde_json::Value, ApiError> {
     let params: serde_json::Value = serde_json::from_str(params).map_err(|error| ApiError::invalid_params(format!("the parameters are not JSON: {error}")))?;
-    let (host, _) = app::load_plugin_host();
+    let host = plugin_host(plugin_dirs);
     let mut workspace = headless_workspace(&host, Arc::new(app::build_registry_with(Some(&host))));
     if let Some(file) = file {
         workspace.open_path(file)?;
@@ -253,8 +294,8 @@ fn run_mcp(args: &[String]) -> i32 {
 struct ReplayArgs {
     recipe: String,
     files: Vec<PathBuf>,
-    parameters: std::collections::BTreeMap<String, serde_json::Value>,
-    output: theviewer::recipes::ReplayOutput,
+    settings: theviewer::recipes::ReplaySettings,
+    plugin_dirs: Option<Vec<PathBuf>>,
     json: bool,
 }
 
@@ -264,11 +305,16 @@ fn parse_replay(args: &[String]) -> Result<Asked<ReplayArgs>, String> {
     let mut parameters = std::collections::BTreeMap::new();
     let mut output = theviewer::recipes::ReplayOutput::Report;
     let mut json = false;
+    let mut allow_writes = false;
+    let mut save_sheets = None;
+    let (args, plugin_dirs) = take_plugin_dirs(args)?;
     let mut args = args.iter();
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "-h" | "--help" => return Ok(Asked::Help),
             "--json" => json = true,
+            "--allow-writes" => allow_writes = true,
+            "--save-sheets" => save_sheets = Some(PathBuf::from(args.next().ok_or("--save-sheets needs a folder")?)),
             "--save" if output == theviewer::recipes::ReplayOutput::Report => output = theviewer::recipes::ReplayOutput::SaveInPlace,
             "--out" if output == theviewer::recipes::ReplayOutput::Report => {
                 let dir = args.next().ok_or("--out needs a folder")?;
@@ -290,7 +336,8 @@ fn parse_replay(args: &[String]) -> Result<Asked<ReplayArgs>, String> {
     if files.is_empty() {
         return Err(format!("theviewer replay needs at least one file to run '{recipe}' on\n\n{USAGE}"));
     }
-    Ok(Asked::Run(ReplayArgs { recipe, files, parameters, output, json }))
+    let settings = theviewer::recipes::ReplaySettings { parameters, output, allow_writes, save_sheets };
+    Ok(Asked::Run(ReplayArgs { recipe, files, settings, plugin_dirs, json }))
 }
 
 /// Run `theviewer replay …` (the arguments after `replay`): the recipe on
@@ -313,14 +360,14 @@ fn run_replay(args: &[String]) -> i32 {
             return EXIT_FAILURE;
         }
     };
-    let (host, _) = app::load_plugin_host();
+    let host = plugin_host(args.plugin_dirs.as_deref());
     let registry = Arc::new(app::build_registry_with(Some(&host)));
     let runs: Vec<theviewer::recipes::FileRun> = args
         .files
         .iter()
         .map(|file| {
             let mut workspace = headless_workspace(&host, Arc::clone(&registry));
-            theviewer::recipes::replay_file(&mut workspace, &recipe, file, &args.parameters, &args.output)
+            theviewer::recipes::replay_file(&mut workspace, &recipe, file, &args.settings)
         })
         .collect();
     if args.json {

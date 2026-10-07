@@ -100,7 +100,7 @@ fn replaying_over_two_files_reports_each_and_saves_those_that_completed_into_a_f
     let out = dir.join("out");
     let parameters = BTreeMap::from([("length_hex".to_string(), json!("0102"))]);
     let recipe = sync_recipe();
-    let runs: Vec<FileRun> = [&first, &second].into_iter().map(|file| replay_file(&mut workspace(), &recipe, file, &parameters, &ReplayOutput::OutDir(out.clone()))).collect();
+    let runs: Vec<FileRun> = [&first, &second].into_iter().map(|file| replay_file(&mut workspace(), &recipe, file, &ReplaySettings::new(parameters.clone(), ReplayOutput::OutDir(out.clone())))).collect();
     assert!(runs[0].succeeded(), "{:?}", runs[0]);
     assert_eq!(std::fs::read(out.join("first.bin")).unwrap(), b"ab\x01\x02\x00\x00", "the run's edits are in the copy");
     assert_eq!(std::fs::read(&first).unwrap(), b"ab\x7e\xa5\x00\x00", "and the file is left as it was");
@@ -126,12 +126,42 @@ fn replaying_with_save_writes_over_the_file_and_a_missing_file_is_reported() {
     let dir = temp_dir("replay-save");
     let file = capture(&dir, "capture.bin", b"\x7e\xa5\x00\x00");
     let parameters = BTreeMap::from([("length_hex".to_string(), json!("ffff"))]);
-    let run = replay_file(&mut workspace(), &sync_recipe(), &file, &parameters, &ReplayOutput::SaveInPlace);
+    let run = replay_file(&mut workspace(), &sync_recipe(), &file, &ReplaySettings::new(parameters.clone(), ReplayOutput::SaveInPlace));
     assert!(run.succeeded(), "{run:?}");
     assert_eq!(std::fs::read(&file).unwrap(), b"\xff\xff\x00\x00");
-    let missing = replay_file(&mut workspace(), &sync_recipe(), &dir.join("absent.bin"), &parameters, &ReplayOutput::Report);
+    let missing = replay_file(&mut workspace(), &sync_recipe(), &dir.join("absent.bin"), &ReplaySettings::new(parameters.clone(), ReplayOutput::Report));
     assert!(!missing.succeeded() && missing.report.is_none() && missing.error.is_some());
     assert!(render_text(&sync_recipe(), &[missing]).contains("not run:"));
+}
+
+#[test]
+fn replaying_saves_the_sheets_the_run_made_when_asked_and_writes_files_only_with_leave() {
+    let dir = temp_dir("replay-sheets");
+    let file = capture(&dir, "container.bin", b"HEADpayload");
+    let exported = dir.join("exported.bin");
+    let peel = recipe(json!({
+        "recipe": 2, "api_version": "1.x", "name": "Peel",
+        "steps": [
+            {"step": 1, "method": "documents.derive", "makes": "payload", "params": {"start": 4}},
+            {"step": 2, "method": "bytes.write", "params": {"doc": {"$anchor": {"sheet": "payload"}}, "start": 0, "data": "50"}},
+            {"step": 3, "method": "documents.export", "params": {"doc": {"$anchor": {"sheet": {"step": 1}}}, "start": 0, "path": exported.display().to_string()}}
+        ]
+    }));
+    let mut settings = ReplaySettings::new(BTreeMap::new(), ReplayOutput::Report);
+    settings.save_sheets = Some(dir.join("sheets"));
+    let refused = replay_file(&mut workspace(), &peel, &file, &settings);
+    assert!(!refused.succeeded() && !exported.exists(), "the export is refused without --allow-writes");
+    assert!(refused.report.as_ref().unwrap().summary().contains("--allow-writes"));
+    let sheet = dir.join("sheets").join("container.bin.step1.payload.bin");
+    assert_eq!(refused.sheets_saved, [sheet.display().to_string()], "the sheets made are saved, even when the run stopped");
+    assert_eq!(std::fs::read(&sheet).unwrap(), b"Payload");
+
+    settings.allow_writes = true;
+    let allowed = replay_file(&mut workspace(), &peel, &file, &settings);
+    assert!(allowed.succeeded(), "{allowed:?}");
+    assert_eq!(std::fs::read(&exported).unwrap(), b"Payload");
+    assert_eq!(std::fs::read(&file).unwrap(), b"HEADpayload", "the input is not changed");
+    assert!(render_text(&peel, &[allowed]).contains(&format!("sheet saved to {}", sheet.display())));
 }
 
 #[test]

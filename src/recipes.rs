@@ -202,6 +202,28 @@ pub enum ReplayOutput {
     OutDir(PathBuf),
 }
 
+/// How `theviewer replay` runs a recipe on each file.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ReplaySettings {
+    /// Values for the recipe's parameters, as text or JSON.
+    pub parameters: BTreeMap<String, Value>,
+    /// What to do with a file the recipe changed.
+    pub output: ReplayOutput,
+    /// Let steps that write files run (`--allow-writes`); without it they
+    /// stop the run, as a recipe from someone else may write anywhere.
+    pub allow_writes: bool,
+    /// Save each sheet the run made into this folder (`--save-sheets`).
+    pub save_sheets: Option<PathBuf>,
+}
+
+impl ReplaySettings {
+    /// Run with `parameters`, doing `output` with each file, writing no
+    /// files of the recipe's own and saving no sheets.
+    pub fn new(parameters: BTreeMap<String, Value>, output: ReplayOutput) -> Self {
+        ReplaySettings { parameters, output, allow_writes: false, save_sheets: None }
+    }
+}
+
 /// One file `theviewer replay` ran a recipe on.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct FileRun {
@@ -216,6 +238,9 @@ pub struct FileRun {
     /// Why the file could not be opened or saved.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<ApiError>,
+    /// Where each sheet the run made was saved, with `--save-sheets`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sheets_saved: Vec<String>,
 }
 
 impl FileRun {
@@ -225,12 +250,14 @@ impl FileRun {
     }
 }
 
-/// Run `recipe` on `file` in `workspace` (fresh, one per file) with
-/// `parameters` as text or JSON, as the command line does: its steps are
-/// the recipe's, allowed as the command line's are. A run that completed is
-/// saved as `output` says; one that stopped is not saved.
-pub fn replay_file(workspace: &mut HeadlessWorkspace, recipe: &Recipe, file: &Path, parameters: &BTreeMap<String, Value>, output: &ReplayOutput) -> FileRun {
-    let mut run = FileRun { file: file.display().to_string(), report: None, saved: None, error: None };
+/// Run `recipe` on `file` in `workspace` (fresh, one per file) as
+/// `settings` say, as the command line does: its steps are the recipe's,
+/// allowed as the command line's are, but for writing files, which needs
+/// `allow_writes`. The sheets it made are saved when asked, whether or not
+/// it completed. A run that completed is saved as `settings.output` says;
+/// one that stopped is not saved.
+pub fn replay_file(workspace: &mut HeadlessWorkspace, recipe: &Recipe, file: &Path, settings: &ReplaySettings) -> FileRun {
+    let mut run = FileRun { file: file.display().to_string(), report: None, saved: None, error: None, sheets_saved: Vec::new() };
     let doc = match workspace.open_path(file) {
         Ok(doc) => doc,
         Err(error) => {
@@ -238,14 +265,26 @@ pub fn replay_file(workspace: &mut HeadlessWorkspace, recipe: &Recipe, file: &Pa
             return run;
         }
     };
-    let options = ReplayOptions { parameters: parameters.clone(), doc: Some(doc.clone()), checked_as: Some(Caller::Cli), ..ReplayOptions::new(Caller::Recipe(recipe.name.clone())) };
+    let options = ReplayOptions {
+        parameters: settings.parameters.clone(),
+        doc: Some(doc.clone()),
+        checked_as: Some(Caller::Cli),
+        allow_writes: settings.allow_writes,
+        ..ReplayOptions::new(Caller::Recipe(recipe.name.clone()))
+    };
     let report = replay::run_recipe(workspace, recipe, &options);
     let completed = report.completed();
+    if let Some(dir) = &settings.save_sheets {
+        match save_sheets(workspace, &report, file, dir) {
+            Ok(saved) => run.sheets_saved = saved,
+            Err(error) => run.error = Some(error),
+        }
+    }
     run.report = Some(report);
-    if !completed {
+    if !completed || run.error.is_some() {
         return run;
     }
-    let target = match output {
+    let target = match &settings.output {
         ReplayOutput::Report => return run,
         ReplayOutput::SaveInPlace => {
             let modified = workspace.documents().iter().any(|document| document.id == doc && document.modified);
@@ -270,6 +309,28 @@ pub fn replay_file(workspace: &mut HeadlessWorkspace, recipe: &Recipe, file: &Pa
     run
 }
 
+/// Save each sheet `report`'s run on `file` made into `dir` (made if need
+/// be), as `FILE.stepN.LABEL.bin`, LABEL being the sheet's label or its id;
+/// returns where each went.
+fn save_sheets(workspace: &mut HeadlessWorkspace, report: &RunReport, file: &Path, dir: &Path) -> Result<Vec<String>, ApiError> {
+    if report.sheets.is_empty() {
+        return Ok(Vec::new());
+    }
+    let unavailable = |message: String| ApiError::new(ErrorCode::Unavailable, message);
+    std::fs::create_dir_all(dir).map_err(|error| unavailable(format!("the folder {} could not be made: {error}", dir.display())))?;
+    let stem = file.file_name().map_or_else(|| "input".to_string(), |name| name.to_string_lossy().into_owned());
+    let mut saved = Vec::new();
+    for sheet in &report.sheets {
+        let Some(document) = workspace.document_mut(&sheet.doc) else { continue };
+        let name = file_name_for(sheet.label.as_deref().unwrap_or(&sheet.doc));
+        let name = name.trim_end_matches(RECIPE_EXTENSION);
+        let path = dir.join(format!("{stem}.step{}.{name}.bin", sheet.step));
+        std::fs::write(&path, document.read_range(0, document.len())).map_err(|error| unavailable(format!("the sheet {} could not be saved to {}: {error}", sheet.doc, path.display())))?;
+        saved.push(path.display().to_string());
+    }
+    Ok(saved)
+}
+
 /// `runs` as `theviewer replay` prints them without `--json`: a line per
 /// file, then its warnings and where it was saved.
 pub fn render_text(recipe: &Recipe, runs: &[FileRun]) -> String {
@@ -289,6 +350,9 @@ pub fn render_text(recipe: &Recipe, runs: &[FileRun]) -> String {
         }
         if let Some(saved) = &run.saved {
             out.push_str(&format!("  saved to {saved}\n"));
+        }
+        for sheet in &run.sheets_saved {
+            out.push_str(&format!("  sheet saved to {sheet}\n"));
         }
     }
     out

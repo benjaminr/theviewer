@@ -138,3 +138,65 @@ fn a_command_without_a_method_is_a_usage_error() {
     assert_eq!(output.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&output.stderr).contains("usage:"));
 }
+
+/// A folder holding one plugin that registers `probe.length`, which gives
+/// the document's length.
+fn probe_plugins(name: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("theviewer-api-cli-plugins-{}-{name}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let plugin = r#"
+theviewer.register_method{
+  name = "probe.length",
+  summary = "The document's length.",
+  params = {},
+  run = function(params, api)
+    return { len = api.documents.info{}.len }
+  end,
+}
+"#;
+    std::fs::write(dir.join("probe.lua"), plugin).unwrap();
+    dir
+}
+
+#[test]
+fn the_command_line_loads_plugins_from_a_folder_given() {
+    let dir = probe_plugins("api");
+    let path = temp_file("plugins.bin", b"12345");
+    let output = theviewer(&["api", "--plugins", dir.to_str().unwrap(), "probe.length", path.to_str().unwrap()]);
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert_eq!(json_of(&output.stdout)["len"], 5);
+    let without = theviewer(&["api", "probe.length", path.to_str().unwrap()]);
+    assert!(!without.status.success(), "the usual places do not hold it");
+    std::fs::remove_dir_all(dir).ok();
+    std::fs::remove_file(path).ok();
+}
+
+#[test]
+fn a_replay_loads_plugins_from_a_folder_given_and_writes_files_only_when_allowed() {
+    let dir = probe_plugins("replay");
+    let path = temp_file("replay.bin", b"HEADpayload");
+    let exported = std::env::temp_dir().join(format!("theviewer-api-cli-exported-{}.bin", std::process::id()));
+    let recipe = serde_json::json!({
+        "recipe": 2, "api_version": "1.x", "name": "Probe",
+        "steps": [
+            {"step": 1, "method": "probe.length"},
+            {"step": 2, "method": "documents.derive", "params": {"start": 4}},
+            {"step": 3, "method": "documents.export", "params": {"doc": {"$anchor": {"sheet": {"step": 2}}}, "start": 0, "path": exported.display().to_string()}}
+        ]
+    });
+    let recipe_path = std::env::temp_dir().join(format!("theviewer-api-cli-probe-{}.theviewer-recipe.json", std::process::id()));
+    std::fs::write(&recipe_path, recipe.to_string()).unwrap();
+    let (recipe_arg, file_arg, plugins_arg) = (recipe_path.to_str().unwrap(), path.to_str().unwrap(), dir.to_str().unwrap());
+    let refused = theviewer(&["replay", recipe_arg, file_arg, "--plugins", plugins_arg, "--json"]);
+    assert_eq!(refused.status.code(), Some(1), "the export needs --allow-writes");
+    let report = json_of(&refused.stdout);
+    assert_eq!(report["files"][0]["report"]["stopped"]["step"], 3, "the plugin's step and the derive ran: {report}");
+    assert!(!exported.exists());
+    let allowed = theviewer(&["replay", recipe_arg, file_arg, "--plugins", plugins_arg, "--allow-writes"]);
+    assert!(allowed.status.success(), "{}", String::from_utf8_lossy(&allowed.stdout));
+    assert_eq!(std::fs::read(&exported).unwrap(), b"payload");
+    for path in [exported, recipe_path, path] {
+        std::fs::remove_file(path).ok();
+    }
+    std::fs::remove_dir_all(dir).ok();
+}
