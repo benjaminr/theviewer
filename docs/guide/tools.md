@@ -173,7 +173,9 @@ IPv4 addresses, UUIDs, version numbers or `key=value` settings.
 ### XOR
 
 Recovers single-byte and repeating XOR keys. Preview the result, or apply
-it as an edit.
+it as an edit. A long key that nearly repeats a shorter one, as happens on
+short data when a column or two is solved wrongly, is folded to the
+shorter key, which is listed first when the two decode about as well.
 
 ### Crypto
 
@@ -182,7 +184,9 @@ it as an edit.
   alphabets), which show where a firmware does its cryptography.
 - Spots ECB-style encryption from repeated cipher blocks.
 - Finds PEM and DER certificates and keys, OpenSSH keys and likely raw
-  keys.
+  keys. A raw key whose first or last byte matches the padding beside it
+  could start a byte either way: the one at the aligned offset is the
+  candidate, the other an alternative with lower confidence.
 - Tries rolling XOR, ADD, rotation and combined ciphers, or drags a known
   plaintext such as `PK\x03\x04` across the data to reveal the key.
 
