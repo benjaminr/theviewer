@@ -64,7 +64,11 @@ let head = api::call(&mut workspace, &Caller::Cli, "bytes.read", json!({"start":
 
 ## Conventions
 
-**Documents.** Each open document has an id: `doc-1`, `doc-2` and so on. A method about a document takes `doc`: an id, the path of an open document, or `"current"`, which is also what an omitted `doc` means. `documents.list` lists the open documents. A document derived from another (a span opened on its own, a stream decompressed, an embedded file) is a document of its own, with its own id.
+**Documents.** Each open document has an id: `doc-1`, `doc-2` and so on. A method about a document takes `doc`: an id, the path of an open document, or `"current"`, the window's document (headless, the one opened or made last). A document derived from another (a span opened on its own, a stream decompressed, an embedded file) is a document of its own, with its own id.
+
+**Focus.** An omitted `doc` means the caller's focus, filled in before the method runs, so the journal entry names the document. For the person at the window it is the document shown, and so it is for a plugin and for Ask, which act for the person. MCP clients, the command line and recipes keep their own: the current document when it first calls, then the document it opens (`documents.open`, `.new`, `.open_source`) or activates (`documents.activate`), or a new sheet it asks to focus (`output: {"new": {"focus": true}}`). Making a sheet (a derive, a node opened) does not move it, nor does naming a document in a call, so a client's calls without `doc` stay on the document it was working on. `documents.list` marks the caller's focus. `theviewer mcp --legacy-current` makes an omitted `doc` the current document for an MCP client, as before.
+
+**Anchors at call time.** Any parameter may be an anchor in place of a literal: `{"$anchor": …}`, or the shorthands `{"$var": "serial"}` (a variable bound with `vars.set`) and `{"$sheet": 7}` or `{"$sheet": "payload"}` (the sheet step 7 made, or the one labelled so). They are resolved against the session before the method runs (`doc`'s first), and the journal entry keeps both the values, in `params`, and the anchors, in `derived_from`, so a recipe made from it finds the values again on the next file. Step and pick anchors cite earlier steps by number; a read they cite becomes a step of the journal. The kinds of anchor are in [Recipes](recipes.md#anchors).
 
 **Spans** are `start` and `len` in bytes, counted from 0. A span must lie inside its document, or the call fails with `out_of_range`; an omitted `len` runs to the end of the document. Where several spans are given or returned, each is a pair `[start, len]`.
 
@@ -177,15 +181,16 @@ A recipe step that starts a job waits for it (up to 10 minutes), and later steps
 
 ## Methods
 
-176 methods in 45 namespaces. The MCP column says which are listed as tools of their own by `theviewer mcp` (every one is with `--all-tools`; the rest are reached with `api_call`).
+180 methods in 46 namespaces. The MCP column says which are listed as tools of their own by `theviewer mcp` (every one is with `--all-tools`; the rest are reached with `api_call`).
 
 | Method | Effect | MCP | Summary |
 | --- | --- | --- | --- |
 | [`api.version`](#apiversion) | read |  | The API version: 1.0. Changes within a major version only add methods, optional parameters and result fields. |
 | [`api.describe`](#apidescribe) | read |  | Every method with its summary, effect, stability and the JSON schemas of its parameters and result. |
-| [`documents.list`](#documentslist) | read | core | The open documents, with their ids, names, paths, lengths and versions. |
+| [`documents.list`](#documentslist) | read | core | The open documents, with their ids, names, paths, lengths and versions, and which is your focus: what an omitted doc means for you. |
 | [`documents.info`](#documentsinfo) | read |  | One document's id, name, path, length, version and whether it has unsaved edits. |
 | [`documents.open`](#documentsopen) | view | core | Open a file by path, or an open document by id, and make it current; a file already open is made current again. In the window, a parent of the document shown is gone back to, closing what was derived from it; that, or opening another file, is refused while what it closes has unsaved edits, unless the person at the window discards them. |
+| [`documents.activate`](#documentsactivate) | view |  | Make an open document your focus, which an omitted doc means from then on; for the person at the window, show it (a parent of the document shown is gone back to, as documents.open does). |
 | [`documents.new`](#documentsnew) | view |  | Open a new, empty document and make it current; the window refuses while its document has unsaved edits, unless the person at the window discards them. |
 | [`documents.save`](#documentssave) | edit | core | Save a document over its file, or to a path, with every edit made so far. |
 | [`documents.derive`](#documentsderive) | view |  | Open bytes of a document (a span, several ranges one after another, bytes given, or ranges of several sheets joined with sources), or what a transform such as decompress or XOR makes of them, as a document of their own derived from it, and make it current; in the window, Back goes back to the parent. Returns the new document, and output; with output {"file": path} the bytes are written to a file instead, which needs leave to edit. |
@@ -223,9 +228,9 @@ A recipe step that starts a job waits for it (up to 10 minutes), and later steps
 | [`history.edit_note`](#historyedit_note) | read |  | Change a note's text and the steps it is linked to, in place; the note then says when and by whom it was edited. Only notes can be edited. |
 | [`history.delete_note`](#historydelete_note) | read |  | Take a note out of the history; the steps it was linked to no longer list it. Only notes can be deleted. |
 | [`history.export_notes`](#historyexport_notes) | read |  | The session's notes as Markdown, in the order written, each with the steps it cites (number, caller and description), returned or written to a path given (which needs leave to edit). |
-| [`history.suggest_anchors`](#historysuggest_anchors) | read |  | Anchors that could stand for a step's literals in a recipe: search matches, structure fields and findings at the same offset in its document as it is now, the selection an earlier step set, and earlier steps' values equal to it, those that port to other files first. |
+| [`history.suggest_anchors`](#historysuggest_anchors) | read |  | Anchors that could stand for a step's literals in a recipe: search matches, structure fields and findings at the same offset in its document as it is now, the selection an earlier step set, picks from lists earlier steps returned (strings, keys, candidates), and earlier steps' values equal to it, those that port to other files first. |
 | [`history.make_anchor`](#historymake_anchor) | read |  | Turn the literal at a path of a step's params into an anchor in its derived_from, so a recipe made from it finds the value when it runs; a read it cites becomes a step of the journal. |
-| [`history.make_parameter`](#historymake_parameter) | read |  | Turn the literal at a path of a step's params into a named recipe parameter, the person's to supply when the recipe runs, the literal its default. |
+| [`history.make_parameter`](#historymake_parameter) | read |  | Turn the literal at a path of a step's params into a named recipe parameter, the person's to supply when the recipe runs, the literal its default (and the anchor that found it, if one did, its default_anchor). |
 | [`history.clear_anchor`](#historyclear_anchor) | read |  | Clear the anchor at a path of a step's params, so a recipe made from it repeats the literal. |
 | [`history.recipe`](#historyrecipe) | read |  | A recipe of the journal's successful steps (or those chosen, with the steps they cite), each recorded provenance as an anchor, parameters declared, steps numbered from 1 and the recorded document left out. |
 | [`search.find`](#searchfind) | read | core | The next (or previous) occurrence of hex bytes, text, UTF-16 text or an integer from an offset. |
@@ -357,6 +362,9 @@ A recipe step that starts a job waits for it (up to 10 minutes), and later steps
 | [`recipes.save`](#recipessave) | read |  | Save a recipe in ~/.config/theviewer/recipes/, given whole or made from steps of this session's journal, to run later on other files. |
 | [`recipes.preview`](#recipespreview) | read |  | What a recipe would do to a document, without changing anything: each step described with its anchors resolved on this file, and where the run would stop. |
 | [`recipes.run`](#recipesrun) | edit |  | Run a recipe on a document, each step called as recipe:NAME with its anchors resolved on this file, waiting for the jobs steps start; its edits undo as one step, and the first failure stops it with which step and why. |
+| [`vars.set`](#varsset) | analysis | core | Bind a value to a variable by name, so later calls can pass it as {"$var": name}: give the value as an anchor ({"$anchor": {"pick": …}}) to keep where it came from, and a recipe finds it again on the next file. Undone by putting back the value bound before. |
+| [`vars.list`](#varslist) | read |  | The session's variables, each with its value, the step that bound it and the anchor it was found by. |
+| [`vars.clear`](#varsclear) | analysis |  | Remove a variable's binding, or every variable's. |
 
 Each method's full JSON schemas are in `api.describe` (`theviewer api --describe`).
 
@@ -392,7 +400,7 @@ Parameters: None.
 
 ### documents.list
 
-The open documents, with their ids, names, paths, lengths and versions.
+The open documents, with their ids, names, paths, lengths and versions, and which is your focus: what an omitted doc means for you.
 
 **Effect:** `read` · **MCP tool:** `documents_list`, listed by default
 
@@ -419,6 +427,7 @@ One document's id, name, path, length, version and whether it has unsaved edits.
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `current` | boolean | yes | Whether this is the current document. |
+| `focus` | boolean | no | Whether it is the focus of the caller listing it: what an omitted `doc` means for that caller (`documents.list` says). |
 | `id` | string | yes | Stable id, such as "doc-1". |
 | `label` | string | no | A short name its maker gave it, such as "payload", which a recipe names it by. |
 | `len` | integer | yes | Length in bytes. |
@@ -446,6 +455,33 @@ Open a file by path, or an open document by id, and make it current; a file alre
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `current` | boolean | yes | Whether this is the current document. |
+| `focus` | boolean | no | Whether it is the focus of the caller listing it: what an omitted `doc` means for that caller (`documents.list` says). |
+| `id` | string | yes | Stable id, such as "doc-1". |
+| `label` | string | no | A short name its maker gave it, such as "payload", which a recipe names it by. |
+| `len` | integer | yes | Length in bytes. |
+| `made_by` | MadeBy | no | The step that made it, for a sheet made from another. |
+| `modified` | boolean | yes | Whether there are edits not saved. |
+| `name` | string | yes | File name, or the name of a derived document. |
+| `parent` | string | no | The document it was derived from, for a sheet made from another; none for one opened from a file, a source or new. |
+| `path` | string | no | Path on disk, for documents opened from a file. |
+| `version` | integer | yes | Incremented on every edit. |
+
+### documents.activate
+
+Make an open document your focus, which an omitted doc means from then on; for the person at the window, show it (a parent of the document shown is gone back to, as documents.open does).
+
+**Effect:** `view` · **MCP tool:** `documents_activate`, through `api_call`, or with `--all-tools`
+
+**History:** Journalled as a step; undone by changing back which document is current; not repeated: what it opened is open already.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `doc` | string | yes | Id or path of the open document to work on. |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `current` | boolean | yes | Whether this is the current document. |
+| `focus` | boolean | no | Whether it is the focus of the caller listing it: what an omitted `doc` means for that caller (`documents.list` says). |
 | `id` | string | yes | Stable id, such as "doc-1". |
 | `label` | string | no | A short name its maker gave it, such as "payload", which a recipe names it by. |
 | `len` | integer | yes | Length in bytes. |
@@ -472,6 +508,7 @@ Open a new, empty document and make it current; the window refuses while its doc
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `current` | boolean | yes | Whether this is the current document. |
+| `focus` | boolean | no | Whether it is the focus of the caller listing it: what an omitted `doc` means for that caller (`documents.list` says). |
 | `id` | string | yes | Stable id, such as "doc-1". |
 | `label` | string | no | A short name its maker gave it, such as "payload", which a recipe names it by. |
 | `len` | integer | yes | Length in bytes. |
@@ -498,6 +535,7 @@ Save a document over its file, or to a path, with every edit made so far.
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `current` | boolean | yes | Whether this is the current document. |
+| `focus` | boolean | no | Whether it is the focus of the caller listing it: what an omitted `doc` means for that caller (`documents.list` says). |
 | `id` | string | yes | Stable id, such as "doc-1". |
 | `label` | string | no | A short name its maker gave it, such as "payload", which a recipe names it by. |
 | `len` | integer | yes | Length in bytes. |
@@ -534,6 +572,7 @@ Open bytes of a document (a span, several ranges one after another, bytes given,
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `current` | boolean | no | Whether this is the current document. |
+| `focus` | boolean | no | Whether it is the focus of the caller listing it: what an omitted `doc` means for that caller (`documents.list` says). |
 | `id` | string | no | Stable id, such as "doc-1". |
 | `label` | string | no | A short name its maker gave it, such as "payload", which a recipe names it by. |
 | `len` | integer | no | Length in bytes. |
@@ -859,6 +898,7 @@ Open one bit plane of a span (at most 1 MiB) as a derived document: bit k of eve
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `current` | boolean | no | Whether this is the current document. |
+| `focus` | boolean | no | Whether it is the focus of the caller listing it: what an omitted `doc` means for that caller (`documents.list` says). |
 | `id` | string | no | Stable id, such as "doc-1". |
 | `label` | string | no | A short name its maker gave it, such as "payload", which a recipe names it by. |
 | `len` | integer | no | Length in bytes. |
@@ -1298,7 +1338,7 @@ The session's notes as Markdown, in the order written, each with the steps it ci
 
 ### history.suggest_anchors
 
-Anchors that could stand for a step's literals in a recipe: search matches, structure fields and findings at the same offset in its document as it is now, the selection an earlier step set, and earlier steps' values equal to it, those that port to other files first.
+Anchors that could stand for a step's literals in a recipe: search matches, structure fields and findings at the same offset in its document as it is now, the selection an earlier step set, picks from lists earlier steps returned (strings, keys, candidates), and earlier steps' values equal to it, those that port to other files first.
 
 **Effect:** `read` · **MCP tool:** `history_suggest_anchors`, through `api_call`, or with `--all-tools`
 
@@ -1337,7 +1377,7 @@ Turn the literal at a path of a step's params into an anchor in its derived_from
 
 ### history.make_parameter
 
-Turn the literal at a path of a step's params into a named recipe parameter, the person's to supply when the recipe runs, the literal its default.
+Turn the literal at a path of a step's params into a named recipe parameter, the person's to supply when the recipe runs, the literal its default (and the anchor that found it, if one did, its default_anchor).
 
 **Effect:** `read` · **MCP tool:** `history_make_parameter`, through `api_call`, or with `--all-tools`
 
@@ -3198,6 +3238,7 @@ Undo a simple cipher over a span: a candidate crypto.attack proposed (by its job
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `current` | boolean | no | Whether this is the current document. |
+| `focus` | boolean | no | Whether it is the focus of the caller listing it: what an omitted `doc` means for that caller (`documents.list` says). |
 | `id` | string | no | Stable id, such as "doc-1". |
 | `label` | string | no | A short name its maker gave it, such as "payload", which a recipe names it by. |
 | `len` | integer | no | Length in bytes. |
@@ -3412,6 +3453,7 @@ Open one file (or volume) of the filesystem image at an offset of the document a
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `current` | boolean | no | Whether this is the current document. |
+| `focus` | boolean | no | Whether it is the focus of the caller listing it: what an omitted `doc` means for that caller (`documents.list` says). |
 | `id` | string | no | Stable id, such as "doc-1". |
 | `label` | string | no | A short name its maker gave it, such as "payload", which a recipe names it by. |
 | `len` | integer | no | Length in bytes. |
@@ -3469,14 +3511,16 @@ Open one node of the unpacked tree (by its path of child indices, as unpack.run 
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `doc` | string | no | Document id, path or "current" (the default): the parent. |
+| `doc` | string | no | Document id, path or "current": the document unpacked, as `tree_doc`, which it defaults to. |
 | `output` | Output | no | Where the node's bytes go: "new" (the default; {"new": {"label": …}} labels the sheet), "return", or {"file": path}, which needs leave to edit. |
 | `password` | string | no | The password unpack.run was given, when the tree was unpacked with one. |
 | `path` | array of integer | yes | Child indices from the root, such as [0, 2]; [] is the document itself. |
+| `tree_doc` | string | no | The document unpacked, whose tree the node is in; by default the one unpack.run last ran on, else `doc`. |
 
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `current` | boolean | no | Whether this is the current document. |
+| `focus` | boolean | no | Whether it is the focus of the caller listing it: what an omitted `doc` means for that caller (`documents.list` says). |
 | `id` | string | no | Stable id, such as "doc-1". |
 | `label` | string | no | A short name its maker gave it, such as "payload", which a recipe names it by. |
 | `len` | integer | no | Length in bytes. |
@@ -3498,12 +3542,13 @@ Read the bytes of one node of the unpacked tree, by its path of child indices, a
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `doc` | string | no | Document id, path or "current" (the default). |
+| `doc` | string | no | Document id, path or "current": the document unpacked, as `tree_doc`, which it defaults to. |
 | `encoding` | `"hex"` \| `"base64"` \| `"text"` | no | hex (the default), base64 or text. |
 | `len` | integer | no | Bytes read, at most 16 MiB; to the end of the node when omitted. |
 | `password` | string | no | The password unpack.run was given, when the tree was unpacked with one. |
 | `path` | array of integer | yes | Child indices from the root, such as [0, 2]. |
 | `start` | integer | no | First offset in the node's bytes (0 by default). |
+| `tree_doc` | string | no | The document unpacked, whose tree the node is in; by default the one unpack.run last ran on, else `doc`. |
 
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -3522,10 +3567,11 @@ Write the bytes of one node of the unpacked tree (by its path of child indices, 
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `doc` | string | no | Document id, path or "current" (the default). |
+| `doc` | string | no | Document id, path or "current": the document unpacked, as `tree_doc`, which it defaults to. |
 | `node` | array of integer | yes | The node's child indices from the root, such as [0, 2]. |
 | `password` | string | no | The password unpack.run was given, when the tree was unpacked with one. |
 | `path` | string | yes | The file to write. |
+| `tree_doc` | string | no | The document unpacked, whose tree the node is in; by default the one unpack.run last ran on, else `doc`. |
 
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -4033,6 +4079,7 @@ Open a recorded version of a document as a document derived from it; the window 
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `current` | boolean | yes | Whether this is the current document. |
+| `focus` | boolean | no | Whether it is the focus of the caller listing it: what an omitted `doc` means for that caller (`documents.list` says). |
 | `id` | string | yes | Stable id, such as "doc-1". |
 | `label` | string | no | A short name its maker gave it, such as "payload", which a recipe names it by. |
 | `len` | integer | yes | Length in bytes. |
@@ -4147,6 +4194,55 @@ Run a recipe on a document, each step called as recipe:NAME with its anchors res
 | `steps` | array of StepReport | yes | Each step run (or previewed), in order. |
 | `stopped` | Stopped | no | Why the run stopped early, if it did. |
 | `warnings` | array of string | no | Things to know that did not stop it: a plugin missing or changed, a different API version, another file than the one recorded on. |
+
+### vars.set
+
+Bind a value to a variable by name, so later calls can pass it as {"$var": name}: give the value as an anchor ({"$anchor": {"pick": …}}) to keep where it came from, and a recipe finds it again on the next file. Undone by putting back the value bound before.
+
+**Effect:** `analysis` · **MCP tool:** `vars_set`, listed by default
+
+**History:** Journalled as a step; undone by changing back the value bound to the variable; repeated by going back, playback and recipes.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `name` | string | yes | The variable's name: letters, digits, '_' or '-', such as "serial". |
+| `value` | any | yes | The value: any JSON, or an anchor that finds it, such as {"$anchor": {"pick": {"step": 7, "list": "job.strings", "where": {"text": {"regex": "^NC500-"}}, "field": "text"}}}. |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `name` | string | yes |  |
+| `replaced` | any | no | The value it replaced, if it was bound before. |
+| `value` | any | yes | The value bound, its anchor resolved. |
+
+### vars.list
+
+The session's variables, each with its value, the step that bound it and the anchor it was found by.
+
+**Effect:** `read` · **MCP tool:** `vars_list`, through `api_call`, or with `--all-tools`
+
+**History:** Kept among the recent reads, which a later step can cite.
+
+Parameters: None.
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `variables` | array of Variable | yes |  |
+
+### vars.clear
+
+Remove a variable's binding, or every variable's.
+
+**Effect:** `analysis` · **MCP tool:** `vars_clear`, through `api_call`, or with `--all-tools`
+
+**History:** Journalled as a step; it has no inverse, so going back past it runs the session's steps again; repeated by going back, playback and recipes.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `name` | string | no | The variable to clear; every variable when omitted. |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `cleared` | array of string | yes | The variables no longer bound. |
 
 ## Topics
 

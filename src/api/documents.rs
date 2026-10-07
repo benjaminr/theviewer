@@ -24,7 +24,7 @@ pub(super) const METHODS: &[super::Method] = &[
     method!("documents.activate", View, caller activate, ActivateParams, super::workspace::DocumentInfo, "Make an open document your focus, which an omitted doc means from then on; for the person at the window, show it (a parent of the document shown is gone back to, as documents.open does).").opens_document(false),
     method!("documents.new", View, caller new, NewParams, super::workspace::DocumentInfo, "Open a new, empty document and make it current; the window refuses while its document has unsaved edits, unless the person at the window discards them.").opens_document(false),
     method!("documents.save", Edit, save, SaveParams, super::workspace::DocumentInfo, "Save a document over its file, or to a path, with every edit made so far.").writes_file(crate::api::WritesFile::Always),
-    method!("documents.derive", View, caller derive, DeriveParams, super::output::Made, "Open bytes of a document (a span, several ranges one after another, bytes given, or ranges of several sheets joined with sources), or what a transform such as decompress or XOR makes of them, as a document of their own derived from it, and make it current; in the window, Back goes back to the parent. Returns the new document, and output; with output {\"file\": path} the bytes are written to a file instead, which needs leave to edit.").outputs(&[OutputKind::New, OutputKind::File], OutputKind::New),
+    method!("documents.derive", View, caller derive, DeriveParams, super::output::Made, "Open bytes of a document (a span, several ranges one after another, bytes given, or ranges of several sheets joined with sources), or what a transform such as decompress or XOR makes of them, as a document of their own derived from it, and make it current; in the window, Back goes back to the parent. Returns the new document, and output; with output {\"file\": path} the bytes are written to a file instead, which needs leave to edit.").outputs(&[OutputKind::New, OutputKind::File], OutputKind::New).doc_defaults_to(first_source),
     method!("documents.export", Edit, export, ExportParams, ExportResult, "Write a span of a document (or several ranges one after another) to a file, or what decompresses at a span's start; the document is left as it is. A shorthand for documents.derive with output {\"file\": path}.").writes_file(crate::api::WritesFile::Always),
     method!("documents.open_source", View, caller open_source, OpenSourceParams, OpenSourceResult, "Open a file, URL, block device, serial port (serial:PORT@BAUD) or a process's memory region (pid:PID@ADDRESS) as a new document. The window reads a URL, device or region in the background and opens it when it arrives, and pid:PID lists a process's regions in the Live tab; headless, the bytes are read before the call returns.").opens_document(false),
 ];
@@ -430,6 +430,13 @@ pub fn open_source(workspace: &mut dyn Workspace, caller: &Caller, params: OpenS
         }
     };
     Ok(OpenSourceResult { document: Some(workspace::info(workspace, &id)?), reading: false })
+}
+
+/// What an omitted `doc` means for `documents.derive`: with `sources`, the
+/// first source's document, which is the new sheet's parent; otherwise the
+/// caller's focus.
+fn first_source(_: &dyn Workspace, _: &Caller, params: &serde_json::Value) -> Option<String> {
+    params.get("sources")?.get(0)?.get("doc")?.as_str().map(str::to_string)
 }
 
 pub fn derive(workspace: &mut dyn Workspace, caller: &Caller, params: DeriveParams) -> Result<Made, ApiError> {
