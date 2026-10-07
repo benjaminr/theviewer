@@ -86,6 +86,9 @@ pub const CORE: &[&str] = &[
     // A note of what the model is doing and why, in the history beside the
     // steps it cites, so the person can follow its reasoning.
     "history.note",
+    // A value found (a serial, a key, an offset) bound by name, where it
+    // came from kept, for later calls to pass as {"$var": name}.
+    "vars.set",
 ];
 
 /// The tool that finds methods.

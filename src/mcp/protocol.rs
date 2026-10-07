@@ -161,25 +161,34 @@ pub fn capabilities() -> Value {
 /// `api_search`, `api_describe` and `api_call`; with every method listed,
 /// those three are not offered.
 pub fn instructions(tools: ToolSet) -> String {
-    let (other_methods, edits) = match tools {
+    let (other_methods, edits, activate) = match tools {
         ToolSet::Core => (
             "The API has more methods than the core ones listed as tools by default (bits, strings, checksums, crypto, firmware, packets \
 and more): api_search finds them, api_describe gives one's parameters, and api_call calls it.",
             "bytes_write, bytes_replace, transform_apply, and bytes.insert and bytes.delete through api_call",
+            "documents.activate through api_call",
         ),
         ToolSet::All => (
             "Every API method is listed as a tool of its own (bits, strings, checksums, crypto, firmware, packets and more), named \
 after the method with underscores for dots: bits.scan_periods is bits_scan_periods.",
             "bytes_write, bytes_replace, transform_apply, bytes_insert, bytes_delete",
+            "documents_activate",
         ),
     };
     format!(
         "theviewer inspects and edits binary files: the ones this server was started with, and any opened with documents_open. \
-Documents are named by id (doc-1), by path, or \"current\". Start with analysis_overview for a map of a file, then findings_query, \
+Documents are named by id (doc-1) or by path; \"current\" is whichever was opened or made last, so prefer ids. Start with analysis_overview for a map of a file, then findings_query, \
 structure_parse and templates_apply for detail; bytes_read and bytes_hexdump show bytes. {other_methods} Edits ({edits}) are \
 each one undoable step: history_undo reverses them, and documents_save writes them to disk, which nothing else does. \
 As you work, record your reasoning with history_note: what you are doing and why, in the session's history where you are, citing the \
 steps it is about as #12; the person sees it beside those steps in the History tab. \
+An omitted doc means your focus: the document you last opened or activated with documents_open or {activate} \
+(documents_list marks it); a derive or a node opened makes a new document without moving it, and naming a doc in one call does not \
+move it either. Name a document a step made as {{\"$sheet\": 7}} (step 7's) rather than its id. \
+When a value you found (a serial, a key, an offset) is used later, bind it with vars_set, passing where it came from as an anchor \
+such as {{\"$anchor\": {{\"pick\": {{\"step\": 7, \"list\": \"job.strings\", \"where\": {{\"text\": {{\"regex\": \"^NC500-\"}}}}, \"field\": \"text\"}}}}}}, \
+and pass it on as {{\"$var\": \"serial\"}}, or transformed as {{\"$anchor\": {{\"of\": {{\"var\": \"serial\"}}, \"then\": [{{\"encode\": \"text_to_hex\"}}]}}}}: \
+the history then keeps where each value came from, and a recipe saved from it finds the values again in the next file. \
 Resources under theviewer://doc/{{id}} give a document's info, bytes, findings and facts; theviewer://reference/{{id}} gives notes on \
 formats and protocols."
     )
@@ -220,6 +229,17 @@ mod tests {
             assert!(instructions(tools).contains("record your reasoning with history_note"));
         }
         assert!(crate::mcp::tools::CORE.contains(&"history.note"), "listed by default, so a client can note as it works");
+    }
+
+    #[test]
+    fn the_instructions_ask_the_model_to_bind_found_values_and_name_sheets_by_step() {
+        for tools in [ToolSet::Core, ToolSet::All] {
+            let text = instructions(tools);
+            for wanted in ["bind it with vars_set", "{\"$var\": \"serial\"}", "{\"$sheet\": 7}", "documents_list marks it"] {
+                assert!(text.contains(wanted), "{wanted} in {text}");
+            }
+        }
+        assert!(crate::mcp::tools::CORE.contains(&"vars.set") && crate::mcp::tools::CORE.contains(&"documents.list"), "listed by default beside history_note");
     }
 
     #[test]

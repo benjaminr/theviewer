@@ -44,6 +44,10 @@ pub struct Options {
     pub output_schemas: bool,
     /// List every method as a tool, not only the core set (`--all-tools`).
     pub all_tools: bool,
+    /// An omitted `doc` means the current document, which every document
+    /// opened or derived becomes, rather than the client's focus
+    /// (`--legacy-current`), as before clients had one.
+    pub legacy_current: bool,
 }
 
 /// A server with the plugins loaded and the files open. A file that cannot
@@ -57,6 +61,7 @@ pub fn start(options: &Options) -> Result<Server, String> {
         }
     }
     let mut workspace = HeadlessWorkspace::new(Arc::new(plugins.registry()));
+    workspace.foci_mut().legacy_current = options.legacy_current;
     workspace.set_registered_methods(plugins.methods());
     workspace.journal_mut().note_plugins(plugins.recorded());
     for file in &options.files {

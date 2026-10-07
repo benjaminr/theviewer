@@ -557,6 +557,24 @@ mod tests {
         messages.iter().find(|message| message["id"] == id).unwrap_or_else(|| panic!("no answer to {id} in {messages:?}")).clone()
     }
 
+    /// What a client reads with no doc after deriving a sheet from the file.
+    fn read_after_a_derive(legacy_current: bool) -> String {
+        let mut workspace = workspace_with("sample.bin", b"hello world");
+        crate::api::Workspace::foci_mut(&mut workspace).legacy_current = legacy_current;
+        let mut server = Server::new(workspace, PluginRuntime::none());
+        let derive = json!({ "name": "api_call", "arguments": { "method": "documents.derive", "params": { "start": 6 } } });
+        let read = json!({ "name": "bytes_read", "arguments": { "start": 0, "len": 5, "encoding": "text" } });
+        let messages = exchange(&mut server, &[initialize("2025-06-18"), initialized(), request(1, "tools/call", derive), request(2, "tools/call", read)]);
+        let text = response(&messages, 2)["result"]["content"][0]["text"].as_str().unwrap().to_string();
+        serde_json::from_str::<Value>(&text).unwrap()["data"].as_str().unwrap().to_string()
+    }
+
+    #[test]
+    fn a_client_s_omitted_doc_stays_on_its_file_after_a_derive_unless_it_asks_for_the_current_document() {
+        assert_eq!(read_after_a_derive(false), "hello", "the client's focus stayed on the file");
+        assert_eq!(read_after_a_derive(true), "world", "--legacy-current: the derived sheet became current, and the default");
+    }
+
     #[test]
     fn initialize_agrees_on_a_revision_and_offers_tools_resources_prompts_and_logging() {
         let messages = exchange(&mut server(), &[initialize("2025-06-18"), initialized(), request(1, "ping", json!({}))]);

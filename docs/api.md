@@ -66,7 +66,7 @@ let head = api::call(&mut workspace, &Caller::Cli, "bytes.read", json!({"start":
 
 **Documents.** Each open document has an id: `doc-1`, `doc-2` and so on. A method about a document takes `doc`: an id, the path of an open document, or `"current"`, the window's document (headless, the one opened or made last). A document derived from another (a span opened on its own, a stream decompressed, an embedded file) is a document of its own, with its own id.
 
-**Focus.** An omitted `doc` means the caller's focus, filled in before the method runs, so the journal entry names the document. For the person at the window it is the document shown. Every other caller keeps its own: the current document when it first calls, then the document it opens (`documents.open`, `.new`, `.open_source`) or activates (`documents.activate`), or a new sheet it asks to focus (`output: {"new": {"focus": true}}`). Making a sheet (a derive, a node opened) does not move it, nor does naming a document in a call, so a client's calls without `doc` stay on the document it was working on. `documents.list` marks the caller's focus.
+**Focus.** An omitted `doc` means the caller's focus, filled in before the method runs, so the journal entry names the document. For the person at the window it is the document shown. Every other caller keeps its own: the current document when it first calls, then the document it opens (`documents.open`, `.new`, `.open_source`) or activates (`documents.activate`), or a new sheet it asks to focus (`output: {"new": {"focus": true}}`). Making a sheet (a derive, a node opened) does not move it, nor does naming a document in a call, so a client's calls without `doc` stay on the document it was working on. `documents.list` marks the caller's focus. `theviewer mcp --legacy-current` makes an omitted `doc` the current document for an MCP client, as before.
 
 **Anchors at call time.** Any parameter may be an anchor in place of a literal: `{"$anchor": …}`, or the shorthands `{"$var": "serial"}` (a variable bound with `vars.set`) and `{"$sheet": 7}` or `{"$sheet": "payload"}` (the sheet step 7 made, or the one labelled so). They are resolved against the session before the method runs (`doc`'s first), and the journal entry keeps both the values, in `params`, and the anchors, in `derived_from`, so a recipe made from it finds the values again on the next file. Step and pick anchors cite earlier steps by number; a read they cite becomes a step of the journal. The kinds of anchor are in [Recipes](recipes.md#anchors).
 
@@ -350,7 +350,7 @@ A recipe step that starts a job waits for it (up to 10 minutes), and later steps
 | [`recipes.save`](#recipessave) | read |  | Save a recipe in ~/.config/theviewer/recipes/, given whole or made from steps of this session's journal, to run later on other files. |
 | [`recipes.preview`](#recipespreview) | read |  | What a recipe would do to a document, without changing anything: each step described with its anchors resolved on this file, and where the run would stop. |
 | [`recipes.run`](#recipesrun) | edit |  | Run a recipe on a document, each step called as recipe:NAME with its anchors resolved on this file, waiting for the jobs steps start; its edits undo as one step, and the first failure stops it with which step and why. |
-| [`vars.set`](#varsset) | analysis |  | Bind a value to a variable by name, so later calls can pass it as {"$var": name}: give the value as an anchor ({"$anchor": {"pick": …}}) to keep where it came from, and a recipe finds it again on the next file. Undone by putting back the value bound before. |
+| [`vars.set`](#varsset) | analysis | core | Bind a value to a variable by name, so later calls can pass it as {"$var": name}: give the value as an anchor ({"$anchor": {"pick": …}}) to keep where it came from, and a recipe finds it again on the next file. Undone by putting back the value bound before. |
 | [`vars.list`](#varslist) | read |  | The session's variables, each with its value, the step that bound it and the anchor it was found by. |
 | [`vars.clear`](#varsclear) | analysis |  | Remove a variable's binding, or every variable's. |
 
@@ -4106,7 +4106,7 @@ Run a recipe on a document, each step called as recipe:NAME with its anchors res
 
 Bind a value to a variable by name, so later calls can pass it as {"$var": name}: give the value as an anchor ({"$anchor": {"pick": …}}) to keep where it came from, and a recipe finds it again on the next file. Undone by putting back the value bound before.
 
-**Effect:** `analysis` · **MCP tool:** `vars_set`, through `api_call`, or with `--all-tools`
+**Effect:** `analysis` · **MCP tool:** `vars_set`, listed by default
 
 **History:** Journalled as a step; undone by changing back the value bound to the variable; repeated by going back, playback and recipes.
 

@@ -30,7 +30,7 @@ usage: theviewer [FILE] [--format NAME] [--palette NAME] [--width PIXELS] [--off
        theviewer FILE --report | --json
        theviewer api [--save] [--plugins DIR]... METHOD ['{JSON PARAMS}'] [FILE]
        theviewer api --describe
-       theviewer mcp [--plugins DIR]... [--all-tools] [--output-schemas] [FILE...]
+       theviewer mcp [--plugins DIR]... [--all-tools] [--output-schemas] [--legacy-current] [FILE...]
        theviewer replay RECIPE FILE... [--param KEY=VALUE]... [--save | --out DIR] [--save-sheets DIR] [--allow-writes] [--plugins DIR]... [--json]
 
   --report   print a plain-text report of FILE without opening a window
@@ -45,7 +45,8 @@ usage: theviewer [FILE] [--format NAME] [--palette NAME] [--width PIXELS] [--off
              plugins' as tools, with api_search, api_describe and api_call to reach the rest;
              --all-tools lists every method instead (about five times the size, which clients
              keep in context); --output-schemas lists each tool's result schema too (about
-             twice the size)
+             twice the size); --legacy-current makes an omitted doc mean the current document,
+             which every document opened or derived becomes, rather than the client's focus
   replay     run a saved recipe (by name, from ~/.config/theviewer/recipes, or a
              .theviewer-recipe.json path) on each FILE, printing what each step did per file;
              --param gives a recipe parameter; --save saves each file the recipe ran to its end
@@ -267,6 +268,7 @@ fn run_mcp(args: &[String]) -> i32 {
             "-h" | "--help" => return print_usage(),
             "--output-schemas" => options.output_schemas = true,
             "--all-tools" => options.all_tools = true,
+            "--legacy-current" => options.legacy_current = true,
             "--plugins" => match args.next() {
                 Some(dir) => options.plugin_dirs.get_or_insert_with(Vec::new).push(PathBuf::from(dir)),
                 None => {
