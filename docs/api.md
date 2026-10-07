@@ -58,6 +58,11 @@ Errors are `{code, message, data}`, with these codes:
 | [`history.list`](#historylist) | read | The session's journal: each edit, view change and job made through the API, by any caller, in order, with its parameters, result, outcome and a description; optionally the recent reads too. Pass back next as since to follow it. |
 | [`history.entry`](#historyentry) | read | One step of the journal, or one recent read, in full. |
 | [`history.session`](#historysession) | read | What the journal's session ran with: when it started, the API version, the plugins loaded with their hashes, and each document as first seen, with its size and SHA-256. |
+| [`history.suggest_anchors`](#historysuggest_anchors) | read | Anchors that could stand for a step's literals in a recipe: search matches, structure fields and findings at the same offset in its document as it is now, the selection an earlier step set, and earlier steps' values equal to it, those that port to other files first. |
+| [`history.make_anchor`](#historymake_anchor) | read | Turn the literal at a path of a step's params into an anchor in its derived_from, so a recipe made from it finds the value when it runs; a read it cites becomes a step of the journal. |
+| [`history.make_parameter`](#historymake_parameter) | read | Turn the literal at a path of a step's params into a named recipe parameter, the person's to supply when the recipe runs, the literal its default. |
+| [`history.clear_anchor`](#historyclear_anchor) | read | Clear the anchor at a path of a step's params, so a recipe made from it repeats the literal. |
+| [`history.recipe`](#historyrecipe) | read | A recipe of the journal's successful steps (or those chosen, with the steps they cite), each recorded provenance as an anchor, parameters declared, steps numbered from 1 and the recorded document left out. |
 | [`search.find`](#searchfind) | read | The next (or previous) occurrence of hex bytes, text, UTF-16 text or an integer from an offset. |
 | [`search.find_all`](#searchfind_all) | read | Every occurrence of hex bytes, text, UTF-16 text or an integer in the document, a page at a time. |
 | [`search.count`](#searchcount) | read | How many times hex bytes, text, UTF-16 text or an integer occur in the document, up to a cap. |
@@ -787,6 +792,96 @@ Parameters: None.
 | `documents` | array of RecordedDocument | yes | Each document a call was about, as it was the first time. |
 | `plugins` | array of RecordedPlugin | yes | The plugin scripts loaded, as last loaded. |
 | `started_at` | string | yes | When the session started, UTC. |
+
+### history.suggest_anchors
+
+Anchors that could stand for a step's literals in a recipe: search matches, structure fields and findings at the same offset in its document as it is now, the selection an earlier step set, and earlier steps' values equal to it, those that port to other files first.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `path` | string | no | Only the literal at this path of its params, such as `start`; every integer when omitted. |
+| `step` | integer | yes | The step whose literals to anchor. |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `literals` | array of LiteralSuggestions | yes | Each literal, with the anchors that give the same value. |
+
+### history.make_anchor
+
+Turn the literal at a path of a step's params into an anchor in its derived_from, so a recipe made from it finds the value when it runs; a read it cites becomes a step of the journal.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `anchor` | Anchor | yes | The anchor, written bare: `{"find": {"hex": "7EA5"}, "nth": 0}`, `{"step": 12, "path": "result.at"}`, `{"param": "key"}`… |
+| `path` | string | yes | The literal's path in the step's params, such as `start` or `selection.range[0]`. |
+| `step` | integer | yes | The step whose literal to anchor. |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `anchor` | Anchor | no | The anchor now at the path; none when it was cleared. |
+| `path` | string | yes | The parameter's path, such as `selection.range[0]`. |
+| `replaced` | Anchor | no | The anchor it replaced, if any. |
+| `step` | integer | yes |  |
+| `value` | any | yes | The literal the step was given there. |
+
+### history.make_parameter
+
+Turn the literal at a path of a step's params into a named recipe parameter, the person's to supply when the recipe runs, the literal its default.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `description` | string | no | What to supply, for the person running the recipe. |
+| `name` | string | yes | The parameter's name: letters, digits, spaces, '_' or '-'. |
+| `path` | string | yes | The literal's path in the step's params. |
+| `step` | integer | yes | The step whose literal to make a parameter. |
+| `type` | `"string"` \| `"integer"` \| `"number"` \| `"boolean"` | no | "string", "integer", "number" or "boolean"; the literal's type when omitted. |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `anchor` | Anchor | no | The anchor now at the path; none when it was cleared. |
+| `parameter` | RecipeParameter | yes | The parameter as a recipe declares it. |
+| `path` | string | yes | The parameter's path, such as `selection.range[0]`. |
+| `replaced` | Anchor | no | The anchor it replaced, if any. |
+| `step` | integer | yes |  |
+| `value` | any | yes | The literal the step was given there. |
+
+### history.clear_anchor
+
+Clear the anchor at a path of a step's params, so a recipe made from it repeats the literal.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `path` | string | yes | The parameter's path in the step's params. |
+| `step` | integer | yes |  |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `anchor` | Anchor | no | The anchor now at the path; none when it was cleared. |
+| `path` | string | yes | The parameter's path, such as `selection.range[0]`. |
+| `replaced` | Anchor | no | The anchor it replaced, if any. |
+| `step` | integer | yes |  |
+| `value` | any | yes | The literal the step was given there. |
+
+### history.recipe
+
+A recipe of the journal's successful steps (or those chosen, with the steps they cite), each recorded provenance as an anchor, parameters declared, steps numbered from 1 and the recorded document left out.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `description` | string | no | What it does, in the person's words. |
+| `name` | string | yes | The recipe's name. |
+| `steps` | array of integer | no | The steps to make it of (the earlier steps they cite are added); every step of the journal when omitted. |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `api_version` | string | yes | The API version the steps were recorded against, by major version: "1.x". |
+| `description` | string | no |  |
+| `name` | string | yes |  |
+| `parameters` | object | no | Values the person supplies when running it, by name, which `{"param": name}` anchors stand for. |
+| `plugins` | array of RecordedPlugin | no | The plugins loaded when it was recorded; running it warns when one is missing or has changed. |
+| `recipe` | integer | yes | The recipe format, 1. |
+| `recorded_on` | FileIdentity | no | The file it was recorded on, to say when another is the same. |
+| `steps` | array of RecipeStep | yes |  |
 
 ### search.find
 
