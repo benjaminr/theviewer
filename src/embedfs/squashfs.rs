@@ -6,7 +6,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use super::{Allowance, Entry, EntryKind, Filesystem, FsKind, MAX_DIRECTORY_DEPTH, join_path, le_u16, le_u32, le_u64, slice_at, take_content};
+use super::{Allowance, Entry, EntryKind, EntryRecord, Filesystem, FsKind, MAX_DIRECTORY_DEPTH, join_path, le_u16, le_u32, le_u64, slice_at, take_content};
 use crate::compress::{self, Codec};
 
 pub(super) const MAGIC: &[u8] = b"hsqs";
@@ -487,10 +487,10 @@ impl Reader<'_> {
             }
             Inode::Symlink { target } => {
                 let (data, note) = take_content(target, 0, allowance);
-                self.entries.push(Entry { path, kind: EntryKind::Symlink, declared_size: data.len() as u64, data: Arc::new(data), source_offset: self.base, source_len: 0, method: None, note });
+                self.entries.push(Entry { path, kind: EntryKind::Symlink, declared_size: data.len() as u64, data: Arc::new(data), source_offset: self.base, source_len: 0, method: None, note, record: EntryRecord::default() });
             }
             Inode::Special => {
-                self.entries.push(Entry { path, kind: EntryKind::Special, declared_size: 0, data: Arc::new(Vec::new()), source_offset: self.base, source_len: 0, method: None, note: None });
+                self.entries.push(Entry { path, kind: EntryKind::Special, declared_size: 0, data: Arc::new(Vec::new()), source_offset: self.base, source_len: 0, method: None, note: None, record: EntryRecord::default() });
             }
         }
     }
@@ -558,6 +558,7 @@ impl Reader<'_> {
             source_len: at.saturating_sub(source_offset),
             method: compressed.then(|| self.superblock.compression.label().to_string()),
             note: problem.or(limit_note),
+            record: EntryRecord::default(),
         }
     }
 

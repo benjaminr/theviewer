@@ -9,7 +9,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use super::{Allowance, Entry, EntryKind, Filesystem, FsKind, be_u32, be_u64, slice_at, take_content};
+use super::{Allowance, Entry, EntryKind, EntryRecord, Filesystem, FsKind, be_u32, be_u64, slice_at, take_content};
 
 pub(super) const MAGIC: &[u8] = b"UBI#";
 const VID_MAGIC: &[u8] = b"UBI!";
@@ -214,6 +214,7 @@ fn volume_entry(image: &[u8], base: usize, volume: u32, record: Option<&VolumeRe
         source_len: mapped.len() * peb_size,
         method: None,
         note: note.or_else(|| Some(format!("{kind_label} volume {volume}, {} LEBs mapped", mapped.len()))),
+        record: EntryRecord::default(),
     }
 }
 

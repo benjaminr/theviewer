@@ -10,7 +10,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
-use super::{Allowance, Entry, EntryKind, Filesystem, FsKind, MAX_DIRECTORY_DEPTH, join_path, le_u16, le_u32, slice_at, take_content};
+use super::{Allowance, Entry, EntryKind, EntryRecord, Filesystem, FsKind, MAX_DIRECTORY_DEPTH, join_path, le_u16, le_u32, slice_at, take_content};
 use crate::compress::{self, Codec};
 
 /// 0x1985, little-endian.
@@ -301,6 +301,7 @@ impl TreeBuilder<'_> {
             source_len: last_end.saturating_sub(first_at),
             method: (!method.is_empty()).then(|| method.join("+")),
             note: if problem.is_empty() { limit_note } else { Some(problem.join("; ")) },
+            record: EntryRecord::default(),
         }
     }
 

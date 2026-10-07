@@ -1,5 +1,5 @@
-//! Embedded filesystem images found inside firmware: SquashFS, CramFS, JFFS2
-//! and UBI.
+//! Embedded filesystem images found inside firmware and disk images:
+//! SquashFS, CramFS, JFFS2, UBI and FAT.
 //!
 //! Each format has its own reader that turns an image into a flat list of
 //! [`Entry`] values (directories, files, symlinks, volumes) with their paths.
@@ -12,6 +12,7 @@
 //! panic nor allocate without bound.
 
 mod cramfs;
+pub mod fat;
 mod jffs2;
 mod squashfs;
 mod ubi;
@@ -40,6 +41,7 @@ pub enum FsKind {
     CramFs,
     Jffs2,
     Ubi,
+    Fat,
 }
 
 impl FsKind {
@@ -49,6 +51,7 @@ impl FsKind {
             FsKind::CramFs => "CramFS",
             FsKind::Jffs2 => "JFFS2",
             FsKind::Ubi => "UBI",
+            FsKind::Fat => "FAT",
         }
     }
 }
@@ -73,6 +76,17 @@ impl EntryKind {
     }
 }
 
+/// What a directory entry records beyond its content. FAT keeps times and
+/// leaves deleted entries behind; the other formats leave this empty.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct EntryRecord {
+    /// The entry was deleted; any content was recovered, as its note says.
+    pub deleted: bool,
+    /// Local wall-clock times, such as "2026-09-12 08:14:54" (FAT keeps no zone).
+    pub created: Option<String>,
+    pub modified: Option<String>,
+}
+
 /// One directory, file, link or volume inside a filesystem image.
 #[derive(Clone, Debug)]
 pub struct Entry {
@@ -93,6 +107,7 @@ pub struct Entry {
     pub method: Option<String>,
     /// A problem with this entry, or why extraction stopped early.
     pub note: Option<String>,
+    pub record: EntryRecord,
 }
 
 impl Entry {
@@ -111,6 +126,7 @@ impl Entry {
             source_len: 0,
             method: None,
             note: None,
+            record: EntryRecord::default(),
         }
     }
 }
@@ -251,31 +267,41 @@ const MAGICS: [(&[u8], FsKind); 4] = [
     (ubi::MAGIC, FsKind::Ubi),
 ];
 
+/// Where an image of each kind might start: each magic number found, and
+/// each sector boundary holding a FAT boot sector, which has no magic of its
+/// own. In offset order.
+fn candidates(data: &[u8]) -> Vec<(usize, FsKind)> {
+    let patterns: Vec<&[u8]> = MAGICS.iter().map(|(magic, _)| *magic).collect();
+    let Ok(matcher) = AhoCorasick::new(patterns) else { return Vec::new() };
+    let mut found: Vec<(usize, FsKind)> = matcher.find_overlapping_iter(data).map(|candidate| (candidate.start(), MAGICS[candidate.pattern().as_usize()].1)).collect();
+    found.extend((0..data.len()).step_by(fat::SCAN_ALIGNMENT).filter(|&offset| fat::geometry(&data[offset..]).is_ok()).map(|offset| (offset, FsKind::Fat)));
+    found.sort_by_key(|&(offset, _)| offset);
+    found
+}
+
 /// Every filesystem image in `data`, in offset order. Images do not overlap:
 /// scanning resumes after the end of each one found, so a filesystem inside
 /// another (say, SquashFS in a UBI volume) is found when that volume is
-/// itself scanned.
+/// itself scanned. A FAT volume is found at any 512-byte boundary, which
+/// covers a partition of a whole disk image.
 ///
 /// File contents are taken from `bytes_left` exactly as `unpack` charges its
 /// own children; once it runs out, entries are still listed but left empty.
 pub fn find_filesystems(data: &[u8], limits: &Limits, bytes_left: &mut usize) -> Vec<Filesystem> {
-    let patterns: Vec<&[u8]> = MAGICS.iter().map(|(magic, _)| *magic).collect();
-    let Ok(matcher) = AhoCorasick::new(patterns) else { return Vec::new() };
     let mut allowance = Allowance::new(limits, bytes_left);
     let mut found = Vec::new();
     let mut resume_at = 0;
-    for candidate in matcher.find_overlapping_iter(data) {
-        let offset = candidate.start();
+    for (offset, kind) in candidates(data) {
         if offset < resume_at {
             continue;
         }
-        let kind = MAGICS[candidate.pattern().as_usize()].1;
         let image = &data[offset..];
         let parsed = match kind {
             FsKind::SquashFs => squashfs::read(image, offset, &mut allowance),
             FsKind::CramFs => cramfs::read(image, offset, &mut allowance),
             FsKind::Jffs2 => jffs2::read(image, offset, &mut allowance),
             FsKind::Ubi => ubi::read(image, offset, &mut allowance),
+            FsKind::Fat => fat::read(image, offset, &mut allowance),
         };
         if let Ok(filesystem) = parsed {
             resume_at = offset + filesystem.len.max(1);
@@ -385,6 +411,25 @@ pub(crate) mod test_support {
         build_image(&items)
     }
 
+    /// A disk image: an MBR whose one partition, at sector 63, holds a
+    /// FAT16 volume with a live note and a deleted photo (with its long name),
+    /// for tests outside this module. Returns the disk and the photo.
+    pub fn fat_disk() -> (Vec<u8>, Vec<u8>) {
+        use super::fat::tests::{Item, build_volume};
+        let photo: Vec<u8> = (0..3000u32).map(|i| (i * 13 % 251) as u8).collect();
+        let volume = build_volume(8192, 1, &[
+            Item::file(b"NOTES   TXT", None, b"pw on the yellow note\n"),
+            Item::file(b"IMG_20~1JPG", Some("IMG_20260912_0814.jpg"), &photo).deleted(),
+        ]);
+        let mut disk = vec![0u8; 63 * 512];
+        disk[446 + 4] = 0x06;
+        disk[446 + 8..446 + 12].copy_from_slice(&63u32.to_le_bytes());
+        disk[446 + 12..446 + 16].copy_from_slice(&8192u32.to_le_bytes());
+        disk[510..512].copy_from_slice(&[0x55, 0xAA]);
+        disk.extend(volume);
+        (disk, photo)
+    }
+
     /// Deterministic pseudo-random bytes (xorshift).
     pub fn noise(len: usize, seed: u32) -> Vec<u8> {
         let mut state = seed.max(1);
@@ -413,6 +458,7 @@ mod tests {
             source_len: content.len(),
             method: None,
             note: None,
+            record: EntryRecord::default(),
         }
     }
 
@@ -458,6 +504,21 @@ mod tests {
         assert_eq!(clean_name(b"a/b\0\0").as_deref(), Some("a_b"));
         assert_eq!(clean_name(b".."), None);
         assert_eq!(clean_name(b"\0\0"), None);
+    }
+
+    #[test]
+    fn a_fat_volume_is_found_inside_an_mbr_partition() {
+        let (disk, photo) = test_support::fat_disk();
+        let mut left = usize::MAX;
+        let found = find_filesystems(&disk, &Limits::default(), &mut left);
+        assert_eq!(found.len(), 1, "the MBR itself is no volume");
+        assert_eq!((found[0].kind, found[0].offset, found[0].len), (FsKind::Fat, 63 * 512, 8192 * 512));
+        let deleted = found[0].entries.iter().find(|entry| entry.record.deleted).expect("the deleted photo");
+        assert_eq!(deleted.path, "IMG_20260912_0814.jpg");
+        assert_eq!(deleted.data.as_slice(), photo.as_slice());
+        let root = filesystem_node(&found[0]);
+        assert_eq!(root.name, "FAT@0x7e00");
+        assert_eq!(root.children[1].note.as_deref(), Some(fat::NOTE_RECOVERED), "the unpacked tree says the file was recovered");
     }
 
     #[test]

@@ -147,11 +147,11 @@ fn show_filesystems(state: &mut ForensicsState, app: &mut ViewerApp, ui: &mut Ui
         }
     });
     let Some(scan) = &state.filesystems else {
-        ui.label(RichText::new("Finds SquashFS, CramFS, JFFS2 and UBI images inside the document and lists their files, which can be opened as documents of their own.").color(theme::TEXT_DIM));
+        ui.label(RichText::new("Finds SquashFS, CramFS, JFFS2, UBI and FAT images inside the document, a disk image's partitions included, and lists their files, deleted FAT files too, which can be opened as documents of their own.").color(theme::TEXT_DIM));
         return;
     };
     if scan.filesystems.is_empty() {
-        ui.label(RichText::new("No SquashFS, CramFS, JFFS2 or UBI images found.").color(theme::TEXT_DIM));
+        ui.label(RichText::new("No SquashFS, CramFS, JFFS2, UBI or FAT images found.").color(theme::TEXT_DIM));
         return;
     }
     let mut action = None;
@@ -231,8 +231,24 @@ fn file_list(ui: &mut Ui, filesystem: &Filesystem, filesystem_index: usize, acti
 }
 
 fn entry_label(ui: &mut Ui, entry: &Entry) {
-    let colour = if entry.kind == EntryKind::Directory { theme::ACCENT } else { theme::TEXT };
-    ui.add(egui::Label::new(RichText::new(entry.path.as_str()).monospace().color(colour)).truncate());
+    let colour = if entry.record.deleted {
+        theme::TEXT_DIM
+    } else if entry.kind == EntryKind::Directory {
+        theme::ACCENT
+    } else {
+        theme::TEXT
+    };
+    let mut path = RichText::new(entry.path.as_str()).monospace().color(colour);
+    if entry.record.deleted {
+        path = path.strikethrough();
+    }
+    let label = ui.add(egui::Label::new(path).truncate());
+    if let Some(created) = &entry.record.created {
+        label.on_hover_text(format!("Created {created} (local time, no zone recorded)"));
+    }
+    if let Some(modified) = &entry.record.modified {
+        ui.label(RichText::new(modified.as_str()).small().monospace().color(theme::TEXT_DIM));
+    }
     match entry.kind {
         EntryKind::Symlink => {
             ui.label(RichText::new(format!("→ {}", String::from_utf8_lossy(&entry.data))).small().color(theme::TEXT_DIM));

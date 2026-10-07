@@ -5,7 +5,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use super::{Allowance, Entry, EntryKind, Filesystem, FsKind, MAX_DIRECTORY_DEPTH, join_path, le_u32, slice_at, take_content};
+use super::{Allowance, Entry, EntryKind, EntryRecord, Filesystem, FsKind, MAX_DIRECTORY_DEPTH, join_path, le_u32, slice_at, take_content};
 use crate::compress::{self, Codec};
 
 /// 0x28cd3d45, little-endian.
@@ -151,6 +151,7 @@ impl Walker<'_> {
                 source_len: INODE_LEN,
                 method: None,
                 note: None,
+                record: EntryRecord::default(),
             }),
         }
     }
@@ -171,6 +172,7 @@ impl Walker<'_> {
             source_len: source_end.saturating_sub(inode.offset),
             method: (inode.size > 0).then(|| "zlib".to_string()),
             note: problem.or(limit_note),
+            record: EntryRecord::default(),
         }
     }
 

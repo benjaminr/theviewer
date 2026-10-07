@@ -14,8 +14,8 @@ use crate::panel_forensics::{self, BlockScan, FilesystemScan};
 /// This module's methods, in the order `api.describe` lists them within
 /// their namespace. A new method is added here, and only here.
 pub(super) const METHODS: &[crate::api::Method] = &[
-    method!("forensics.find_filesystems", Job, caller find_filesystems, FilesystemsParams, JobStartedResult, "Start a search of the document (its first 256 MiB) for SquashFS, CramFS, JFFS2 and UBI images as a job: each image found, with its files, is job.finished's result, and in the window they fill Forensics."),
-    method!("forensics.open_entry", View, open_entry, OpenEntryParams, DocumentInfo, "Open one file (or volume) of the filesystem image at an offset of the document as a derived document, by its path in the image.").opens_document(true),
+    method!("forensics.find_filesystems", Job, caller find_filesystems, FilesystemsParams, JobStartedResult, "Start a search of the document (its first 256 MiB) for SquashFS, CramFS, JFFS2, UBI and FAT images (FAT at any 512-byte boundary, so inside a disk's partitions) as a job: each image found, with its files, deleted FAT entries included, is job.finished's result, and in the window they fill Forensics."),
+    method!("forensics.open_entry", View, open_entry, OpenEntryParams, DocumentInfo, "Open one file (or volume) of the filesystem image at an offset of the document as a derived document, by its path in the image; a deleted FAT file opens as recovered from its first cluster on.").opens_document(true),
     method!("forensics.classify_blocks", Job, caller classify_blocks, ClassifyBlocksParams, JobStartedResult, "Start labelling every block of the document (its first 256 MiB) as padding, text, markup, machine code, compressed, random, raw image, PCM audio or table data as a job: the runs of one class, with the reason for each, are job.finished's result, and in the window they fill Forensics."),
 ];
 
@@ -78,14 +78,23 @@ pub struct FilesystemEntry {
     /// Bytes extracted, and the size the image declares.
     pub size: u64,
     pub declared_size: u64,
-    /// Where something went wrong with it.
+    /// Where something went wrong with it, or how a deleted file was recovered.
     pub note: Option<String>,
+    /// A deleted entry (FAT keeps them), listed with what could be recovered.
+    #[serde(default)]
+    pub deleted: bool,
+    /// When it was created and last written, as the image records them:
+    /// local wall-clock times such as "2026-09-12 08:14:54" (FAT keeps no zone).
+    #[serde(default)]
+    pub created: Option<String>,
+    #[serde(default)]
+    pub modified: Option<String>,
 }
 
 /// A filesystem image found.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct FilesystemFound {
-    /// "SquashFS", "CramFS", "JFFS2" or "UBI".
+    /// "SquashFS", "CramFS", "JFFS2", "UBI" or "FAT".
     pub kind: String,
     pub offset: u64,
     pub len: u64,
@@ -125,7 +134,16 @@ impl FilesystemsFound {
                     entries: filesystem
                         .entries
                         .iter()
-                        .map(|entry| FilesystemEntry { path: entry.path.clone(), kind: entry_kind(entry.kind).to_string(), size: entry.data.len() as u64, declared_size: entry.declared_size, note: entry.note.clone() })
+                        .map(|entry| FilesystemEntry {
+                            path: entry.path.clone(),
+                            kind: entry_kind(entry.kind).to_string(),
+                            size: entry.data.len() as u64,
+                            declared_size: entry.declared_size,
+                            note: entry.note.clone(),
+                            deleted: entry.record.deleted,
+                            created: entry.record.created.clone(),
+                            modified: entry.record.modified.clone(),
+                        })
                         .collect(),
                 })
                 .collect(),
@@ -262,6 +280,24 @@ mod tests {
         let opened = call(&mut workspace, "forensics.open_entry", json!({"filesystem": 4096, "path": "version"})).unwrap();
         assert_eq!((opened["name"].as_str(), opened["len"].as_u64()), (Some("firmware.bin › CramFS@0x1000/version"), Some(6)));
         assert_eq!(call(&mut workspace, "forensics.open_entry", json!({"doc": "doc-1", "filesystem": 4096, "path": "missing"})).unwrap_err().code, ErrorCode::NotFound);
+    }
+
+    #[test]
+    fn a_deleted_photo_on_a_usb_stick_image_is_listed_and_opens_recovered() {
+        let (disk, photo) = crate::embedfs::test_support::fat_disk();
+        let mut workspace = workspace_with("usb_stick.dd", &disk);
+        let status = run_job(&mut workspace, "forensics.find_filesystems", json!({}));
+        let filesystem = &status["result"]["filesystems"][0];
+        assert_eq!((filesystem["kind"].as_str(), filesystem["offset"].as_u64()), (Some("FAT"), Some(63 * 512)), "{status}");
+        let entries = filesystem["entries"].as_array().unwrap();
+        let deleted = entries.iter().find(|entry| entry["deleted"] == true).expect("the deleted photo");
+        assert_eq!(deleted["path"], "IMG_20260912_0814.jpg");
+        assert_eq!(deleted["note"], crate::embedfs::fat::NOTE_RECOVERED);
+        assert_eq!(deleted["modified"], "2026-09-12 08:14:54");
+        let opened = call(&mut workspace, "forensics.open_entry", json!({"filesystem": 63 * 512, "path": "IMG_20260912_0814.jpg"})).unwrap();
+        assert_eq!(opened["len"].as_u64(), Some(photo.len() as u64));
+        let read = call(&mut workspace, "bytes.read", json!({"doc": opened["id"], "start": 0, "len": 16})).unwrap();
+        assert_eq!(read["data"].as_str().unwrap(), photo[..16].iter().map(|byte| format!("{byte:02x}")).collect::<String>());
     }
 
     #[test]
