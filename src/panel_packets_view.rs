@@ -1060,6 +1060,7 @@ mod tests {
     #[test]
     fn opening_only_the_chosen_field_takes_it_from_each_packet_cut_short_at_the_end() {
         let (mut state, mut app, at, packet) = one_packet();
+        state.selected = BTreeSet::from([0]);
         state.selected_field = Some((28, 4096));
         state.operation_on_field = true;
         crate::actions::take_performed();
@@ -1069,5 +1070,7 @@ mod tests {
             [("documents.derive".to_string(), serde_json::json!({ "ranges": [[at + 28, packet.len() - 28]], "name": "field of packet 1" }))]
         );
         assert_eq!(app.document.read_range(0, packet.len() - 28), &packet[28..]);
+        app.bench.panels.packets = state;
+        assert!(app.packet_selection_ranges().is_empty(), "the packets' offsets belong to the document left behind, so nothing is drawn here");
     }
 }
