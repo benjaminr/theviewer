@@ -82,9 +82,12 @@ The JSON Schema of the file is the `recipe` parameter's in
 ## Format 2
 
 Format 2 adds what format 1 cannot say: [sheet anchors](#sheet-a-document-of-the-run),
-a step's `makes` label, and `inputs`. A recipe is written as format 2 only
-when it uses one of them, so a recipe that needs none of them is still
-format 1 and runs on older builds; this build reads both.
+[pick](#pick-an-item-chosen-from-an-earlier-steps-list),
+[then](#then-a-value-transformed) and [var](#var-a-variable) anchors, a
+parameter's `default_anchor`, a step's `makes` label, and `inputs`. A
+recipe is written as format 2 only when it uses one of them, so a recipe
+that needs none of them is still format 1 and runs on older builds; this
+build reads both.
 
 ```json
 {
@@ -138,13 +141,30 @@ A parameter has a `type` (`string`, `integer`, `number` or `boolean`), a
 `description` for whoever runs it, and an optional `default`. A step uses
 one through a param anchor, `{"$anchor": {"param": "key"}}`.
 
+A parameter's default may be an anchor instead, `default_anchor`: the value
+is then found on each file unless one is given, and `default` says what it
+found when the recipe was recorded (format 2).
+
+```json
+"parameters": {
+  "serial": { "type": "string", "description": "The unit's serial", "default": "NC500-8D98EE98",
+              "default_anchor": { "pick": { "step": 4, "list": "job.strings", "where": { "text": { "regex": "^NC500-" } }, "field": "text" } } }
+}
+```
+
+*Make parameter* (`history.make_parameter`) on a literal an anchor found,
+such as the `value` of a `vars.set` bound from a pick, makes such a
+parameter: the person running the recipe may give the serial, and the
+recipe finds it when they do not.
+
 When a recipe runs:
 
 - a value given as text (as `theviewer replay --param key=5a` and the *Run
   recipe…* window give them) is read as the declared type: an integer in
   decimal or `0x` hex, a number, `true`/`yes`/`1` or `false`/`no`/`0`;
-- a parameter not given takes its default; one with no default must be
-  given, or the run stops before its first step, saying which;
+- a parameter not given takes its default, or what its `default_anchor`
+  finds when the step that uses it runs; one with neither must be given,
+  or the run stops before its first step, saying which;
 - a value for a parameter the recipe neither declares nor uses is refused,
   as it is most likely a typing mistake ("the recipe 'Telemetry frames' has
   no parameter 'syn' (it has sync)").
@@ -170,6 +190,49 @@ the anchor as `data.anchor` and the path as `data.path`.
 In a journal entry's `derived_from` (which maps parameter paths to anchors)
 and in `history.make_anchor`'s `anchor`, anchors are written bare, without
 the `$anchor` key.
+
+Two shorthands mark the commonest anchors: `{"$var": "serial"}` is
+`{"$anchor": {"var": "serial"}}`, and `{"$sheet": 7}` or `{"$sheet":
+"payload"}` is a sheet anchor. A value marked with `$anchor`, `$var` or
+`$sheet` that is not an anchor is refused rather than passed on as a
+literal.
+
+### Anchors at call time
+
+Every caller may pass anchors in a call's params, not only recipes: the
+person's panels, Ask, plugins, MCP clients and the command line. The call
+resolves them against the live session before the method runs (the `doc`'s
+first, so the others are found in the document it names), runs on the
+values, and records both: the journal entry keeps the values in `params`
+and the anchors in `derived_from`. A recipe made from the session then uses
+the anchors, so a client gets portable recipes without `history.make_anchor`
+round trips.
+
+```json
+{"method": "strings.find", "params": {"doc": {"$sheet": 6}, "min_chars": 5}}
+{"method": "vars.set", "params": {"name": "serial", "value": {"$anchor": {"pick": {"step": 7,
+   "list": "job.strings", "where": {"text": {"regex": "^NC500-[0-9A-F]{8}$"}}, "field": "text"}}}}}
+{"method": "transform.apply", "params": {"doc": {"$sheet": 9}, "selection": {"range": [0, 154]},
+   "operation": {"op": "xor", "key": {"$anchor": {"of": {"var": "serial"}, "then": [{"encode": "text_to_hex"}]}}}}}
+```
+
+Live, a step or pick anchor reads the journal's entry for its step (a read
+it cites becomes a step of the journal, and a job's list is its finished
+result, waited for if need be); a sheet anchor names the sheet a step of the
+session made, or the open document labelled so; `{"sheet": "input"}` is the
+file the caller's focus descends from. `recipes.save`, `recipes.preview`,
+`recipes.run` and `history.transaction` leave the anchors inside the recipe
+or calls they carry to be resolved when those run.
+
+### Variables
+
+`vars.set {name, value}` binds a value to a name, and later calls read it
+with `{"$var": name}`: a clipboard with provenance. Bound from an anchor,
+the step keeps the anchor, so in a recipe the `vars.set` finds the value
+again on the next file and every step that reads the variable gets that
+file's value. `vars.list` lists the variables with the step that bound each
+and where its value came from; `vars.clear` removes one or all. Undoing a
+`vars.set` puts back the value bound before, or removes the binding.
 
 ### Step: a value an earlier step was given or returned
 
@@ -291,6 +354,70 @@ step, and the anchors to be found in it with it.
 | Selection | `{"selection": "current"}` | what is selected when the step runs |
 | Param | `{"param": "key"}` | a value given when the recipe runs |
 | Sheet | `{"sheet": {"step": 3}}`, `{"sheet": "payload"}`, `{"sheet": "input"}` | the sheet step 3 made, the sheet labelled payload, or the run's input |
+| Pick | `{"pick": {"step": 5, "list": "job.strings", "where": {"text": {"regex": "^NC500-"}}, "field": "text"}}` | an item chosen by what it holds from a list in a step's result |
+| Then | `{"of": ANCHOR, "then": [{"add": 16}, {"encode": "text_to_hex"}]}` | a value another anchor finds, transformed |
+| Var | `{"var": "serial"}` | the value last bound to a variable with `vars.set` |
+
+### Pick: an item chosen from an earlier step's list
+
+```json
+{ "pick": { "step": 5, "list": "job.strings", "where": { "text": { "regex": "^NC500-[0-9A-F]{8}$" } }, "field": "text" } }
+{ "pick": { "step": 9, "list": "result.candidates", "where": { "key": { "regex": "^([0-9a-f]{2}){1,8}$" } }, "field": "key" } }
+{ "pick": { "step": "@rootfs", "list": "job.children", "where": { "name": { "equals": "config.enc" } }, "field": "path" } }
+```
+
+An item of a list in what an earlier step was given or returned, chosen by
+what it holds rather than where it is, so it is found again in a list of
+another length or order:
+
+- `step` is the earlier step, by number, or as `"@label"` for the step that
+  made the sheet labelled so;
+- `list` is the list's path in the step's `{"params", "result", "job"}`, as
+  a step anchor's path is written (`job.strings`, `result.candidates`);
+- `where` keeps the items that pass: each key a field of the item (a path)
+  with a test, `regex`, `equals`, `contains` (text or a list), `min` or
+  `max`, every test given holding, or a value the field equals; `tag` a
+  tag the item has (its `tag`, or one of its `tags`); `all` and `any`
+  lists of such conditions. Every item when omitted;
+- `sort` orders those kept, `{"by": "score", "order": "descending"}`
+  (ascending when `order` is omitted), before `nth` (from 0) chooses one;
+- `field` is the value to give inside the chosen item; the whole item when
+  omitted.
+
+A pick that keeps no item, or fewer than `nth + 1`, does not resolve and
+says how many passed. In a preview, a pick waits for its step as a step
+anchor does.
+
+### Then: a value transformed
+
+```json
+{ "of": { "structure": "mbr", "field": "partition table.partition 1.starting LBA", "part": "value" }, "then": [ { "mul": 512 } ] }
+{ "of": { "find": { "hex": "53594e434c4f4700" } }, "then": [ { "add": 16 } ] }
+{ "of": { "var": "serial" }, "then": [ { "encode": "text_to_hex" } ] }
+```
+
+What the anchor `of` finds, through each operation of `then` in turn:
+
+| Operation | Gives |
+| --- | --- |
+| `{"add": 16}`, `{"sub": 4}`, `{"mul": 512}` | the integer (or text read as one) plus, minus or times the number |
+| `{"and": 255}` | the integer with only the mask's bits kept |
+| `{"encode": "text_to_hex"}` | text as the hex of its UTF-8 bytes: `"NC5"` is `"4e4335"` |
+| `{"encode": "hex_to_text"}` | hex as the UTF-8 text its bytes spell |
+| `"int"` | text read as an integer, decimal or `0x` hex |
+| `{"slice": [start]}`, `{"slice": [start, len]}` | part of a text (by characters) or a list |
+| `"len"` | the length of a text (in characters) or a list |
+
+### Var: a variable
+
+```json
+{ "var": "serial" }
+```
+
+The value last bound to the variable with `vars.set`, in the session or by
+an earlier step of the run (see [Variables](#variables)). A variable no
+earlier step of the recipe binds is a mistake the recipe's warnings point
+out; in a preview, a variable an earlier step would bind waits for it.
 
 ## Recording a recipe
 
@@ -345,9 +472,9 @@ says so afterwards:
 
 | Method | What it does |
 | --- | --- |
-| `history.suggest_anchors {step, path?}` | For each integer literal of the step's params (or the one at `path`), the anchors that give the same value now: matches of searches earlier steps made, structure fields and findings at that offset, the selection an earlier step set, and earlier steps' values equal to it, those that port to other files first. |
+| `history.suggest_anchors {step, path?}` | For each integer literal of the step's params (or the one at `path`), and each text an earlier step's list holds, the anchors that give the same value now: matches of searches earlier steps made, structure fields and findings at that offset, the selection an earlier step set, picks from lists earlier steps returned (by a pattern of the text's shape, the item's tag, or its place), and earlier steps' values equal to it, those that port to other files first. |
 | `history.make_anchor {step, path, anchor}` | Turns the literal at `path` into `anchor` (written bare). A read the anchor cites becomes a step of the journal. |
-| `history.make_parameter {step, path, name, description?, type?}` | Turns the literal into the parameter `name`, its default the literal, its type the literal's unless given. |
+| `history.make_parameter {step, path, name, description?, type?}` | Turns the literal into the parameter `name`, its default the literal, its type the literal's unless given; when an anchor found the literal, that anchor becomes its `default_anchor`. |
 | `history.clear_anchor {step, path}` | Turns it back into the literal. |
 | `history.recipe {name, description?, steps?}` | The recipe these make, without saving it. |
 

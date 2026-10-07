@@ -143,7 +143,19 @@ recipe step can be an **anchor**, found when the step runs:
 - the nth finding of a kind, such as the first compressed stream;
 - whatever is selected when the recipe runs;
 - a value an earlier step was given or returned;
+- an item picked from a list an earlier step returned by what it holds,
+  such as the first string that looks like a serial, or the best XOR key
+  of at most 8 bytes;
+- another anchor's value worked on: an offset plus a header's length, a
+  sector number times 512, a serial written as hex for a key;
+- a **variable**, a value bound by name with `vars.set`;
 - a **parameter** you give each time you run it, such as a key.
+
+Clients (Ask, plugins, MCP clients) pass anchors in place of values as
+they call, such as `{"$sheet": 7}` for the sheet step 7 made or
+`{"$var": "serial"}`, and the history keeps both the value and the anchor.
+A variable keeps where its value came from, so in a recipe the step that
+bound it finds it again on the next file.
 
 Many anchors are recorded for you as you work. A selection made with *Find
 next* or *All matches* remembers which match it was; selecting a finding
@@ -156,7 +168,8 @@ For the rest, open a step's **Recipe values** (in its details, or
 - **Use …** turns the value into one of the anchors offered for it, such
   as *Use the 2nd match of …* or *Use where png field IHDR.width starts*;
 - **Make a parameter** turns it into a parameter, under the name typed in
-  *Parameter name*;
+  *Parameter name*; a value an anchor found keeps that anchor as the
+  parameter's default, so the recipe finds it unless you give one;
 - **Clear anchor** turns it back into the value as recorded.
 
 ## Saving a recipe

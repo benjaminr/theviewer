@@ -10,7 +10,7 @@ theviewer [FILE] [--format NAME] [--palette NAME] [--width PIXELS] [--offset BYT
 theviewer FILE --report | --json
 theviewer api [--save] [--plugins DIR]... METHOD ['{JSON PARAMS}'] [FILE]
 theviewer api --describe
-theviewer mcp [--plugins DIR]... [--all-tools] [--output-schemas] [FILE...]
+theviewer mcp [--plugins DIR]... [--all-tools] [--output-schemas] [--legacy-current] [FILE...]
 theviewer replay RECIPE FILE... [--param KEY=VALUE]... [--save | --out DIR] [--save-sheets DIR]
                  [--allow-writes] [--plugins DIR]... [--json]
 ```
@@ -121,6 +121,7 @@ inspect and edit them. It runs until the client closes the connection.
 | `--plugins DIR` | Load plugins from DIR instead of `./plugins` and `~/.config/theviewer/plugins`; give it more than once for several |
 | `--all-tools` | List every API method as a tool. By default only the core methods and the plugins' are listed, with `api_search`, `api_describe` and `api_call` to reach the rest, which keeps the tool list a client holds in its model's context to about a quarter of the size |
 | `--output-schemas` | List each tool's result schema too, which roughly doubles the tool list |
+| `--legacy-current` | Make a call without `doc` mean the current document, which every document opened or derived becomes, rather than the client's focus, as before clients had one |
 
 Every call is allowed, without asking, and nothing is written to disk
 until the client saves. Setting it up in each client, the tools,

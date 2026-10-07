@@ -71,11 +71,12 @@ nothing but protocol messages on standard output.
 | `--plugins DIR` | Load plugins from DIR instead of `./plugins` and `~/.config/theviewer/plugins`. Give it more than once for several folders. |
 | `--all-tools` | List every API method as a tool of its own, instead of the core set with `api_search`, `api_describe` and `api_call`. |
 | `--output-schemas` | Give each built-in method's tool its result schema (`outputSchema`), for clients that check results against it. |
+| `--legacy-current` | Make an omitted `doc` mean the current document, which every document opened or derived becomes, rather than the client's focus (see [Which document a call is about](#which-document-a-call-is-about)), as before clients had a focus. For one release. |
 
 A client keeps every tool it is offered in its model's context, so the
 tool list's size matters. With the plugins in this repository, the default
-list is 29 tools and about 50 KB of JSON; `--all-tools` lists about 170
-tools in about 245 KB; `--output-schemas` roughly doubles either.
+list is 30 tools and about 56 KB of JSON; `--all-tools` lists 180 tools in
+about 310 KB; `--output-schemas` roughly doubles either.
 
 ## Tools
 
@@ -103,7 +104,7 @@ for first:
 | Packets | `packets_dissect_bytes`, `packets_sets_create`, `packets_dissect` |
 | Reference notes | `reference_lookup` |
 | Edits | `bytes_write`, `bytes_replace`, `transform_apply`, `history_undo` |
-| Notes | `history_note` |
+| Notes and values found | `history_note`, `vars_set` |
 
 plus every method a plugin registers (see [Plugins](#plugins)), and three
 that reach the rest of the API:
@@ -152,6 +153,52 @@ the notes linked to it. Through `api_call`, `history.edit_note` and
 `history.delete_note` change a note, and `history.export_notes` gives the
 notes as Markdown (or writes them to a `path`). See
 [History and recipes](guide/history-and-recipes.md#notes).
+
+### Which document a call is about
+
+A method about a document takes `doc`. When a call leaves it out, it means
+the client's **focus**: the current document when the client first calls,
+then the document it opens (`documents_open`) or activates
+(`documents.activate`). Making a sheet (`documents.derive`, `unpack.open`,
+`codecs.open_decoded`…) does not move the focus, and nor does naming a
+document in one call, so the client's next call without `doc` is still
+about the document it was working on. `documents_list` marks the focus
+(`"focus": true`), and every call's journal entry names the document it
+was about. `"current"` still names the document opened or made last, which
+moves with every derive: pass ids rather than relying on it.
+
+`unpack.open`, `unpack.read` and `unpack.save` find a node in the tree of
+`tree_doc`, which defaults to the document `unpack.run` last ran on, so a
+client opening one node after another need not repeat which document was
+unpacked.
+
+### Passing on what you found
+
+Any parameter may be an anchor instead of a literal, resolved before the
+call runs and recorded with it, so the history keeps where each value came
+from and a recipe saved from the session finds the values again in the
+next file (see [Recipes](recipes.md#anchors-at-call-time)):
+
+- `{"$sheet": 7}` is the sheet step 7 made (`{"$sheet": "payload"}` the one
+  labelled so), in place of its id;
+- `{"$anchor": {"pick": {"step": 7, "list": "job.strings", "where": {"text":
+  {"regex": "^NC500-"}}, "field": "text"}}}` is the first string step 7
+  found that matches;
+- `{"$anchor": {"of": {"find": {"text": "CONFIG:"}}, "then": [{"add": 7}]}}`
+  is 7 bytes past a match;
+- `{"$var": "serial"}` is the value bound with `vars_set`.
+
+`vars_set {name, value}` binds a value found to a name, a clipboard with
+provenance: given as an anchor, the binding keeps where the value came from.
+
+```json
+{"name": "vars_set", "arguments": {"name": "serial", "value": {"$anchor": {"pick": {"step": 7, "list": "job.strings", "where": {"text": {"regex": "^NC500-[0-9A-F]{8}$"}}, "field": "text"}}}}}
+{"name": "transform_apply", "arguments": {"doc": {"$sheet": 9}, "selection": {"range": [0, 154]},
+  "operation": {"op": "xor", "key": {"$anchor": {"of": {"var": "serial"}, "then": [{"encode": "text_to_hex"}]}}}}}
+```
+
+The server's instructions tell the model to name sheets with `$sheet`, to
+bind values it finds with `vars_set`, and to pass them on with `$var`.
 
 ### Annotations
 

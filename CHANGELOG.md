@@ -73,6 +73,42 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `theviewer replay --save-sheets DIR` saves each sheet a run made, and
   `--allow-writes` lets steps that write files run; `theviewer replay` and
   `theviewer api` take `--plugins DIR`, as `theviewer mcp` does.
+- **Anchors at call time.** Every caller (the person's panels, Ask,
+  plugins, MCP clients, the command line) may pass an anchor in place of
+  any parameter's value: `{"$anchor": …}`, `{"$var": "serial"}` or
+  `{"$sheet": 7}` / `{"$sheet": "payload"}`. The call resolves it against
+  the session before the method runs, and the journal keeps both the value
+  and the anchor, so a recipe saved from an MCP session finds its values
+  again without `history.make_anchor`.
+- **Pick, then and var anchors.** `pick` chooses an item from a list in an
+  earlier step's result by what it holds (`where` with `regex`, `equals`,
+  `contains`, `min`, `max`, `tag`, `all` and `any`; `sort`; `nth`;
+  `field`), naming the step by number or as `"@label"`; `then` works on
+  another anchor's value (`add`, `sub`, `mul`, `and`, `text_to_hex`,
+  `hex_to_text`, `int`, `slice`, `len`); `var` reads a variable.
+- **Variables.** `vars.set {name, value}` binds a value found to a name,
+  journalled and replayed, and undone by putting back the value before;
+  `vars.list` lists them with where each came from, and `vars.clear` clears
+  one or all. In a recipe, a `vars.set` keeps its anchor, so the value is
+  found again on the next file.
+- *Make parameter* (`history.make_parameter`) on a value an anchor found
+  makes a parameter whose default is that anchor (`default_anchor`): the
+  recipe finds the value unless one is given.
+- `history.suggest_anchors` offers picks for literals found in lists
+  earlier steps returned (strings, keys, candidates): by a pattern of the
+  text's shape, by the item's tag, or by its place.
+- **Each caller has a focus**, the document an omitted `doc` means for it:
+  the current document when it first calls, then the one it opens or
+  activates. `documents.activate` moves it, `documents.list` marks it
+  (`focus`), and `output: {"new": {"focus": true}}` moves it to the sheet
+  made.
+- `unpack.open`, `unpack.read` and `unpack.save` take `tree_doc`, the
+  document unpacked, which defaults to the one `unpack.run` last ran on.
+- The MCP server lists `vars_set` among its core tools, and its
+  instructions ask the model to name sheets with `{"$sheet": N}`, bind the
+  values it finds with `vars_set` and pass them on with `{"$var": name}`.
+- `theviewer mcp --legacy-current` makes an omitted `doc` mean the current
+  document for one more release.
 
 ### Changed
 
@@ -88,6 +124,16 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `forensics.open_entry` return the new document's fields with `output`
   beside them; `packets.sets.create` returns the set's with `output` when
   it opened a decompressed capture.
+- **An omitted `doc` means the caller's focus**, not the current document.
+  At the window nothing changes: the person's focus is the document shown.
+  For MCP clients, plugins, Ask and the command line, deriving a document,
+  opening a node or decompressing a stream no longer moves where their
+  next call without `doc` goes; `"current"` still names the document opened
+  or made last. Every journal entry's `params` now name the document.
+- A value marked `$anchor`, `$var` or `$sheet` that is not an anchor is
+  refused rather than passed to the method as a literal.
+- Recipes that use pick, then or var anchors, or a parameter whose default
+  is an anchor, are written as format 2.
 
 - A filter naming a field the packets cannot have is refused with the
   names it was close to, rather than matching nothing.
