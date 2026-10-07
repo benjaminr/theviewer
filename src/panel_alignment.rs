@@ -9,18 +9,16 @@ use std::time::Duration;
 
 use eframe::egui::{self, Align2, Color32, FontId, Rect, RichText, Sense, Stroke, Ui, vec2};
 
-use crate::alignment::{self, AlignmentOptions, AlignmentReport, ClusterReport, ColumnClass};
+use crate::alignment::{self, AlignmentReport, ClusterReport, ColumnClass};
+use crate::api::tools::alignment::{Gathered, run_alignment};
 use crate::analysis_tools::PROTOCOL_PRODUCER;
 use crate::app::ViewerApp;
-use crate::bus::topics::{FrameSpan, FramesDefined};
+use crate::bus::topics::FramesDefined;
 use crate::plugin::Category;
 use crate::theme;
 
 /// How often the panel repaints while alignment runs.
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
-/// Most bytes read per message; longer messages are aligned on this prefix
-/// (and their length field is judged on it).
-const READ_LIMIT: usize = 4096;
 /// Hex bytes shown in a cluster's sample.
 const SAMPLE_BYTES: usize = 16;
 /// Grid geometry, in points.
@@ -62,13 +60,6 @@ impl AlignmentState {
     }
 }
 
-/// Messages gathered from the document: their offsets and bytes.
-struct GatheredMessages {
-    source: String,
-    offsets: Vec<usize>,
-    lengths: Vec<usize>,
-    bytes: Vec<Vec<u8>>,
-}
 
 /// Show the alignment panel.
 pub fn show_alignment(state: &mut AlignmentState, app: &mut ViewerApp, ui: &mut Ui) {
@@ -80,7 +71,7 @@ pub fn show_alignment(state: &mut AlignmentState, app: &mut ViewerApp, ui: &mut 
     ui.horizontal_wrapped(|ui| {
         let busy = state.pending.is_some();
         if ui.add_enabled(!busy, egui::Button::new("Align messages")).clicked() {
-            start_alignment(state, app);
+            ask_to_align(state, app);
         }
         let mut threshold = state.threshold();
         let slider = egui::Slider::new(&mut threshold, 0.1..=0.95).text("cluster similarity");
@@ -99,20 +90,16 @@ pub fn show_alignment(state: &mut AlignmentState, app: &mut ViewerApp, ui: &mut 
     }
     let Some(job) = &state.job else { return };
     ui.separator();
-    if let Some(cluster) = job.report.clusters.get(state.selected_cluster)
+    if job.report.clusters.get(state.selected_cluster).is_some()
         && ui.button(format!("Open type {} in packet viewer", state.selected_cluster)).on_hover_text("List this type's messages as packets").clicked()
     {
-        let name = format!("message type {}", state.selected_cluster);
-        match crate::packets::sources::from_cluster(&job.offsets, &job.lengths, &cluster.members, &name) {
-            Ok(set) => crate::panel_packets::open_in_packet_viewer(app, set),
-            Err(error) => state.input_error = Some(error.to_string()),
-        }
+        open_cluster(job, state.selected_cluster, app);
     }
     let Some(job) = &state.job else { return };
     let mut jump = None;
     show_job(job, &mut state.selected_cluster, &mut jump, ui);
     if let Some(offset) = jump {
-        app.jump_to_offset(offset);
+        app.jump_from_tool(offset);
     }
 }
 
@@ -149,45 +136,55 @@ fn source_hint(app: &ViewerApp) -> String {
     }
 }
 
-fn start_alignment(state: &mut AlignmentState, app: &mut ViewerApp) {
+/// Ask to align the protocol analysis's messages, else the selection cut
+/// into raster rows, through `alignment.run`; say here why not when there
+/// are no messages to align.
+fn ask_to_align(state: &mut AlignmentState, app: &mut ViewerApp) {
     state.input_error = None;
-    let gathered = match gather_messages(app) {
-        Ok(gathered) => gathered,
-        Err(message) => {
-            state.input_error = Some(message);
+    let mut params = serde_json::json!({ "threshold": state.threshold() });
+    if protocol_frames(app).is_none() {
+        let Some((start, len)) = app.selection() else {
+            state.input_error = Some("Run the protocol analysis first, or select the messages (one per raster row).".to_string());
+            return;
+        };
+        let stride = app.shape.row_stride().max(1);
+        if len.div_ceil(stride) < 2 {
+            state.input_error = Some(format!("The selection holds fewer than 2 rows of {stride} bytes."));
             return;
         }
-    };
-    let options = AlignmentOptions { threshold: state.threshold() };
-    let (sender, receiver) = mpsc::channel();
-    thread::spawn(move || {
-        let report = alignment::analyse(&gathered.bytes, &options);
-        let _ = sender.send(AlignmentJob { source: gathered.source, offsets: gathered.offsets, lengths: gathered.lengths, report });
-    });
-    state.pending = Some(receiver);
+        params["start"] = start.into();
+        params["len"] = len.into();
+        params["row_width"] = stride.into();
+    }
+    app.perform_later("alignment.run", params);
 }
 
-/// The protocol analysis's messages if there are any, else the selection cut
-/// into raster rows.
-fn gather_messages(app: &mut ViewerApp) -> Result<GatheredMessages, String> {
-    if let Some(frames) = protocol_frames(app) {
-        let messages: Vec<FrameSpan> = frames.frames.into_iter().take(alignment::MAX_CLUSTERED_MESSAGES).collect();
-        let offsets: Vec<usize> = messages.iter().map(|frame| frame.start).collect();
-        let lengths: Vec<usize> = messages.iter().map(|frame| frame.len).collect();
-        let bytes = messages.iter().map(|frame| app.document.read_range(frame.start, frame.len.min(READ_LIMIT))).collect();
-        return Ok(GatheredMessages { source: "protocol analysis".to_string(), offsets, lengths, bytes });
+/// List the messages of cluster `index` as packets in the packet viewer,
+/// through `packets.sets.create`.
+fn open_cluster(job: &AlignmentJob, index: usize, app: &mut ViewerApp) {
+    let Some(cluster) = job.report.clusters.get(index) else { return };
+    let ranges: Vec<(usize, usize)> = cluster.members.iter().filter_map(|&member| Some((*job.offsets.get(member)?, *job.lengths.get(member)?))).collect();
+    if app.perform("packets.sets.create", serde_json::json!({ "from": "selection", "ranges": ranges })).is_ok() {
+        app.dock.toggle(crate::dock::DockTab::Packets);
     }
-    let (start, len) = app.selection().ok_or("Run the protocol analysis first, or select the messages (one per raster row).")?;
-    let stride = app.shape.row_stride().max(1);
-    let rows = (len.div_ceil(stride)).min(alignment::MAX_CLUSTERED_MESSAGES);
-    if rows < 2 {
-        return Err(format!("The selection holds fewer than 2 rows of {stride} bytes."));
-    }
-    let bytes = app.document.read_range(start, len.min(rows * stride));
-    let records = alignment::split_into_records(&bytes, stride);
-    let offsets = (0..records.len()).map(|row| start + row * stride).collect();
-    let lengths = records.iter().map(Vec::len).collect();
-    Ok(GatheredMessages { source: format!("selection rows of {stride} bytes"), offsets, lengths, bytes: records })
+}
+
+/// Cluster and align `gathered` as `producer`'s job and show the clusters
+/// here: what `alignment.run` does in the window. Returns the job.
+pub fn align_as(app: &mut ViewerApp, gathered: Gathered, threshold: f64, producer: &str) -> String {
+    let document = Some((app.document_id(), app.document.version()));
+    let job = app.bus.start_job("alignment", "Message alignment", producer, document);
+    let id = job.id().to_string();
+    let (sender, receiver) = mpsc::channel();
+    thread::spawn(move || {
+        let report = run_alignment(&gathered, threshold, &job);
+        let _ = sender.send(AlignmentJob { source: gathered.source, offsets: gathered.offsets, lengths: gathered.lengths, report });
+    });
+    let state = &mut app.bench.panels.alignment;
+    state.input_error = None;
+    state.threshold = Some(threshold);
+    state.pending = Some(receiver);
+    id
 }
 
 fn show_job(job: &AlignmentJob, selected: &mut usize, jump: &mut Option<usize>, ui: &mut Ui) {
@@ -322,18 +319,69 @@ fn show_grid(cluster: &ClusterReport, offsets: &[usize], jump: &mut Option<usize
 mod tests {
     use super::*;
     use crate::app::Launch;
+    use crate::actions::take_performed;
     use crate::bus::Payload;
+    use serde_json::json;
 
     #[test]
-    fn alignment_takes_the_messages_the_protocol_analysis_published() {
+    fn aligning_takes_the_messages_the_protocol_analysis_published_through_the_api() {
         let mut app = ViewerApp::new(Launch::default());
         app.open_bytes((0..64u8).collect(), "messages.bin".to_string());
         let frames = FramesDefined::new([(0, 8), (8, 8), (16, 8)].into_iter(), "fixed-size messages of 8 bytes");
         app.publish(PROTOCOL_PRODUCER, Payload::FramesDefined(frames));
         app.run_bus();
+        take_performed();
         assert_eq!(source_hint(&app), "Uses the 3 messages from the protocol analysis.");
-        let gathered = gather_messages(&mut app).expect("the published messages");
-        assert_eq!(gathered.offsets, [0, 8, 16]);
-        assert_eq!(gathered.bytes[1], (8..16u8).collect::<Vec<u8>>());
+        let mut state = AlignmentState::default();
+        ask_to_align(&mut state, &mut app);
+        app.perform_waiting_actions();
+        assert_eq!(take_performed(), [("alignment.run".to_string(), json!({"threshold": alignment::DEFAULT_CLUSTER_THRESHOLD}))]);
+        let job = wait_for_alignment(&mut app);
+        assert_eq!(job.offsets, [0, 8, 16]);
+        assert_eq!(job.source, "protocol analysis");
+    }
+
+    #[test]
+    fn aligning_the_selection_s_rows_carries_the_span_and_the_row_width() {
+        let mut app = ViewerApp::new(Launch::default());
+        app.open_bytes((0..=255u8).collect(), "rows.bin".to_string());
+        app.set_width(16);
+        app.run_bus();
+        take_performed();
+        let mut state = AlignmentState::default();
+        ask_to_align(&mut state, &mut app);
+        assert!(take_performed().is_empty() && app.actions_after_drawing.is_empty());
+        assert_eq!(state.input_error.as_deref(), Some("Run the protocol analysis first, or select the messages (one per raster row)."));
+        app.restore_selection(0, 8);
+        ask_to_align(&mut state, &mut app);
+        assert_eq!(state.input_error.as_deref(), Some("The selection holds fewer than 2 rows of 16 bytes."));
+        app.restore_selection(32, 64);
+        state.threshold = Some(0.7);
+        ask_to_align(&mut state, &mut app);
+        app.perform_waiting_actions();
+        assert_eq!(take_performed(), [("alignment.run".to_string(), json!({"threshold": 0.7, "start": 32, "len": 64, "row_width": 16}))]);
+        let job = wait_for_alignment(&mut app);
+        assert_eq!(job.offsets, [32, 48, 64, 80]);
+        app.run_bus();
+        let status = app.bus.jobs().list().into_iter().find(|job| job.title == "Message alignment").expect("a job");
+        assert_eq!(status.producer, "panel");
+        assert!(status.result.is_some_and(|result| result["messages"].as_array().unwrap().len() == 4));
+        take_performed();
+        open_cluster(&job, 0, &mut app);
+        let ranges: Vec<(usize, usize)> = job.report.clusters[0].members.iter().map(|&member| (job.offsets[member], job.lengths[member])).collect();
+        assert_eq!(take_performed(), [("packets.sets.create".to_string(), json!({"from": "selection", "ranges": ranges}))]);
+        let shown = app.bench.panels.packets.api_set.clone().expect("the packet viewer shows the set");
+        assert_eq!(app.packet_sets.get(&shown).map(|set| set.packets.len()), Some(ranges.len()));
+        assert_eq!(app.dock.tab, crate::dock::DockTab::Packets);
+    }
+
+    /// Wait for the alignment shown to arrive, and take it.
+    fn wait_for_alignment(app: &mut ViewerApp) -> AlignmentJob {
+        let begun = std::time::Instant::now();
+        while app.bench.panels.alignment.job.is_none() && begun.elapsed() < Duration::from_secs(30) {
+            poll(&mut app.bench.panels.alignment);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        app.bench.panels.alignment.job.take().expect("the alignment finished")
     }
 }
