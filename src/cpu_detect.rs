@@ -165,6 +165,7 @@ pub fn identify_architecture(bytes: &[u8], base_offset: usize) -> CpuReport {
     let sampled_bytes = windows.iter().map(|range| range.len()).sum();
     let mut candidates: Vec<ArchCandidate> =
         Arch::ALL.par_iter().map(|&arch| score_architecture(arch, bytes, &windows, base_offset)).collect();
+    weigh_vector_table(&mut candidates, bytes, base_offset);
     candidates.sort_by(|a, b| b.confidence.total_cmp(&a.confidence));
 
     let best = candidates[0].confidence;
@@ -187,6 +188,30 @@ pub fn identify_architecture(bytes: &[u8], base_offset: usize) -> CpuReport {
         format!("Most likely {} ({:.0}% confidence).", candidates[0].arch.label(), best * 100.0)
     };
     CpuReport { candidates, looks_like_data, windows: windows.len(), sampled_bytes, summary }
+}
+
+/// Confidence a Cortex-M vector table at the start of the blob adds to Thumb.
+const VECTOR_TABLE_EVIDENCE: f32 = 0.25;
+/// How sure the vector table finder must be for its table to count.
+const VECTOR_TABLE_CONFIDENCE: f32 = 0.9;
+/// Bytes from the blob's start searched for a vector table.
+const VECTOR_TABLE_REACH: usize = 1024;
+
+/// A Cortex-M runs only Thumb code, so a convincing Cortex-M vector table at
+/// the start of the blob (a stack pointer in RAM, then Thumb handlers that
+/// all land in the image) counts for Thumb beyond what its instructions
+/// show: a small image's few kilobytes of code can read nearly as well as
+/// x86.
+fn weigh_vector_table(candidates: &mut [ArchCandidate], bytes: &[u8], base_offset: usize) {
+    let start = &bytes[..bytes.len().min(VECTOR_TABLE_REACH)];
+    let table = crate::cortex_m::find_vector_tables(start, base_offset, base_offset + bytes.len())
+        .into_iter()
+        .find(|table| table.base_consistent && table.confidence >= VECTOR_TABLE_CONFIDENCE);
+    let Some(table) = table else { return };
+    if let Some(thumb) = candidates.iter_mut().find(|candidate| candidate.arch == Arch::Thumb) {
+        thumb.confidence = (thumb.confidence + VECTOR_TABLE_EVIDENCE).min(1.0);
+        thumb.reason = format!("a Cortex-M vector table at {:#x}, {}", table.offset, thumb.reason);
+    }
 }
 
 fn no_evidence(arch: Arch, base_offset: usize) -> ArchCandidate {
@@ -808,6 +833,22 @@ mod tests {
         assert_eq!(first.arch, Arch::X86_64);
         assert!(first.confidence > x86_32.confidence);
         assert!(first.idioms > 0);
+    }
+
+    #[test]
+    fn a_cortex_m_vector_table_at_the_start_counts_for_thumb() {
+        let code = repeat_to(&thumb_functions(), 4096);
+        // Stack top in RAM, then reset and fault handlers in the image as
+        // loaded at 0x0800_0000, with the Thumb bit set.
+        let mut image = words_le(&[0x2000_5000, 0x0800_0101, 0x0800_0105, 0x0800_0105, 0x0800_0105, 0x0800_0105, 0x0800_0105]);
+        image.extend(words_le(&[0; 4]));
+        image.extend(words_le(&[0x0800_0105, 0x0800_0105, 0, 0x0800_0105, 0x0800_0105]));
+        image.resize(0x100, 0);
+        image.extend(&code);
+        let with = identify_architecture(&image, 0);
+        let thumb = &with.candidates[0];
+        assert_eq!(thumb.arch, Arch::Thumb, "{:?}", scores(&with));
+        assert!(thumb.reason.starts_with("a Cortex-M vector table at 0x0"), "{}", thumb.reason);
     }
 
     #[test]
