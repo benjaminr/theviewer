@@ -3285,7 +3285,7 @@ impl ViewerApp {
                 if ui.button("Fit width").clicked() { self.fit_width_requested = true; ui.close(); }
                 ui.separator();
                 if ui.button("Origin = cursor").clicked() { self.align_view_to_cursor(); ui.close(); }
-                if ui.button("Reset origin").clicked() { self.shape.byte_offset = 0; self.shape.bit_offset = 0; self.top_row = 0; ui.close(); }
+                if ui.button("Reset origin").clicked() { self.reset_origin(); ui.close(); }
                 ui.separator();
                 if ui.button("Detect width").clicked() { self.start_period_scan(); ui.close(); }
                 if ui.button("Collapse or expand tools   Cmd+J").clicked() { self.dock.open = layout::toggle_tools(&mut self.layout); ui.close(); }

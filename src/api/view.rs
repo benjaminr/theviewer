@@ -627,5 +627,27 @@ mod tests {
             assert_eq!(take_performed(), [("bookmarks.remove".to_string(), json!({"start": 0x20}))]);
             assert_eq!(app.bookmarks.bookmarks.len(), 1);
         }
+
+        #[test]
+        fn the_palette_s_view_file_and_bookmark_commands_are_method_calls() {
+            let mut app = app_with(&[0u8; 256]);
+            app.add_bookmark(0x10, 0, "mark".to_string());
+            app.set_cursor(0x20, false);
+            take_performed();
+            let ctx = eframe::egui::Context::default();
+            let expected = [
+                ("view.origin_cursor", "view.set_shape"),
+                ("view.origin_reset", "view.set_shape"),
+                ("bookmark.next", "cursor.set"),
+                ("plugins.reload", "plugins.reload"),
+                ("file.new", "documents.new"),
+            ];
+            for (id, method) in expected {
+                let command = crate::commands::commands().into_iter().find(|command| command.id == id).unwrap();
+                (command.run)(&mut app, &ctx);
+                let performed = take_performed();
+                assert_eq!(performed.first().map(|(name, _)| name.as_str()), Some(method), "{id}");
+            }
+        }
     }
 }
