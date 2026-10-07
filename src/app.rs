@@ -743,27 +743,36 @@ impl ViewerApp {
         if launch.open_media {
             app.open_media();
         }
-        if let Some(name) = &launch.tool
-            // "dot-plot" names the "Dot plot" tab.
-            && let Some(tab) = DockTab::ALL.into_iter().find(|tab| tab.label().replace(' ', "-").eq_ignore_ascii_case(&name.replace(' ', "-")))
-        {
-            app.dock.open = true;
-            app.dock.tab = tab;
-            match tab {
-                DockTab::Report => app.start_report(),
-                DockTab::Unpacked => app.start_unpack(),
-                DockTab::Statistics => crate::analysis_stats::start_statistics(&mut app),
-                DockTab::Protocol => crate::analysis_tools::start_protocol(&mut app),
-                DockTab::Packets => crate::panel_packets::auto_load(&mut app),
-                DockTab::Trigrams => {
-                    let mut trigrams = std::mem::take(&mut app.bench.panels.trigrams);
-                    crate::panel_trigram::start_counting(&mut trigrams, &mut app);
-                    app.bench.panels.trigrams = trigrams;
-                }
-                _ => {}
-            }
+        if let Some(name) = &launch.tool {
+            app.open_launch_tool(name);
         }
         app
+    }
+
+    /// Open the tool `--tool` named, starting the work it shows; a name
+    /// that is no tool is reported in the status line.
+    fn open_launch_tool(&mut self, name: &str) {
+        // "dot-plot" names the "Dot plot" tab.
+        let wanted = name.replace(' ', "-");
+        let Some(tab) = DockTab::ALL.into_iter().find(|tab| tab.label().replace(' ', "-").eq_ignore_ascii_case(&wanted)) else {
+            self.status = format!("No tool called '{name}'; theviewer --help lists them");
+            return;
+        };
+        self.dock.open = true;
+        self.dock.tab = tab;
+        match tab {
+            DockTab::Report => self.start_report(),
+            DockTab::Unpacked => self.start_unpack(),
+            DockTab::Statistics => crate::analysis_stats::start_statistics(self),
+            DockTab::Protocol => crate::analysis_tools::start_protocol(self),
+            DockTab::Packets => crate::panel_packets::auto_load(self),
+            DockTab::Trigrams => {
+                let mut trigrams = std::mem::take(&mut self.bench.panels.trigrams);
+                crate::panel_trigram::start_counting(&mut trigrams, self);
+                self.bench.panels.trigrams = trigrams;
+            }
+            _ => {}
+        }
     }
 
     // ------------------------------------------------------------------
@@ -4157,6 +4166,16 @@ mod tests {
         app.run_bus();
         take_performed();
         app
+    }
+
+    #[test]
+    fn a_tool_named_at_launch_opens_and_an_unknown_one_is_reported() {
+        let app = ViewerApp::new(Launch { tool: Some("Dot plot".to_string()), ..Default::default() });
+        assert!(app.dock.open);
+        assert_eq!(app.dock.tab, DockTab::DotPlot);
+        let app = ViewerApp::new(Launch { tool: Some("sparkles".to_string()), ..Default::default() });
+        assert!(!app.dock.open, "nothing is opened for it");
+        assert_eq!(app.status, "No tool called 'sparkles'; theviewer --help lists them");
     }
 
     #[test]

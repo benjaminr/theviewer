@@ -47,7 +47,7 @@ theviewer dump.bin --tool packets      # load the first capture, else the messag
 | `--zoom FACTOR` | Pixel scale, such as `2` or `0.5` |
 | `--detect` | Look for the record width straight away |
 | `--open` | Open the image, audio or video at the cursor |
-| `--tool NAME` | Open a tool: `report` `reference` `structure-map` `size-map` `ask` `dot-plot` `trigrams` `images` `template` `columns` `protocol` `packets` `bits` `statistics` `characterise` `strings` `xor` `crypto` `checksums` `learn` `disassembly` `firmware` `unpacked` `forensics` `diff` `compare` `live` `workspace` `history` |
+| `--tool NAME` | Open a tool: `report` `reference` `structure-map` `size-map` `ask` `dot-plot` `trigrams` `images` `template` `columns` `protocol` `packets` `bits` `statistics` `characterise` `strings` `xor` `crypto` `checksums` `learn` `disassembly` `firmware` `unpacked` `forensics` `diff` `compare` `live` `workspace` `history`, in any case. An unknown name opens no tool and says so in the status bar. |
 | `--layout NAME` | Start with a layout for this session: `overview` `network` `structure` `firmware` `signals` `forensics` `compare` `focus` (`default` is another name for `overview`), or the name of one you saved. An unknown name opens the Overview and says so in the status bar. The last session's arrangement is left as it is. |
 
 Tools that need a run to show anything (Report, Unpacked, Statistics,
