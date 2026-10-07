@@ -280,6 +280,10 @@ fn to_json_at(value: &LuaValue, depth: usize) -> Result<Value, String> {
     }
 }
 
+/// Longest array a table becomes, so a stray huge index cannot ask for a
+/// huge allocation.
+const MAX_ARRAY_LEN: usize = 1 << 20;
+
 fn table_to_json(table: &Table, depth: usize) -> Result<Value, String> {
     let marked = is_array_mark(table);
     let mut entries: Vec<(LuaValue, LuaValue)> = Vec::new();
@@ -289,6 +293,14 @@ fn table_to_json(table: &Table, depth: usize) -> Result<Value, String> {
     let length = entries.len();
     let is_sequence = length > 0 && entries.iter().all(|(key, _)| matches!(key, LuaValue::Integer(index) if *index >= 1 && (*index as usize) <= length));
     if marked || is_sequence {
+        // A JSON null in an array arrives in Lua as a hole, so a marked
+        // array runs to its highest index, the holes null again. (Nulls at
+        // the end leave no trace in Lua and are lost.)
+        let highest = entries.iter().filter_map(|(key, _)| if let LuaValue::Integer(index) = key { usize::try_from(*index).ok() } else { None }).max().unwrap_or(0);
+        if highest > MAX_ARRAY_LEN {
+            return Err(format!("an array reaches index {highest}, more than {MAX_ARRAY_LEN}"));
+        }
+        let length = length.max(highest);
         let mut items = vec![Value::Null; length];
         for (key, item) in &entries {
             let LuaValue::Integer(index) = key else { return Err("an array has a key that is not a whole number".to_string()) };
@@ -865,6 +877,9 @@ mod tests {
         let value = json!({"list": [1, 2.5, "three", true, null], "empty": [], "nested": {"a": {"b": [[]]}}});
         let back = super::lua_to_json(&super::json_to_lua(&lua, &value).unwrap()).unwrap();
         assert_eq!(back, json!({"list": [1, 2.5, "three", true], "empty": [], "nested": {"a": {"b": [[]]}}}), "nulls in arrays end them, as Lua's nil does");
+        let gapped = json!({"list": [1, null, 3]});
+        let back = super::lua_to_json(&super::json_to_lua(&lua, &gapped).unwrap()).unwrap();
+        assert_eq!(back, gapped, "a null inside an array comes back as null");
         let made: mlua::Value = lua.load("return { 10, 20 }").eval().unwrap();
         assert_eq!(super::lua_to_json(&made).unwrap(), json!([10, 20]));
         let binary: mlua::Value = lua.load(r#"return "\xff\x00""#).eval().unwrap();
