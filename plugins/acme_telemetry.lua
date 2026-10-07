@@ -5,9 +5,11 @@
 -- and a length byte. When any tool defines frames (the protocol framing,
 -- the packet viewer's splitting rules, a capture), this plugin looks at the
 -- first few and, when most start with the sync word, says so on the bus as
--- `protocol.identified`, which the packet viewer and Reference use like a
--- built-in identification. It also registers `acme.decode_frame`, which
--- panels, Ask, the command line and plugins can all call.
+-- `protocol.identified`: a fact the Workspace tab lists, which other
+-- plugins can subscribe to and any client can read with `events.facts`
+-- (nothing in the app itself acts on it). It also registers
+-- `acme.decode_frame`, which panels, Ask, the command line and plugins can
+-- all call.
 --
 -- It only ever reads: it declares no edits, so its handler's `api` could
 -- not change the document even if it tried. On ordinary files, where no
