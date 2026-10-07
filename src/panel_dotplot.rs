@@ -6,18 +6,17 @@
 //! block on the vertical axis. The cursor's block is marked on both axes.
 
 use std::sync::mpsc::{self, Receiver};
-use std::thread;
 use std::time::Duration;
 
 use eframe::egui::{self, Color32, ColorImage, Rect, RichText, Sense, Stroke, TextureHandle, TextureOptions, Ui, pos2, vec2};
 
 use crate::app::ViewerApp;
-use crate::dotplot::{self, DotPlot, SimilarityMode};
+use crate::dotplot::{DotPlot, SimilarityMode};
 use crate::raster::Palette;
 use crate::theme;
 
 /// Largest range plotted; anything beyond is left out.
-const DOT_PLOT_LIMIT: usize = 64 * 1024 * 1024;
+const DOT_PLOT_LIMIT: usize = crate::api::tools::dotplot::DOT_PLOT_LIMIT;
 /// How often to look for a finished plot while one is being computed.
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
 /// Smallest side, in points, the plot is drawn at.
@@ -48,17 +47,20 @@ fn scope(app: &ViewerApp) -> (usize, usize, &'static str) {
     }
 }
 
+/// The person plots the selection, else the whole file, compared as the
+/// panel's mode says: `dotplot.compute`, carried out once the panel is drawn.
 pub(crate) fn start_plot(state: &mut DotPlotState, app: &mut ViewerApp) {
-    app.note_tool_result(crate::dock::DockTab::DotPlot);
     let (start, len, _) = scope(app);
-    let bytes = app.document.read_range(start, len);
-    let mode = state.mode;
+    let mode = crate::api::tools::dotplot::DotPlotMode::of(state.mode);
+    app.perform_later("dotplot.compute", serde_json::json!({ "start": start, "len": len, "mode": mode }));
+}
+
+/// Wait for a plot `dotplot.compute` started; returns where it is sent.
+pub(crate) fn await_plot(app: &mut ViewerApp) -> mpsc::Sender<DotPlot> {
+    app.note_tool_result(crate::dock::DockTab::DotPlot);
     let (sender, receiver) = mpsc::channel();
-    thread::spawn(move || {
-        // The receiver may be gone if the panel was closed; nothing to do then.
-        let _ = sender.send(dotplot::compute(&bytes, start, mode));
-    });
-    state.pending = Some(receiver);
+    app.bench.panels.dot_plot.pending = Some(receiver);
+    sender
 }
 
 fn poll(state: &mut DotPlotState, ctx: &egui::Context) {
@@ -159,7 +161,7 @@ pub fn show_dot_plot(state: &mut DotPlotState, app: &mut ViewerApp, ui: &mut Ui)
         }
     }
     if let Some((target, other)) = jump {
-        app.jump_to_offset(target);
+        app.jump_found(target);
         app.status = format!("Jumped to {target:#x}; the compared block is at {other:#x}");
     }
 }
@@ -192,21 +194,30 @@ mod tests {
     /// Longest a background job may take in a test.
     const JOB_TIMEOUT: Duration = Duration::from_secs(20);
 
-    type PanelHarness = Harness<'static, (DotPlotState, ViewerApp)>;
+    type PanelHarness = Harness<'static, ViewerApp>;
 
+    /// The panel drawn as the window draws it: its state lent out of the
+    /// app, and the actions it asked for carried out before each frame.
     fn harness_for(bytes: Vec<u8>) -> PanelHarness {
         let mut app = ViewerApp::new(Launch::default());
         app.document = Document::from_bytes(bytes);
-        Harness::new_ui_state(|ui, (state, app): &mut (DotPlotState, ViewerApp)| show_dot_plot(state, app, ui), (DotPlotState::default(), app))
+        Harness::new_ui_state(
+            |ui, app: &mut ViewerApp| {
+                app.perform_waiting_actions();
+                crate::panels::show(app, ui, |panels| &mut panels.dot_plot, show_dot_plot);
+            },
+            app,
+        )
     }
 
     fn plot_whole_file(harness: &mut PanelHarness) {
         harness.step();
         harness.get_by_label_contains("Plot whole file").click();
         harness.step();
+        harness.step();
         let started = Instant::now();
-        while harness.state().0.pending.is_some() && started.elapsed() < JOB_TIMEOUT {
-            thread::sleep(POLL_INTERVAL / 5);
+        while harness.state().bench.panels.dot_plot.pending.is_some() && started.elapsed() < JOB_TIMEOUT {
+            std::thread::sleep(POLL_INTERVAL / 5);
             harness.step();
         }
         harness.step();
@@ -217,9 +228,27 @@ mod tests {
         let bytes: Vec<u8> = (0..64 * 1024u32).map(|index| (index % 251) as u8).collect();
         let mut harness = harness_for(bytes);
         plot_whole_file(&mut harness);
-        let plot = harness.state().0.plot.as_ref().expect("a finished plot");
-        assert_eq!(plot.cells, dotplot::MAX_CELLS);
-        assert!(harness.state().0.texture.is_some());
+        let state = &harness.state().bench.panels.dot_plot;
+        let plot = state.plot.as_ref().expect("a finished plot");
+        assert_eq!(plot.cells, crate::dotplot::MAX_CELLS);
+        assert!(state.texture.is_some());
+        let job = harness.state().bus.jobs().list().into_iter().find(|job| job.title == "Dot plot").expect("the plot is a job");
+        assert_eq!(job.producer, "panel");
+    }
+
+    #[test]
+    fn plotting_is_a_dot_plot_job_with_the_span_and_mode_in_its_step() {
+        use serde_json::json;
+        let mut app = ViewerApp::new(Launch::default());
+        app.open_bytes(vec![7u8; 4096], "test.bin".to_string());
+        app.restore_selection(16, 1000);
+        crate::actions::take_performed();
+        let mut state = DotPlotState { mode: SimilarityMode::Histogram, ..Default::default() };
+        start_plot(&mut state, &mut app);
+        assert!(crate::actions::take_performed().is_empty(), "carried out once the panel is drawn");
+        app.perform_waiting_actions();
+        assert_eq!(crate::actions::take_performed(), [("dotplot.compute".to_string(), json!({"start": 16, "len": 1000, "mode": "histogram"}))]);
+        assert!(app.bench.panels.dot_plot.pending.is_some(), "the panel waits for the plot");
     }
 
     #[test]

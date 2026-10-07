@@ -6,17 +6,16 @@
 //! cursor to its first byte.
 
 use std::sync::mpsc::{self, Receiver};
-use std::thread;
 use std::time::Duration;
 
 use eframe::egui::{self, RichText, Ui};
 
 use crate::app::ViewerApp;
-use crate::image_finder::{self, ImageCandidate};
+use crate::image_finder::ImageCandidate;
 use crate::theme;
 
 /// Largest range searched; anything beyond is left out.
-const IMAGE_SEARCH_LIMIT: usize = 64 * 1024 * 1024;
+const IMAGE_SEARCH_LIMIT: usize = crate::api::tools::images::IMAGE_SEARCH_LIMIT;
 /// How often to look for finished results while a search runs.
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
 /// Width of the score bar drawn before each candidate.
@@ -42,17 +41,21 @@ fn scope(app: &ViewerApp) -> (usize, usize, &'static str) {
     }
 }
 
-pub(crate) fn start_search(state: &mut ImageFinderState, app: &mut ViewerApp) {
-    app.note_tool_result(crate::dock::DockTab::Images);
+/// The person searches the selection, else the whole file, for images:
+/// `images.find`, carried out once the panel is drawn.
+pub(crate) fn start_search(_state: &mut ImageFinderState, app: &mut ViewerApp) {
     let (start, len, _) = scope(app);
-    let bytes = app.document.read_range(start, len);
+    app.perform_later("images.find", serde_json::json!({ "start": start, "len": len }));
+}
+
+/// Wait for a search `images.find` started; returns where it is sent.
+pub(crate) fn await_search(app: &mut ViewerApp) -> mpsc::Sender<Vec<ImageCandidate>> {
+    app.note_tool_result(crate::dock::DockTab::Images);
     let (sender, receiver) = mpsc::channel();
-    thread::spawn(move || {
-        // The receiver may be gone if the panel was closed; nothing to do then.
-        let _ = sender.send(image_finder::find_images(&bytes, start));
-    });
+    let state = &mut app.bench.panels.images;
     state.pending = Some(receiver);
     state.applied = None;
+    sender
 }
 
 fn poll(state: &mut ImageFinderState, ctx: &egui::Context) {
@@ -67,18 +70,24 @@ fn poll(state: &mut ImageFinderState, ctx: &egui::Context) {
     }
 }
 
-/// Show a candidate in the raster: its format and width, with the view
-/// origin on its first pixel, and the cursor there too.
+/// The person shows a candidate in the raster: its format and width, with
+/// the view origin on its first pixel (`view.set_shape`), and the cursor
+/// there too (`cursor.set`).
 pub fn apply_candidate(app: &mut ViewerApp, candidate: &ImageCandidate) {
-    app.shape.format = candidate.format;
-    app.set_width(candidate.width);
-    app.shape.row_padding = 0;
-    app.shape.bit_offset = 0;
-    app.shape.byte_offset = candidate.start.min(app.document.len());
+    let shape = serde_json::json!({
+        "format": candidate.format,
+        "width": candidate.width,
+        "offset": candidate.start.min(app.document.len()),
+        "bit_offset": 0,
+        "row_padding": 0,
+    });
+    if app.perform("view.set_shape", shape).is_err() {
+        return;
+    }
     app.top_row = 0;
     app.pan_x = 0.0;
     app.clamp_top_row();
-    app.jump_to_offset(candidate.start);
+    app.jump_found(candidate.start);
     app.status = format!("Showing {}", candidate.description());
 }
 
@@ -164,7 +173,7 @@ mod tests {
     const IMAGE_WIDTH: usize = 160;
     const IMAGE_HEIGHT: usize = 90;
 
-    type PanelHarness = Harness<'static, (ImageFinderState, ViewerApp)>;
+    type PanelHarness = Harness<'static, ViewerApp>;
 
     /// Random bytes around a smooth RGB picture.
     fn file_with_picture() -> Vec<u8> {
@@ -196,9 +205,14 @@ mod tests {
     fn harness_for(bytes: Vec<u8>) -> PanelHarness {
         let mut app = ViewerApp::new(Launch::default());
         app.document = Document::from_bytes(bytes);
+        // As the window draws it: its state lent out of the app, and the
+        // actions it asked for carried out before each frame.
         Harness::new_ui_state(
-            |ui, (state, app): &mut (ImageFinderState, ViewerApp)| show_image_finder(state, app, ui),
-            (ImageFinderState::default(), app),
+            |ui, app: &mut ViewerApp| {
+                app.perform_waiting_actions();
+                crate::panels::show(app, ui, |panels| &mut panels.images, show_image_finder);
+            },
+            app,
         )
     }
 
@@ -208,21 +222,25 @@ mod tests {
         harness.step();
         harness.get_by_label_contains("Find images in whole file").click();
         harness.step();
+        harness.step();
         let started = Instant::now();
-        while harness.state().0.pending.is_some() && started.elapsed() < JOB_TIMEOUT {
-            thread::sleep(POLL_INTERVAL / 5);
+        while harness.state().bench.panels.images.pending.is_some() && started.elapsed() < JOB_TIMEOUT {
+            std::thread::sleep(POLL_INTERVAL / 5);
             harness.step();
         }
         harness.step();
-        let best = harness.state().0.candidates.as_ref().and_then(|found| found.first().cloned()).expect("a candidate");
+        let best = harness.state().bench.panels.images.candidates.as_ref().and_then(|found| found.first().cloned()).expect("a candidate");
+        crate::actions::take_performed();
         harness.get_by_label(&best.description()).click();
         harness.step();
-        let app = &harness.state().1;
+        let performed: Vec<String> = crate::actions::take_performed().into_iter().map(|(method, _)| method).collect();
+        assert_eq!(performed, ["view.set_shape", "cursor.set"], "the shape and the cursor through the API");
+        let app = harness.state();
         assert_eq!(app.shape.format, PixelFormat::Rgb8);
         assert_eq!(app.shape.width, IMAGE_WIDTH);
         assert_eq!(app.shape.byte_offset, best.start);
         assert_eq!(app.cursor, best.start);
         assert!(best.start.abs_diff(IMAGE_START) < PixelFormat::Rgb8.bytes_per_pixel(), "{}", best.description());
-        assert_eq!(harness.state().0.applied, Some(0));
+        assert_eq!(harness.state().bench.panels.images.applied, Some(0));
     }
 }

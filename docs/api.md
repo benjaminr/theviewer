@@ -129,6 +129,9 @@ Errors are `{code, message, data}`, with these codes:
 | [`compare.variation`](#comparevariation) | job | Start comparing a document with other files byte position by byte position, each from its own start offset, as a job: the regions that are constant, vary (and how many values) or move one way through the files like a counter are job.finished's result, and in the window they fill Compare. |
 | [`compare.correlate`](#comparecorrelate) | job | Start a search of a document and other files for fields whose values follow a number known for each file (a temperature, a setting), as a job: the fields, best fit first, with the fitted line, are job.finished's result, and in the window they fill Compare. |
 | [`compare.timeline`](#comparetimeline) | job | Start building the change timeline of the recording of a live source or watched file, as a job: where and how often it changed, snapshot by snapshot, is job.finished's result, and the window fills Compare with it; only the window records, so headless there is none. |
+| [`dotplot.compute`](#dotplotcompute) | job | Start comparing every block of a span (at most 64 MiB) with every other, by shared 6-byte substrings or by byte histograms, as a job: the grid of similarities (repeated content shows as lines parallel to the diagonal) is job.finished's result, and in the window it fills the Dot plot. |
+| [`images.find`](#imagesfind) | job | Start a search of a span (at most 64 MiB) for uncompressed images, trying 1-bit, 8-bit grey, RGB565, RGB and RGBA at widths from 16 to 2048 pixels, as a job: the regions whose rows resemble each other, best first, are job.finished's result (view.set_shape shows one), and in the window they fill Images. |
+| [`trigrams.count`](#trigramscount) | job | Start counting every run of three bytes in a span (sampled beyond 16 MiB) as a job, labelled by segments, by the report's regions or not at all, with a part of it to pick out: the points of the trigram cube, most common first, and the region types they belong to are job.finished's result, and in the window they fill Trigrams. |
 | [`view.get_shape`](#viewget_shape) | read | The shape a document's bytes are drawn in: the pixel format, pixels per row, the offset of the first pixel, a bit shift and the bytes skipped after each row. |
 | [`view.set_shape`](#viewset_shape) | view | Change the shape a document's bytes are drawn in (the pixel format, pixels per row, the first pixel's offset and bit, the padding after each row); what is not given stays as it is. |
 | [`view.fold`](#viewfold) | view | Skip ranges of a document in its views (the raster and the hex dump) without deleting them; a marker shows where each was. |
@@ -1981,6 +1984,51 @@ Start building the change timeline of the recording of a live source or watched 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `doc` | string | no | Document id, path or "current" (the default). |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `job` | string | yes | Follow it with jobs.status, or on job.progress and job.finished. |
+
+### dotplot.compute
+
+Start comparing every block of a span (at most 64 MiB) with every other, by shared 6-byte substrings or by byte histograms, as a job: the grid of similarities (repeated content shows as lines parallel to the diagonal) is job.finished's result, and in the window it fills the Dot plot.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `doc` | string | no | Document id, path or "current" (the default). |
+| `len` | integer | no | Bytes plotted, at most 64 MiB; to the end of the document (or 64 MiB) when omitted. |
+| `mode` | `"k_grams"` \| `"histogram"` | no | How blocks are compared: "k_grams" (the default) or "histogram". |
+| `start` | integer | no | First offset plotted (0 by default). |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `job` | string | yes | Follow it with jobs.status, or on job.progress and job.finished. |
+
+### images.find
+
+Start a search of a span (at most 64 MiB) for uncompressed images, trying 1-bit, 8-bit grey, RGB565, RGB and RGBA at widths from 16 to 2048 pixels, as a job: the regions whose rows resemble each other, best first, are job.finished's result (view.set_shape shows one), and in the window they fill Images.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `doc` | string | no | Document id, path or "current" (the default). |
+| `len` | integer | no | Bytes searched, at most 64 MiB; to the end of the document (or 64 MiB) when omitted. |
+| `start` | integer | no | First offset searched (0 by default). |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `job` | string | yes | Follow it with jobs.status, or on job.progress and job.finished. |
+
+### trigrams.count
+
+Start counting every run of three bytes in a span (sampled beyond 16 MiB) as a job, labelled by segments, by the report's regions or not at all, with a part of it to pick out: the points of the trigram cube, most common first, and the region types they belong to are job.finished's result, and in the window they fill Trigrams.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `doc` | string | no | Document id, path or "current" (the default). |
+| `highlight` | pair | no | A part of the span, as [start, len], whose trigrams are picked out from the rest. |
+| `labels` | `"nothing"` \| `"segments"` \| `"report_regions"` | no | What the points are labelled by (segments by default). |
+| `len` | integer | no | Bytes counted; to the end of the document when omitted. Beyond 16 MiB the span is sampled. |
+| `start` | integer | no | First offset counted (0 by default). |
 
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |

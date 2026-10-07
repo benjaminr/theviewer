@@ -38,6 +38,8 @@ pub(super) fn examples() -> Vec<(&'static str, serde_json::Value)> {
         ("bits.find_length_fields", json!({"start": 0, "len": 256})),
         ("bits.decode_linecode", json!({"start": 0, "len": 64, "code": "nrzi", "bit_offset": 1})),
         ("bits.open_plane", json!({"start": 0, "len": 16, "bit": 7})),
+        // Back to the example document for the tools after these.
+        ("documents.open", json!({"doc": "doc-1"})),
     ]
 }
 

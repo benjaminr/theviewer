@@ -17,7 +17,6 @@
 
 use std::f32::consts::{FRAC_PI_2, FRAC_PI_4};
 use std::sync::mpsc::{self, Receiver};
-use std::thread;
 use std::time::Duration;
 
 use eframe::egui::{self, Align2, Color32, FontId, Painter, Pos2, RichText, Sense, Stroke, Ui, Vec2, vec2};
@@ -57,7 +56,7 @@ const HOVER_SLOP: f32 = 3.0;
 const SEARCH_RADIUS: usize = 8 * 1024 * 1024;
 const LABEL_FONT_SIZE: f32 = 11.0;
 /// Most bytes segmented to label the cloud.
-const SEGMENT_LIMIT: usize = 64 * 1024 * 1024;
+pub(crate) const SEGMENT_LIMIT: usize = 64 * 1024 * 1024;
 /// Most bytes read when looking for a clicked trigram inside its region.
 const REGION_SEARCH_LIMIT: usize = 16 * 1024 * 1024;
 /// Height of the file strip under the cube.
@@ -176,10 +175,10 @@ pub struct RegionGroup {
 
 /// A finished count: the cloud, its region groups and the selection it
 /// highlights.
-struct Counted {
-    cloud: TrigramCloud,
-    groups: Vec<RegionGroup>,
-    selection: Option<(usize, usize)>,
+pub(crate) struct Counted {
+    pub cloud: TrigramCloud,
+    pub groups: Vec<RegionGroup>,
+    pub selection: Option<(usize, usize)>,
 }
 
 /// Everything the trigram panel keeps between frames.
@@ -223,7 +222,7 @@ impl Default for TrigramState {
 }
 
 /// What the background job labels the cloud from.
-enum LabelInput {
+pub(crate) enum LabelInput {
     /// The plotted bytes from `start`, to segment.
     Bytes { start: usize, bytes: Vec<u8> },
     Regions(Vec<Region>),
@@ -247,42 +246,73 @@ fn scope(state: &TrigramState, app: &ViewerApp) -> (usize, usize, &'static str) 
     }
 }
 
-/// Read the scope (sampled when large) and count it on a background thread,
-/// labelling trigrams by region and highlighting the selection when the whole
-/// file is plotted around it.
+/// The parameters of `trigrams.count` for the panel's scope and labels,
+/// picking out the selection when the whole file is plotted around it.
+fn count_params(state: &TrigramState, app: &ViewerApp) -> crate::api::tools::trigrams::CountParams {
+    let (start, len, _) = scope(state, app);
+    let highlight = app.selection().filter(|&(selected, selected_len)| selected_len < len && selected >= start);
+    crate::api::tools::trigrams::CountParams {
+        doc: None,
+        start: start as u64,
+        len: Some(len as u64),
+        labels: crate::api::tools::trigrams::TrigramLabels::of(state.label_source),
+        highlight: highlight.map(|(start, len)| (start as u64, len as u64)),
+    }
+}
+
+/// The person plots the scope: `trigrams.count`, carried out once the panel
+/// is drawn.
+fn plot(state: &TrigramState, app: &mut ViewerApp) {
+    let params = serde_json::to_value(count_params(state, app)).unwrap_or_default();
+    app.perform_later("trigrams.count", params);
+}
+
+/// Count the scope again by itself (after an edit, or when the window opens
+/// on this tool): the app's own work, kept off the person's steps, as the
+/// tool's job.
 pub fn start_counting(state: &mut TrigramState, app: &mut ViewerApp) {
     app.note_tool_result(crate::dock::DockTab::Trigrams);
-    let (start, len, _) = scope(state, app);
-    let windows: Vec<(usize, Vec<u8>)> = trigram::sample_windows(len, trigram::SAMPLE_LIMIT, trigram::SAMPLE_WINDOW)
-        .into_iter()
-        .map(|(offset, size)| (start + offset, app.document.read_range(start + offset, size)))
-        .collect();
-    let selection = app.selection().filter(|&(selected, selected_len)| selected_len < len && selected >= start);
-    let labels = match state.label_source {
-        LabelSource::Segments => LabelInput::Bytes { start, bytes: app.document.read_range(start, len.min(SEGMENT_LIMIT)) },
-        LabelSource::ReportRegions => LabelInput::Regions(app.mapped_regions.to_vec()),
-        LabelSource::Nothing => LabelInput::Nothing,
-    };
+    let params = count_params(state, app);
     let (sender, receiver) = mpsc::channel();
-    let job = app.start_job("trigrams", "Counting trigrams");
-    thread::spawn(move || {
-        let groups = region_groups(labels);
-        let spans = labelled_spans(&groups);
-        let mut counter = TrigramCounter::with_labels(spans, groups.len(), selection);
-        let total = windows.len() as u64;
-        for (index, (offset, bytes)) in windows.iter().enumerate() {
-            if job.is_cancelled() {
-                return job.finish_cancelled();
-            }
-            counter.add_window(*offset, bytes);
-            job.progress(index as u64 + 1, Some(total));
+    match crate::api::tools::trigrams::start_count(app, "tool:trigrams", params, |_, _| Some(sender)) {
+        Ok(_) => state.pending = Some(receiver),
+        Err(error) => app.status = format!("Trigrams: {}", error.message),
+    }
+}
+
+/// Wait for a count `trigrams.count` started; returns where it is sent.
+pub(crate) fn await_count(app: &mut ViewerApp) -> mpsc::Sender<Counted> {
+    app.note_tool_result(crate::dock::DockTab::Trigrams);
+    let (sender, receiver) = mpsc::channel();
+    app.bench.panels.trigrams.pending = Some(receiver);
+    sender
+}
+
+/// The windows of `len` bytes from `start` that are counted: all of them,
+/// or samples spread along them beyond [`trigram::SAMPLE_LIMIT`].
+pub(crate) fn sample(document: &mut crate::document::Document, start: usize, len: usize) -> Vec<(usize, Vec<u8>)> {
+    trigram::sample_windows(len, trigram::SAMPLE_LIMIT, trigram::SAMPLE_WINDOW)
+        .into_iter()
+        .map(|(offset, size)| (start + offset, document.read_range(start + offset, size)))
+        .collect()
+}
+
+/// Count `windows` of the `len` bytes from `start`, labelled by `labels`,
+/// picking out `selection`, saying how far it has got on `job`.
+pub(crate) fn count(start: usize, len: usize, windows: Vec<(usize, Vec<u8>)>, labels: LabelInput, selection: Option<(usize, usize)>, job: &crate::bus::JobHandle) -> Counted {
+    let groups = region_groups(labels);
+    let spans = labelled_spans(&groups);
+    let mut counter = TrigramCounter::with_labels(spans, groups.len(), selection);
+    let total = windows.len() as u64;
+    for (index, (offset, bytes)) in windows.iter().enumerate() {
+        if job.is_cancelled() {
+            break;
         }
-        let cloud = counter.finish(start, len, trigram::DEFAULT_MAX_POINTS);
-        job.finish(true, format!("{} groups", groups.len()));
-        // The receiver may be gone if the panel was closed; nothing to do then.
-        let _ = sender.send(Counted { cloud, groups, selection });
-    });
-    state.pending = Some(receiver);
+        counter.add_window(*offset, bytes);
+        job.progress(index as u64 + 1, Some(total));
+    }
+    let cloud = counter.finish(start, len, trigram::DEFAULT_MAX_POINTS);
+    Counted { cloud, groups, selection }
 }
 
 /// The region groups to label the cloud with, at most [`MAX_GROUPS`].
@@ -375,7 +405,7 @@ pub fn show_trigram(state: &mut TrigramState, app: &mut ViewerApp, ui: &mut Ui) 
     let jump = show_cube(state, ui, &mut hovered);
     show_legend(state, ui, &mut hovered);
     if let Some(offset) = show_file_strip(state, ui, &mut hovered) {
-        app.jump_to_offset(offset);
+        app.jump_found(offset);
     }
     state.hovered_group = hovered;
     if let Some(point) = jump {
@@ -387,7 +417,7 @@ fn show_toolbar(state: &mut TrigramState, app: &mut ViewerApp, ui: &mut Ui) {
     let (_, len, what) = scope(state, app);
     ui.horizontal_wrapped(|ui| {
         if ui.button(format!("Plot {what} ({})", human_bytes(len))).clicked() {
-            start_counting(state, app);
+            plot(state, app);
         }
         start_row_unless_fits(ui, combo_width(ui));
         egui::ComboBox::from_id_salt("trigram-labels").selected_text(state.label_source.label()).show_ui(ui, |ui| {
@@ -743,7 +773,7 @@ fn jump_to_trigram(app: &mut ViewerApp, point: &TrigramPoint, groups: &[RegionGr
             (closest_occurrence(&window, window_start, &point.exemplar, app.cursor).unwrap_or(point.offset), String::new())
         }
     };
-    app.jump_to_offset(target);
+    app.jump_found(target);
     let [a, b, c] = point.exemplar;
     app.status = format!("Trigram {a:02X} {b:02X} {c:02X} cell at {target:#x}{place}");
 }
@@ -821,24 +851,29 @@ mod tests {
         corners
     }
 
-    type PanelHarness = Harness<'static, (TrigramState, ViewerApp)>;
+    type PanelHarness = Harness<'static, ViewerApp>;
+
+    /// Draw the panel as the window does: its state lent out of the app,
+    /// and the actions it asked for carried out before each frame.
+    fn draw(ui: &mut Ui, app: &mut ViewerApp) {
+        app.perform_waiting_actions();
+        crate::panels::show(app, ui, |panels| &mut panels.trigrams, show_trigram);
+    }
 
     fn harness_for(bytes: Vec<u8>) -> PanelHarness {
         let mut app = ViewerApp::new(Launch::default());
         app.document = Document::from_bytes(bytes);
-        Harness::new_ui_state(
-            |ui, (state, app): &mut (TrigramState, ViewerApp)| show_trigram(state, app, ui),
-            (TrigramState::default(), app),
-        )
+        Harness::new_ui_state(draw, app)
     }
 
     fn plot_whole_file(harness: &mut PanelHarness) {
         harness.step();
         harness.get_by_label_contains("Plot whole file").click();
         harness.step();
+        harness.step();
         let started = Instant::now();
-        while harness.state().0.pending.is_some() && started.elapsed() < JOB_TIMEOUT {
-            thread::sleep(POLL_INTERVAL / 5);
+        while harness.state().bench.panels.trigrams.pending.is_some() && started.elapsed() < JOB_TIMEOUT {
+            std::thread::sleep(POLL_INTERVAL / 5);
             harness.step();
         }
         harness.step();
@@ -849,7 +884,7 @@ mod tests {
         let text = "Plain text makes a tight cluster of points. ".repeat(200);
         let mut harness = harness_for(text.into_bytes());
         plot_whole_file(&mut harness);
-        let cloud = harness.state().0.cloud.as_ref().expect("a finished cloud");
+        let cloud = harness.state().bench.panels.trigrams.cloud.as_ref().expect("a finished cloud");
         assert!(!cloud.is_empty());
         assert!(harness.query_by_label_contains("uniform cloud").is_some());
     }
@@ -864,11 +899,11 @@ mod tests {
     #[test]
     fn choosing_a_preset_turns_the_camera_but_keeps_the_zoom() {
         let mut harness = harness_for(b"abcabcabc".to_vec());
-        harness.state_mut().0.camera.zoom = 2.0;
+        harness.state_mut().bench.panels.trigrams.camera.zoom = 2.0;
         harness.step();
         harness.get_by_label("Top (x/y)").click();
         harness.step();
-        let camera = harness.state().0.camera;
+        let camera = harness.state().bench.panels.trigrams.camera;
         assert_eq!((camera.yaw, camera.pitch, camera.zoom), (Camera::TOP.yaw, Camera::TOP.pitch, 2.0));
     }
 
@@ -944,7 +979,7 @@ mod tests {
         let (bytes, _) = three_part_file();
         let mut harness = harness_for(bytes);
         plot_whole_file(&mut harness);
-        let (state, _) = harness.state();
+        let state = &harness.state().bench.panels.trigrams;
         assert!(state.groups.len() >= 2, "{:?}", state.groups.iter().map(|g| &g.label).collect::<Vec<_>>());
         let cloud = state.cloud.as_ref().unwrap();
         assert!(cloud.points.iter().any(|point| point.dominant_group().is_some()));
@@ -958,7 +993,7 @@ mod tests {
         let (bytes, _) = three_part_file();
         let mut harness = harness_for(bytes);
         plot_whole_file(&mut harness);
-        let (state, _) = harness.state_mut();
+        let state = &mut harness.state_mut().bench.panels.trigrams;
         let point = state.cloud.as_ref().unwrap().points.iter().find(|point| point.exemplar == [0, 0, 0]).unwrap().clone();
         assert!(is_visible(state, &point));
         state.hidden[point.dominant_group().unwrap() as usize] = true;
@@ -970,13 +1005,17 @@ mod tests {
         let (bytes, text) = three_part_file();
         let mut harness = harness_for(bytes);
         {
-            let (state, app) = harness.state_mut();
+            let app = harness.state_mut();
             app.set_cursor(text.start, false);
             app.set_cursor(text.end, true);
-            state.whole_file = true;
+            app.bench.panels.trigrams.whole_file = true;
         }
+        crate::actions::take_performed();
         plot_whole_file(&mut harness);
-        let (state, _) = harness.state();
+        let performed = crate::actions::take_performed();
+        let expected = serde_json::json!({"start": 0, "len": harness.state().document.len(), "labels": "segments", "highlight": [text.start, text.end - text.start]});
+        assert_eq!(performed[0], ("trigrams.count".to_string(), expected), "the selection picked out is in the step");
+        let state = &harness.state().bench.panels.trigrams;
         assert_eq!(state.selection, Some((text.start, text.end - text.start)));
         let cloud = state.cloud.as_ref().unwrap();
         let text_point = cloud.points.iter().find(|point| point.exemplar == *b"Rea").unwrap();
@@ -990,10 +1029,12 @@ mod tests {
         let (bytes, text) = three_part_file();
         let mut harness = harness_for(bytes);
         plot_whole_file(&mut harness);
-        let (state, app) = harness.state_mut();
+        let app = harness.state_mut();
         app.set_cursor(app.document.len() - 1, false);
+        let state = &app.bench.panels.trigrams;
         let point = state.cloud.as_ref().unwrap().points.iter().find(|point| point.exemplar == *b"Rea").unwrap().clone();
-        jump_to_trigram(app, &point, &state.groups);
+        let groups = state.groups.clone();
+        jump_to_trigram(app, &point, &groups);
         assert!(text.contains(&app.cursor), "landed at {:#x}, inside the text", app.cursor);
         assert!(app.status.contains(" in "), "{}", app.status);
     }
@@ -1004,12 +1045,9 @@ mod tests {
         let mut app = ViewerApp::new(Launch::default());
         app.document = Document::from_bytes(bytes);
         let pane_width = 300.0;
-        let mut harness = Harness::builder().with_size(vec2(pane_width, 1400.0)).build_ui_state(
-            |ui, (state, app): &mut (TrigramState, ViewerApp)| show_trigram(state, app, ui),
-            (TrigramState::default(), app),
-        );
+        let mut harness = Harness::builder().with_size(vec2(pane_width, 1400.0)).build_ui_state(draw, app);
         plot_whole_file(&mut harness);
-        let groups: Vec<RegionGroup> = harness.state().0.groups.clone();
+        let groups: Vec<RegionGroup> = harness.state().bench.panels.trigrams.groups.clone();
         assert!(groups.len() >= 2);
         for (index, group) in groups.iter().enumerate() {
             let needle = format!("{} (", group.label);
@@ -1018,7 +1056,7 @@ mod tests {
             assert!(rect.right() <= pane_width + 1.0, "{} reaches {} in a {pane_width} pane", group.label, rect.right());
             entry.click();
             harness.step();
-            assert!(harness.state().0.hidden[index], "ticking {} hides it", group.label);
+            assert!(harness.state().bench.panels.trigrams.hidden[index], "ticking {} hides it", group.label);
         }
     }
 
@@ -1027,11 +1065,11 @@ mod tests {
         let (bytes, _) = three_part_file();
         let mut harness = harness_for(bytes);
         plot_whole_file(&mut harness);
-        let label = harness.state().0.groups[0].label.clone();
+        let label = harness.state().bench.panels.trigrams.groups[0].label.clone();
         let needle = format!("{label} (");
         harness.get_by_label_contains(&needle).hover();
         harness.step();
         harness.step();
-        assert_eq!(harness.state().0.hovered_group, Some(0), "the hovered type is highlighted");
+        assert_eq!(harness.state().bench.panels.trigrams.hovered_group, Some(0), "the hovered type is highlighted");
     }
 }
