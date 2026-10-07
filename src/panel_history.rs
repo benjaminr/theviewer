@@ -363,6 +363,14 @@ impl HistoryState {
 }
 
 pub fn show_history(state: &mut HistoryState, app: &mut ViewerApp, ui: &mut Ui) {
+    // In a tab too short for the steps and the note box together, the tab
+    // scrolls rather than drawing one over the other.
+    let visible = ui.available_height();
+    egui::ScrollArea::vertical().id_salt("history-tab").auto_shrink([false, false]).show(ui, |ui| show_history_inside(state, app, ui, visible));
+}
+
+fn show_history_inside(state: &mut HistoryState, app: &mut ViewerApp, ui: &mut Ui, visible: f32) {
+    let top = ui.cursor().min.y;
     state.follow(app);
     play_due_step(state, app, ui.ctx());
     show_toolbar(state, app, ui);
@@ -370,9 +378,12 @@ pub fn show_history(state: &mut HistoryState, app: &mut ViewerApp, ui: &mut Ui) 
     if let Some(message) = &state.message {
         ui.label(RichText::new(message).small().color(theme::DANGER));
     }
-    egui::Panel::bottom("history-note-box").frame(egui::Frame::new().inner_margin(egui::Margin::symmetric(0, 4))).show(ui, |ui| show_note_box(state, app, ui));
     ui.separator();
-    let list_height = if state.selected.is_some() { LIST_HEIGHT } else { ui.available_height() };
+    // The list takes what the note box below it leaves, so the box is never
+    // drawn over the steps, however short the tab is.
+    let used = ui.cursor().min.y - top;
+    let left = (visible - used - note_box_height(ui)).max(MIN_LIST_HEIGHT);
+    let list_height = if state.selected.is_some() { LIST_HEIGHT.min(left) } else { left };
     if state.rows.is_empty() {
         let list = egui::ScrollArea::vertical().id_salt("history-steps").max_height(list_height).auto_shrink([false, true]);
         list.show(ui, |ui| ui.label(RichText::new("Nothing done yet. Each edit, view change, packet set and job, by you, plugins, Ask or MCP clients, is listed here as a step, with the notes written beside them.").color(theme::TEXT_DIM)));
@@ -381,8 +392,22 @@ pub fn show_history(state: &mut HistoryState, app: &mut ViewerApp, ui: &mut Ui) 
     }
     if let Some(step) = state.selected {
         ui.separator();
-        egui::ScrollArea::vertical().id_salt("history-details").show(ui, |ui| show_details(state, app, ui, step));
+        let used = ui.cursor().min.y - top;
+        let details_height = (visible - used - note_box_height(ui)).max(MIN_LIST_HEIGHT);
+        egui::ScrollArea::vertical().id_salt("history-details").max_height(details_height).show(ui, |ui| show_details(state, app, ui, step));
     }
+    ui.separator();
+    show_note_box(state, app, ui);
+}
+
+/// The steps keep at least this much room, the note box going below.
+const MIN_LIST_HEIGHT: f32 = 48.0;
+
+/// The height the note box and its button row take.
+fn note_box_height(ui: &Ui) -> f32 {
+    let row = ui.text_style_height(&egui::TextStyle::Body);
+    let spacing = ui.spacing();
+    row * NOTE_BOX_ROWS as f32 + spacing.interact_size.y + spacing.item_spacing.y * 3.0 + spacing.button_padding.y * 4.0 + 8.0
 }
 
 /// The steps and notes the filters keep, laying out only those in view: a
@@ -1073,6 +1098,23 @@ mod tests {
         harness.get_by_label_contains("Overwrite 1 byte at 0x384");
         let rows = &harness.state().bench.panels.history.rows;
         assert_eq!(rows.iter().map(|row| (row.caller.as_str(), row.changed_bytes, row.error.is_some())).collect::<Vec<_>>(), [("panel", true, false), ("panel", false, false), ("panel", false, true)]);
+    }
+
+    #[test]
+    fn in_a_short_tab_the_note_box_sits_below_the_steps_not_over_them() {
+        let mut app = app_with(&[0u8; 64]);
+        app.perform("bytes.write", json!({"start": 2, "data": "4142"})).unwrap();
+        let mut harness = Harness::builder().with_size(egui::vec2(600.0, 130.0)).build_ui_state(
+            |ui, app: &mut ViewerApp| {
+                app.perform_waiting_actions();
+                crate::panels::show(app, ui, |panels| &mut panels.history, show_history);
+            },
+            app,
+        );
+        harness.step();
+        let step = harness.get_by_label_contains("Overwrite 2 bytes at 0x2").rect();
+        let add = harness.get_by_label("Add note").rect();
+        assert!(add.min.y > step.max.y, "the note box ({add:?}) is below the step ({step:?}), the tab scrolling to reach it");
     }
 
     #[test]
