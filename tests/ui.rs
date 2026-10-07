@@ -710,8 +710,14 @@ fn flipping_extracting_and_repacking_a_stream() {
     std::fs::remove_file(raw_out).ok();
     std::fs::remove_file(text_out).ok();
 
-    // Without a selection, extraction falls back to the stream under the cursor.
+    // Without a selection, extraction falls back to the stream under the
+    // cursor, once the scan around it has found the stream (a busy machine
+    // may still be rescanning).
     harness.state_mut().set_cursor(stream_at + 5, false);
+    let started = std::time::Instant::now();
+    while harness.state().compressed_stream_at_cursor().is_none() && started.elapsed().as_secs() < 60 {
+        harness.step();
+    }
     let raw_out = dir.join(format!("theviewer-ui-{}-raw2.bz2", std::process::id()));
     harness.state_mut().export_bytes_to(&raw_out);
     assert_eq!(std::fs::read(&raw_out).unwrap(), packed);
