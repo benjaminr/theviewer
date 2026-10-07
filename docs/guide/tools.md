@@ -188,7 +188,11 @@ shorter key, which is listed first when the two decode about as well.
   could start a byte either way: the one at the aligned offset is the
   candidate, the other an alternative with lower confidence.
 - Tries rolling XOR, ADD, rotation and combined ciphers, or drags a known
-  plaintext such as `PK\x03\x04` across the data to reveal the key.
+  plaintext such as `PK\x03\x04` across the data to reveal the key. With a
+  crib, the key bytes it reveals at the start (and anywhere they read as
+  text) are listed even when no decode comes of them, as when the key is
+  longer than the crib: *key prefix at offset 0* is the start of the key
+  to go on from.
 
 Decodes open as a document (*Open decoded*) or apply as an edit (*Apply*),
 which is a `transform.apply` step a recipe repeats.

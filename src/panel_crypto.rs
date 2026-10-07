@@ -11,7 +11,7 @@ use eframe::egui::{self, Color32, RichText, Sense, Ui, vec2};
 
 use crate::app::ViewerApp;
 use crate::blocks::{self, BlockReport};
-use crate::ciphers::{self, CipherCandidate};
+use crate::ciphers::{self, CipherCandidate, KeyFragment};
 use crate::keys::{self, KeyFinding, KeyFormat, KeyKind};
 use crate::plugin::{Category, Finding};
 use crate::selection_ops::Operation;
@@ -48,6 +48,8 @@ pub(crate) struct DecodeResults {
     pub start: usize,
     pub len: usize,
     pub candidates: Vec<CipherCandidate>,
+    /// With a crib: the key bytes it reveals, whether or not they decode.
+    pub fragments: Vec<KeyFragment>,
 }
 
 /// State of the crypto panel, kept between frames.
@@ -343,6 +345,7 @@ fn show_decode(state: &mut CryptoState, app: &mut ViewerApp, ui: &mut Ui) {
         return;
     };
     let results = &done.value;
+    show_key_fragments(ui, results);
     if results.candidates.is_empty() {
         ui.label(dim("No convincing decode."));
         return;
@@ -371,6 +374,21 @@ fn show_decode(state: &mut CryptoState, app: &mut ViewerApp, ui: &mut Ui) {
             // The previews describe the bytes as they were before the edit.
             state.decode = None;
         }
+    }
+}
+
+/// The key bytes the crib revealed, shown even when they decode nothing:
+/// with a key longer than the crib they are the start of the answer.
+fn show_key_fragments(ui: &mut Ui, results: &DecodeResults) {
+    for fragment in &results.fragments {
+        ui.horizontal_wrapped(|ui| {
+            ui.label(RichText::new(format!("Key bytes at {:#x}", results.start + fragment.offset)).strong());
+            ui.monospace(keys::short_hex(&fragment.keystream, fragment.keystream.len()));
+            if ui.small_button("Copy").on_hover_text("Copy the key bytes as hex").clicked() {
+                ui.ctx().copy_text(crate::api::values::encode_bytes(&fragment.keystream, Default::default()));
+            }
+        });
+        ui.label(dim(&fragment.reason));
     }
 }
 

@@ -10,10 +10,11 @@ use serde::{Deserialize, Serialize};
 
 use super::tool_jobs::{self, Summary, ToolSpan};
 use crate::api::jobs::JobStartedResult;
+use crate::api::values::{self, ByteEncoding};
 use crate::api::workspace::{self, Workspace};
 use crate::api::{ApiError, Caller};
 use crate::blocks::BlockReport;
-use crate::ciphers::{AttackOptions, CipherCandidate};
+use crate::ciphers::{AttackOptions, CipherCandidate, KeyFragment};
 use crate::crypto_constants::CryptoMatch;
 use crate::keys::KeyFinding;
 use crate::panel_crypto::{self, DecodeResults};
@@ -26,7 +27,7 @@ pub(super) const METHODS: &[crate::api::Method] = &[
     method!("crypto.scan_constants", Job, caller scan_constants, ScanConstantsParams, JobStartedResult, "Start a scan of the whole document (an edited one's first 256 MiB) for well-known constants of crypto and compression code (AES S-boxes, hash initial values, CRC tables, deflate tables, Blowfish, DES, ChaCha, TEA, curve primes, Base64 alphabets) as a job: the matches are job.finished's result, and in the window they fill Crypto constants."),
     method!("crypto.repeated_blocks", Job, caller repeated_blocks, CryptoSpanParams, JobStartedResult, "Start a search of a span (at most 16 MiB) for random-looking 8- and 16-byte blocks that repeat, the mark of ECB-mode encryption, as a job: the verdict, the best block size and alignment, the most repeated blocks and the repeats along the span are job.finished's result, and in the window they fill the Crypto panel."),
     method!("crypto.find_keys", Job, caller find_keys, CryptoSpanParams, JobStartedResult, "Start a search of a span (the whole document by default, at most 64 MiB) for PEM blocks, DER certificates and keys, OpenSSH keys and random-looking runs that could be raw symmetric keys, as a job: what was found is job.finished's result, and in the window it fills the Crypto panel."),
-    method!("crypto.attack", Job, caller attack, AttackParams, JobStartedResult, "Start attacks on simple ciphers over a span (at most 1 MiB): rolling XOR, XOR with the previous byte, ADD/SUB with a constant or repeating key, bit rotation, XOR combined with ADD and, with a crib, crib dragging, as a job: the decodes that look most like text or structured data, each with the operation that transform.apply or documents.derive takes to apply it, are job.finished's result, and in the window they fill the Crypto panel."),
+    method!("crypto.attack", Job, caller attack, AttackParams, JobStartedResult, "Start attacks on simple ciphers over a span (at most 1 MiB): rolling XOR, XOR with the previous byte, ADD/SUB with a constant or repeating key, bit rotation, XOR combined with ADD and, with a crib, crib dragging, as a job: the decodes that look most like text or structured data, each with the operation that transform.apply or documents.derive takes to apply it, and with a crib the key bytes it reveals, are job.finished's result, and in the window they fill the Crypto panel."),
 ];
 
 /// An example call of each of [`METHODS`], run in order on a fresh
@@ -255,6 +256,32 @@ impl CipherDecode {
     }
 }
 
+/// Key bytes a crib reveals where it sits, whether or not they make a decode.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct CribKeyFragment {
+    /// Document offset of the crib.
+    pub offset: u64,
+    /// The key bytes under the crib, as hex: the key's first bytes when
+    /// the crib is at the span's start.
+    pub key: String,
+    /// The key bytes as text, when they are all printable.
+    pub text: Option<String>,
+    /// Such as "key prefix at offset 0: …; a longer key goes on from there".
+    pub reason: String,
+}
+
+impl CribKeyFragment {
+    fn of(span_start: usize, fragment: &KeyFragment) -> Self {
+        let printable = fragment.keystream.iter().all(|&byte| (0x20..0x7F).contains(&byte));
+        CribKeyFragment {
+            offset: (span_start + fragment.offset) as u64,
+            key: values::encode_bytes(&fragment.keystream, ByteEncoding::Hex),
+            text: printable.then(|| String::from_utf8_lossy(&fragment.keystream).into_owned()),
+            reason: fragment.reason.clone(),
+        }
+    }
+}
+
 /// What `crypto.attack`'s job finishes with.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct CipherDecodes {
@@ -262,6 +289,10 @@ pub struct CipherDecodes {
     pub len: u64,
     /// The decodes, most plausible first.
     pub candidates: Vec<CipherDecode>,
+    /// With a crib: the key bytes it reveals at the span's start, and where
+    /// they read as text, even when no repeating key decodes the span (a
+    /// key longer than the crib).
+    pub key_fragments: Vec<CribKeyFragment>,
 }
 
 /// `crypto.scan_constants`: scan the document's file mapping (or a copy of
@@ -337,9 +368,17 @@ pub fn attack(workspace: &mut dyn Workspace, caller: &Caller, params: AttackPara
         ("cipher-attacks", "Cipher attacks"),
         &span,
         deliver,
-        move |_| DecodeResults { start, len, candidates: crate::ciphers::attack(&bytes, &options) },
+        move |_| {
+            let fragments = options.crib.as_deref().map(|crib| crate::ciphers::crib_key_fragments(&bytes, crib)).unwrap_or_default();
+            DecodeResults { start, len, candidates: crate::ciphers::attack(&bytes, &options), fragments }
+        },
         |results| {
-            let decodes = CipherDecodes { start: results.start as u64, len: results.len as u64, candidates: results.candidates.iter().map(CipherDecode::of).collect() };
+            let decodes = CipherDecodes {
+                start: results.start as u64,
+                len: results.len as u64,
+                candidates: results.candidates.iter().map(CipherDecode::of).collect(),
+                key_fragments: results.fragments.iter().map(|fragment| CribKeyFragment::of(results.start, fragment)).collect(),
+            };
             Summary::of(format!("{} decodes", decodes.candidates.len()), decodes)
         },
     ))
@@ -428,5 +467,19 @@ mod tests {
         call(&mut workspace, "transform.apply", json!({"selection": {"range": [4, hidden.len()]}, "operation": operation})).unwrap();
         let read = call(&mut workspace, "bytes.read", json!({"start": 4, "len": 14, "encoding": "text"})).unwrap();
         assert_eq!(read["data"], "Attack at dawn");
+    }
+
+    #[test]
+    fn a_crib_shorter_than_the_key_reports_the_key_prefix_it_pins() {
+        let config = b"[camera]\nmodel = NovaCam NC-500\nserial = NC500-8D51266C\nrtsp_port = 554\n[cloud]\nrecovery_flag = FLAG{8d51266c8ea1f897}\n";
+        let serial = b"NC500-8D51266C";
+        let sealed = crate::xor::apply(config, serial, 0);
+        let mut workspace = workspace_with("config.enc", &[vec![0u8; 16], sealed].concat());
+        let status = run_job(&mut workspace, "crypto.attack", json!({"start": 16, "crib": "[camera]"}));
+        let fragment = &status["result"]["key_fragments"][0];
+        assert_eq!((fragment["offset"].as_u64(), fragment["key"].as_str(), fragment["text"].as_str()), (Some(16), Some("4e433530302d3844"), Some("NC500-8D")), "{status}");
+        assert!(fragment["reason"].as_str().unwrap().starts_with("key prefix at offset 0"), "{fragment}");
+        let without_crib = run_job(&mut workspace, "crypto.attack", json!({"start": 16}));
+        assert_eq!(without_crib["result"]["key_fragments"], json!([]));
     }
 }

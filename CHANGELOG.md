@@ -83,6 +83,9 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   previous byte, XOR then add, add then XOR and per-byte rotation, and each
   `crypto.attack` candidate carries the `operation` that applies it. The
   Crypto panel's *Apply* is now a `transform.apply` step a recipe repeats.
+- `crypto.attack` with a crib lists the key bytes the crib reveals
+  (`key_fragments`), *key prefix at offset 0* first, even when the key is
+  longer than the crib and no decode comes of them.
 
 ### Fixed
 

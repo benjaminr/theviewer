@@ -65,6 +65,9 @@ const MIN_IMPROVEMENT: f64 = 0.15;
 const MIN_SCORE: f64 = 0.45;
 /// Characters in a candidate preview.
 const PREVIEW_CHARS: usize = 64;
+/// Crib positions past the start reported as key fragments because the
+/// key bytes they reveal read as text.
+const MAX_TEXT_FRAGMENTS: usize = 3;
 /// Bytes compared when deciding two candidates decode identically.
 const DEDUPLICATION_BYTES: usize = 4096;
 
@@ -335,6 +338,71 @@ pub fn crib_text(bytes: &[u8]) -> String {
 /// decodes the data most plausibly, best first.
 pub fn crib_drag(bytes: &[u8], crib: &[u8], top: usize) -> Vec<CribHit> {
     crib_drag_within(bytes, crib, MAX_CRIB_OFFSETS, top)
+}
+
+/// Key bytes a crib reveals where it sits: the data XOR the crib.
+#[derive(Clone, Debug, PartialEq)]
+pub struct KeyFragment {
+    /// Where the crib sits in the data.
+    pub offset: usize,
+    /// The key bytes under the crib: the key's first bytes when the crib
+    /// sits at offset 0.
+    pub keystream: Vec<u8>,
+    /// What the fragment is and how to use it.
+    pub reason: String,
+}
+
+/// The key bytes `crib` reveals at offset 0, and at up to
+/// [`MAX_TEXT_FRAGMENTS`] other offsets where they read as text (keys are
+/// often a serial number or a password). Crib dragging only proposes a
+/// decode when a repeating key no longer than the crib, or one the data's
+/// period suggests, makes the whole span plausible; a longer key leaves no
+/// decode, but these fragments are still the start of the answer.
+pub fn crib_key_fragments(bytes: &[u8], crib: &[u8]) -> Vec<KeyFragment> {
+    let sample = &bytes[..bytes.len().min(SAMPLE_BYTES)];
+    if crib.is_empty() || sample.len() < crib.len() {
+        return Vec::new();
+    }
+    let keystream_at = |offset: usize| -> Vec<u8> { sample[offset..offset + crib.len()].iter().zip(crib).map(|(byte, plain)| byte ^ plain).collect() };
+    let crib_label = crib_text(crib);
+    let start = keystream_at(0);
+    let mut fragments = vec![KeyFragment {
+        offset: 0,
+        reason: format!(
+            "key prefix at offset 0: if the data starts with \"{crib_label}\", the key's first {} bytes are {}{}; a longer key goes on from there",
+            crib.len(),
+            hex(&start),
+            quoted_if_text(&start)
+        ),
+        keystream: start,
+    }];
+    let last_offset = (sample.len() - crib.len()).min(MAX_CRIB_OFFSETS.saturating_sub(1));
+    let text_offsets = (1..=last_offset).filter(|&offset| reads_as_key_text(&keystream_at(offset), crib)).take(MAX_TEXT_FRAGMENTS);
+    fragments.extend(text_offsets.map(|offset| {
+        let keystream = keystream_at(offset);
+        KeyFragment {
+            offset,
+            reason: format!(
+                "key bytes at offset {offset:#x}: \"{crib_label}\" there leaves {}{}, which reads as text; where they fall in the key depends on its length",
+                hex(&keystream),
+                quoted_if_text(&keystream)
+            ),
+            keystream,
+        }
+    }));
+    fragments
+}
+
+/// Whether a keystream looks like part of a text key: printable, not one
+/// repeated character, and not the crib itself (which is what zero bytes
+/// under it give).
+fn reads_as_key_text(keystream: &[u8], crib: &[u8]) -> bool {
+    keystream.iter().all(|&byte| (0x20..0x7F).contains(&byte)) && keystream.iter().any(|&byte| byte != keystream[0]) && keystream != crib
+}
+
+/// ` ("text")` when every byte is printable, else nothing.
+fn quoted_if_text(bytes: &[u8]) -> String {
+    if bytes.iter().all(|&byte| (0x20..0x7F).contains(&byte)) { format!(" (\"{}\")", String::from_utf8_lossy(bytes)) } else { String::new() }
 }
 
 // ---------------------------------------------------------------------------
@@ -795,6 +863,29 @@ mod tests {
         let hits = crib_drag(&cipher, b"http://", 3);
         assert_eq!(hits[0].offset, plain.find("http://").unwrap());
         assert_eq!(hits[0].key, key);
+    }
+
+    #[test]
+    fn a_crib_shorter_than_the_key_still_gives_the_key_s_first_bytes() {
+        let config = "[camera]\nmodel = NovaCam NC-500\nserial = NC500-8D51266C\nrtsp_port = 554\n[cloud]\n\
+            admin_token = 3f9a0c2e71b84d65\nrecovery_flag = FLAG{8d51266c8ea1f897}\n";
+        let serial = b"NC500-8D51266C";
+        let cipher = xor::apply(config.as_bytes(), serial, 0);
+        let decodes = attack(&cipher, &AttackOptions { crib: Some(b"[camera]".to_vec()), max_results: 10 });
+        assert!(!decodes.iter().any(|candidate| candidate.transform == Transform::RepeatingXor { key: serial.to_vec() }), "too short to solve a 14-byte key");
+        let fragments = crib_key_fragments(&cipher, b"[camera]");
+        assert_eq!((fragments[0].offset, fragments[0].keystream.as_slice()), (0, b"NC500-8D".as_slice()));
+        assert!(fragments[0].reason.starts_with("key prefix at offset 0") && fragments[0].reason.contains("\"NC500-8D\""), "{}", fragments[0].reason);
+        assert!(fragments.iter().all(|fragment| fragment.offset == 0 || fragment.keystream.iter().all(u8::is_ascii_graphic)), "{fragments:?}");
+    }
+
+    #[test]
+    fn key_fragments_need_the_crib_to_fit_and_skip_zeros_that_echo_the_crib() {
+        assert!(crib_key_fragments(b"ab", b"abc").is_empty());
+        let mut data = vec![0xEEu8; 8];
+        data.extend([0u8; 16]);
+        let fragments = crib_key_fragments(&data, b"[camera]");
+        assert_eq!(fragments.len(), 1, "zeros under the crib give the crib back, not a key: {fragments:?}");
     }
 
     #[test]
