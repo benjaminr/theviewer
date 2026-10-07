@@ -413,10 +413,13 @@ mod tests {
             crate::actions::take_performed(),
             [("forensics.find_filesystems".to_string(), json!({})), ("forensics.classify_blocks".to_string(), json!({"block_size": fragments::DEFAULT_BLOCK_SIZE}))]
         );
+        let begun = std::time::Instant::now();
+        while harness.state().bench.panels.forensics.is_busy() && begun.elapsed() < Duration::from_secs(60) {
+            std::thread::sleep(Duration::from_millis(10));
+            harness.step();
+        }
         let state = &harness.state().bench.panels.forensics;
-        let blocks = state.blocks_pending.as_ref().expect("the panel waits for the classes").recv_timeout(Duration::from_secs(60)).expect("classified");
-        assert_eq!(blocks.runs[0].class, BlockClass::Text);
-        let filesystems = state.filesystems_pending.as_ref().expect("and for the filesystems").recv_timeout(Duration::from_secs(60)).expect("searched");
-        assert!(filesystems.filesystems.is_empty());
+        assert_eq!(state.blocks.as_ref().expect("the classes are shown").runs[0].class, BlockClass::Text);
+        assert!(state.filesystems.as_ref().expect("and the filesystems").filesystems.is_empty());
     }
 }

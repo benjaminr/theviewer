@@ -13,13 +13,13 @@
 
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver};
-use std::thread;
 use std::time::Duration;
 
 use eframe::egui::{self, Color32, CornerRadius, RichText, Sense, Stroke, Ui, vec2};
 
 use crate::app::{DialogKind, FileAction, ViewerApp};
-use crate::charset::{self, TextEncoding, TextReport};
+use crate::api::analysis::TextEncodingResult;
+use crate::charset::{self, TextEncoding};
 use crate::codec_profile::{self, Profile, SegmentProfile, Verdict};
 use crate::compress::human_bytes;
 use crate::elementary::{self, StreamKind, StreamRun};
@@ -29,7 +29,7 @@ use crate::plugin::Category;
 use crate::theme;
 
 /// Largest prefix of the document scanned for media streams.
-const STREAM_SCAN_LIMIT: usize = 256 * 1024 * 1024;
+pub(crate) const STREAM_SCAN_LIMIT: usize = 256 * 1024 * 1024;
 /// Most bytes handed to the player, written to a file or decoded as text.
 const MAX_EXTRACT: usize = 512 * 1024 * 1024;
 /// Bytes examined from the cursor when nothing is selected.
@@ -45,9 +45,9 @@ const SOURCE: &str = "builtin.elementary_streams";
 
 /// Identifies the document a result was computed from, to flag stale results.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct DocumentKey {
-    len: usize,
-    version: u64,
+pub(crate) struct DocumentKey {
+    pub len: usize,
+    pub version: u64,
 }
 
 impl DocumentKey {
@@ -56,26 +56,26 @@ impl DocumentKey {
     }
 }
 
-struct CompressionResult {
-    key: DocumentKey,
+pub(crate) struct CompressionResult {
+    pub key: DocumentKey,
     /// What was profiled, e.g. "selection 0x100..0x900".
-    scope: String,
-    profile: Profile,
+    pub scope: String,
+    pub profile: Profile,
     /// Per-segment profiles for a whole-file run; empty for a selection.
-    segments: Vec<SegmentProfile>,
+    pub segments: Vec<SegmentProfile>,
 }
 
-struct StreamScan {
-    key: DocumentKey,
-    scanned_len: usize,
-    runs: Vec<StreamRun>,
+pub(crate) struct StreamScan {
+    pub key: DocumentKey,
+    pub scanned_len: usize,
+    pub runs: Vec<StreamRun>,
 }
 
 struct TextResult {
     key: DocumentKey,
     start: usize,
     len: usize,
-    report: TextReport,
+    report: TextEncodingResult,
 }
 
 #[derive(Default)]
@@ -84,13 +84,12 @@ pub struct CharacteriseState {
     compression: Option<CompressionResult>,
     streams_pending: Option<Receiver<StreamScan>>,
     streams: Option<StreamScan>,
-    text_pending: Option<Receiver<TextResult>>,
     text: Option<TextResult>,
 }
 
 impl CharacteriseState {
     fn is_busy(&self) -> bool {
-        self.compression_pending.is_some() || self.streams_pending.is_some() || self.text_pending.is_some()
+        self.compression_pending.is_some() || self.streams_pending.is_some()
     }
 
     /// Collect any finished background results.
@@ -100,9 +99,6 @@ impl CharacteriseState {
         }
         if let Some(result) = take_ready(&mut self.streams_pending) {
             self.streams = Some(result);
-        }
-        if let Some(result) = take_ready(&mut self.text_pending) {
-            self.text = Some(result);
         }
     }
 }
@@ -124,13 +120,22 @@ fn take_ready<T>(pending: &mut Option<Receiver<T>>) -> Option<T> {
     }
 }
 
-/// Run `work` on a background thread and return where its result arrives.
-fn spawn<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> Receiver<T> {
+/// Where a job's result for the panel is sent, and where the panel waits for it.
+fn awaited<T>(pending: &mut Option<Receiver<T>>) -> mpsc::Sender<T> {
     let (sender, receiver) = mpsc::channel();
-    thread::spawn(move || {
-        let _ = sender.send(work());
-    });
-    receiver
+    *pending = Some(receiver);
+    sender
+}
+
+/// Wait for a profile `characterise.profile_selection` or
+/// `characterise.profile_file` started; returns where it is sent.
+pub(crate) fn await_compression(app: &mut ViewerApp) -> mpsc::Sender<CompressionResult> {
+    awaited(&mut app.bench.panels.characterise.compression_pending)
+}
+
+/// Wait for a search `characterise.streams` started; returns where it is sent.
+pub(crate) fn await_streams(app: &mut ViewerApp) -> mpsc::Sender<StreamScan> {
+    awaited(&mut app.bench.panels.characterise.streams_pending)
 }
 
 pub fn show_characterise(state: &mut CharacteriseState, app: &mut ViewerApp, ui: &mut Ui) {
@@ -177,26 +182,34 @@ fn verdict_colour(verdict: Verdict) -> Color32 {
 }
 
 /// Read the sample ranges of a region and join them.
-fn read_sample(app: &mut ViewerApp, start: usize, len: usize, budget: usize) -> Vec<u8> {
-    codec_profile::sample_ranges(start, len, budget).into_iter().flat_map(|(offset, len)| app.document.read_range(offset, len)).collect()
+pub(crate) fn read_sample(document: &mut crate::document::Document, start: usize, len: usize, budget: usize) -> Vec<u8> {
+    codec_profile::sample_ranges(start, len, budget).into_iter().flat_map(|(offset, len)| document.read_range(offset, len)).collect()
 }
 
-fn start_selection_profile(state: &mut CharacteriseState, app: &mut ViewerApp, start: usize, len: usize) {
-    let key = DocumentKey::of(app);
-    let sample = read_sample(app, start, len, codec_profile::MAX_SAMPLE);
-    let scope = format!("selection {start:#x}..{:#x} ({})", start + len, human_bytes(len));
-    state.compression_pending = Some(spawn(move || CompressionResult { key, scope, profile: codec_profile::profile_sample(&sample), segments: Vec::new() }));
+/// What a selection's profile says it profiled.
+pub(crate) fn selection_scope(start: usize, len: usize) -> String {
+    format!("selection {start:#x}..{:#x} ({})", start + len, human_bytes(len))
 }
 
-fn start_whole_file_profile(state: &mut CharacteriseState, app: &mut ViewerApp) {
-    let key = DocumentKey::of(app);
-    let overall = read_sample(app, 0, key.len, codec_profile::MAX_SAMPLE);
-    let segments: Vec<(usize, usize, Vec<u8>)> = codec_profile::segment_bounds(key.len, codec_profile::MAX_SEGMENTS)
+/// A segment of the document and the sample read from it: offset, length, bytes.
+pub(crate) type SegmentSample = (usize, usize, Vec<u8>);
+
+/// The samples a whole-file profile compresses: one along the whole
+/// document, and one per segment of it.
+pub(crate) fn whole_file_samples(document: &mut crate::document::Document) -> (Vec<u8>, Vec<SegmentSample>) {
+    let len = document.len();
+    let overall = read_sample(document, 0, len, codec_profile::MAX_SAMPLE);
+    let segments = codec_profile::segment_bounds(len, codec_profile::MAX_SEGMENTS)
         .into_iter()
-        .map(|(offset, len)| (offset, len, read_sample(app, offset, len, codec_profile::SEGMENT_SAMPLE)))
+        .map(|(offset, segment_len)| (offset, segment_len, read_sample(document, offset, segment_len, codec_profile::SEGMENT_SAMPLE)))
         .collect();
+    (overall, segments)
+}
+
+/// Profile the whole document of `key` from its samples.
+pub(crate) fn profile_whole_file(key: DocumentKey, overall: &[u8], segments: Vec<SegmentSample>) -> CompressionResult {
     let scope = format!("whole file ({}), sampled along its length", human_bytes(key.len));
-    state.compression_pending = Some(spawn(move || CompressionResult { key, scope, profile: codec_profile::profile_sample(&overall), segments: codec_profile::profile_segments(segments) }));
+    CompressionResult { key, scope, profile: codec_profile::profile_sample(overall), segments: codec_profile::profile_segments(segments) }
 }
 
 fn show_compressibility(state: &mut CharacteriseState, app: &mut ViewerApp, ui: &mut Ui) {
@@ -210,10 +223,10 @@ fn show_compressibility(state: &mut CharacteriseState, app: &mut ViewerApp, ui: 
         if ui.add_enabled(idle && selection.is_some(), egui::Button::new(label)).on_disabled_hover_text("Select some bytes first").clicked()
             && let Some((start, len)) = selection
         {
-            start_selection_profile(state, app, start, len);
+            app.perform_later("characterise.profile_selection", serde_json::json!({ "start": start, "len": len }));
         }
         if ui.add_enabled(idle && !app.document.is_empty(), egui::Button::new("Profile whole file")).clicked() {
-            start_whole_file_profile(state, app);
+            app.perform_later("characterise.profile_file", serde_json::json!({}));
         }
         if !idle {
             ui.spinner();
@@ -236,7 +249,7 @@ fn show_compressibility(state: &mut CharacteriseState, app: &mut ViewerApp, ui: 
         ui.add_space(4.0);
         ui.label(dim("Verdict along the file (click to jump):"));
         if let Some(offset) = verdict_strip(ui, &result.segments) {
-            app.jump_to_offset(offset);
+            app.jump_found(offset);
         }
         verdict_legend(ui, &result.segments);
     }
@@ -318,12 +331,6 @@ fn verdict_legend(ui: &mut Ui, segments: &[SegmentProfile]) {
 // Media streams
 // ---------------------------------------------------------------------------
 
-fn start_stream_scan(state: &mut CharacteriseState, app: &mut ViewerApp) {
-    let key = DocumentKey::of(app);
-    let bytes = app.document.read_range(0, key.len.min(STREAM_SCAN_LIMIT));
-    state.streams_pending = Some(spawn(move || StreamScan { key, scanned_len: bytes.len(), runs: elementary::find_streams(&bytes) }));
-}
-
 /// What the user asked for in the streams section this frame.
 enum StreamAction {
     Select(usize),
@@ -335,7 +342,7 @@ fn show_streams(state: &mut CharacteriseState, app: &mut ViewerApp, ui: &mut Ui)
     ui.horizontal_wrapped(|ui| {
         let size = human_bytes(app.document.len().min(STREAM_SCAN_LIMIT));
         if ui.add_enabled(state.streams_pending.is_none(), egui::Button::new(format!("Scan for media streams ({size})"))).clicked() {
-            start_stream_scan(state, app);
+            app.perform_later("characterise.streams", serde_json::json!({}));
         }
         if state.streams_pending.is_some() {
             ui.spinner();
@@ -437,22 +444,23 @@ fn text_target(app: &ViewerApp) -> (usize, usize) {
     app.selection().unwrap_or_else(|| (app.cursor, TEXT_WINDOW.min(app.document.len().saturating_sub(app.cursor))))
 }
 
+/// The person identifies the encoding of the selection, else the bytes at
+/// the cursor: `analysis.text_encoding`.
 fn start_text_analysis(state: &mut CharacteriseState, app: &mut ViewerApp) {
     let key = DocumentKey::of(app);
     let (start, len) = text_target(app);
-    let sample = app.document.read_range(start, len.min(charset::MAX_TEXT_SAMPLE));
-    state.text_pending = Some(spawn(move || TextResult { key, start, len, report: charset::characterise_text(&sample) }));
+    let params = serde_json::json!({ "start": start, "len": len.min(charset::MAX_TEXT_SAMPLE) });
+    if let Ok(report) = app.perform_typed::<TextEncodingResult>("analysis.text_encoding", params) {
+        state.text = Some(TextResult { key, start, len, report });
+    }
 }
 
 fn show_text(state: &mut CharacteriseState, app: &mut ViewerApp, ui: &mut Ui) {
     ui.horizontal_wrapped(|ui| {
         let label = if app.selection().is_some() { "Identify selection's encoding" } else { "Identify encoding at cursor" };
         let has_bytes = text_target(app).1 > 0;
-        if ui.add_enabled(state.text_pending.is_none() && has_bytes, egui::Button::new(label)).clicked() {
+        if ui.add_enabled(has_bytes, egui::Button::new(label)).clicked() {
             start_text_analysis(state, app);
-        }
-        if state.text_pending.is_some() {
-            ui.spinner();
         }
         if let Some(result) = &state.text {
             stale_marker(ui, result.key, app);
@@ -465,7 +473,7 @@ fn show_text(state: &mut CharacteriseState, app: &mut ViewerApp, ui: &mut Ui) {
         );
         return;
     };
-    ui.label(dim(format!("{:#x}..{:#x}: {} examined", result.start, result.start + result.len, human_bytes(result.report.sample_len))));
+    ui.label(dim(format!("{:#x}..{:#x}: {} examined", result.start, result.start + result.len, human_bytes(result.report.sample_len as usize))));
     language_line(ui, &result.report);
     let open = encoding_table(ui, &result.report);
     if let Some(encoding) = open {
@@ -474,20 +482,20 @@ fn show_text(state: &mut CharacteriseState, app: &mut ViewerApp, ui: &mut Ui) {
     }
 }
 
-fn language_line(ui: &mut Ui, report: &TextReport) {
+fn language_line(ui: &mut Ui, report: &TextEncodingResult) {
     ui.horizontal_wrapped(|ui| {
         ui.label(RichText::new("Language:").color(theme::TEXT_DIM));
         if report.languages.is_empty() {
             ui.label(dim("not enough text to tell"));
         }
         for guess in report.languages.iter().take(LANGUAGES_SHOWN) {
-            ui.label(RichText::new(format!("{} {:.0}%", guess.language.label(), guess.confidence * 100.0)).color(theme::ACCENT)).on_hover_text(guess.reason.as_str());
+            ui.label(RichText::new(format!("{} {:.0}%", guess.language, guess.confidence * 100.0)).color(theme::ACCENT)).on_hover_text(guess.reason.as_str());
         }
     });
 }
 
 /// The ranked encodings; returns one when its "Open" button is clicked.
-fn encoding_table(ui: &mut Ui, report: &TextReport) -> Option<TextEncoding> {
+fn encoding_table(ui: &mut Ui, report: &TextEncodingResult) -> Option<TextEncoding> {
     let mut open = None;
     egui::Grid::new("characterise-encoding-grid").num_columns(4).striped(true).spacing([10.0, 2.0]).show(ui, |ui| {
         for heading in ["Encoding", "Confidence", "", "Preview"] {
@@ -497,14 +505,14 @@ fn encoding_table(ui: &mut Ui, report: &TextReport) -> Option<TextEncoding> {
         for guess in &report.encodings {
             let valid = guess.confidence > 0.0;
             let colour = if valid { theme::TEXT } else { theme::TEXT_DIM };
-            let mut label = guess.encoding.label().to_string();
+            let mut label = guess.encoding.clone();
             if guess.has_bom {
                 label.push_str(" (BOM)");
             }
             ui.label(RichText::new(label).color(colour)).on_hover_text(guess.reason.as_str());
             ui.monospace(RichText::new(format!("{:>3.0}%", guess.confidence * 100.0)).color(colour));
             if ui.add_enabled(valid, egui::Button::new("Open as UTF-8").small()).on_hover_text("Decode the region with this encoding and open it as a new document").clicked() {
-                open = Some(guess.encoding);
+                open = TextEncoding::ALL.into_iter().find(|encoding| encoding.label() == guess.encoding);
             }
             ui.add(egui::Label::new(RichText::new(guess.preview.as_str()).monospace().color(colour)).truncate());
             ui.end_row();
@@ -513,11 +521,13 @@ fn encoding_table(ui: &mut Ui, report: &TextReport) -> Option<TextEncoding> {
     open
 }
 
+/// The person opens the region decoded with `encoding` as a UTF-8
+/// document: `documents.derive`, with the text.
 fn open_decoded(app: &mut ViewerApp, start: usize, len: usize, encoding: TextEncoding) {
     let bytes = app.document.read_range(start, len.min(MAX_EXTRACT));
     let text = charset::decode(&bytes, encoding);
     let name = format!("{} › {}@{start:#x} as UTF-8", app.display_name(), encoding.label());
-    app.open_derived(text.into_bytes(), name);
+    let _ = app.perform("documents.derive", serde_json::json!({ "data": text, "encoding": "text", "name": name }));
 }
 
 #[cfg(test)]
@@ -534,7 +544,8 @@ mod tests {
 
     #[test]
     fn a_finished_job_is_collected_once_and_a_vanished_one_is_cleared() {
-        let mut pending = Some(spawn(|| 7));
+        let mut pending = None;
+        awaited(&mut pending).send(7).unwrap();
         let mut collected = None;
         for _ in 0..200 {
             if let Some(value) = take_ready(&mut pending) {
@@ -562,5 +573,67 @@ mod tests {
     #[test]
     fn the_probe_list_matches_the_ratio_table_headings() {
         assert!(Probe::ALL.iter().all(|probe| !probe.label().is_empty() && !probe.description().is_empty()));
+    }
+
+    fn app_with(bytes: &[u8]) -> ViewerApp {
+        let mut app = ViewerApp::new(crate::app::Launch::default());
+        app.open_bytes(bytes.to_vec(), "notes.txt".to_string());
+        app.run_bus();
+        crate::actions::take_performed();
+        app
+    }
+
+    /// The panel drawn as the window draws it: its state lent out of the
+    /// app, and the actions it asked for carried out before each frame.
+    fn harness_for(app: ViewerApp) -> egui_kittest::Harness<'static, ViewerApp> {
+        egui_kittest::Harness::new_ui_state(
+            |ui, app: &mut ViewerApp| {
+                app.perform_waiting_actions();
+                crate::panels::show(app, ui, |panels| &mut panels.characterise, show_characterise);
+            },
+            app,
+        )
+    }
+
+    #[test]
+    fn profiles_and_the_stream_search_are_jobs_of_the_person_s_with_their_spans_in_the_step() {
+        use egui_kittest::kittest::Queryable;
+        let mut app = app_with(&b"The quick brown fox jumps over the lazy dog. ".repeat(100));
+        app.restore_selection(10, 500);
+        let mut harness = harness_for(app);
+        harness.step();
+        harness.get_by_label_contains("Profile selection").click();
+        harness.step();
+        harness.get_by_label_contains("Scan for media streams").click();
+        harness.step();
+        harness.step();
+        assert_eq!(
+            crate::actions::take_performed(),
+            [("characterise.profile_selection".to_string(), serde_json::json!({"start": 10, "len": 500})), ("characterise.streams".to_string(), serde_json::json!({}))]
+        );
+        let state = &harness.state().bench.panels.characterise;
+        assert!(state.streams_pending.is_some() || state.streams.is_some());
+        // Another profile waits until this one is in.
+        let mut harness = harness_for(app_with(b"some bytes to profile, some more bytes"));
+        harness.step();
+        harness.get_by_label("Profile whole file").click();
+        harness.step();
+        harness.step();
+        assert_eq!(crate::actions::take_performed(), [("characterise.profile_file".to_string(), serde_json::json!({}))]);
+    }
+
+    #[test]
+    fn the_encoding_is_read_through_the_api_and_opening_it_decoded_is_a_derived_document() {
+        let mut app = app_with(b"plain ASCII text, nothing more");
+        app.restore_selection(0, 11);
+        let mut state = CharacteriseState::default();
+        start_text_analysis(&mut state, &mut app);
+        assert_eq!(crate::actions::take_performed(), [("analysis.text_encoding".to_string(), serde_json::json!({"start": 0, "len": 11}))]);
+        let report = &state.text.as_ref().expect("the encodings are shown").report;
+        assert_eq!(report.encodings[0].encoding, TextEncoding::Ascii.label());
+        open_decoded(&mut app, 0, 11, TextEncoding::Ascii);
+        let name = "notes.txt › ASCII@0x0 as UTF-8";
+        assert_eq!(crate::actions::take_performed(), [("documents.derive".to_string(), serde_json::json!({"data": "plain ASCII", "encoding": "text", "name": name}))]);
+        assert_eq!(app.display_name(), name);
     }
 }

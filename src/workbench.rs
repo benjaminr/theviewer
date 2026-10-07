@@ -829,25 +829,37 @@ impl ViewerApp {
     // Unpacking
     // -----------------------------------------------------------------------
 
+    /// The person unpacks everything nested in the document: `unpack.run`,
+    /// unless an unpacking is already under way.
     pub fn start_unpack(&mut self) {
         if self.bench.busy(|p| matches!(p, Pending::Unpack(_))) || self.document.is_empty() {
             return;
         }
+        let _ = self.perform("unpack.run", serde_json::json!({}));
+    }
+
+    /// Unpack the document on a thread as a job of `producer`'s, the tree
+    /// filling the Unpacked tab and the Size map: what `unpack.run` does in
+    /// the window. Returns the job.
+    pub(crate) fn unpack_as(&mut self, producer: &str) -> String {
         let bytes = Arc::new(self.document.read_range(0, ANALYSIS_READ_LIMIT));
         let name = self.display_name();
         let (sender, receiver) = mpsc::channel();
-        let job = self.start_job("unpack", "Unpack");
+        let job = self.bus.start_job("unpack", "Unpack", producer, Some((self.document_id(), self.document.version())));
+        let id = job.id().to_string();
         thread::spawn(move || {
             let tree = unpack::unpack(bytes, &name, &unpack::Limits::default());
             if job.is_cancelled() {
                 return job.finish_cancelled();
             }
-            job.finish(true, format!("{} items", tree.count().saturating_sub(1)));
+            let summary = crate::api::tools::unpack::tree_summary(&tree);
+            job.finish_with(summary.ok, summary.outcome, Some(summary.result));
             let _ = sender.send(tree);
         });
         self.bench.pending.push(Pending::Unpack(receiver));
         self.note_tool_result(DockTab::Unpacked);
         self.status = "Unpacking nested containers…".to_string();
+        id
     }
 
     fn show_unpacked_tab(&mut self, ui: &mut Ui) {
@@ -872,11 +884,9 @@ impl ViewerApp {
         });
         match action {
             Some(NodeAction::Open(path)) => {
-                if let Some(node) = root.find(&path) {
-                    self.open_derived(node.data.to_vec(), format!("{} › {}", self.display_name(), node.name));
-                }
+                let _ = self.perform("unpack.open", serde_json::json!({ "path": path }));
             }
-            Some(NodeAction::Jump(offset)) => self.jump_to_offset(offset),
+            Some(NodeAction::Jump(offset)) => self.jump_found(offset),
             Some(NodeAction::Save(path)) => {
                 if let Some(node) = root.find(&path) {
                     let dialog = rfd::AsyncFileDialog::new().set_file_name(node.name.replace('/', "_"));
@@ -1416,5 +1426,29 @@ mod tests {
         let text = render_fields(&fields, 0, 10);
         assert_eq!(text, "header @ 0x0 (8 B): \n  magic @ 0x0 (4 B): PNG\n  len @ 0x4 (4 B): 13\n");
         assert!(render_fields(&fields, 0, 1).ends_with("…\n"));
+    }
+
+    #[test]
+    fn unpacking_is_a_job_of_the_person_s_that_fills_the_tab_and_a_node_opens_through_the_api() {
+        use serde_json::json;
+        let mut app = ViewerApp::new(crate::app::Launch::default());
+        app.open_bytes(crate::api::test_support::example_bytes(), "example.bin".to_string());
+        crate::actions::take_performed();
+        app.start_unpack();
+        assert_eq!(crate::actions::take_performed(), [("unpack.run".to_string(), json!({}))]);
+        let ctx = Context::default();
+        let begun = std::time::Instant::now();
+        while app.bench.unpacked.is_none() && begun.elapsed() < std::time::Duration::from_secs(60) {
+            app.poll_workbench(&ctx);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let tree = app.bench.unpacked.clone().expect("the tree fills the tab");
+        assert_eq!(tree.children[0].data.len(), 300);
+        app.run_bus();
+        let job = app.bus.jobs().list().into_iter().find(|job| job.title == "Unpack").expect("the unpacking is a job");
+        assert_eq!((job.producer.as_str(), job.result.as_ref().map(|result| result["children"][0]["len"].clone())), ("panel", Some(json!(300))));
+        let opened = app.perform("unpack.open", json!({"path": [0]})).unwrap();
+        assert_eq!(opened["len"], 300);
+        assert_eq!(app.document.len(), 300, "the node is the document shown");
     }
 }

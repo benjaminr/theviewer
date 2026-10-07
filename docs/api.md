@@ -138,6 +138,12 @@ Errors are `{code, message, data}`, with these codes:
 | [`forensics.find_filesystems`](#forensicsfind_filesystems) | job | Start a search of the document (its first 256 MiB) for SquashFS, CramFS, JFFS2 and UBI images as a job: each image found, with its files, is job.finished's result, and in the window they fill Forensics. |
 | [`forensics.open_entry`](#forensicsopen_entry) | view | Open one file (or volume) of the filesystem image at an offset of the document as a derived document, by its path in the image. |
 | [`forensics.classify_blocks`](#forensicsclassify_blocks) | job | Start labelling every block of the document (its first 256 MiB) as padding, text, markup, machine code, compressed, random, raw image, PCM audio or table data as a job: the runs of one class, with the reason for each, are job.finished's result, and in the window they fill Forensics. |
+| [`unpack.run`](#unpackrun) | job | Start extracting the archives and compressed streams in the document (its first 256 MiB) recursively, like binwalk -e, as a job: the tree of what was found, each node with its kind, size and where its bytes came from, is job.finished's result, and in the window it fills the Unpacked tab and the Size map. |
+| [`unpack.open`](#unpackopen) | view | Open one node of the unpacked tree (by its path of child indices, as unpack.run gave it) as a derived document. |
+| [`unpack.read`](#unpackread) | read | Read the bytes of one node of the unpacked tree, by its path of child indices, as hex by default, or as base64 or text. |
+| [`characterise.profile_selection`](#characteriseprofile_selection) | job | Start compressing a sample of a span with deflate, bzip2, LZ4, zstd and an order-1 entropy coder as a job: the ratios and the verdict they give (encrypted or random, already compressed, lossy media or structured) are job.finished's result, and in the window they fill Characterise (analysis.compressibility is the quick read). |
+| [`characterise.profile_file`](#characteriseprofile_file) | job | Start profiling the compressibility of the whole document as a job, overall and for up to 64 segments sampled along it: the verdicts are job.finished's result, and in the window they fill Characterise with a strip of verdicts. |
+| [`characterise.streams`](#characterisestreams) | job | Start a search of the document (its first 256 MiB) for raw MP3/MP2 and AAC frames, H.264 and H.265 Annex B video and 16-bit PCM audio without a container as a job: the runs found are job.finished's result, and in the window they fill Characterise. |
 | [`view.get_shape`](#viewget_shape) | read | The shape a document's bytes are drawn in: the pixel format, pixels per row, the offset of the first pixel, a bit shift and the bytes skipped after each row. |
 | [`view.set_shape`](#viewset_shape) | view | Change the shape a document's bytes are drawn in (the pixel format, pixels per row, the first pixel's offset and bit, the padding after each row); what is not given stays as it is. |
 | [`view.fold`](#viewfold) | view | Skip ranges of a document in its views (the raster and the hex dump) without deleting them; a marker shows where each was. |
@@ -2123,6 +2129,94 @@ Start labelling every block of the document (its first 256 MiB) as padding, text
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `block_size` | integer | no | Bytes per block, at least 256 (4096 by default). |
+| `doc` | string | no | Document id, path or "current" (the default). |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `job` | string | yes | Follow it with jobs.status, or on job.progress and job.finished. |
+
+### unpack.run
+
+Start extracting the archives and compressed streams in the document (its first 256 MiB) recursively, like binwalk -e, as a job: the tree of what was found, each node with its kind, size and where its bytes came from, is job.finished's result, and in the window it fills the Unpacked tab and the Size map.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `doc` | string | no | Document id, path or "current" (the default). |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `job` | string | yes | Follow it with jobs.status, or on job.progress and job.finished. |
+
+### unpack.open
+
+Open one node of the unpacked tree (by its path of child indices, as unpack.run gave it) as a derived document.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `doc` | string | no | Document id, path or "current" (the default): the parent. |
+| `path` | array of integer | yes | Child indices from the root, such as [0, 2]; [] is the document itself. |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `current` | boolean | yes | Whether this is the current document. |
+| `id` | string | yes | Stable id, such as "doc-1". |
+| `len` | integer | yes | Length in bytes. |
+| `modified` | boolean | yes | Whether there are edits not saved. |
+| `name` | string | yes | File name, or the name of a derived document. |
+| `path` | string | no | Path on disk, for documents opened from a file. |
+| `version` | integer | yes | Incremented on every edit. |
+
+### unpack.read
+
+Read the bytes of one node of the unpacked tree, by its path of child indices, as hex by default, or as base64 or text.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `doc` | string | no | Document id, path or "current" (the default). |
+| `encoding` | `"hex"` \| `"base64"` \| `"text"` | no | hex (the default), base64 or text. |
+| `len` | integer | no | Bytes read, at most 16 MiB; to the end of the node when omitted. |
+| `path` | array of integer | yes | Child indices from the root, such as [0, 2]. |
+| `start` | integer | no | First offset in the node's bytes (0 by default). |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `data` | string | yes |  |
+| `encoding` | `"hex"` \| `"base64"` \| `"text"` | yes | How bytes are written in JSON. |
+| `name` | string | yes |  |
+| `node_len` | integer | yes | Bytes in the whole node. |
+
+### characterise.profile_selection
+
+Start compressing a sample of a span with deflate, bzip2, LZ4, zstd and an order-1 entropy coder as a job: the ratios and the verdict they give (encrypted or random, already compressed, lossy media or structured) are job.finished's result, and in the window they fill Characterise (analysis.compressibility is the quick read).
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `doc` | string | no | Document id, path or "current" (the default). |
+| `len` | integer | yes | Bytes in the span; a sample of at most 256 KiB is compressed, slices spread along it. |
+| `start` | integer | yes | First offset of the span (0 by default). |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `job` | string | yes | Follow it with jobs.status, or on job.progress and job.finished. |
+
+### characterise.profile_file
+
+Start profiling the compressibility of the whole document as a job, overall and for up to 64 segments sampled along it: the verdicts are job.finished's result, and in the window they fill Characterise with a strip of verdicts.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `doc` | string | no | Document id, path or "current" (the default). |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `job` | string | yes | Follow it with jobs.status, or on job.progress and job.finished. |
+
+### characterise.streams
+
+Start a search of the document (its first 256 MiB) for raw MP3/MP2 and AAC frames, H.264 and H.265 Annex B video and 16-bit PCM audio without a container as a job: the runs found are job.finished's result, and in the window they fill Characterise.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
 | `doc` | string | no | Document id, path or "current" (the default). |
 
 | Result field | Type | Required | Description |

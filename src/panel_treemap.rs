@@ -109,7 +109,7 @@ pub fn show_treemap(state: &mut TreemapState, app: &mut ViewerApp, ui: &mut Ui) 
     };
     match action {
         Some(MapAction::JumpTo(offset)) => {
-            app.jump_to_offset(offset);
+            app.jump_found(offset);
             app.status = format!("Jumped to {offset:#x}");
         }
         Some(MapAction::Open(path)) => open_node(app, &path),
@@ -338,12 +338,12 @@ fn describe_node(node: &Node) -> String {
     text
 }
 
-/// Open the node at `path` as a derived document, as the Unpacked tab does.
+/// The person opens the node at `path` as a derived document, as the
+/// Unpacked tab does: `unpack.open`.
 fn open_node(app: &mut ViewerApp, path: &[usize]) {
-    let Some(node) = app.bench.unpacked.as_ref().and_then(|root| root.find(path)) else { return };
-    let (bytes, name) = (node.data.to_vec(), node.name.clone());
-    let name = format!("{} › {name}", app.display_name());
-    app.open_derived(bytes, name);
+    if app.bench.unpacked.as_ref().and_then(|root| root.find(path)).is_some() {
+        let _ = app.perform("unpack.open", serde_json::json!({ "path": path }));
+    }
 }
 
 /// Darker for outer levels, lighter for each level nested inside.
