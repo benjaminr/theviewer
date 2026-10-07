@@ -1493,7 +1493,7 @@ fn an_edit_marks_the_report_out_of_date_and_the_segments_refresh_themselves() {
     steps(&mut harness, 2);
     harness.get_by_label("Show on file map").click();
     steps(&mut harness, 2);
-    let segments_end = |app: &ViewerApp| app.bench.pinned.iter().filter(|f| f.id.starts_with("segment:")).map(|f| f.end()).max();
+    let segments_end = |app: &ViewerApp| app.pinned_findings().into_iter().filter(|(_, f)| f.id.starts_with("segment:")).map(|(_, f)| f.end()).max();
     assert_eq!(segments_end(harness.state()), Some(SAMPLE_LEN));
 
     // The report.
@@ -1513,7 +1513,7 @@ fn an_edit_marks_the_report_out_of_date_and_the_segments_refresh_themselves() {
 
     // Once the edits settle, the segments work themselves out again and the
     // pinned ones follow; the report waits for Refresh.
-    step_until(&mut harness, |app| app.bench.pinned.iter().filter(|f| f.id.starts_with("segment:")).map(|f| f.end()).max() == Some(SAMPLE_LEN + 4096));
+    step_until(&mut harness, |app| app.pinned_findings().into_iter().filter(|(_, f)| f.id.starts_with("segment:")).map(|(_, f)| f.end()).max() == Some(SAMPLE_LEN + 4096) && !app.tool_out_of_date(DockTab::StructureMap) && !app.bench.panels.structure_map.is_busy());
     assert_eq!(segments_end(harness.state()), Some(SAMPLE_LEN + 4096), "the pinned segments cover the edited document");
     assert!(!harness.state().tool_out_of_date(DockTab::StructureMap));
     assert!(harness.state().tool_out_of_date(DockTab::Report), "the report is not redone by itself");

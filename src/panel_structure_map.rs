@@ -10,17 +10,18 @@ use std::time::Duration;
 
 use eframe::egui::{self, Color32, CornerRadius, Rect, RichText, Sense, Stroke, Ui, pos2, vec2};
 
+use crate::api::Caller;
+use crate::api::findings::PublishParams;
+use crate::api::tools::structure_map::{SCAN_LIMIT, run_segmentation, run_similar, run_tracks};
 use crate::app::ViewerApp;
 use crate::compress::human_bytes;
 use crate::features::KindMix;
 use crate::plugin::{Category, Finding};
-use crate::segments::{self, SegmentOptions, Segmentation};
+use crate::segments::Segmentation;
 use crate::similar::{self, SimilarError, SimilarOptions, SimilarRegion, SimilarityScores};
 use crate::theme;
-use crate::tracks::{self, FeatureTracks, TrackOptions};
+use crate::tracks::{self, FeatureTracks};
 
-/// Largest prefix of the document analysed by any section.
-const SCAN_LIMIT: usize = 256 * 1024 * 1024;
 /// How often to look for a finished background job.
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
 const STRIP_HEIGHT: f32 = 28.0;
@@ -107,9 +108,10 @@ impl StructureMapState {
     /// pinned ones, if they were pinned.
     fn poll(&mut self, app: &mut ViewerApp) {
         if let Some(job) = receive(&mut self.segments_pending) {
-            if app.bench.pinned.iter().any(|finding| finding.id.starts_with(SEGMENT_ID_PREFIX)) {
-                unpin(app, SEGMENT_ID_PREFIX);
-                app.bench.pinned.extend(segment_findings(&job.result));
+            if person_pinned(app, SEGMENT_ID_PREFIX) {
+                // The person's pins, kept up to date by the tool: not a step of theirs.
+                let params = PublishParams { doc: None, findings: segment_findings(&job.result), key: SEGMENT_ID_PREFIX.to_string() };
+                let _ = crate::api::findings::publish(app, &Caller::Panel, params);
             }
             self.segments = Some(job);
         }
@@ -179,28 +181,43 @@ fn apply(state: &StructureMapState, app: &mut ViewerApp, action: Action) {
             let finding = Finding::new("structure-map:selection", FINDING_SOURCE, Category::Custom, start, len.max(1)).title(title);
             app.select_pattern(&finding);
         }
-        Action::Jump(offset) => app.jump_to_offset(offset),
-        Action::SetWidth(width) => app.set_width(width),
+        Action::Jump(offset) => app.jump_from_tool(offset),
+        Action::SetWidth(width) => app.change_width(width),
         Action::PinSegments => {
-            unpin(app, SEGMENT_ID_PREFIX);
-            if let Some(job) = &state.segments {
-                app.bench.pinned.extend(segment_findings(&job.result));
-            }
+            let findings = state.segments.as_ref().map(|job| segment_findings(&job.result)).unwrap_or_default();
+            pin(app, SEGMENT_ID_PREFIX, findings);
         }
         Action::ClearSegments => unpin(app, SEGMENT_ID_PREFIX),
         Action::PinSimilar => {
-            unpin(app, SIMILAR_ID_PREFIX);
-            if let Some(SimilarJob { result: Ok(scores), .. }) = &state.similar {
-                let regions = similar::matching_regions(scores, state.similar_settings.threshold);
-                app.bench.pinned.extend(similar_findings(&regions));
-            }
+            let findings = match &state.similar {
+                Some(SimilarJob { result: Ok(scores), .. }) => similar_findings(&similar::matching_regions(scores, state.similar_settings.threshold)),
+                _ => Vec::new(),
+            };
+            pin(app, SIMILAR_ID_PREFIX, findings);
         }
         Action::ClearSimilar => unpin(app, SIMILAR_ID_PREFIX),
     }
 }
 
-fn unpin(app: &mut ViewerApp, prefix: &str) {
-    app.bench.pinned.retain(|finding| !finding.id.starts_with(prefix));
+/// Pin `findings` on the file map for the person, under `key` in place of
+/// those pinned there before, through `findings.publish`.
+fn pin(app: &mut ViewerApp, key: &str, findings: Vec<Finding>) {
+    let findings = serde_json::to_value(findings).unwrap_or_default();
+    let _ = app.perform("findings.publish", serde_json::json!({ "findings": findings, "key": key }));
+}
+
+/// Take the findings pinned under `key` off the file map for the person,
+/// through `findings.retract`.
+fn unpin(app: &mut ViewerApp, key: &str) {
+    let _ = app.perform("findings.retract", serde_json::json!({ "key": key }));
+}
+
+/// Whether the person has findings pinned under `key` on the document shown.
+fn person_pinned(app: &ViewerApp, key: &str) -> bool {
+    let document = app.document_id();
+    app.bus.facts().any(|fact| {
+        fact.topic() == crate::bus::Topic::FindingsPublished && fact.producer() == Caller::Panel.producer() && fact.draft.key == key && fact.draft.document.as_deref() == Some(document.as_str())
+    })
 }
 
 /// "(document changed since this scan)" when the document has changed.
@@ -236,11 +253,44 @@ fn offset_at(rect: Rect, x: f32, total: usize) -> usize {
 /// and replace pinned segments.
 pub(crate) fn refresh(state: &mut StructureMapState, app: &mut ViewerApp) {
     if state.segments.is_some() || state.segments_pending.is_some() {
-        start_segmentation(state, app);
+        start_segmentation(state, app, TOOL_PRODUCER);
     }
     if state.tracks.is_some() || state.tracks_pending.is_some() {
-        start_tracks(state, app);
+        start_tracks(state, app, TOOL_PRODUCER);
     }
+}
+
+/// Who the work the tool does by itself (a refresh after an edit) is by.
+const TOOL_PRODUCER: &str = "tool:structure-map";
+
+/// Run `work` with the panel's state taken out of `app`, for a method that
+/// starts the panel's work.
+fn with_state<R>(app: &mut ViewerApp, work: impl FnOnce(&mut StructureMapState, &mut ViewerApp) -> R) -> R {
+    let mut state = std::mem::take(&mut app.bench.panels.structure_map);
+    let result = work(&mut state, app);
+    app.bench.panels.structure_map = state;
+    result
+}
+
+/// Segment the document as `producer`'s job and show the segments here:
+/// what `structure_map.segment` does in the window. Returns the job.
+pub fn segment_as(app: &mut ViewerApp, producer: &str) -> String {
+    with_state(app, |state, app| start_segmentation(state, app, producer))
+}
+
+/// Find the parts like `span` as `producer`'s job and list them here:
+/// what `structure_map.find_similar` does in the window. Returns the job.
+pub fn find_similar_as(app: &mut ViewerApp, span: (usize, usize), histogram_weight: f32, threshold: f32, producer: &str) -> String {
+    with_state(app, |state, app| {
+        state.similar_settings = SimilarSettings { threshold, histogram_weight };
+        start_similar(state, app, span, producer)
+    })
+}
+
+/// Measure the tracks as `producer`'s job and draw them here: what
+/// `structure_map.tracks` does in the window. Returns the job.
+pub fn tracks_as(app: &mut ViewerApp, producer: &str) -> String {
+    with_state(app, |state, app| start_tracks(state, app, producer))
 }
 
 /// Collect finished results while the panel is not drawn, so pinned
@@ -249,20 +299,25 @@ pub fn follow_document(state: &mut StructureMapState, app: &mut ViewerApp) {
     state.poll(app);
 }
 
-fn start_segmentation(state: &mut StructureMapState, app: &mut ViewerApp) {
+/// Start a job of `producer`'s, about the document shown.
+fn start_job_as(app: &mut ViewerApp, kind: &str, title: &str, producer: &str) -> crate::bus::JobHandle {
+    let document = Some((app.document_id(), app.document.version()));
+    app.bus.start_job(kind, title, producer, document)
+}
+
+fn start_segmentation(state: &mut StructureMapState, app: &mut ViewerApp, producer: &str) -> String {
     app.note_tool_result(crate::dock::DockTab::StructureMap);
     let (key, bytes) = read_scanned(app);
     let (sender, receiver) = mpsc::channel();
-    let job = app.start_job("structure-map", "Segmenting the file");
+    let job = start_job_as(app, "structure-map", "Segmenting the file", producer);
+    let id = job.id().to_string();
     thread::spawn(move || {
-        let result = segments::segment_file(&bytes, &SegmentOptions::default());
-        if job.is_cancelled() {
-            return job.finish_cancelled();
+        if let Some(result) = run_segmentation(&bytes, &job) {
+            let _ = sender.send(SegmentJob { key, result });
         }
-        job.finish(true, format!("{} segments", result.segments.len()));
-        let _ = sender.send(SegmentJob { key, result });
     });
     state.segments_pending = Some(receiver);
+    id
 }
 
 fn segment_findings(result: &Segmentation) -> Vec<Finding> {
@@ -283,7 +338,7 @@ fn show_segments(state: &mut StructureMapState, app: &mut ViewerApp, ui: &mut Ui
     ui.horizontal_wrapped(|ui| {
         let size = human_bytes(app.document.len().min(SCAN_LIMIT));
         if ui.add_enabled(state.segments_pending.is_none(), egui::Button::new(format!("Segment file ({size})"))).clicked() {
-            start_segmentation(state, app);
+            app.perform_later("structure_map.segment", serde_json::json!({}));
         }
         if state.segments_pending.is_some() {
             ui.spinner();
@@ -380,20 +435,19 @@ fn segment_list(ui: &mut Ui, result: &Segmentation, actions: &mut Vec<Action>) {
 // Find more like this
 // ---------------------------------------------------------------------------
 
-fn start_similar(state: &mut StructureMapState, app: &mut ViewerApp, selection: (usize, usize)) {
+fn start_similar(state: &mut StructureMapState, app: &mut ViewerApp, selection: (usize, usize), producer: &str) -> String {
     let (key, bytes) = read_scanned(app);
-    let options = SimilarOptions { histogram_weight: state.similar_settings.histogram_weight, ..SimilarOptions::default() };
+    let SimilarSettings { threshold, histogram_weight } = state.similar_settings;
     let (sender, receiver) = mpsc::channel();
-    let job = app.start_job("similar-blocks", "Finding blocks like the selection");
+    let job = start_job_as(app, "similar-blocks", "Finding blocks like the selection", producer);
+    let id = job.id().to_string();
     thread::spawn(move || {
-        let result = similar::score_blocks(&bytes, selection, &options);
-        if job.is_cancelled() {
-            return job.finish_cancelled();
+        if let Some(result) = run_similar(&bytes, selection, histogram_weight, threshold, &job) {
+            let _ = sender.send(SimilarJob { key, result });
         }
-        job.finish(true, "scored");
-        let _ = sender.send(SimilarJob { key, result });
     });
     state.similar_pending = Some(receiver);
+    id
 }
 
 fn similar_findings(regions: &[SimilarRegion]) -> Vec<Finding> {
@@ -416,9 +470,11 @@ fn show_similar(state: &mut StructureMapState, app: &mut ViewerApp, ui: &mut Ui,
         let button = ui.add_enabled(can_search, egui::Button::new("Find similar"));
         let button = if selection.is_none() { button.on_disabled_hover_text("Select some bytes first") } else { button };
         if button.clicked()
-            && let Some(range) = selection
+            && let Some((start, len)) = selection
         {
-            start_similar(state, app, range);
+            let SimilarSettings { threshold, histogram_weight } = state.similar_settings;
+            let params = serde_json::json!({ "start": start, "len": len, "histogram_weight": histogram_weight, "threshold": threshold });
+            app.perform_later("structure_map.find_similar", params);
         }
         if state.similar_pending.is_some() {
             ui.spinner();
@@ -489,20 +545,19 @@ fn similar_list(ui: &mut Ui, regions: &[SimilarRegion], actions: &mut Vec<Action
 // Feature tracks
 // ---------------------------------------------------------------------------
 
-fn start_tracks(state: &mut StructureMapState, app: &mut ViewerApp) {
+fn start_tracks(state: &mut StructureMapState, app: &mut ViewerApp, producer: &str) -> String {
     app.note_tool_result(crate::dock::DockTab::StructureMap);
     let (key, bytes) = read_scanned(app);
     let (sender, receiver) = mpsc::channel();
-    let job = app.start_job("feature-tracks", "Feature tracks");
+    let job = start_job_as(app, "feature-tracks", "Feature tracks", producer);
+    let id = job.id().to_string();
     thread::spawn(move || {
-        let tracks = tracks::compute_tracks(&bytes, &TrackOptions::default());
-        if job.is_cancelled() {
-            return job.finish_cancelled();
+        if let Some(tracks) = run_tracks(&bytes, &job) {
+            let _ = sender.send(TracksJob { key, tracks });
         }
-        job.finish(true, "computed");
-        let _ = sender.send(TracksJob { key, tracks });
     });
     state.tracks_pending = Some(receiver);
+    id
 }
 
 /// How one track is drawn.
@@ -519,7 +574,7 @@ fn show_tracks(state: &mut StructureMapState, app: &mut ViewerApp, ui: &mut Ui, 
     ui.horizontal_wrapped(|ui| {
         let size = human_bytes(app.document.len().min(SCAN_LIMIT));
         if ui.add_enabled(state.tracks_pending.is_none(), egui::Button::new(format!("Compute tracks ({size})"))).clicked() {
-            start_tracks(state, app);
+            app.perform_later("structure_map.tracks", serde_json::json!({}));
         }
         if state.tracks_pending.is_some() {
             ui.spinner();
@@ -725,10 +780,126 @@ mod tests {
     #[test]
     fn pinned_segments_carry_the_segment_prefix_and_type_category() {
         let data: Vec<u8> = (0..20_000u32).map(|index| if index < 10_000 { 0 } else { b'a' + (index % 26) as u8 }).collect();
-        let result = segments::segment_file(&data, &SegmentOptions::default());
+        let result = crate::segments::segment_file(&data, &crate::segments::SegmentOptions::default());
         let findings = segment_findings(&result);
         assert_eq!(findings.len(), result.segments.len());
         assert!(findings.iter().all(|finding| finding.id.starts_with(SEGMENT_ID_PREFIX)));
         assert_eq!(findings[0].category, Category::Padding);
+    }
+
+    use serde_json::json;
+
+    use crate::actions::take_performed;
+    use crate::app::Launch;
+    use crate::legend::PinnedGroup;
+
+    /// Zeros, then text.
+    fn zeros_then_text() -> Vec<u8> {
+        let mut bytes = vec![0; 10_000];
+        bytes.extend(b"The quick brown fox jumps over the lazy dog. ".repeat(300));
+        bytes
+    }
+
+    fn app_with(bytes: &[u8]) -> ViewerApp {
+        let mut app = ViewerApp::new(Launch::default());
+        app.open_bytes(bytes.to_vec(), "test.bin".to_string());
+        app.run_bus();
+        take_performed();
+        app
+    }
+
+    /// Carry out the actions asked for while drawing, and collect the panel's
+    /// results once its work is done.
+    fn run_until_idle(app: &mut ViewerApp) {
+        app.perform_waiting_actions();
+        let begun = std::time::Instant::now();
+        loop {
+            let mut state = std::mem::take(&mut app.bench.panels.structure_map);
+            state.poll(app);
+            let busy = state.is_busy();
+            app.bench.panels.structure_map = state;
+            if !busy || begun.elapsed() > Duration::from_secs(30) {
+                break;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+        app.run_bus();
+    }
+
+    fn segments_pinned(app: &ViewerApp) -> Vec<(usize, usize)> {
+        app.pinned_findings().into_iter().filter(|(group, _)| *group == PinnedGroup::Segments).map(|(_, finding)| (finding.start, finding.len)).collect()
+    }
+
+    #[test]
+    fn segmenting_is_a_job_of_the_person_s_and_its_pins_are_their_findings() {
+        let mut app = app_with(&zeros_then_text());
+        app.perform_later("structure_map.segment", json!({}));
+        run_until_idle(&mut app);
+        assert_eq!(take_performed(), [("structure_map.segment".to_string(), json!({}))]);
+        let job = app.bus.jobs().list().into_iter().find(|job| job.title == "Segmenting the file").expect("a job");
+        assert_eq!(job.producer, "panel");
+        let segments = app.bench.panels.structure_map.segments.as_ref().map(|job| job.result.segments.len()).expect("the panel shows the segments");
+        assert!(segments >= 2);
+
+        let state = std::mem::take(&mut app.bench.panels.structure_map);
+        apply(&state, &mut app, Action::PinSegments);
+        let performed = take_performed();
+        assert_eq!((performed[0].0.as_str(), performed[0].1["key"].clone()), ("findings.publish", json!(SEGMENT_ID_PREFIX)));
+        assert_eq!(performed[0].1["findings"].as_array().unwrap().len(), segments, "every segment is in the step");
+        app.run_bus();
+        assert_eq!(segments_pinned(&app).len(), segments, "drawn in the Segments group");
+        assert!(app.bench.pinned.is_empty());
+        apply(&state, &mut app, Action::ClearSegments);
+        assert_eq!(take_performed(), [("findings.retract".to_string(), json!({"key": SEGMENT_ID_PREFIX}))]);
+        app.run_bus();
+        assert!(segments_pinned(&app).is_empty());
+    }
+
+    #[test]
+    fn pinned_segments_follow_a_refresh_without_a_step_of_the_person_s() {
+        let mut app = app_with(&zeros_then_text());
+        app.perform_later("structure_map.segment", json!({}));
+        run_until_idle(&mut app);
+        let state = std::mem::take(&mut app.bench.panels.structure_map);
+        apply(&state, &mut app, Action::PinSegments);
+        app.bench.panels.structure_map = state;
+        app.run_bus();
+        take_performed();
+        let length = app.document.len();
+        app.document.insert(0, &[0; 4096]);
+        app.publish_edits_as("document");
+        crate::panels::with(&mut app, |panels| &mut panels.structure_map, refresh);
+        run_until_idle(&mut app);
+        assert!(take_performed().is_empty(), "the tool's own work");
+        assert_eq!(segments_pinned(&app).iter().map(|(start, len)| start + len).max(), Some(length + 4096));
+        let job = app.bus.jobs().list().into_iter().rfind(|job| job.title == "Segmenting the file").unwrap();
+        assert_eq!(job.producer, TOOL_PRODUCER);
+    }
+
+    #[test]
+    fn finding_more_like_the_selection_carries_its_span_and_settings() {
+        let mut app = app_with(&zeros_then_text());
+        app.perform_later("structure_map.find_similar", json!({"start": 10_000, "len": 1024, "histogram_weight": 0.25, "threshold": 0.7}));
+        run_until_idle(&mut app);
+        let state = &app.bench.panels.structure_map;
+        assert_eq!((state.similar_settings.histogram_weight, state.similar_settings.threshold), (0.25, 0.7));
+        let scores = state.similar.as_ref().and_then(|job| job.result.as_ref().ok()).expect("the panel lists the matches");
+        assert_eq!(scores.selection, (10_000, 1024));
+        let job = app.bus.jobs().list().into_iter().find(|job| job.title == "Finding blocks like the selection").expect("a job");
+        assert!(job.result.as_ref().is_some_and(|result| result["regions"].is_array()));
+    }
+
+    #[test]
+    fn a_track_clicked_moves_the_cursor_and_use_width_here_sets_the_width_through_the_api() {
+        let mut app = app_with(&zeros_then_text());
+        app.perform_later("structure_map.tracks", json!({}));
+        run_until_idle(&mut app);
+        assert!(app.bench.panels.structure_map.tracks.is_some());
+        take_performed();
+        let state = StructureMapState::default();
+        apply(&state, &mut app, Action::Jump(0x100));
+        apply(&state, &mut app, Action::SetWidth(48));
+        assert_eq!(take_performed(), [("cursor.set".to_string(), json!({"offset": 0x100})), ("view.set_shape".to_string(), json!({"width": 48}))]);
+        assert_eq!((app.cursor, app.shape.width), (0x100, 48));
     }
 }
