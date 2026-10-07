@@ -231,7 +231,7 @@ pub fn session(workspace: &mut dyn Workspace, _params: NoParams) -> Result<Journ
 
 pub fn inverse(workspace: &mut dyn Workspace, params: EntryParams) -> Result<StepInverse, ApiError> {
     let Some(status) = Timeline::of(workspace.journal()).status(params.step) else {
-        return Err(ApiError::not_found(format!("there is no step {} in the journal; history.list shows the steps held", params.step)));
+        return Err(crate::journal::provenance::not_a_step(params.step));
     };
     Ok(StepInverse { step: params.step, status, inverse: timeline::inverse_of(workspace, params.step) })
 }

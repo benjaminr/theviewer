@@ -680,10 +680,7 @@ fn summarise(value: &Value) -> Value {
 
 /// `time` as an RFC 3339 UTC timestamp to the second.
 pub fn timestamp(time: SystemTime) -> String {
-    let seconds = time.duration_since(UNIX_EPOCH).map_or(0, |since| since.as_secs());
-    let (year, month, day) = crate::patterns::civil_from_days((seconds / 86_400) as i64);
-    let in_day = seconds % 86_400;
-    format!("{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z", in_day / 3600, (in_day % 3600) / 60, in_day % 60)
+    crate::patterns::format_unix_seconds_rfc3339(time.duration_since(UNIX_EPOCH).map_or(0, |since| since.as_secs()))
 }
 
 /// SHA-256 of `document`'s bytes as they are now, lower-case hex, read a
@@ -866,12 +863,7 @@ fn describe(workspace: &mut dyn Workspace, method: &MethodRef, params: &Value) -
 
 /// `description` cut to [`DESCRIPTION_LIMIT`] characters.
 fn cut_to_a_line(description: String) -> String {
-    if description.chars().count() <= DESCRIPTION_LIMIT {
-        return description;
-    }
-    let mut cut: String = description.chars().take(DESCRIPTION_LIMIT).collect();
-    cut.push('…');
-    cut
+    crate::text::truncate_chars(&description, DESCRIPTION_LIMIT)
 }
 
 /// The document a call is about: the one its `doc` parameter names, when
