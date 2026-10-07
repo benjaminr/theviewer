@@ -109,6 +109,36 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   values it finds with `vars_set` and pass them on with `{"$var": name}`.
 - `theviewer mcp --legacy-current` makes an omitted `doc` mean the current
   document for one more release.
+- **One `output` parameter** on the methods that produce bytes, saying
+  where they go: `"in_place"` (an undoable edit of what they came from),
+  `"new"` (a sheet derived from it; `{"new": {"label": "payload"}}` labels
+  it, and a recipe names it by the label), `"return"` (in the result) or
+  `{"file": path}` (which needs leave to edit). Each result says where in
+  `output`: `{doc, label, len}`, `{version, len, ranges}`,
+  `{len, encoding, data}` or `{path, len}`. `api.describe` lists each
+  method's outputs and default, and a call is journalled, undone and kept
+  by recipes as its output says.
+  - `transform.apply`: in place by default; `new` and `return`.
+  - `codecs.decode`: returned by default; `new` and `in_place`. It takes
+    any codec `codecs.list` lists, plugins' included, or the first built-in
+    decompressor that decodes there when none is named; so does
+    `codecs.open_decoded`.
+  - `documents.derive`: a new sheet by default; `file`. It joins ranges of
+    several documents with `sources: [{doc, ranges}]`.
+  - `bits.open_plane` and `bits.decode_linecode`: `return` beside `new`.
+  - `unpack.open` and `forensics.open_entry`: `return` and `file` beside
+    `new`.
+  - `packets.extract`: `new` (a sheet of the set's document) and `file`
+    beside `return`. Without `indices` it takes the packets
+    `packets.list` lists with `filter`, `sort` and `dedupe`, in that
+    order, so a recipe extracts the same packets of another capture.
+  - `packets.follow_stream`: `new`, with `direction` to take one side's
+    bytes.
+  - `crypto.decrypt`: `new`, `in_place` and `file` beside `return`.
+- **`crypto.apply`** applies a `crypto.attack` candidate, by its job and
+  index, or an operation, over a span: to a new sheet by default, or in
+  place, returned or to a file. A recipe applies the candidate of the
+  attack its own step ran.
 
 ### Changed
 
@@ -135,6 +165,18 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   refused rather than passed to the method as a literal.
 - Recipes that use pick, then or var anchors, or a parameter whose default
   is an anchor, are written as format 2.
+- `transform.preview`, `codecs.open_decoded`, `crypto.open_decrypted`,
+  `documents.export`, `unpack.read` and `unpack.save` stay, as shorthands
+  for the method they name with an `output`. `transform.apply`,
+  `codecs.decode`, `crypto.decrypt`, `packets.extract` and
+  `packets.follow_stream` results gain `output`; `codecs.decode`'s and
+  `crypto.decrypt`'s `data` is left out when the bytes went elsewhere, and
+  `bits.decode_linecode`'s `document` when they were returned.
+- `packets.extract` is a read when it returns its bytes, kept among the
+  recent reads rather than as a step; written to a file it is still a step
+  that needs leave to edit.
+- `codecs.open_decoded`'s `codec` is the codec's id as a string, any
+  `codecs.list` lists, where it was one of the built-in decompressors.
 
 - A filter naming a field the packets cannot have is refused with the
   names it was close to, rather than matching nothing.

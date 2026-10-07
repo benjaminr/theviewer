@@ -113,14 +113,33 @@ one), or with `"current"`, runs on the input.
 Steps that make a document from another make **sheets**:
 `documents.derive`, `codecs.open_decoded`, `bits.open_plane`,
 `bits.decode_linecode`, `unpack.open`, `forensics.open_entry`,
-`crypto.open_decrypted`, and `packets.sets.create` with `gunzip` or
-`packets.http_bodies` with `open`. A recipe repeats them, and later steps
+`crypto.open_decrypted`, `crypto.apply`, and `packets.sets.create` with
+`gunzip` or `packets.http_bodies` with `open`; and any call whose `output`
+is `"new"` (`transform.apply`, `codecs.decode`, `crypto.decrypt`,
+`packets.extract`, `packets.follow_stream`…; see
+[Outputs](api.md#conventions)). A recipe repeats them, and later steps
 name what they made with a sheet anchor: `{"$anchor": {"sheet": {"step": 2}}}`
 for the sheet step 2 made, `{"$anchor": {"sheet": "payload"}}` for the one a
 step labelled with its `makes`, and `{"$anchor": {"sheet": "input"}}` for
 the input, at any parameter path. Each such method returns the sheet it made
 as `output: {doc, label?, len}` (or `outputs`, a list, for one that may make
 several), which is how the run knows it.
+
+A step's `makes` comes from the label the call gave its sheet,
+`output: {"new": {"label": "payload"}}`, so label the sheets later steps
+work on and the recipe reads by name:
+
+```json
+{ "step": 3, "method": "codecs.decode", "makes": "half one",
+  "params": { "doc": { "$anchor": { "sheet": "labels" } }, "start": 0, "codec": "base32",
+              "output": { "new": { "label": "half one" } } } }
+```
+
+A step whose `output` is `"in_place"` is an edit like any other, and one
+whose output is `"return"` a read, kept only when a later step cites it. A
+job a step started, named by its id at a path ending `job` (the
+`candidate.job` of a `crypto.apply`), becomes a step anchor on that step's
+`result.job`, so the run applies the candidate of the attack it ran itself.
 
 A document named by its id (`"doc-4"`) is taken as it is, and must be the
 input or a sheet the run made: a step naming any other id stops the run

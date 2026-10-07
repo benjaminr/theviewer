@@ -199,6 +199,24 @@ provenance: given as an anchor, the binding keeps where the value came from.
 
 The server's instructions tell the model to name sheets with `$sheet`, to
 bind values it finds with `vars_set`, and to pass them on with `$var`.
+### Passing bytes on without reading them out
+
+A method that produces bytes takes `output`, so its result need not come
+back through the client to be used again: `"new"` opens it as a sheet
+derived from the document it came from (`{"new": {"label": "payload"}}`
+labels it), `"in_place"` puts it in place of what it came from, `"return"`
+gives the bytes, and `{"file": path}` writes them. The sheet's id is
+`result.output.doc`, for the next call's `doc`:
+
+```json
+{"method": "packets.extract", "params": {"set": "set-1", "indices": [4, 9, 2], "field_name": "dns.qry.name", "label": 1, "output": {"new": {"label": "labels"}}}}
+{"method": "codecs.decode", "params": {"doc": "doc-2", "start": 0, "codec": "base32", "output": {"new": {"label": "half one"}}}}
+{"method": "documents.derive", "params": {"sources": [{"doc": "doc-3"}, {"doc": "doc-5"}], "output": {"new": {"label": "archive"}}}}
+```
+
+Labelled sheets are named by their labels in a recipe saved from the
+session. `crypto.apply` applies a `crypto.attack` candidate the same way.
+See [Outputs](api.md#conventions).
 
 ### Annotations
 

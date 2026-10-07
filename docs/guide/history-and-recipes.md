@@ -190,11 +190,12 @@ left out. The notes linked to a step become its note in the recipe (see
 
 **Sheets.** A step that makes a new document from another, a **sheet**
 (opening the selection as a document, decompressing a stream, opening an
-unpacked file, decoding a line code), is kept. The steps after it that work
-on the sheet name it by the step that made it, not by its id in this
-session, so on the next file they work on the sheet made there, not on the
-file itself. Each step is saved on the document it actually ran on, and
-the recipe's file is the one its sheets all came from.
+unpacked file, decoding a line code, or any call through the API whose
+`output` was `"new"`), is kept. The steps after it that work on the sheet
+name it by the step that made it, or by the label the call gave it, not by
+its id in this session, so on the next file they work on the sheet made
+there, not on the file itself. Each step is saved on the document it
+actually ran on, and the recipe's file is the one its sheets all came from.
 
 If a step would not replay, nothing is saved and the History tab says
 which step and why: a step on a second file you opened, or on a sheet made
