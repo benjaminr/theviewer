@@ -77,7 +77,7 @@ pub fn commands() -> Vec<Command> {
         Command { id: "bookmark.add", title: "Bookmark the cursor or selection", keys: "Cmd+B", run: |app, _| app.begin_bookmark() },
         Command { id: "bookmark.next", title: "Next bookmark", keys: "F2", run: |app, _| app.goto_bookmark(true) },
         Command { id: "bookmark.previous", title: "Previous bookmark", keys: "Shift+F2", run: |app, _| app.goto_bookmark(false) },
-        Command { id: "plugins.reload", title: "Reload plugins", keys: "", run: |app, _| app.reload_plugins() },
+        Command { id: "plugins.reload", title: "Reload plugins", keys: "", run: |app, _| app.reload_plugins_by_hand() },
         Command { id: "media.open", title: "View image / play audio or video at the cursor", keys: "Cmd+Enter", run: |app, _| app.open_media() },
         Command { id: "media.toggle", title: "Play or pause media", keys: "Space", run: |app, _| app.media.toggle_play() },
         Command { id: "media.close", title: "Close the media window", keys: "", run: |app, _| app.media.close() },

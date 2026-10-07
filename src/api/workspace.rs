@@ -25,6 +25,7 @@ use crate::document::Document;
 use crate::folds::Folds;
 use crate::plugin::Registry;
 use crate::selection::Selection;
+use crate::sources::{self, Recording};
 
 /// Who publishes edits made by hand, outside any API call.
 pub const DOCUMENT_PRODUCER: &str = "document";
@@ -151,6 +152,18 @@ pub trait Workspace {
     /// Keep `bookmarks` for document `id` (the window keeps them beside
     /// its file too).
     fn set_bookmarks(&mut self, id: &str, bookmarks: Vec<Bookmark>) -> Result<(), ApiError>;
+    /// Open `bytes` read from a source (a URL, a device, a process) as a
+    /// new document called `name` and make it current, returning its id.
+    fn open_source_bytes(&mut self, name: &str, bytes: Vec<u8>) -> Result<String, ApiError>;
+    /// Start or stop keeping every version of document `id` as it changes;
+    /// starting keeps the version it is at now.
+    fn set_recording(&mut self, id: &str, enabled: bool) -> Result<(), ApiError>;
+    /// How many versions of document `id` are kept, or `None` when they
+    /// are not being recorded.
+    fn recorded_versions(&self, id: &str) -> Option<usize>;
+    /// Open version `index` of document `id`, counting from 0, as a
+    /// derived document, returning its id.
+    fn open_recorded_version(&mut self, id: &str, index: usize) -> Result<String, ApiError>;
     /// The window, when this workspace is the window: for a method whose
     /// effect only the window has (a panel to show, a chart to fill), so it
     /// need not add a hook of its own here. Headless workspaces have none,
@@ -199,6 +212,25 @@ pub fn info(workspace: &dyn Workspace, id: &str) -> Result<DocumentInfo, ApiErro
     workspace.documents().into_iter().find(|info| info.id == id).ok_or_else(|| ApiError::not_found(format!("document '{id}' has closed")))
 }
 
+/// `recording` with `document`'s bytes now kept as a version, when they
+/// are small enough to keep.
+fn record_version(mut recording: Recording, document: &mut Document) -> Recording {
+    if document.len() <= crate::workbench::RECORDING_FILE_LIMIT {
+        recording.record(&document.read_range(0, document.len()));
+    }
+    recording
+}
+
+/// The bytes of recorded version `index` of the document called `name`,
+/// and the name to open them under.
+pub fn recorded_version(recording: Option<&Recording>, index: usize, name: &str) -> Result<(Vec<u8>, String), ApiError> {
+    let recording = recording.ok_or_else(|| ApiError::invalid_params("no versions are being recorded; start with sources.record"))?;
+    if index >= recording.len() {
+        return Err(ApiError::not_found(format!("there is no version {index}: {} are recorded, counting from 0", recording.len())));
+    }
+    Ok((recording.materialise(index), format!("{name} @ version {}", index + 1)))
+}
+
 /// One document of a headless workspace, with its own cursor and selection.
 struct OpenDocument {
     id: String,
@@ -208,6 +240,8 @@ struct OpenDocument {
     shape: ViewShape,
     folds: Folds,
     bookmarks: Vec<Bookmark>,
+    /// Every version kept since recording started, a version after each edit.
+    recording: Option<Recording>,
     /// The version `document.edited` has been published up to.
     published_version: u64,
 }
@@ -272,7 +306,7 @@ impl HeadlessWorkspace {
         let opened = DocumentOpened { name: name.clone(), path: document.path().map(|path| path.display().to_string()), len: document.len() };
         self.bus.publish(Draft::new("workspace", Payload::DocumentOpened(opened)).about(id.clone(), document.version()));
         let published_version = document.version();
-        self.documents.push(OpenDocument { id: id.clone(), name, document, view: ViewState::default(), shape: ViewShape::default(), folds: Folds::default(), bookmarks: Vec::new(), published_version });
+        self.documents.push(OpenDocument { id: id.clone(), name, document, view: ViewState::default(), shape: ViewShape::default(), folds: Folds::default(), bookmarks: Vec::new(), recording: None, published_version });
         self.current = Some(self.documents.len() - 1);
         id
     }
@@ -346,6 +380,30 @@ impl Workspace for HeadlessWorkspace {
         Ok(())
     }
 
+    fn open_source_bytes(&mut self, name: &str, bytes: Vec<u8>) -> Result<String, ApiError> {
+        Ok(self.add_document(name, Document::from_bytes(bytes)))
+    }
+
+    /// Without a file watcher, a version is kept after each edit.
+    fn set_recording(&mut self, id: &str, enabled: bool) -> Result<(), ApiError> {
+        let open = self.open_document(id).ok_or_else(|| ApiError::not_found(format!("document '{id}' has closed")))?;
+        if enabled == open.recording.is_some() {
+            return Ok(());
+        }
+        open.recording = enabled.then(|| record_version(Recording::new(sources::DEFAULT_RECORDING_BUDGET), &mut open.document));
+        Ok(())
+    }
+
+    fn recorded_versions(&self, id: &str) -> Option<usize> {
+        self.documents.iter().find(|open| open.id == id)?.recording.as_ref().map(Recording::len)
+    }
+
+    fn open_recorded_version(&mut self, id: &str, index: usize) -> Result<String, ApiError> {
+        let open = self.documents.iter().find(|open| open.id == id).ok_or_else(|| ApiError::not_found(format!("document '{id}' has closed")))?;
+        let (bytes, name) = recorded_version(open.recording.as_ref(), index, &open.name)?;
+        Ok(self.add_document(name, Document::from_bytes(bytes)))
+    }
+
     fn registry(&self) -> Arc<Registry> {
         Arc::clone(&self.registry)
     }
@@ -377,6 +435,9 @@ impl Workspace for HeadlessWorkspace {
         let Some(open) = self.documents.iter_mut().find(|open| open.id == id) else { return };
         let Some(edited) = edits_since(&open.document, open.published_version) else { return };
         open.published_version = open.document.version();
+        if let Some(recording) = open.recording.take() {
+            open.recording = Some(record_version(recording, &mut open.document));
+        }
         let draft = Draft::new(producer, Payload::DocumentEdited(edited)).about(id, open.published_version);
         self.bus.publish(self.caused(draft));
     }
@@ -529,6 +590,37 @@ impl Workspace for ViewerApp {
         self.bookmarks.bookmarks = bookmarks;
         self.save_sidecar();
         Ok(())
+    }
+
+    /// In place of every document shown, unless one has unsaved edits.
+    fn open_source_bytes(&mut self, name: &str, bytes: Vec<u8>) -> Result<String, ApiError> {
+        refuse_unsaved(self)?;
+        ViewerApp::open_bytes(self, bytes, name.to_string());
+        Ok(self.document_id())
+    }
+
+    /// The window records the document shown, as the file or capture
+    /// changes.
+    fn set_recording(&mut self, id: &str, enabled: bool) -> Result<(), ApiError> {
+        if id != self.document_id {
+            return Err(ApiError::invalid_params(format!("{id} waits behind the document shown; the window records the document it shows")));
+        }
+        self.record_history(enabled);
+        Ok(())
+    }
+
+    fn recorded_versions(&self, id: &str) -> Option<usize> {
+        (id == self.document_id).then_some(())?;
+        self.bench.recording.as_ref().map(Recording::len)
+    }
+
+    /// What changed from the version before is marked too.
+    fn open_recorded_version(&mut self, id: &str, index: usize) -> Result<String, ApiError> {
+        if id != self.document_id {
+            return Err(ApiError::invalid_params(format!("{id} waits behind the document shown; the window records the document it shows")));
+        }
+        self.view_recorded_version(index)?;
+        Ok(self.document_id())
     }
 
     fn shape(&self, id: &str) -> Option<ViewShape> {

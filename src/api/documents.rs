@@ -12,6 +12,7 @@ use super::ApiError;
 use super::permissions::Caller;
 use crate::compress::{self, Codec};
 use crate::selection_ops::{self, Operation};
+use crate::sources::{self, SourceSpec};
 
 /// This module's methods, in the order `api.describe` lists them within
 /// their namespace. A new method is added here, and only here.
@@ -23,6 +24,7 @@ pub(super) const METHODS: &[super::Method] = &[
     method!("documents.save", Edit, save, SaveParams, super::workspace::DocumentInfo, "Save a document over its file, or to a path, with every edit made so far."),
     method!("documents.derive", View, derive, DeriveParams, super::workspace::DocumentInfo, "Open bytes of a document (a span, several ranges one after another, or bytes given), or what a transform such as decompress or XOR makes of them, as a document of their own derived from it, and make it current; in the window, Back goes back to the parent."),
     method!("documents.export", Edit, export, ExportParams, ExportResult, "Write a span of a document to a file, or what decompresses at its start; the document is left as it is."),
+    method!("documents.open_source", View, caller open_source, OpenSourceParams, OpenSourceResult, "Open a file, URL, block device, serial port (serial:PORT@BAUD) or a process's memory region (pid:PID@ADDRESS) as a new document. The window reads a URL, device or region in the background and opens it when it arrives, and pid:PID lists a process's regions in the Live tab; headless, the bytes are read before the call returns."),
 ];
 
 /// An example call of each of [`METHODS`], run in order on a fresh
@@ -37,6 +39,7 @@ pub(super) fn examples() -> Vec<(&'static str, serde_json::Value)> {
         ("documents.save", json!({"path": super::test_support::example_save_path().display().to_string()})),
         ("documents.export", json!({"start": 0, "len": 40, "path": std::env::temp_dir().join(format!("theviewer-api-examples-export-{}.bin", std::process::id())).display().to_string(), "decompress": true})),
         ("documents.derive", json!({"start": 0, "len": 32, "name": "zlib stream", "transform": {"op": "decompress"}})),
+        ("documents.open_source", json!({"uri": super::test_support::example_file().display().to_string()})),
         ("documents.new", json!({"name": "scratch"})),
     ]
 }
@@ -51,6 +54,7 @@ pub(super) fn describe_call(_workspace: &mut dyn Workspace, method: &str, params
             None => "Save the document over its file".to_string(),
         },
         "documents.new" => "Open a new, empty document in place of this one".to_string(),
+        "documents.open_source" => format!("Open {}", params.get("uri")?.as_str()?),
         "documents.export" => {
             let path = params.get("path")?.as_str()?;
             let start = params.get("start")?.as_u64()?;
@@ -269,6 +273,66 @@ pub fn export(workspace: &mut dyn Workspace, params: ExportParams) -> Result<Exp
     Ok(ExportResult { path: params.path, written: bytes.len() as u64, decompressed })
 }
 
+/// Parameters of `documents.open_source`.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct OpenSourceParams {
+    /// A path, an http(s) URL, a block device (/dev/disk2), serial:PORT@BAUD, pid:PID or pid:PID@ADDRESS.
+    pub uri: String,
+}
+
+/// The result of `documents.open_source`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct OpenSourceResult {
+    /// The document opened, when it opened before the call returned.
+    pub document: Option<DocumentInfo>,
+    /// Whether the window is still reading the bytes, and opens them when they arrive.
+    pub reading: bool,
+}
+
+/// Most bytes read from a URL, device or process region.
+const SOURCE_READ_LIMIT: usize = 512 * 1024 * 1024;
+
+/// Read `spec` whole, for a workspace without a frame loop to wait in.
+fn read_source_now(spec: SourceSpec) -> Result<Vec<u8>, ApiError> {
+    let unavailable = |message: String| ApiError::new(super::ErrorCode::Unavailable, message);
+    match spec {
+        SourceSpec::Url(url) => sources::fetch_url(&url, SOURCE_READ_LIMIT).map_err(unavailable),
+        SourceSpec::BlockDevice(path) => sources::read_block_device(&path, SOURCE_READ_LIMIT).map_err(unavailable),
+        SourceSpec::ProcessRegion { pid, start } => {
+            let region = sources::readable_region_at(pid, start).map_err(unavailable)?;
+            sources::read_process_memory(pid, &region, SOURCE_READ_LIMIT).map_err(unavailable)
+        }
+        SourceSpec::Serial { .. } => Err(unavailable("serial captures run only in the window".to_string())),
+        SourceSpec::Process { pid } => Err(ApiError::invalid_params(format!("give the memory region to read as pid:{pid}@ADDRESS; the window's Live tab lists them"))),
+        SourceSpec::File(_) => Err(ApiError::invalid_params("a file is opened with documents.open")),
+    }
+}
+
+pub fn open_source(workspace: &mut dyn Workspace, caller: &Caller, params: OpenSourceParams) -> Result<OpenSourceResult, ApiError> {
+    let spec = SourceSpec::parse(&params.uri).map_err(ApiError::invalid_params)?;
+    // The window opens a source in place of every document it shows, as
+    // the Live tab always has; only the person may lose unsaved edits so.
+    let unsaved = workspace.documents().iter().any(|info| info.modified);
+    if let Some(app) = workspace.window() {
+        may_discard(caller, unsaved)?;
+        let before = app.document_id();
+        app.open_live_source(&params.uri).map_err(|message| ApiError::new(super::ErrorCode::Unavailable, message))?;
+        let (opened, reading) = (app.document_id(), app.source_loading());
+        let document = if opened == before { None } else { Some(workspace::info(workspace, &opened)?) };
+        return Ok(OpenSourceResult { document, reading });
+    }
+    let name = spec.describe();
+    let id = match spec {
+        SourceSpec::File(path) => workspace.open_path(&path)?,
+        spec => {
+            let bytes = read_source_now(spec)?;
+            workspace.open_source_bytes(&name, bytes)?
+        }
+    };
+    Ok(OpenSourceResult { document: Some(workspace::info(workspace, &id)?), reading: false })
+}
+
 pub fn derive(workspace: &mut dyn Workspace, params: DeriveParams) -> Result<DocumentInfo, ApiError> {
     let parent = workspace::resolve(workspace, params.doc.as_deref())?;
     let (spans, what) = derived_spans(workspace, &parent, &params)?;
@@ -480,6 +544,26 @@ mod tests {
         assert_eq!(refused(&mut workspace, json!({"start": 10, "path": path, "decompress": true})), ErrorCode::InvalidParams, "nothing at the end");
         assert_eq!(refused(&mut workspace, json!({"start": 0, "path": "/no/such/dir/out.bin"})), ErrorCode::Unavailable);
         assert!(!std::path::Path::new(&path).exists(), "nothing was written");
+    }
+
+    #[test]
+    fn a_source_opens_before_the_call_returns_without_a_window() {
+        let path = std::env::temp_dir().join(format!("theviewer-open-source-{}.bin", std::process::id()));
+        std::fs::write(&path, b"from a source").unwrap();
+        let mut workspace = workspace_with("fw.bin", b"x");
+        let opened = call(&mut workspace, "documents.open_source", json!({"uri": path.display().to_string()})).unwrap();
+        assert_eq!((opened["document"]["id"].as_str(), opened["document"]["len"].as_u64(), opened["reading"].as_bool()), (Some("doc-2"), Some(13), Some(false)));
+        std::fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn a_source_that_cannot_be_read_without_a_window_is_refused() {
+        let mut workspace = workspace_with("fw.bin", b"x");
+        let refused = |workspace: &mut crate::api::HeadlessWorkspace, uri: &str| call(workspace, "documents.open_source", json!({"uri": uri})).unwrap_err().code;
+        assert_eq!(refused(&mut workspace, "  "), ErrorCode::InvalidParams);
+        assert_eq!(refused(&mut workspace, "pid:12"), ErrorCode::InvalidParams, "a process's regions are listed in the window");
+        assert_eq!(refused(&mut workspace, "serial:/dev/cu.nothing"), ErrorCode::Unavailable);
+        assert_eq!(refused(&mut workspace, "/no/such/file.bin"), ErrorCode::NotFound);
     }
 
     #[test]

@@ -33,6 +33,7 @@ Errors are `{code, message, data}`, with these codes:
 | [`documents.save`](#documentssave) | edit | Save a document over its file, or to a path, with every edit made so far. |
 | [`documents.derive`](#documentsderive) | view | Open bytes of a document (a span, several ranges one after another, or bytes given), or what a transform such as decompress or XOR makes of them, as a document of their own derived from it, and make it current; in the window, Back goes back to the parent. |
 | [`documents.export`](#documentsexport) | edit | Write a span of a document to a file, or what decompresses at its start; the document is left as it is. |
+| [`documents.open_source`](#documentsopen_source) | view | Open a file, URL, block device, serial port (serial:PORT@BAUD) or a process's memory region (pid:PID@ADDRESS) as a new document. The window reads a URL, device or region in the background and opens it when it arrives, and pid:PID lists a process's regions in the Live tab; headless, the bytes are read before the call returns. |
 | [`bytes.read`](#bytesread) | read | Read a span of bytes, as hex by default, or as base64 or text. |
 | [`bytes.hexdump`](#byteshexdump) | read | A classic hex dump of a span, 16 bytes per line with an ASCII column, at most 1 MiB. |
 | [`bytes.write`](#byteswrite) | edit | Overwrite bytes in place with new ones, as one undoable step; the document keeps its length. |
@@ -113,6 +114,11 @@ Errors are `{code, message, data}`, with these codes:
 | [`bookmarks.list`](#bookmarkslist) | read | A document's bookmarks, in offset order. |
 | [`bookmarks.add`](#bookmarksadd) | view | Bookmark a byte or a span of a document with a name, replacing a bookmark at the same offset; the window keeps them beside the file. |
 | [`bookmarks.remove`](#bookmarksremove) | view | Remove the bookmark at an offset. |
+| [`plugins.reload`](#pluginsreload) | view | Load the Lua plugins again from disk, so the detectors, parsers, codecs and methods they register are the ones in their files now; the command line and MCP load them once, when they start. |
+| [`sources.watch`](#sourceswatch) | view | Watch the window's file for changes on disk, reloading it and marking what changed, or stop watching it. |
+| [`sources.record`](#sourcesrecord) | view | Keep every version of a document as it changes (the window's file or capture as it changes on disk, or after each edit), or stop keeping them. |
+| [`sources.stop`](#sourcesstop) | view | Stop the window's serial capture. |
+| [`sources.view_version`](#sourcesview_version) | view | Open a recorded version of a document as a document derived from it; the window marks what changed from the version before. |
 
 Each method's full JSON schemas are in `theviewer api --describe`.
 
@@ -266,6 +272,19 @@ Write a span of a document to a file, or what decompresses at its start; the doc
 | `decompressed` | ExportedStream | no | The codec and stream, when the bytes were decompressed. |
 | `path` | string | yes | The file written. |
 | `written` | integer | yes | Bytes written. |
+
+### documents.open_source
+
+Open a file, URL, block device, serial port (serial:PORT@BAUD) or a process's memory region (pid:PID@ADDRESS) as a new document. The window reads a URL, device or region in the background and opens it when it arrives, and pid:PID lists a process's regions in the Live tab; headless, the bytes are read before the call returns.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `uri` | string | yes | A path, an http(s) URL, a block device (/dev/disk2), serial:PORT@BAUD, pid:PID or pid:PID@ADDRESS. |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `document` | DocumentInfo | no | The document opened, when it opened before the call returned. |
+| `reading` | boolean | yes | Whether the window is still reading the bytes, and opens them when they arrive. |
 
 ### bytes.read
 
@@ -1700,6 +1719,83 @@ Remove the bookmark at an offset.
 | --- | --- | --- | --- |
 | `bookmarks` | array of BookmarkInfo | yes | Its bookmarks now, in offset order. |
 | `doc` | string | yes | Id of the document. |
+
+### plugins.reload
+
+Load the Lua plugins again from disk, so the detectors, parsers, codecs and methods they register are the ones in their files now; the command line and MCP load them once, when they start.
+
+Parameters: None.
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `message` | string | yes | What happened, as the status bar says it. |
+
+### sources.watch
+
+Watch the window's file for changes on disk, reloading it and marking what changed, or stop watching it.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `doc` | string | no | Document id, path or "current" (the default). |
+| `enabled` | boolean | yes | On or off. |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `capturing` | boolean | yes | Whether a serial capture is receiving. |
+| `reading` | boolean | yes | Whether bytes asked for (a URL, a device, a process region) are still being read. |
+| `recording` | boolean | yes | Whether versions of the document are being recorded. |
+| `versions` | integer | yes | Versions recorded so far. |
+| `watching` | boolean | yes | Whether the window's file is watched for changes. |
+
+### sources.record
+
+Keep every version of a document as it changes (the window's file or capture as it changes on disk, or after each edit), or stop keeping them.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `doc` | string | no | Document id, path or "current" (the default). |
+| `enabled` | boolean | yes | On or off. |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `capturing` | boolean | yes | Whether a serial capture is receiving. |
+| `reading` | boolean | yes | Whether bytes asked for (a URL, a device, a process region) are still being read. |
+| `recording` | boolean | yes | Whether versions of the document are being recorded. |
+| `versions` | integer | yes | Versions recorded so far. |
+| `watching` | boolean | yes | Whether the window's file is watched for changes. |
+
+### sources.stop
+
+Stop the window's serial capture.
+
+Parameters: None.
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `capturing` | boolean | yes | Whether a serial capture is receiving. |
+| `reading` | boolean | yes | Whether bytes asked for (a URL, a device, a process region) are still being read. |
+| `recording` | boolean | yes | Whether versions of the document are being recorded. |
+| `versions` | integer | yes | Versions recorded so far. |
+| `watching` | boolean | yes | Whether the window's file is watched for changes. |
+
+### sources.view_version
+
+Open a recorded version of a document as a document derived from it; the window marks what changed from the version before.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `doc` | string | no | Document id, path or "current" (the default). |
+| `index` | integer | yes | The version, counting from 0 for the first one recorded. |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `current` | boolean | yes | Whether this is the current document. |
+| `id` | string | yes | Stable id, such as "doc-1". |
+| `len` | integer | yes | Length in bytes. |
+| `modified` | boolean | yes | Whether there are edits not saved. |
+| `name` | string | yes | File name, or the name of a derived document. |
+| `path` | string | no | Path on disk, for documents opened from a file. |
+| `version` | integer | yes | Incremented on every edit. |
 
 ## Topics
 

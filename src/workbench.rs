@@ -33,7 +33,7 @@ use crate::player;
 /// Largest prefix of a file the report and unpacker read into memory.
 pub(crate) const ANALYSIS_READ_LIMIT: usize = 256 * 1024 * 1024;
 /// Largest file kept in the recording history.
-const RECORDING_FILE_LIMIT: usize = 256 * 1024 * 1024;
+pub(crate) const RECORDING_FILE_LIMIT: usize = 256 * 1024 * 1024;
 /// How often watched files and serial captures are checked.
 const LIVE_POLL_INTERVAL: Duration = Duration::from_millis(400);
 /// Bytes a template is applied to.
@@ -992,43 +992,64 @@ impl ViewerApp {
     // Live sources, watch mode and recording
     // -----------------------------------------------------------------------
 
+    /// Whether a serial capture is receiving.
+    pub fn serial_capturing(&self) -> bool {
+        self.bench.serial.as_ref().is_some_and(SerialCapture::is_running)
+    }
+
     pub fn source_loading(&self) -> bool {
         self.bench.busy(|p| matches!(p, Pending::Source(_)))
     }
 
-    /// Open a URL, serial port, block device, process or file.
+    /// Open a URL, serial port, block device, process or file, as the
+    /// person's `documents.open_source`; why not is shown in the Live tab.
     pub fn open_source(&mut self, text: &str) {
         self.bench.live_error = None;
-        let spec = match SourceSpec::parse(text) {
-            Ok(spec) => spec,
-            Err(message) => {
-                self.bench.live_error = Some(message);
-                return;
-            }
-        };
+        self.perform_live("documents.open_source", serde_json::json!({ "uri": text }));
+    }
+
+    /// Call a live-source method as the person, showing a refusal in the
+    /// Live tab as these actions always have.
+    fn perform_live(&mut self, method: &str, params: serde_json::Value) {
+        if let Err(error) = self.perform(method, params) {
+            self.bench.live_error = Some(error.message);
+        }
+    }
+
+    /// Open a URL, serial port, block device, process or file: the work of
+    /// `documents.open_source`. A URL, device or process region is read in
+    /// the background and opens when it arrives.
+    pub(crate) fn open_live_source(&mut self, text: &str) -> Result<(), String> {
+        let spec = SourceSpec::parse(text)?;
         let name = spec.describe();
         match spec {
-            SourceSpec::File(path) => self.load_path(&path),
+            SourceSpec::File(path) => {
+                self.load_path(&path);
+                if self.document.path() != Some(path.as_path()) {
+                    return Err(self.status.clone());
+                }
+            }
             SourceSpec::Url(url) => self.spawn_source(name, move || sources::fetch_url(&url, ANALYSIS_READ_LIMIT * 2)),
             SourceSpec::BlockDevice(path) => self.spawn_source(name, move || sources::read_block_device(&path, ANALYSIS_READ_LIMIT * 2)),
-            SourceSpec::Serial { port, baud } => match SerialCapture::start(&port, baud) {
-                Ok(capture) => {
-                    // Opening the capture's document stops any previous source.
-                    self.open_bytes(Vec::new(), name);
-                    self.bench.serial = Some(capture);
-                    self.bench.serial_seen = 0;
-                    self.bench.recording.get_or_insert_with(|| Recording::new(sources::DEFAULT_RECORDING_BUDGET));
-                }
-                Err(message) => self.bench.live_error = Some(message),
-            },
-            SourceSpec::Process { pid } => match sources::process_regions(pid) {
-                Ok(regions) => {
-                    self.bench.process_pid = Some(pid);
-                    self.bench.process_regions = regions.into_iter().filter(|r| r.is_readable()).collect();
-                }
-                Err(message) => self.bench.live_error = Some(message),
-            },
+            SourceSpec::Serial { port, baud } => {
+                let capture = SerialCapture::start(&port, baud)?;
+                // Opening the capture's document stops any previous source.
+                self.open_bytes(Vec::new(), name);
+                self.bench.serial = Some(capture);
+                self.bench.serial_seen = 0;
+                self.bench.recording.get_or_insert_with(|| Recording::new(sources::DEFAULT_RECORDING_BUDGET));
+            }
+            SourceSpec::Process { pid } => {
+                let regions = sources::process_regions(pid)?;
+                self.bench.process_pid = Some(pid);
+                self.bench.process_regions = regions.into_iter().filter(|r| r.is_readable()).collect();
+            }
+            SourceSpec::ProcessRegion { pid, start } => {
+                let region = sources::readable_region_at(pid, start)?;
+                self.spawn_source(name, move || sources::read_process_memory(pid, &region, ANALYSIS_READ_LIMIT));
+            }
         }
+        Ok(())
     }
 
     fn spawn_source(&mut self, name: String, read: impl FnOnce() -> Result<Vec<u8>, String> + Send + 'static) {
@@ -1044,7 +1065,7 @@ impl ViewerApp {
     /// document replaces the one they feed, or they would overwrite it.
     pub fn stop_live_sources(&mut self) {
         self.stop_serial();
-        self.set_watch(false);
+        let _ = self.watch_file(false);
     }
 
     pub fn stop_serial(&mut self) {
@@ -1071,26 +1092,53 @@ impl ViewerApp {
         self.force_rescan();
     }
 
-    /// Turn watch mode on or off for the open file.
+    /// Turn watch mode on or off for the open file, as the person's
+    /// `sources.watch`.
     pub fn set_watch(&mut self, enabled: bool) {
+        self.perform_live("sources.watch", serde_json::json!({ "enabled": enabled }));
+    }
+
+    /// Turn watch mode on or off for the open file: the work of
+    /// `sources.watch`, and of stopping the live sources.
+    pub(crate) fn watch_file(&mut self, enabled: bool) -> Result<(), String> {
         self.bench.watch_enabled = false;
         self.bench.watcher = None;
         if !enabled {
+            return Ok(());
+        }
+        let path = self.document.path().map(|p| p.to_path_buf()).ok_or_else(|| "Only files on disk can be watched".to_string())?;
+        let watcher = FileWatcher::new(&path)?;
+        self.bench.watcher = Some(watcher);
+        self.bench.watch_enabled = true;
+        let bytes = self.document.read_range(0, RECORDING_FILE_LIMIT);
+        self.record_snapshot(&bytes);
+        Ok(())
+    }
+
+    /// Start or stop keeping every version of the file or capture: the
+    /// work of `sources.record`.
+    pub(crate) fn record_history(&mut self, enabled: bool) {
+        if enabled == self.bench.recording.is_some() {
             return;
         }
-        let Some(path) = self.document.path().map(|p| p.to_path_buf()) else {
-            self.bench.live_error = Some("Only files on disk can be watched".to_string());
-            return;
-        };
-        match FileWatcher::new(&path) {
-            Ok(watcher) => {
-                self.bench.watcher = Some(watcher);
-                self.bench.watch_enabled = true;
-                let bytes = self.document.read_range(0, RECORDING_FILE_LIMIT);
-                self.record_snapshot(&bytes);
-            }
-            Err(message) => self.bench.live_error = Some(message),
+        self.bench.recording = enabled.then(|| Recording::new(sources::DEFAULT_RECORDING_BUDGET));
+        if enabled {
+            let bytes = self.document.read_range(0, RECORDING_FILE_LIMIT);
+            self.record_snapshot(&bytes);
         }
+    }
+
+    /// Open recorded version `index` as a derived document, with what
+    /// changed from the version before pinned: the work of
+    /// `sources.view_version`.
+    pub(crate) fn view_recorded_version(&mut self, index: usize) -> Result<(), crate::api::ApiError> {
+        let (bytes, name) = crate::api::workspace::recorded_version(self.bench.recording.as_ref(), index, &self.display_name())?;
+        let ranges = self.bench.recording.as_ref().map(|recording| recording.changed_ranges(index)).unwrap_or_default();
+        self.open_derived(bytes, name);
+        for (start, len) in ranges {
+            self.bench.pinned.push(changed_finding(start, len, "Changed in this version"));
+        }
+        Ok(())
     }
 
     fn poll_watcher(&mut self) {
@@ -1145,11 +1193,7 @@ impl ViewerApp {
             }
             let mut recording = self.bench.recording.is_some();
             if ui.checkbox(&mut recording, "Record history").on_hover_text("Keep every version as the file or capture changes").changed() {
-                self.bench.recording = recording.then(|| Recording::new(sources::DEFAULT_RECORDING_BUDGET));
-                if recording {
-                    let bytes = self.document.read_range(0, RECORDING_FILE_LIMIT);
-                    self.record_snapshot(&bytes);
-                }
+                self.perform_live("sources.record", serde_json::json!({ "enabled": recording }));
             }
         });
         if let Some(capture) = &self.bench.serial {
@@ -1159,7 +1203,7 @@ impl ViewerApp {
                 ui.label(format!("{} bytes", capture.received()));
             });
             if ui.button("Stop capture").clicked() {
-                self.stop_serial();
+                self.perform_live("sources.stop", serde_json::json!({}));
             }
         }
         if !self.bench.process_regions.is_empty() {
@@ -1176,9 +1220,8 @@ impl ViewerApp {
                 }
             });
             if let (Some(index), Some(pid)) = (open, self.bench.process_pid) {
-                let region = self.bench.process_regions[index].clone();
-                let name = format!("pid {pid} {:#x}", region.start);
-                self.spawn_source(name, move || sources::read_process_memory(pid, &region, ANALYSIS_READ_LIMIT));
+                let start = self.bench.process_regions[index].start;
+                self.perform_live("documents.open_source", serde_json::json!({ "uri": format!("pid:{pid}@{start:#x}") }));
             }
         }
     }
@@ -1203,12 +1246,7 @@ impl ViewerApp {
         let ranges = recording.changed_ranges(index);
         ui.label(RichText::new(format!("{} changed ranges from the previous version", ranges.len())).small().color(theme::TEXT_DIM));
         if ui.button("View this version").clicked() {
-            let bytes = recording.materialise(index);
-            let name = format!("{} @ version {}", self.display_name(), index + 1);
-            self.open_derived(bytes, name);
-            for (start, len) in ranges {
-                self.bench.pinned.push(changed_finding(start, len, "Changed in this version"));
-            }
+            self.perform_live("sources.view_version", serde_json::json!({ "index": index }));
         }
     }
 

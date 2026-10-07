@@ -3330,7 +3330,7 @@ impl ViewerApp {
                 ui.checkbox(&mut self.bench.show_file_map, "File map");
                 if ui.button("Guess image shape").clicked() { self.guess_image_shape(); ui.close(); }
                 ui.separator();
-                if ui.button("Reload plugins").clicked() { self.reload_plugins(); ui.close(); }
+                if ui.button("Reload plugins").clicked() { self.reload_plugins_by_hand(); ui.close(); }
             });
             ui.menu_button("Layout", |ui| {
                 layouts::show_layout_menu(self, ui);

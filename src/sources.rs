@@ -1,7 +1,8 @@
 //! Live data sources, watch mode and recording.
 //!
 //! * [`SourceSpec`] parses what the user typed into "open" (a path, a URL,
-//!   `serial:/dev/…@baud`, a block device or `pid:1234`).
+//!   `serial:/dev/…@baud`, a block device, `pid:1234` or one region of it,
+//!   `pid:1234@0x7f00`).
 //! * [`fetch_url`], [`read_block_device`] and the process-memory functions
 //!   turn a source into bytes.
 //! * [`SerialCapture`] collects bytes from a serial port on a background thread.
@@ -39,6 +40,8 @@ pub enum SourceSpec {
     Serial { port: String, baud: u32 },
     BlockDevice(PathBuf),
     Process { pid: u32 },
+    /// One memory region of a process, by the address it starts at.
+    ProcessRegion { pid: u32, start: u64 },
 }
 
 impl SourceSpec {
@@ -56,6 +59,11 @@ impl SourceSpec {
             return parse_serial(rest);
         }
         if let Some(rest) = strip_prefix_ignore_case(text, "pid:") {
+            if let Some((pid, start)) = rest.split_once('@') {
+                let pid = pid.trim().parse::<u32>().map_err(|_| format!("'{pid}' is not a process id"))?;
+                let start = crate::ops::parse_offset(start.trim()).ok_or_else(|| format!("'{start}' is not an address"))? as u64;
+                return Ok(SourceSpec::ProcessRegion { pid, start });
+            }
             let pid = rest.trim().parse::<u32>().map_err(|_| format!("'{rest}' is not a process id"))?;
             return Ok(SourceSpec::Process { pid });
         }
@@ -74,6 +82,7 @@ impl SourceSpec {
             SourceSpec::Serial { port, baud } => format!("serial port {port} at {baud} baud"),
             SourceSpec::BlockDevice(path) => format!("block device {}", path.display()),
             SourceSpec::Process { pid } => format!("memory of process {pid}"),
+            SourceSpec::ProcessRegion { pid, start } => format!("pid {pid} {start:#x}"),
         }
     }
 }
@@ -228,6 +237,14 @@ pub fn process_regions(pid: u32) -> Result<Vec<MemoryRegion>, String> {
         let _ = pid;
         Err(NOT_LINUX_MESSAGE.to_string())
     }
+}
+
+/// The readable memory region of process `pid` that starts at `start`.
+pub fn readable_region_at(pid: u32, start: u64) -> Result<MemoryRegion, String> {
+    process_regions(pid)?
+        .into_iter()
+        .find(|region| region.start == start && region.is_readable())
+        .ok_or_else(|| format!("process {pid} has no readable memory region starting at {start:#x}"))
 }
 
 /// Read up to `max_bytes` of one region of a process's memory (Linux only).
@@ -758,6 +775,9 @@ mod tests {
         assert_eq!(SourceSpec::parse("/dev/sda"), Ok(SourceSpec::BlockDevice("/dev/sda".into())));
         assert_eq!(SourceSpec::parse("/dev/null"), Ok(SourceSpec::File("/dev/null".into())));
         assert_eq!(SourceSpec::parse("pid:1234"), Ok(SourceSpec::Process { pid: 1234 }));
+        assert_eq!(SourceSpec::parse("pid:1234@0x7f00"), Ok(SourceSpec::ProcessRegion { pid: 1234, start: 0x7f00 }));
+        assert!(SourceSpec::parse("pid:1234@here").is_err());
+        assert_eq!(SourceSpec::ProcessRegion { pid: 7, start: 0x1000 }.describe(), "pid 7 0x1000");
         assert!(SourceSpec::parse("pid:abc").is_err());
         assert!(SourceSpec::parse("  ").is_err());
         assert_eq!(SourceSpec::Serial { port: "/dev/x".into(), baud: 9600 }.describe(), "serial port /dev/x at 9600 baud");
