@@ -57,7 +57,7 @@ use crate::api::{self, ApiError, Caller, Consent, Effect, ErrorCode, MethodRef, 
 use crate::bus::{JobState, JobStatus};
 
 /// Longest a run waits for one step's job before giving up on it.
-const JOB_WAIT_LIMIT: Duration = Duration::from_secs(10 * 60);
+pub const JOB_WAIT_LIMIT: Duration = Duration::from_secs(10 * 60);
 /// How often a run looks at a job it waits for.
 const JOB_POLL_INTERVAL: Duration = Duration::from_millis(10);
 

@@ -1,203 +1,351 @@
 # theviewer data API, version 1.0
 
-<!-- Generated from the method table (src/api.rs and each module in src/api/) by `cargo run --bin api_docs`. Do not edit by hand. -->
+<!-- Generated from the method table (src/api.rs and each module in src/api/) by `cargo run --bin api_docs`; the prose is in src/api/manual.rs. Do not edit by hand. -->
 
-Every method can be called from the command line (`theviewer api METHOD '{json params}' FILE`; with `--save`, the file is saved with the call's edits, so `--save history.transaction` edits and saves in one command), Lua plugins call them as `theviewer.api.<namespace>.<method>{…}`, Ask uses the methods that read or edit as its tools, and `theviewer mcp FILE…` offers every method to MCP clients such as Claude Code as a tool named with underscores for dots (`bytes_read`), with resources for each document (`theviewer://doc/{id}`, its `bytes/{start}-{end}`, `findings`, `facts` and `packets/{set}`) and the reference notes (`theviewer://reference/{id}`). Documents are named by id (`doc-1`), by path or as `"current"`, which an omitted `doc` also means. Spans are `start` and `len` in bytes; an omitted `len` runs to the end of the document. Bytes are hex strings unless `encoding` says `base64` or `text`. List methods take `limit` and return `next`, a cursor to pass back for the next page. One call reads or returns at most 16 MiB.
+theviewer has one data API: a table of methods over documents, bytes, bits, selections, findings, structures, templates, codecs, packets, analysis, the journal and recipes, each declared once with its name, its effect and the JSON schemas of its parameters and result. Every way into the program calls the same table:
 
-Methods whose effect is `edit` change the document. Each call is one undo step, labelled with what it did and who called it ("XOR by mcp:claude-code"), and published on `document.edited` as the caller's. Any edit takes `expect_version`: when the document has changed since, the call fails with `version_conflict` and changes nothing. `history.transaction` runs several calls as one step and reverses them all when one fails. In the app, an edit or view change from a plugin, Ask or another client is checked against that client's setting under Settings › Permissions (always allow, always ask, never allow; a new client is asked about): when it asks, a window shows the change for the person to allow once, always allow or deny. On the command line and through `theviewer mcp` every call is allowed: the files are the ones the person named. Methods plugins register join the table at run time; `api.describe` lists them as experimental.
+| Way in | Calls methods as | Producer id |
+| --- | --- | --- |
+| Panels, menus, the command palette and shortcuts | the person at the keyboard | `panel` |
+| Lua plugins (`theviewer.api.<namespace>.<method>{…}`) | the plugin, by file name | `plugin:acme_telemetry.lua` |
+| Ask, the assistant | Ask | `ask` |
+| MCP clients (`theviewer mcp FILE…`) | the client, by the name it gives | `mcp:claude-code` |
+| The command line (`theviewer api METHOD …`) | the command line | `cli` |
+| Recipes (the Run recipe window, `theviewer replay`, `recipes.run`) | the recipe, by name | `recipe:Telemetry frames` |
 
-Errors are `{code, message, data}`, with these codes:
+A method does the same whichever way it is called. Every call that changes something is recorded in the session's journal, by whom, which gives the History tab, undo across analysis steps, playback and recipes. Edits are labelled with their caller in the undo history ("XOR by mcp:claude-code") and published on the workspace bus as theirs.
+
+This reference is generated from the method table by `cargo run --bin api_docs`. `api.describe` (on the command line, `theviewer api --describe`) returns the same table as JSON, with every schema in full and the methods plugins have registered.
+
+## Calling the API
+
+### From the command line
+
+```sh
+theviewer api bytes.read '{"start": 0, "len": 16}' firmware.bin
+theviewer api analysis.overview firmware.bin
+theviewer api --save bytes.write '{"start": 4, "data": "deadbeef"}' firmware.bin
+theviewer api --save history.transaction '{"calls": [
+    {"method": "bytes.write", "params": {"start": 0, "data": "7f454c46"}},
+    {"method": "bytes.delete", "params": {"start": 64, "len": 16}}]}' firmware.bin
+theviewer api --describe
+```
+
+`theviewer api [--save] METHOD ['{JSON PARAMS}'] [FILE]` opens FILE (when given) in a workspace of its own without a window, loads the plugins from `./plugins` and `~/.config/theviewer/plugins` (so their methods can be called too), makes the one call as `cli` and prints its result as JSON on standard output. A failed call prints the error as JSON on standard error and exits with status 1; a command line that cannot be understood exits with status 2. With `--save`, a call that left the file's document with unsaved edits is followed by `documents.save`, which writes them over FILE; without it the file is never changed. Every call is allowed: the file is the one you named. The call is the whole session, so a method whose effect is `job` prints only its job's id: use such methods from the window, from an MCP client, or in a recipe (`theviewer replay` waits for each job a step starts). Plugins' subscription handlers do not run here.
+
+### From an MCP client
+
+`theviewer mcp FILE…` serves the files over the Model Context Protocol on standard input and output. The core methods are tools named with underscores for dots (`bytes_read`), with `api_search`, `api_describe` and `api_call` to reach the rest; documents, their bytes, findings, facts and packet sets, and the reference notes, are resources. See [Using theviewer from MCP clients](mcp.md).
+
+### From a Lua plugin
+
+```lua
+local head = theviewer.api.bytes.read{ start = 0, len = 16 }
+theviewer.api.transform.apply{ selection = { range = { 0, 16 } }, operation = { op = "xor", key = "5a" } }
+```
+
+A plugin calls the API while one of its actions, subscription handlers or registered methods runs; an error is raised as a Lua error, `"<code>: <message>"`. See [Lua plugins](plugins.md).
+
+### From Rust
+
+```rust
+use std::path::Path;
+use std::sync::Arc;
+
+use serde_json::json;
+use theviewer::api::{self, Caller, HeadlessWorkspace, Workspace};
+
+let mut workspace = HeadlessWorkspace::new(Arc::new(theviewer::app::build_registry()));
+workspace.open_path(Path::new("capture.bin"))?;
+let head = api::call(&mut workspace, &Caller::Cli, "bytes.read", json!({"start": 0, "len": 16}))?;
+```
+
+`api::call` checks the parameters against the method's schema, checks the caller's permission, runs the method and records the call in the journal. In the app, `ViewerApp::perform(method, params)` calls as the person and shows a failure in the status bar; `ViewerApp::perform_derived` also notes where parameters' values came from, for recipes. Callers that cannot wait for the person to confirm (Ask, plugins' handlers) use `api::call_or_hold`. Each namespace module (`theviewer::api::bytes`, `theviewer::api::search`…) also offers its methods as typed functions.
+
+## Conventions
+
+**Documents.** Each open document has an id: `doc-1`, `doc-2` and so on. A method about a document takes `doc`: an id, the path of an open document, or `"current"`, which is also what an omitted `doc` means. `documents.list` lists the open documents. A document derived from another (a span opened on its own, a stream decompressed, an embedded file) is a document of its own, with its own id.
+
+**Spans** are `start` and `len` in bytes, counted from 0. A span must lie inside its document, or the call fails with `out_of_range`; an omitted `len` runs to the end of the document. Where several spans are given or returned, each is a pair `[start, len]`.
+
+**Bit spans** are `bit_start` and `bit_len`: the byte offset times 8 plus the bit within that byte, counted in the call's `order`, `"msb"` (the default: the most significant bit of each byte first) or `"lsb"`.
+
+**Selections** are `{"range": [start, len]}`, `{"ranges": [[start, len], …]}`, or a column of every record, `{"columns": {"first_row_start": 32, "stride": 16, "column": 2, "width": 4, "rows": 10}}`. `selection.set` takes `null` to select nothing. A method that edits a `selection` uses the document's own selection when it is omitted, or the byte at the cursor when nothing is selected.
+
+**Bytes** in JSON are compact lower-case hex (`"89504e47"`) unless the call's `encoding` asks for `"base64"` (standard, with padding) or `"text"` (UTF-8). Hex given to a method may hold spaces (`"de ad be ef"`). Bytes returned as text that are not UTF-8 become U+FFFD, so read binary data as hex or base64.
+
+**Numbers.** Integers up to 2^53 are JSON numbers. Larger ones, such as a 64-bit value from `numbers.decode` or `bits.read`, are strings of decimal digits, since JSON numbers carry no more exactly.
+
+**Pages.** A method that lists takes `limit` (100 by default, at most 10000 for most) and returns `next`, an opaque cursor: pass it back as `next` for the following page; it is absent after the last. The journal and the bus are followed rather than paged: `history.list` takes `since` and `events.poll` takes `cursor`, as their schemas say.
+
+**Limits.** One call reads or returns at most 16 MiB; ask for less, or a page at a time. Through MCP a tool's result carries at most 1 MiB of JSON text.
+
+**Parameters are checked.** Parameters the method does not have, or of the wrong type, fail with `invalid_params` before anything runs. Omitted parameters count as `{}`.
+
+**Versions.** Each document has a version, which every edit increases. A method that edits takes `expect_version` and returns the new `version`: when the document has changed since the version given, the call fails with `version_conflict` and changes nothing.
+
+## Effects and permissions
+
+Each method has one effect, which says what calling it does and decides who may call it without asking:
+
+| Effect | What a call does | Checked against the caller's permission | How the journal keeps it |
+| --- | --- | --- | --- |
+| `read` | Looks, and changes nothing. | No | In the ring of recent reads, which a later step can cite |
+| `analysis` | Changes the session's analysis but no bytes and nothing on screen: packet sets and how they decode, published findings, a pinned template, a cancelled job. | No, unless it writes a file | As a step |
+| `job` | Starts background work and returns `{"job": …}` at once; see [Jobs](#jobs). | No | As a step |
+| `view` | Changes what is shown or open, but no bytes: the shape, folds, bookmarks, the selection and cursor, the document that is current. | Yes | As a step |
+| `edit` | Changes a document's bytes, as one undoable step, or moves along the journal. | Yes | As a step |
+
+A method that writes a file (`documents.save`, `documents.export`, `packets.export_pcap`, `recipes.save`, `history.save_recipe`, and others when given a `path`) needs leave to edit, whatever its effect: each such method's entry below says so.
+
+**Who is asked.** The person at the keyboard (`panel`) may do anything. Any other caller is checked before a call that edits, changes the view or writes a file, against its setting under Settings › Permissions, kept per producer id:
+
+| Setting | Meaning |
+| --- | --- |
+| Always allow | Its calls run without asking. |
+| Always ask | A window shows the call in plain words ("Overwrite 4 bytes at 0x40 with DE AD BE EF") with Allow once, Always allow this client and Deny. This is the setting of a client not seen before. |
+| Never allow | Its calls fail with `read_only`; it may still read. |
+
+Calls wait for the person in the order they arrived; one not answered within 120 seconds is refused with `read_only`, saying so. Ask's tool calls and plugins' handlers are held while they wait. A call that must be confirmed but came by a way that cannot wait fails at once with `read_only` and `data.reason` set to `"needs_confirmation"`.
+
+**Without a window** (`theviewer api`, `theviewer mcp`, `theviewer replay`) every call is allowed: the files are the ones the person named, and edits reach the disk only through `documents.save`.
+
+**Edits.** Each call of an `edit` method is one undo step of its document, labelled with what it did and, for anyone but the person, who did it: "Overwrite 2 bytes by plugin:acme_telemetry.lua". `history.undo` and `history.redo` move through those steps; `history.transaction` runs several calls on one document as one step and reverses them all when one fails. Every change to the bytes is published on `document.edited`.
+
+**Ask** offers as tools the methods whose effect is `read`, `analysis` or `edit` (the plugins' too), except `api.*` and `documents.save`; it does not change the view or start jobs.
+
+## The journal, undo and replay
+
+Every call made through the API is recorded in the session's journal (the History tab shows it; `history.list` reads it):
+
+* Each call of an `edit`, `view`, `job` or `analysis` method, by any caller, is a **step**, with a step number, its caller, its parameters, its result and a description in plain words; a call that failed or was refused is recorded too. A call refused because it must first be confirmed is recorded when the person allows it.
+* **Reads** go into a ring of the last 256 recent reads, numbered in the same sequence. When a later step used a value a read returned (a match's offset, a detected length field), the read is moved into the journal under its own number, so the step can cite it.
+* Calls made inside another call (a transaction's, a recipe run's, those a plugin's method makes) are part of the outer call's step.
+* The methods that read the journal or edit where its values came from (`history.list`, `history.make_anchor`…) are not journalled.
+* Repeated calls of a setter that merges its repeats (`selection.set`, `cursor.set`, `view.set_shape`) by the same caller on the same document are merged into one step, so dragging a selection undoes as one step.
+
+The journal keeps at most 10000 entries; very large parameters and results are kept as a summary, and a step whose parameters were summarised cannot be repeated exactly.
+
+**Undoing a step.** A byte edit undoes through its document's own undo, so only while it is the document's last edit. A step that changed no bytes undoes through its **inverse**, which its method declares: the call that changes back what it changed (a shape, folds, a bookmark, the selection, the current document, the pinned template, a packet set's decoding, findings published), the call that removes what it made (a packet set), nothing at all (a read, a job, a file written), or no inverse. `history.inverse` says how a step would be undone now; `history.undo_step` undoes it.
+
+**Going back** to step N (`history.go_back`) undoes every later step in effect, latest first. When one has no inverse, the document is brought back to how the session first saw it and steps 1 to N are run again. Either way the later steps stay in the journal, shown as undone, and are left out of recipes and playback.
+
+**Replay.** Going back, playback and recipes repeat the steps of the analysis. Some steps are never repeated: moves along the journal itself, opening a document (what it opened is open already), writing a file, reloading plugins and starting or stopping a live source.
+
+Each method's entry below says how the journal, undo and replay treat its calls. Methods plugins register are steps (or reads) as their effect says, are repeated by recipes, and keep nothing to undo them by beyond their byte edits.
+
+## Errors
+
+A failed call returns `{code, message, data}`: a code to act on, a message saying what went wrong and what to do next, and sometimes details. On the command line it is printed as JSON on standard error; in Lua it is raised as `"<code>: <message>"`; through MCP it is a tool result marked `isError`, so the model sees it and can try again.
 
 | Code | Meaning |
 | --- | --- |
-| `invalid_params` | The parameters don't match the schema |
-| `out_of_range` | A span falls outside the document |
-| `not_found` | No such document, method or entry |
-| `version_conflict` | The document changed since `expect_version` |
-| `read_only` | The caller may not edit |
-| `too_large` | Over the per-call limit |
-| `cancelled` | A job was cancelled |
-| `plugin_failed` | A plugin raised an error or used up its budget |
-| `unavailable` | Something needed is missing, such as tshark |
+| `invalid_params` | The parameters do not match the method's schema, or ask for something impossible. The message says which, and what to give instead. |
+| `out_of_range` | A span falls outside the document. |
+| `not_found` | No such document, method, packet set, job, step, recipe or entry; or a recipe's anchor found nothing. |
+| `version_conflict` | The document changed since `expect_version`; nothing was changed. Read again and retry. |
+| `read_only` | The caller may not make this call: its permission is Never allow, the person declined it, nobody answered in time, or it must first be confirmed (`data.reason` is `"needs_confirmation"`). A plugin's handler that did not declare edits gets it too. |
+| `too_large` | Over a per-call limit; ask for less. |
+| `cancelled` | A job was cancelled. |
+| `plugin_failed` | A plugin raised an error or used up its budget; the message is the plugin's. |
+| `unavailable` | Something needed is missing or not possible here: tshark, a home folder, a live source without a window, a plugin that has been unloaded. |
+
+Some errors carry `data`: an anchor of a recipe step that did not resolve gives `data.anchor` and `data.reason`; a `recipes.run` that stopped gives the run's report as `data.report`.
+
+## Jobs
+
+A method whose effect is `job` starts work in the background and returns `{"job": "report-3"}` at once. Follow it with `jobs.status`, which gives its state (`running`, `cancelling`, `finished`, `failed` or `cancelled`), how far it has got (`done` of `total`, when it counts) and, once finished, `result`: what the method would have returned had it waited. The same arrives on the bus as `job.started`, `job.progress` and `job.finished`. `jobs.list` lists the last 100 jobs; `jobs.cancel` asks one to stop, and it ends as `cancelled` without a result as soon as it notices.
+
+A recipe step that starts a job waits for it (up to 10 minutes), and later steps can use its result through a step anchor whose path starts `job.`; see [Recipes](recipes.md).
+
+## Versions and stability
+
+`api.version` returns the API's version, `"1.0"`. Within a major version changes only add: new methods, new optional parameters and new result fields, so a client written for 1.0 works with any 1.x. The methods in this reference are stable. Methods plugins register join the table at run time and are listed by `api.describe` as experimental: they change when their plugin does. A recipe records the major version it was made with (`"1.x"`) and warns when it runs under another.
 
 ## Methods
 
-| Method | Effect | Summary |
-| --- | --- | --- |
-| [`api.version`](#apiversion) | read | The API version: 1.0. Changes within a major version only add methods, optional parameters and result fields. |
-| [`api.describe`](#apidescribe) | read | Every method with its summary, effect, stability and the JSON schemas of its parameters and result. |
-| [`documents.list`](#documentslist) | read | The open documents, with their ids, names, paths, lengths and versions. |
-| [`documents.info`](#documentsinfo) | read | One document's id, name, path, length, version and whether it has unsaved edits. |
-| [`documents.open`](#documentsopen) | view | Open a file by path, or an open document by id, and make it current; a file already open is made current again. In the window, a parent of the document shown is gone back to, closing what was derived from it; that, or opening another file, is refused while what it closes has unsaved edits, unless the person at the window discards them. |
-| [`documents.new`](#documentsnew) | view | Open a new, empty document and make it current; the window refuses while its document has unsaved edits, unless the person at the window discards them. |
-| [`documents.save`](#documentssave) | edit | Save a document over its file, or to a path, with every edit made so far. |
-| [`documents.derive`](#documentsderive) | view | Open bytes of a document (a span, several ranges one after another, or bytes given), or what a transform such as decompress or XOR makes of them, as a document of their own derived from it, and make it current; in the window, Back goes back to the parent. |
-| [`documents.export`](#documentsexport) | edit | Write a span of a document (or several ranges one after another) to a file, or what decompresses at a span's start; the document is left as it is. |
-| [`documents.open_source`](#documentsopen_source) | view | Open a file, URL, block device, serial port (serial:PORT@BAUD) or a process's memory region (pid:PID@ADDRESS) as a new document. The window reads a URL, device or region in the background and opens it when it arrives, and pid:PID lists a process's regions in the Live tab; headless, the bytes are read before the call returns. |
-| [`bytes.read`](#bytesread) | read | Read a span of bytes, as hex by default, or as base64 or text. |
-| [`bytes.hexdump`](#byteshexdump) | read | A classic hex dump of a span, 16 bytes per line with an ASCII column, at most 1 MiB. |
-| [`bytes.write`](#byteswrite) | edit | Overwrite bytes in place with new ones, as one undoable step; the document keeps its length. |
-| [`bytes.insert`](#bytesinsert) | edit | Insert bytes at an offset, as one undoable step; the bytes after it move along. |
-| [`bytes.delete`](#bytesdelete) | edit | Remove a span of bytes, as one undoable step; the bytes after it move back. |
-| [`bytes.replace`](#bytesreplace) | edit | Replace a span of bytes with new bytes of any length, as one undoable step. |
-| [`bytes.move`](#bytesmove) | edit | Cut ranges out and put their bytes, one after another, at an offset counted before the cut, as one undoable step, and select them. |
-| [`bits.read`](#bitsread) | read | Read a span of bits, most or least significant bit of each byte first, as a string of 0s and 1s and, up to 64 bits, as a number. |
-| [`bits.write`](#bitswrite) | edit | Overwrite bits from any bit offset, most or least significant bit of each byte first, as one undoable step; the bits around them are kept. |
-| [`bits.scan_periods`](#bitsscan_periods) | job | Start a search of a span for bit periods (frames that are not a whole number of bytes) and the sync word of the strongest, comparing the bits with themselves at every lag, as a job: the periods and sync words are job.finished's result, and in the window they fill the Bits panel. |
-| [`bits.planes`](#bitsplanes) | job | Start splitting a span (at most 1 MiB) into its eight bit planes as a job, scoring how much shape each holds with rows of row_width bytes: the scores are job.finished's result, and in the window the planes fill the Bits panel. |
-| [`bits.open_plane`](#bitsopen_plane) | view | Open one bit plane of a span (at most 1 MiB) as a derived document: bit k of every byte, as a byte of 0 or 255. |
-| [`bits.detect_linecode`](#bitsdetect_linecode) | job | Start trying Manchester (both conventions), differential Manchester, 8b/10b and packed BCD at every bit alignment of a span (at most 64 KiB) as a job: the decodes, fewest invalid symbols first, and any BCD timestamps are job.finished's result, and in the window they fill the Bits panel. |
-| [`bits.decode_linecode`](#bitsdecode_linecode) | view | Decode a span (at most 64 KiB) from a line code at a bit offset and open the decoded bytes as a derived document. |
-| [`bits.rank_field`](#bitsrank_field) | read | Rank what a field of records holds (integers, floats, fixed point, timestamps, enums…) by how plausible its values are across the records. |
-| [`bits.find_length_fields`](#bitsfind_length_fields) | job | Start a search of a span (at most 256 KiB, one message or a run of records) for numbers that are distances, as a job: length prefixes, tag-length-value chains and offset tables, best first, are job.finished's result, and in the window they fill the Bits panel. |
-| [`transform.apply`](#transformapply) | edit | Apply an operation (XOR, invert, shift bits, swap byte order, number, compress, decompress and more) to every range of a selection, as one undoable step, and select what it produced. |
-| [`transform.preview`](#transformpreview) | read | What transform.apply would write into each range of a selection, without changing anything. |
-| [`history.undo`](#historyundo) | edit | Undo the document's last step, whoever made it, and put the cursor where it was. |
-| [`history.redo`](#historyredo) | edit | Redo the last step undone, and put the cursor where it was. |
-| [`history.transaction`](#historytransaction) | edit | Run several calls on one document as one undoable step; when one fails, every change the others made is reversed. |
-| [`history.list`](#historylist) | read | The session's journal: each edit, view change and job made through the API, by any caller, in order, with its parameters, result, outcome and a description; optionally the recent reads too. Pass back next as since to follow it. |
-| [`history.entry`](#historyentry) | read | One step of the journal, or one recent read, in full. |
-| [`history.session`](#historysession) | read | What the journal's session ran with: when it started, the API version, the plugins loaded with their hashes, and each document as first seen, with its size and SHA-256. |
-| [`history.inverse`](#historyinverse) | read | How a step of the journal would be undone now: the calls that undo it (the document's undo for its last edit, or the inverse of a view change, fold, bookmark, selection or document opened), nothing to undo (a job, a read, a file written), or why it cannot be. |
-| [`history.undo_step`](#historyundo_step) | edit | Undo one step of the journal through its inverse (see history.inverse), whoever made it, as a step of its own; the step is then shown as undone and left out of recipes and playback. |
-| [`history.go_back`](#historygo_back) | edit | Go back to a step of the journal (0 for before the first): undo every later step in effect, latest first, or, where one has no inverse, bring the document back to how the session first saw it and run the steps up to it again. The later steps stay in the journal, shown as undone. |
-| [`history.save_recipe`](#historysave_recipe) | edit | Write the steps in effect (all, or up to a step) to a recipe file, *.theviewer-recipe.json, each with its parameters as recorded, to run on other files. |
-| [`history.suggest_anchors`](#historysuggest_anchors) | read | Anchors that could stand for a step's literals in a recipe: search matches, structure fields and findings at the same offset in its document as it is now, the selection an earlier step set, and earlier steps' values equal to it, those that port to other files first. |
-| [`history.make_anchor`](#historymake_anchor) | read | Turn the literal at a path of a step's params into an anchor in its derived_from, so a recipe made from it finds the value when it runs; a read it cites becomes a step of the journal. |
-| [`history.make_parameter`](#historymake_parameter) | read | Turn the literal at a path of a step's params into a named recipe parameter, the person's to supply when the recipe runs, the literal its default. |
-| [`history.clear_anchor`](#historyclear_anchor) | read | Clear the anchor at a path of a step's params, so a recipe made from it repeats the literal. |
-| [`history.recipe`](#historyrecipe) | read | A recipe of the journal's successful steps (or those chosen, with the steps they cite), each recorded provenance as an anchor, parameters declared, steps numbered from 1 and the recorded document left out. |
-| [`search.find`](#searchfind) | read | The next (or previous) occurrence of hex bytes, text, UTF-16 text or an integer from an offset. |
-| [`search.find_all`](#searchfind_all) | read | Every occurrence of hex bytes, text, UTF-16 text or an integer in the document, a page at a time. |
-| [`search.count`](#searchcount) | read | How many times hex bytes, text, UTF-16 text or an integer occur in the document, up to a cap. |
-| [`numbers.decode`](#numbersdecode) | read | Read the bytes at an offset as integers, floats, fixed-point numbers and timestamps of each width and byte order. |
-| [`selection.get`](#selectionget) | read | What is selected in a document: one range, several ranges or a column of every record. |
-| [`selection.set`](#selectionset) | view | Select one range, several ranges or a column of every record in a document, or nothing. |
-| [`cursor.get`](#cursorget) | read | The cursor's offset in a document. |
-| [`cursor.set`](#cursorset) | view | Move the cursor to an offset, selecting nothing. |
-| [`findings.query`](#findingsquery) | read | Run the detectors over a span and list what they recognise (signatures, compressed streams, counters, timestamps, text, structures), filtered by category, confidence and producer. |
-| [`findings.publish`](#findingspublish) | analysis | Publish findings about a document on the bus as the caller's, for the views, Findings and every other tool to show; they replace the caller's earlier ones under the same key. |
-| [`findings.retract`](#findingsretract) | analysis | Withdraw the findings the caller published under a key. |
-| [`structure.parse`](#structureparse) | read | Parse the structure starting exactly at an offset (executables, images, archives, captures, ASN.1, filesystems) into a field tree, best match first. |
-| [`structure.parsers`](#structureparsers) | read | The structure parsers available, built in and from plugins. |
-| [`templates.list`](#templateslist) | read | The binary templates available: the built-in ones and the user's own. |
-| [`templates.apply`](#templatesapply) | analysis | Apply a binary template, by name or as source text, at an offset and return its field tree and records; with pin, also show it as the template tool does. |
-| [`templates.infer`](#templatesinfer) | read | Propose a template struct from several example records, from what varies between them; with pin, also apply it at the first record and show it as the template tool does. |
-| [`templates.clear`](#templatesclear) | view | Withdraw the template pinned over a document: its records are no longer outlined, and it leaves template.applied. |
-| [`codecs.list`](#codecslist) | read | The codecs available for decoding, built in and from plugins. |
-| [`codecs.detect`](#codecsdetect) | read | The codecs whose header starts at an offset. |
-| [`codecs.decode`](#codecsdecode) | read | Decode (decompress) a span with a codec and return the output. |
-| [`codecs.probe`](#codecsprobe) | read | Try every built-in decompressor at the start of a span, headerless ones included, and list those that decode. |
-| [`codecs.open_decoded`](#codecsopen_decoded) | view | Decompress the stream starting at an offset, with the first codec that decodes there or the one named, and open what it holds as a document derived from this one; in the window, Back (or opening the parent by id) returns. |
-| [`packets.dissect_bytes`](#packetsdissect_bytes) | read | Dissect one packet, from a span or from hex bytes, into protocol layers and fields, a summary and its flow. |
-| [`packets.detect_frames`](#packetsdetect_frames) | read | Find the protocol a set of frames of unknown format is, by trying every frame decoder on them. |
-| [`packets.sets.create`](#packetssetscreate) | analysis | Take a set of packets from a document: a capture in it, a range cut into fixed records, by a length field, at a pattern or with the protocol framing, or the selection's ranges, with how to decode frames of unknown format; returns the set's id and what was worked out (the capture found, the framing), so the call can be made again exactly. |
-| [`packets.sets.remove`](#packetssetsremove) | analysis | Forget a packet set: its id stops working and it leaves packets.sets.list. Its document is not changed. |
-| [`packets.sets.list`](#packetssetslist) | read | The packet sets made, with their ids, documents, sources, packet counts and decoding. |
-| [`packets.list`](#packetslist) | read | A set's packets the display filter keeps, a page at a time: each one's index, offset, length, summary columns, protocols and addresses. |
-| [`packets.dissect`](#packetsdissect) | read | Dissect one packet of a set into protocol layers and fields, as the set decodes frames of unknown format. |
-| [`packets.decode_as`](#packetsdecode_as) | analysis | Choose the protocol a set's frames of unknown format are decoded as, or detection, and a template for frames no protocol reads. |
-| [`packets.export_pcap`](#packetsexport_pcap) | analysis | A set's packets (those a filter keeps) as a pcap file, returned or written to a path given (which needs leave to edit). |
-| [`packets.conversations`](#packetsconversations) | read | The conversations in a set (the packets a filter keeps): each pair of endpoints with its transport, packets and bytes each way, and a filter for it. |
-| [`packets.follow_stream`](#packetsfollow_stream) | read | The payloads of a packet's conversation in order, each with its direction, and the stream as text. |
-| [`packets.find_captures`](#packetsfind_captures) | read | The captures inside a span of a document (pcap, pcapng, snoop, Network Monitor or ERF, or one of these compressed with gzip), each with its offset, format, link type and packets, for packets.sets.create. |
-| [`packets.sets.add_packets`](#packetssetsadd_packets) | view | Add ranges of the document to a set as packets of their own, so packets can be gathered one at a time; the set then keeps its packets where they are. |
-| [`packets.sets.refresh`](#packetssetsrefresh) | view | Find a set's packets again, the way they were found, in another document (the current one by default), which the set then belongs to. |
-| [`packets.detect_length_field`](#packetsdetect_length_field) | read | Look for a length field that cuts a span into frames, with the protocol analysis's framing detection; returns it as packets.sets.create's length_field, or the best framing found instead. |
-| [`packets.endpoints`](#packetsendpoints) | read | The addresses in a set (the packets a filter keeps), busiest first, with the packets and bytes each sent and received. |
-| [`packets.extract`](#packetsextract) | analysis | Some of a set's packets' bytes one after another, returned or written to a path given (which needs leave to edit). |
-| [`packets.delete`](#packetsdelete) | edit | Remove packets from the document (their whole capture records, so a capture stays readable), as one undoable step. |
-| [`packets.fix_checksums`](#packetsfix_checksums) | edit | Recompute the IPv4 header, TCP and UDP checksums of some of a set's packets, as one undoable step. |
-| [`packets.apply`](#packetsapply) | edit | Invert, fill or XOR some of a set's packets, or the same field of each, as one undoable step. |
-| [`packets.write_field`](#packetswrite_field) | edit | Write a value (a number, or hex bytes as wide as the field) into a field of one packet, as one undoable step. |
-| [`packets.columns.apply`](#packetscolumnsapply) | edit | Change the same columns (byte offsets) of every packet, or of some, laid out one packet per row: invert, fill, XOR, add, set, number or swap the byte order, as one undoable step. |
-| [`packets.columns.delete`](#packetscolumnsdelete) | edit | Remove the same columns (byte offsets) from every packet, or from some, as one undoable step; length fields and checksums are not changed. |
-| [`packets.columns.read`](#packetscolumnsread) | read | The same columns (byte offsets) of every packet, or of some, as hex lines or CSV. |
-| [`packets.tshark_decode`](#packetstshark_decode) | job | Have Wireshark's tshark decode some of a set's packets (run locally with -n) as a background job; the protocols it named are the job's result, and in the window its layers merge into the Packets panel's. |
-| [`analysis.overview`](#analysisoverview) | read | Map the whole document: a summary of what it is, its regions with offsets, likely record widths and confident findings. |
-| [`analysis.overview_job`](#analysisoverview_job) | job | Start analysis.overview as a background job and return its id at once; the report arrives as job.finished's result and from jobs.status, for large files and clients that should not wait. |
-| [`analysis.statistics`](#analysisstatistics) | read | Measure a span: entropy, chi-square, serial correlation, printable, zero and high-byte fractions, distinct values and a verdict. |
-| [`analysis.segments`](#analysissegments) | read | Split the document into regions of one kind (text, tables, code, compressed, random, padding) and group them into types. |
-| [`analysis.compressibility`](#analysiscompressibility) | read | Compress a span with several codecs and report the ratios, with a verdict: encrypted or random, already compressed, lossy media or structured. |
-| [`analysis.text_encoding`](#analysistext_encoding) | read | Identify the character encoding of a span of text, with previews and the likely language. |
-| [`analysis.processor`](#analysisprocessor) | read | Test whether a span is machine code, and for which processor, by disassembling samples for each architecture. |
-| [`analysis.period_scan`](#analysisperiod_scan) | job | Start a scan of a window of bytes for repeating periods (record widths) as a background job; the periods found, best first, are job.finished's result, and in the window they fill the structure chart and are published on record_width.estimated. |
-| [`reference.lookup`](#referencelookup) | read | The reference notes on a format or protocol, by id, finding id, layer name, port (udp/67) or number (port, IP protocol or EtherType): layout, field meanings and specifications. |
-| [`reference.search`](#referencesearch) | read | Reference entries whose notes mention every word of a query, or that a port or number names. |
-| [`reference.rfc`](#referencerfc) | read | The plain text of an RFC, or of one of its sections, fetched from the RFC Editor once and then kept in ~/.cache/theviewer/rfc. |
-| [`reference.reload`](#referencereload) | view | Read the user's own reference notes again, and say which files could not be read. |
-| [`reference.pick_alternative`](#referencepick_alternative) | view | Take another entry in place of a format guessed from a port, EtherType or IP protocol number, for the payload at an offset; the Reference panel shows it, and the entry's notes are returned. |
-| [`events.facts`](#eventsfacts) | read | What the tools have learnt about a document and keep: the latest fact per topic, producer and key, by topic, producer or the bytes they cover, each marked stale when the document changed under it. |
-| [`events.poll`](#eventspoll) | read | The messages (facts and events) published after a cursor, oldest first, optionally of some topics only; pass back next to keep up. |
-| [`jobs.list`](#jobslist) | read | The background jobs tools and callers started (the last 100): what each does, who started it, whether it is running, how far it has got and how it ended. |
-| [`jobs.status`](#jobsstatus) | read | One job's state, progress and outcome, and once it has finished, the result of a job a method started. |
-| [`jobs.cancel`](#jobscancel) | analysis | Ask a running job to stop; it ends as cancelled, without a result, as soon as it notices. |
-| [`statistics.analyse`](#statisticsanalyse) | job | Start the Statistics tool's measure of a span (at most 64 MiB) as a job: the ent randomness tests with a verdict, the byte histogram, entropy and compressibility along the span and the most repeated byte sequences are job.finished's result, and in the window they fill the Statistics tab. |
-| [`strings.find`](#stringsfind) | job | Start the Strings tool's search of a span (at most 64 MiB) for runs of text at least min_chars long in the encodings chosen, as a job: the strings found (at most 200000), each with its offset, length, encoding, text and what it looks like (a URL, a path, a key…), are job.finished's result, and in the window they fill the Strings tab. |
-| [`xor.recover_keys`](#xorrecover_keys) | read | Recover single-byte and repeating XOR keys for a span (at most 1 MiB) by letter frequency, index of coincidence and the key showing through zero padding, best first, with a preview of each decode and the likely key lengths; transform.apply with {"op": "xor"} applies one. |
-| [`checksums.digests`](#checksumsdigests) | read | The digests of a span (at most 64 MiB): CRC-32, Adler-32, MD5, SHA-1, SHA-256, the 8- and 16-bit sums and the XOR of every byte. |
-| [`checksums.find_stored`](#checksumsfind_stored) | read | Find a CRC, Adler or sum stored in a span (at most 64 MiB) that covers part of it, testing header and trailer fields, and the fields at the boundaries given, against the bytes before, after and around them. |
-| [`checksums.solve_crc`](#checksumssolve_crc) | job | Start the CRC solver on records of equal length that each carry a stored CRC, as a job: every polynomial, init, xorout and reflection that reproduces all the stored values (like reveng), with the closest catalogue algorithm, is job.finished's result, and in the window it fills the CRC solver. |
-| [`diff.run`](#diffrun) | job | Start a comparison of a document with another file as a job: the regions replaced, only in the document and only in the other file (inserted, deleted and changed, not just flipped bytes), with the bytes equal and changed, are job.finished's result, and in the window they fill the Diff tab and are outlined on the views. |
-| [`disasm.set_arch`](#disasmset_arch) | view | Choose the architecture the Disassembly tab decodes as, or auto (the executable header's, else a guess from the bytes); headless there is no listing to change, and the choice is only returned. |
-| [`crypto.scan_constants`](#cryptoscan_constants) | job | Start a scan of the whole document (an edited one's first 256 MiB) for well-known constants of crypto and compression code (AES S-boxes, hash initial values, CRC tables, deflate tables, Blowfish, DES, ChaCha, TEA, curve primes, Base64 alphabets) as a job: the matches are job.finished's result, and in the window they fill Crypto constants. |
-| [`crypto.repeated_blocks`](#cryptorepeated_blocks) | job | Start a search of a span (at most 16 MiB) for random-looking 8- and 16-byte blocks that repeat, the mark of ECB-mode encryption, as a job: the verdict, the best block size and alignment, the most repeated blocks and the repeats along the span are job.finished's result, and in the window they fill the Crypto panel. |
-| [`crypto.find_keys`](#cryptofind_keys) | job | Start a search of a span (the whole document by default, at most 64 MiB) for PEM blocks, DER certificates and keys, OpenSSH keys and random-looking runs that could be raw symmetric keys, as a job: what was found is job.finished's result, and in the window it fills the Crypto panel. |
-| [`crypto.attack`](#cryptoattack) | job | Start attacks on simple ciphers over a span (at most 1 MiB): rolling XOR, XOR with the previous byte, ADD/SUB with a constant or repeating key, bit rotation, XOR combined with ADD and, with a crib, crib dragging, as a job: the decodes that look most like text or structured data are job.finished's result, and in the window they fill the Crypto panel. |
-| [`compare.variation`](#comparevariation) | job | Start comparing a document with other files byte position by byte position, each from its own start offset, as a job: the regions that are constant, vary (and how many values) or move one way through the files like a counter are job.finished's result, and in the window they fill Compare. |
-| [`compare.correlate`](#comparecorrelate) | job | Start a search of a document and other files for fields whose values follow a number known for each file (a temperature, a setting), as a job: the fields, best fit first, with the fitted line, are job.finished's result, and in the window they fill Compare. |
-| [`compare.timeline`](#comparetimeline) | job | Start building the change timeline of the recording of a live source or watched file, as a job: where and how often it changed, snapshot by snapshot, is job.finished's result, and the window fills Compare with it; only the window records, so headless there is none. |
-| [`dotplot.compute`](#dotplotcompute) | job | Start comparing every block of a span (at most 64 MiB) with every other, by shared 6-byte substrings or by byte histograms, as a job: the grid of similarities (repeated content shows as lines parallel to the diagonal) is job.finished's result, and in the window it fills the Dot plot. |
-| [`images.find`](#imagesfind) | job | Start a search of a span (at most 64 MiB) for uncompressed images, trying 1-bit, 8-bit grey, RGB565, RGB and RGBA at widths from 16 to 2048 pixels, as a job: the regions whose rows resemble each other, best first, are job.finished's result (view.set_shape shows one), and in the window they fill Images. |
-| [`trigrams.count`](#trigramscount) | job | Start counting every run of three bytes in a span (sampled beyond 16 MiB) as a job, labelled by segments, by the report's regions or not at all, with a part of it to pick out: the points of the trigram cube, most common first, and the region types they belong to are job.finished's result, and in the window they fill Trigrams. |
-| [`firmware.identify`](#firmwareidentify) | job | Start identifying the processor of a span of headerless code (at most 64 MiB) as a job, disassembling samples as every supported architecture and ranking them by typical instructions, idioms and branch targets: the ranking is job.finished's result, and in the window it fills Firmware (analysis.processor is the quick read). |
-| [`firmware.find_load_address`](#firmwarefind_load_address) | job | Start a search for the address a firmware image is loaded at (the address of offset 0, over the document's first 64 MiB) as a job: the bases that make most stored pointers land on the start of a string, as rbasefind does, are job.finished's result, and in the window they fill Firmware. |
-| [`firmware.vector_tables`](#firmwarevector_tables) | job | Start a search of a span (the whole document by default, at most 64 MiB) for ARM Cortex-M vector tables as a job: each table's stack pointer, handlers and the flash base they imply are job.finished's result, and in the window they fill Firmware. |
-| [`forensics.find_filesystems`](#forensicsfind_filesystems) | job | Start a search of the document (its first 256 MiB) for SquashFS, CramFS, JFFS2 and UBI images as a job: each image found, with its files, is job.finished's result, and in the window they fill Forensics. |
-| [`forensics.open_entry`](#forensicsopen_entry) | view | Open one file (or volume) of the filesystem image at an offset of the document as a derived document, by its path in the image. |
-| [`forensics.classify_blocks`](#forensicsclassify_blocks) | job | Start labelling every block of the document (its first 256 MiB) as padding, text, markup, machine code, compressed, random, raw image, PCM audio or table data as a job: the runs of one class, with the reason for each, are job.finished's result, and in the window they fill Forensics. |
-| [`unpack.run`](#unpackrun) | job | Start extracting the archives and compressed streams in the document (its first 256 MiB) recursively, like binwalk -e, as a job: the tree of what was found, each node with its kind, size and where its bytes came from, is job.finished's result, and in the window it fills the Unpacked tab and the Size map. |
-| [`unpack.open`](#unpackopen) | view | Open one node of the unpacked tree (by its path of child indices, as unpack.run gave it) as a derived document. |
-| [`unpack.read`](#unpackread) | read | Read the bytes of one node of the unpacked tree, by its path of child indices, as hex by default, or as base64 or text. |
-| [`unpack.save`](#unpacksave) | edit | Write the bytes of one node of the unpacked tree (by its path of child indices, as node) to a file; the document is left as it is. |
-| [`characterise.profile_selection`](#characteriseprofile_selection) | job | Start compressing a sample of a span with deflate, bzip2, LZ4, zstd and an order-1 entropy coder as a job: the ratios and the verdict they give (encrypted or random, already compressed, lossy media or structured) are job.finished's result, and in the window they fill Characterise (analysis.compressibility is the quick read). |
-| [`characterise.profile_file`](#characteriseprofile_file) | job | Start profiling the compressibility of the whole document as a job, overall and for up to 64 segments sampled along it: the verdicts are job.finished's result, and in the window they fill Characterise with a strip of verdicts. |
-| [`characterise.streams`](#characterisestreams) | job | Start a search of the document (its first 256 MiB) for raw MP3/MP2 and AAC frames, H.264 and H.265 Annex B video and 16-bit PCM audio without a container as a job: the runs found are job.finished's result, and in the window they fill Characterise. |
-| [`columns.profile`](#columnsprofile) | read | Profile the byte columns of fixed-size records from an offset (each column's kind, entropy and values) and group them into likely fields; in the window the Columns tool shows it. |
-| [`protocol.analyse`](#protocolanalyse) | job | Start finding how a span is framed into messages (sync words, delimiters, length prefixes, fixed size) and what their header fields are, as a background job; the framing, messages and fields are job.finished's result and are published on frames.defined and fields.guessed. |
-| [`protocol.choose_framing`](#protocolchoose_framing) | view | Split a span into messages with a framing (one protocol.analyse offered, or any other) and work out their fields again; the messages are published on frames.defined, and in the window the Protocol tool shows them. |
-| [`report.run`](#reportrun) | job | Start explaining the whole document in plain words and mapping its regions, as a background job; the report and regions are job.finished's result and are published on regions.mapped, and in the window the Report tool and the file map show them. |
-| [`structure_map.segment`](#structure_mapsegment) | job | Start splitting the document into stretches of uniform character, grouped into types (text, tables, compressed, padding…), as a background job; the segments are job.finished's result, and in the window the Structure map shows them. |
-| [`structure_map.find_similar`](#structure_mapfind_similar) | job | Start finding every part of the document whose statistics resemble a span, as a background job; the regions at or above the threshold are job.finished's result, and in the window the Structure map lists them. |
-| [`structure_map.tracks`](#structure_maptracks) | job | Start measuring entropy, compressibility, byte kinds and the local record width along the document, as a background job; the tracks are job.finished's result, and in the window the Structure map draws them. |
-| [`learn.format`](#learnformat) | job | Start learning what the document and sample files of the same format share (a magic number, header fields) as a background job; a signature for the catalogue and a template draft are job.finished's result, and in the window the Learn tool shows them. |
-| [`learn.save_catalogue`](#learnsave_catalogue) | edit | Write a learned signature to a new file in the user's catalogue folder, never over another, and load it. |
-| [`learn.fuzzy_compare`](#learnfuzzy_compare) | job | Start hashing files with ssdeep and scoring how like the document each is, 0 to 100, as a background job; the scores are job.finished's result, and in the window the Learn tool lists them. |
-| [`learn.fragments`](#learnfragments) | job | Start finding the blocks of the document that also occur in a file, as a background job; the shared fragments are job.finished's result, and in the window the Learn tool lists them. |
-| [`alignment.run`](#alignmentrun) | job | Start clustering messages into probable types and aligning each type byte by byte, marking columns as constant, counter, length or variable, as a background job; the messages are a span cut into rows, or else those the protocol analysis published on frames.defined. The clusters are job.finished's result, and in the window the Alignment tool shows them. |
-| [`view.get_shape`](#viewget_shape) | read | The shape a document's bytes are drawn in: the pixel format, pixels per row, the offset of the first pixel, a bit shift and the bytes skipped after each row. |
-| [`view.set_shape`](#viewset_shape) | view | Change the shape a document's bytes are drawn in (the pixel format, pixels per row, the first pixel's offset and bit, the padding after each row); what is not given stays as it is. |
-| [`view.fold`](#viewfold) | view | Skip ranges of a document in its views (the raster and the hex dump) without deleting them; a marker shows where each was. |
-| [`view.unfold`](#viewunfold) | view | Show skipped bytes again: the skipped range starting at an offset, or all of them. |
-| [`bookmarks.list`](#bookmarkslist) | read | A document's bookmarks, in offset order. |
-| [`bookmarks.add`](#bookmarksadd) | view | Bookmark a byte or a span of a document with a name, replacing a bookmark at the same offset; the window keeps them beside the file. |
-| [`bookmarks.remove`](#bookmarksremove) | view | Remove the bookmark at an offset. |
-| [`plugins.reload`](#pluginsreload) | view | Load the Lua plugins again from disk, so the detectors, parsers, codecs and methods they register are the ones in their files now; the command line and MCP load them once, when they start. |
-| [`sources.watch`](#sourceswatch) | view | Watch the window's file for changes on disk, reloading it and marking what changed, or stop watching it. |
-| [`sources.record`](#sourcesrecord) | view | Keep every version of a document as it changes (the window's file or capture as it changes on disk, or after each edit), or stop keeping them. |
-| [`sources.stop`](#sourcesstop) | view | Stop the window's serial capture. |
-| [`sources.view_version`](#sourcesview_version) | view | Open a recorded version of a document as a document derived from it; the window marks what changed from the version before. |
-| [`recipes.list`](#recipeslist) | read | The recipes saved in ~/.config/theviewer/recipes/: each one's name, description, steps and the parameters it asks for. |
-| [`recipes.describe`](#recipesdescribe) | read | One recipe in full, by name or path, with what to know before running it here: another API version, a plugin missing or changed, a method this build lacks, or mistakes in its anchors. |
-| [`recipes.save`](#recipessave) | read | Save a recipe in ~/.config/theviewer/recipes/, given whole or made from steps of this session's journal, to run later on other files. |
-| [`recipes.preview`](#recipespreview) | read | What a recipe would do to a document, without changing anything: each step described with its anchors resolved on this file, and where the run would stop. |
-| [`recipes.run`](#recipesrun) | edit | Run a recipe on a document, each step called as recipe:NAME with its anchors resolved on this file, waiting for the jobs steps start; its edits undo as one step, and the first failure stops it with which step and why. |
+168 methods in 45 namespaces. The MCP column says which are listed as tools of their own by `theviewer mcp` (every one is with `--all-tools`; the rest are reached with `api_call`).
 
-Each method's full JSON schemas are in `theviewer api --describe`.
+| Method | Effect | MCP | Summary |
+| --- | --- | --- | --- |
+| [`api.version`](#apiversion) | read |  | The API version: 1.0. Changes within a major version only add methods, optional parameters and result fields. |
+| [`api.describe`](#apidescribe) | read |  | Every method with its summary, effect, stability and the JSON schemas of its parameters and result. |
+| [`documents.list`](#documentslist) | read | core | The open documents, with their ids, names, paths, lengths and versions. |
+| [`documents.info`](#documentsinfo) | read |  | One document's id, name, path, length, version and whether it has unsaved edits. |
+| [`documents.open`](#documentsopen) | view | core | Open a file by path, or an open document by id, and make it current; a file already open is made current again. In the window, a parent of the document shown is gone back to, closing what was derived from it; that, or opening another file, is refused while what it closes has unsaved edits, unless the person at the window discards them. |
+| [`documents.new`](#documentsnew) | view |  | Open a new, empty document and make it current; the window refuses while its document has unsaved edits, unless the person at the window discards them. |
+| [`documents.save`](#documentssave) | edit | core | Save a document over its file, or to a path, with every edit made so far. |
+| [`documents.derive`](#documentsderive) | view |  | Open bytes of a document (a span, several ranges one after another, or bytes given), or what a transform such as decompress or XOR makes of them, as a document of their own derived from it, and make it current; in the window, Back goes back to the parent. |
+| [`documents.export`](#documentsexport) | edit |  | Write a span of a document (or several ranges one after another) to a file, or what decompresses at a span's start; the document is left as it is. |
+| [`documents.open_source`](#documentsopen_source) | view |  | Open a file, URL, block device, serial port (serial:PORT@BAUD) or a process's memory region (pid:PID@ADDRESS) as a new document. The window reads a URL, device or region in the background and opens it when it arrives, and pid:PID lists a process's regions in the Live tab; headless, the bytes are read before the call returns. |
+| [`bytes.read`](#bytesread) | read | core | Read a span of bytes, as hex by default, or as base64 or text. |
+| [`bytes.hexdump`](#byteshexdump) | read | core | A classic hex dump of a span, 16 bytes per line with an ASCII column, at most 1 MiB. |
+| [`bytes.write`](#byteswrite) | edit | core | Overwrite bytes in place with new ones, as one undoable step; the document keeps its length. |
+| [`bytes.insert`](#bytesinsert) | edit |  | Insert bytes at an offset, as one undoable step; the bytes after it move along. |
+| [`bytes.delete`](#bytesdelete) | edit |  | Remove a span of bytes, as one undoable step; the bytes after it move back. |
+| [`bytes.replace`](#bytesreplace) | edit | core | Replace a span of bytes with new bytes of any length, as one undoable step. |
+| [`bytes.move`](#bytesmove) | edit |  | Cut ranges out and put their bytes, one after another, at an offset counted before the cut, as one undoable step, and select them. |
+| [`bits.read`](#bitsread) | read |  | Read a span of bits, most or least significant bit of each byte first, as a string of 0s and 1s and, up to 64 bits, as a number. |
+| [`bits.write`](#bitswrite) | edit |  | Overwrite bits from any bit offset, most or least significant bit of each byte first, as one undoable step; the bits around them are kept. |
+| [`bits.scan_periods`](#bitsscan_periods) | job |  | Start a search of a span for bit periods (frames that are not a whole number of bytes) and the sync word of the strongest, comparing the bits with themselves at every lag, as a job: the periods and sync words are job.finished's result, and in the window they fill the Bits panel. |
+| [`bits.planes`](#bitsplanes) | job |  | Start splitting a span (at most 1 MiB) into its eight bit planes as a job, scoring how much shape each holds with rows of row_width bytes: the scores are job.finished's result, and in the window the planes fill the Bits panel. |
+| [`bits.open_plane`](#bitsopen_plane) | view |  | Open one bit plane of a span (at most 1 MiB) as a derived document: bit k of every byte, as a byte of 0 or 255. |
+| [`bits.detect_linecode`](#bitsdetect_linecode) | job |  | Start trying Manchester (both conventions), differential Manchester, 8b/10b and packed BCD at every bit alignment of a span (at most 64 KiB) as a job: the decodes, fewest invalid symbols first, and any BCD timestamps are job.finished's result, and in the window they fill the Bits panel. |
+| [`bits.decode_linecode`](#bitsdecode_linecode) | view |  | Decode a span (at most 64 KiB) from a line code at a bit offset and open the decoded bytes as a derived document. |
+| [`bits.rank_field`](#bitsrank_field) | read |  | Rank what a field of records holds (integers, floats, fixed point, timestamps, enums…) by how plausible its values are across the records. |
+| [`bits.find_length_fields`](#bitsfind_length_fields) | job |  | Start a search of a span (at most 256 KiB, one message or a run of records) for numbers that are distances, as a job: length prefixes, tag-length-value chains and offset tables, best first, are job.finished's result, and in the window they fill the Bits panel. |
+| [`transform.apply`](#transformapply) | edit | core | Apply an operation (XOR, invert, shift bits, swap byte order, number, compress, decompress and more) to every range of a selection, as one undoable step, and select what it produced. |
+| [`transform.preview`](#transformpreview) | read |  | What transform.apply would write into each range of a selection, without changing anything. |
+| [`history.undo`](#historyundo) | edit | core | Undo the document's last step, whoever made it, and put the cursor where it was. |
+| [`history.redo`](#historyredo) | edit |  | Redo the last step undone, and put the cursor where it was. |
+| [`history.transaction`](#historytransaction) | edit |  | Run several calls on one document as one undoable step; when one fails, every change the others made is reversed. |
+| [`history.list`](#historylist) | read |  | The session's journal: each edit, view change and job made through the API, by any caller, in order, with its parameters, result, outcome and a description; optionally the recent reads too. Pass back next as since to follow it. |
+| [`history.entry`](#historyentry) | read |  | One step of the journal, or one recent read, in full. |
+| [`history.session`](#historysession) | read |  | What the journal's session ran with: when it started, the API version, the plugins loaded with their hashes, and each document as first seen, with its size and SHA-256. |
+| [`history.inverse`](#historyinverse) | read |  | How a step of the journal would be undone now: the calls that undo it (the document's undo for its last edit, or the inverse of a view change, fold, bookmark, selection or document opened), nothing to undo (a job, a read, a file written), or why it cannot be. |
+| [`history.undo_step`](#historyundo_step) | edit |  | Undo one step of the journal through its inverse (see history.inverse), whoever made it, as a step of its own; the step is then shown as undone and left out of recipes and playback. |
+| [`history.go_back`](#historygo_back) | edit |  | Go back to a step of the journal (0 for before the first): undo every later step in effect, latest first, or, where one has no inverse, bring the document back to how the session first saw it and run the steps up to it again. The later steps stay in the journal, shown as undone. |
+| [`history.save_recipe`](#historysave_recipe) | edit |  | Write the steps in effect (all, or up to a step) to a recipe file, *.theviewer-recipe.json, with the anchors and parameters recorded for its steps, to run on other files. |
+| [`history.suggest_anchors`](#historysuggest_anchors) | read |  | Anchors that could stand for a step's literals in a recipe: search matches, structure fields and findings at the same offset in its document as it is now, the selection an earlier step set, and earlier steps' values equal to it, those that port to other files first. |
+| [`history.make_anchor`](#historymake_anchor) | read |  | Turn the literal at a path of a step's params into an anchor in its derived_from, so a recipe made from it finds the value when it runs; a read it cites becomes a step of the journal. |
+| [`history.make_parameter`](#historymake_parameter) | read |  | Turn the literal at a path of a step's params into a named recipe parameter, the person's to supply when the recipe runs, the literal its default. |
+| [`history.clear_anchor`](#historyclear_anchor) | read |  | Clear the anchor at a path of a step's params, so a recipe made from it repeats the literal. |
+| [`history.recipe`](#historyrecipe) | read |  | A recipe of the journal's successful steps (or those chosen, with the steps they cite), each recorded provenance as an anchor, parameters declared, steps numbered from 1 and the recorded document left out. |
+| [`search.find`](#searchfind) | read | core | The next (or previous) occurrence of hex bytes, text, UTF-16 text or an integer from an offset. |
+| [`search.find_all`](#searchfind_all) | read | core | Every occurrence of hex bytes, text, UTF-16 text or an integer in the document, a page at a time. |
+| [`search.count`](#searchcount) | read |  | How many times hex bytes, text, UTF-16 text or an integer occur in the document, up to a cap. |
+| [`numbers.decode`](#numbersdecode) | read | core | Read the bytes at an offset as integers, floats, fixed-point numbers and timestamps of each width and byte order. |
+| [`selection.get`](#selectionget) | read |  | What is selected in a document: one range, several ranges or a column of every record. |
+| [`selection.set`](#selectionset) | view |  | Select one range, several ranges or a column of every record in a document, or nothing. |
+| [`cursor.get`](#cursorget) | read |  | The cursor's offset in a document. |
+| [`cursor.set`](#cursorset) | view |  | Move the cursor to an offset, selecting nothing. |
+| [`findings.query`](#findingsquery) | read | core | Run the detectors over a span and list what they recognise (signatures, compressed streams, counters, timestamps, text, structures), filtered by category, confidence and producer. |
+| [`findings.publish`](#findingspublish) | analysis |  | Publish findings about a document on the bus as the caller's, for the views, Findings and every other tool to show; they replace the caller's earlier ones under the same key. |
+| [`findings.retract`](#findingsretract) | analysis |  | Withdraw the findings the caller published under a key. |
+| [`structure.parse`](#structureparse) | read | core | Parse the structure starting exactly at an offset (executables, images, archives, captures, ASN.1, filesystems) into a field tree, best match first. |
+| [`structure.parsers`](#structureparsers) | read |  | The structure parsers available, built in and from plugins. |
+| [`templates.list`](#templateslist) | read |  | The binary templates available: the built-in ones and the user's own. |
+| [`templates.apply`](#templatesapply) | analysis | core | Apply a binary template, by name or as source text, at an offset and return its field tree and records; with pin, also show it as the template tool does. |
+| [`templates.infer`](#templatesinfer) | read |  | Propose a template struct from several example records, from what varies between them; with pin, also apply it at the first record and show it as the template tool does. |
+| [`templates.clear`](#templatesclear) | view |  | Withdraw the template pinned over a document: its records are no longer outlined, and it leaves template.applied. |
+| [`codecs.list`](#codecslist) | read |  | The codecs available for decoding, built in and from plugins. |
+| [`codecs.detect`](#codecsdetect) | read |  | The codecs whose header starts at an offset. |
+| [`codecs.decode`](#codecsdecode) | read |  | Decode (decompress) a span with a codec and return the output. |
+| [`codecs.probe`](#codecsprobe) | read | core | Try every built-in decompressor at the start of a span, headerless ones included, and list those that decode. |
+| [`codecs.open_decoded`](#codecsopen_decoded) | view |  | Decompress the stream starting at an offset, with the first codec that decodes there or the one named, and open what it holds as a document derived from this one; in the window, Back (or opening the parent by id) returns. |
+| [`packets.dissect_bytes`](#packetsdissect_bytes) | read | core | Dissect one packet, from a span or from hex bytes, into protocol layers and fields, a summary and its flow. |
+| [`packets.detect_frames`](#packetsdetect_frames) | read |  | Find the protocol a set of frames of unknown format is, by trying every frame decoder on them. |
+| [`packets.sets.create`](#packetssetscreate) | analysis | core | Take a set of packets from a document: a capture in it, a range cut into fixed records, by a length field, at a pattern or with the protocol framing, or the selection's ranges, with how to decode frames of unknown format; returns the set's id and what was worked out (the capture found, the framing), so the call can be made again exactly. |
+| [`packets.sets.remove`](#packetssetsremove) | analysis |  | Forget a packet set: its id stops working and it leaves packets.sets.list. Its document is not changed. |
+| [`packets.sets.list`](#packetssetslist) | read |  | The packet sets made, with their ids, documents, sources, packet counts and decoding. |
+| [`packets.list`](#packetslist) | read |  | A set's packets the display filter keeps, a page at a time: each one's index, offset, length, summary columns, protocols and addresses. |
+| [`packets.dissect`](#packetsdissect) | read | core | Dissect one packet of a set into protocol layers and fields, as the set decodes frames of unknown format. |
+| [`packets.decode_as`](#packetsdecode_as) | analysis |  | Choose the protocol a set's frames of unknown format are decoded as, or detection, and a template for frames no protocol reads. |
+| [`packets.export_pcap`](#packetsexport_pcap) | analysis |  | A set's packets (those a filter keeps) as a pcap file, returned or written to a path given (which needs leave to edit). |
+| [`packets.conversations`](#packetsconversations) | read |  | The conversations in a set (the packets a filter keeps): each pair of endpoints with its transport, packets and bytes each way, and a filter for it. |
+| [`packets.follow_stream`](#packetsfollow_stream) | read |  | The payloads of a packet's conversation in order, each with its direction, and the stream as text. |
+| [`packets.find_captures`](#packetsfind_captures) | read |  | The captures inside a span of a document (pcap, pcapng, snoop, Network Monitor or ERF, or one of these compressed with gzip), each with its offset, format, link type and packets, for packets.sets.create. |
+| [`packets.sets.add_packets`](#packetssetsadd_packets) | view |  | Add ranges of the document to a set as packets of their own, so packets can be gathered one at a time; the set then keeps its packets where they are. |
+| [`packets.sets.refresh`](#packetssetsrefresh) | view |  | Find a set's packets again, the way they were found, in another document (the current one by default), which the set then belongs to. |
+| [`packets.detect_length_field`](#packetsdetect_length_field) | read |  | Look for a length field that cuts a span into frames, with the protocol analysis's framing detection; returns it as packets.sets.create's length_field, or the best framing found instead. |
+| [`packets.endpoints`](#packetsendpoints) | read |  | The addresses in a set (the packets a filter keeps), busiest first, with the packets and bytes each sent and received. |
+| [`packets.extract`](#packetsextract) | analysis |  | Some of a set's packets' bytes one after another, returned or written to a path given (which needs leave to edit). |
+| [`packets.delete`](#packetsdelete) | edit |  | Remove packets from the document (their whole capture records, so a capture stays readable), as one undoable step. |
+| [`packets.fix_checksums`](#packetsfix_checksums) | edit |  | Recompute the IPv4 header, TCP and UDP checksums of some of a set's packets, as one undoable step. |
+| [`packets.apply`](#packetsapply) | edit |  | Invert, fill or XOR some of a set's packets, or the same field of each, as one undoable step. |
+| [`packets.write_field`](#packetswrite_field) | edit |  | Write a value (a number, or hex bytes as wide as the field) into a field of one packet, as one undoable step. |
+| [`packets.columns.apply`](#packetscolumnsapply) | edit |  | Change the same columns (byte offsets) of every packet, or of some, laid out one packet per row: invert, fill, XOR, add, set, number or swap the byte order, as one undoable step. |
+| [`packets.columns.delete`](#packetscolumnsdelete) | edit |  | Remove the same columns (byte offsets) from every packet, or from some, as one undoable step; length fields and checksums are not changed. |
+| [`packets.columns.read`](#packetscolumnsread) | read |  | The same columns (byte offsets) of every packet, or of some, as hex lines or CSV. |
+| [`packets.tshark_decode`](#packetstshark_decode) | job |  | Have Wireshark's tshark decode some of a set's packets (run locally with -n) as a background job; the protocols it named are the job's result, and in the window its layers merge into the Packets panel's. |
+| [`analysis.overview`](#analysisoverview) | read | core | Map the whole document: a summary of what it is, its regions with offsets, likely record widths and confident findings. |
+| [`analysis.overview_job`](#analysisoverview_job) | job | core | Start analysis.overview as a background job and return its id at once; the report arrives as job.finished's result and from jobs.status, for large files and clients that should not wait. |
+| [`analysis.statistics`](#analysisstatistics) | read |  | Measure a span: entropy, chi-square, serial correlation, printable, zero and high-byte fractions, distinct values and a verdict. |
+| [`analysis.segments`](#analysissegments) | read | core | Split the document into regions of one kind (text, tables, code, compressed, random, padding) and group them into types. |
+| [`analysis.compressibility`](#analysiscompressibility) | read |  | Compress a span with several codecs and report the ratios, with a verdict: encrypted or random, already compressed, lossy media or structured. |
+| [`analysis.text_encoding`](#analysistext_encoding) | read |  | Identify the character encoding of a span of text, with previews and the likely language. |
+| [`analysis.processor`](#analysisprocessor) | read |  | Test whether a span is machine code, and for which processor, by disassembling samples for each architecture. |
+| [`analysis.period_scan`](#analysisperiod_scan) | job |  | Start a scan of a window of bytes for repeating periods (record widths) as a background job; the periods found, best first, are job.finished's result, and in the window they fill the structure chart and are published on record_width.estimated. |
+| [`reference.lookup`](#referencelookup) | read | core | The reference notes on a format or protocol, by id, finding id, layer name, port (udp/67) or number (port, IP protocol or EtherType): layout, field meanings and specifications. |
+| [`reference.search`](#referencesearch) | read |  | Reference entries whose notes mention every word of a query, or that a port or number names. |
+| [`reference.rfc`](#referencerfc) | read |  | The plain text of an RFC, or of one of its sections, fetched from the RFC Editor once and then kept in ~/.cache/theviewer/rfc. |
+| [`reference.reload`](#referencereload) | view |  | Read the user's own reference notes again, and say which files could not be read. |
+| [`reference.pick_alternative`](#referencepick_alternative) | view |  | Take another entry in place of a format guessed from a port, EtherType or IP protocol number, for the payload at an offset; the Reference panel shows it, and the entry's notes are returned. |
+| [`events.facts`](#eventsfacts) | read |  | What the tools have learnt about a document and keep: the latest fact per topic, producer and key, by topic, producer or the bytes they cover, each marked stale when the document changed under it. |
+| [`events.poll`](#eventspoll) | read |  | The messages (facts and events) published after a cursor, oldest first, optionally of some topics only; pass back next to keep up. |
+| [`jobs.list`](#jobslist) | read |  | The background jobs tools and callers started (the last 100): what each does, who started it, whether it is running, how far it has got and how it ended. |
+| [`jobs.status`](#jobsstatus) | read | core | One job's state, progress and outcome, and once it has finished, the result of a job a method started. |
+| [`jobs.cancel`](#jobscancel) | analysis |  | Ask a running job to stop; it ends as cancelled, without a result, as soon as it notices. |
+| [`statistics.analyse`](#statisticsanalyse) | job |  | Start the Statistics tool's measure of a span (at most 64 MiB) as a job: the ent randomness tests with a verdict, the byte histogram, entropy and compressibility along the span and the most repeated byte sequences are job.finished's result, and in the window they fill the Statistics tab. |
+| [`strings.find`](#stringsfind) | job |  | Start the Strings tool's search of a span (at most 64 MiB) for runs of text at least min_chars long in the encodings chosen, as a job: the strings found (at most 200000), each with its offset, length, encoding, text and what it looks like (a URL, a path, a key…), are job.finished's result, and in the window they fill the Strings tab. |
+| [`xor.recover_keys`](#xorrecover_keys) | read |  | Recover single-byte and repeating XOR keys for a span (at most 1 MiB) by letter frequency, index of coincidence and the key showing through zero padding, best first, with a preview of each decode and the likely key lengths; transform.apply with {"op": "xor"} applies one. |
+| [`checksums.digests`](#checksumsdigests) | read |  | The digests of a span (at most 64 MiB): CRC-32, Adler-32, MD5, SHA-1, SHA-256, the 8- and 16-bit sums and the XOR of every byte. |
+| [`checksums.find_stored`](#checksumsfind_stored) | read |  | Find a CRC, Adler or sum stored in a span (at most 64 MiB) that covers part of it, testing header and trailer fields, and the fields at the boundaries given, against the bytes before, after and around them. |
+| [`checksums.solve_crc`](#checksumssolve_crc) | job |  | Start the CRC solver on records of equal length that each carry a stored CRC, as a job: every polynomial, init, xorout and reflection that reproduces all the stored values (like reveng), with the closest catalogue algorithm, is job.finished's result, and in the window it fills the CRC solver. |
+| [`diff.run`](#diffrun) | job |  | Start a comparison of a document with another file as a job: the regions replaced, only in the document and only in the other file (inserted, deleted and changed, not just flipped bytes), with the bytes equal and changed, are job.finished's result, and in the window they fill the Diff tab and are outlined on the views. |
+| [`disasm.set_arch`](#disasmset_arch) | view |  | Choose the architecture the Disassembly tab decodes as, or auto (the executable header's, else a guess from the bytes); headless there is no listing to change, and the choice is only returned. |
+| [`crypto.scan_constants`](#cryptoscan_constants) | job |  | Start a scan of the whole document (an edited one's first 256 MiB) for well-known constants of crypto and compression code (AES S-boxes, hash initial values, CRC tables, deflate tables, Blowfish, DES, ChaCha, TEA, curve primes, Base64 alphabets) as a job: the matches are job.finished's result, and in the window they fill Crypto constants. |
+| [`crypto.repeated_blocks`](#cryptorepeated_blocks) | job |  | Start a search of a span (at most 16 MiB) for random-looking 8- and 16-byte blocks that repeat, the mark of ECB-mode encryption, as a job: the verdict, the best block size and alignment, the most repeated blocks and the repeats along the span are job.finished's result, and in the window they fill the Crypto panel. |
+| [`crypto.find_keys`](#cryptofind_keys) | job |  | Start a search of a span (the whole document by default, at most 64 MiB) for PEM blocks, DER certificates and keys, OpenSSH keys and random-looking runs that could be raw symmetric keys, as a job: what was found is job.finished's result, and in the window it fills the Crypto panel. |
+| [`crypto.attack`](#cryptoattack) | job |  | Start attacks on simple ciphers over a span (at most 1 MiB): rolling XOR, XOR with the previous byte, ADD/SUB with a constant or repeating key, bit rotation, XOR combined with ADD and, with a crib, crib dragging, as a job: the decodes that look most like text or structured data are job.finished's result, and in the window they fill the Crypto panel. |
+| [`compare.variation`](#comparevariation) | job |  | Start comparing a document with other files byte position by byte position, each from its own start offset, as a job: the regions that are constant, vary (and how many values) or move one way through the files like a counter are job.finished's result, and in the window they fill Compare. |
+| [`compare.correlate`](#comparecorrelate) | job |  | Start a search of a document and other files for fields whose values follow a number known for each file (a temperature, a setting), as a job: the fields, best fit first, with the fitted line, are job.finished's result, and in the window they fill Compare. |
+| [`compare.timeline`](#comparetimeline) | job |  | Start building the change timeline of the recording of a live source or watched file, as a job: where and how often it changed, snapshot by snapshot, is job.finished's result, and the window fills Compare with it; only the window records, so headless there is none. |
+| [`dotplot.compute`](#dotplotcompute) | job |  | Start comparing every block of a span (at most 64 MiB) with every other, by shared 6-byte substrings or by byte histograms, as a job: the grid of similarities (repeated content shows as lines parallel to the diagonal) is job.finished's result, and in the window it fills the Dot plot. |
+| [`images.find`](#imagesfind) | job |  | Start a search of a span (at most 64 MiB) for uncompressed images, trying 1-bit, 8-bit grey, RGB565, RGB and RGBA at widths from 16 to 2048 pixels, as a job: the regions whose rows resemble each other, best first, are job.finished's result (view.set_shape shows one), and in the window they fill Images. |
+| [`trigrams.count`](#trigramscount) | job |  | Start counting every run of three bytes in a span (sampled beyond 16 MiB) as a job, labelled by segments, by the report's regions or not at all, with a part of it to pick out: the points of the trigram cube, most common first, and the region types they belong to are job.finished's result, and in the window they fill Trigrams. |
+| [`firmware.identify`](#firmwareidentify) | job |  | Start identifying the processor of a span of headerless code (at most 64 MiB) as a job, disassembling samples as every supported architecture and ranking them by typical instructions, idioms and branch targets: the ranking is job.finished's result, and in the window it fills Firmware (analysis.processor is the quick read). |
+| [`firmware.find_load_address`](#firmwarefind_load_address) | job |  | Start a search for the address a firmware image is loaded at (the address of offset 0, over the document's first 64 MiB) as a job: the bases that make most stored pointers land on the start of a string, as rbasefind does, are job.finished's result, and in the window they fill Firmware. |
+| [`firmware.vector_tables`](#firmwarevector_tables) | job |  | Start a search of a span (the whole document by default, at most 64 MiB) for ARM Cortex-M vector tables as a job: each table's stack pointer, handlers and the flash base they imply are job.finished's result, and in the window they fill Firmware. |
+| [`forensics.find_filesystems`](#forensicsfind_filesystems) | job |  | Start a search of the document (its first 256 MiB) for SquashFS, CramFS, JFFS2 and UBI images as a job: each image found, with its files, is job.finished's result, and in the window they fill Forensics. |
+| [`forensics.open_entry`](#forensicsopen_entry) | view |  | Open one file (or volume) of the filesystem image at an offset of the document as a derived document, by its path in the image. |
+| [`forensics.classify_blocks`](#forensicsclassify_blocks) | job |  | Start labelling every block of the document (its first 256 MiB) as padding, text, markup, machine code, compressed, random, raw image, PCM audio or table data as a job: the runs of one class, with the reason for each, are job.finished's result, and in the window they fill Forensics. |
+| [`unpack.run`](#unpackrun) | job |  | Start extracting the archives and compressed streams in the document (its first 256 MiB) recursively, like binwalk -e, as a job: the tree of what was found, each node with its kind, size and where its bytes came from, is job.finished's result, and in the window it fills the Unpacked tab and the Size map. |
+| [`unpack.open`](#unpackopen) | view |  | Open one node of the unpacked tree (by its path of child indices, as unpack.run gave it) as a derived document. |
+| [`unpack.read`](#unpackread) | read |  | Read the bytes of one node of the unpacked tree, by its path of child indices, as hex by default, or as base64 or text. |
+| [`unpack.save`](#unpacksave) | edit |  | Write the bytes of one node of the unpacked tree (by its path of child indices, as node) to a file; the document is left as it is. |
+| [`characterise.profile_selection`](#characteriseprofile_selection) | job |  | Start compressing a sample of a span with deflate, bzip2, LZ4, zstd and an order-1 entropy coder as a job: the ratios and the verdict they give (encrypted or random, already compressed, lossy media or structured) are job.finished's result, and in the window they fill Characterise (analysis.compressibility is the quick read). |
+| [`characterise.profile_file`](#characteriseprofile_file) | job |  | Start profiling the compressibility of the whole document as a job, overall and for up to 64 segments sampled along it: the verdicts are job.finished's result, and in the window they fill Characterise with a strip of verdicts. |
+| [`characterise.streams`](#characterisestreams) | job |  | Start a search of the document (its first 256 MiB) for raw MP3/MP2 and AAC frames, H.264 and H.265 Annex B video and 16-bit PCM audio without a container as a job: the runs found are job.finished's result, and in the window they fill Characterise. |
+| [`columns.profile`](#columnsprofile) | read |  | Profile the byte columns of fixed-size records from an offset (each column's kind, entropy and values) and group them into likely fields; in the window the Columns tool shows it. |
+| [`protocol.analyse`](#protocolanalyse) | job |  | Start finding how a span is framed into messages (sync words, delimiters, length prefixes, fixed size) and what their header fields are, as a background job; the framing, messages and fields are job.finished's result and are published on frames.defined and fields.guessed. |
+| [`protocol.choose_framing`](#protocolchoose_framing) | view |  | Split a span into messages with a framing (one protocol.analyse offered, or any other) and work out their fields again; the messages are published on frames.defined, and in the window the Protocol tool shows them. |
+| [`report.run`](#reportrun) | job |  | Start explaining the whole document in plain words and mapping its regions, as a background job; the report and regions are job.finished's result and are published on regions.mapped, and in the window the Report tool and the file map show them. |
+| [`structure_map.segment`](#structure_mapsegment) | job |  | Start splitting the document into stretches of uniform character, grouped into types (text, tables, compressed, padding…), as a background job; the segments are job.finished's result, and in the window the Structure map shows them. |
+| [`structure_map.find_similar`](#structure_mapfind_similar) | job |  | Start finding every part of the document whose statistics resemble a span, as a background job; the regions at or above the threshold are job.finished's result, and in the window the Structure map lists them. |
+| [`structure_map.tracks`](#structure_maptracks) | job |  | Start measuring entropy, compressibility, byte kinds and the local record width along the document, as a background job; the tracks are job.finished's result, and in the window the Structure map draws them. |
+| [`learn.format`](#learnformat) | job |  | Start learning what the document and sample files of the same format share (a magic number, header fields) as a background job; a signature for the catalogue and a template draft are job.finished's result, and in the window the Learn tool shows them. |
+| [`learn.save_catalogue`](#learnsave_catalogue) | edit |  | Write a learned signature to a new file in the user's catalogue folder, never over another, and load it. |
+| [`learn.fuzzy_compare`](#learnfuzzy_compare) | job |  | Start hashing files with ssdeep and scoring how like the document each is, 0 to 100, as a background job; the scores are job.finished's result, and in the window the Learn tool lists them. |
+| [`learn.fragments`](#learnfragments) | job |  | Start finding the blocks of the document that also occur in a file, as a background job; the shared fragments are job.finished's result, and in the window the Learn tool lists them. |
+| [`alignment.run`](#alignmentrun) | job |  | Start clustering messages into probable types and aligning each type byte by byte, marking columns as constant, counter, length or variable, as a background job; the messages are a span cut into rows, or else those the protocol analysis published on frames.defined. The clusters are job.finished's result, and in the window the Alignment tool shows them. |
+| [`view.get_shape`](#viewget_shape) | read |  | The shape a document's bytes are drawn in: the pixel format, pixels per row, the offset of the first pixel, a bit shift and the bytes skipped after each row. |
+| [`view.set_shape`](#viewset_shape) | view |  | Change the shape a document's bytes are drawn in (the pixel format, pixels per row, the first pixel's offset and bit, the padding after each row); what is not given stays as it is. |
+| [`view.fold`](#viewfold) | view |  | Skip ranges of a document in its views (the raster and the hex dump) without deleting them; a marker shows where each was. |
+| [`view.unfold`](#viewunfold) | view |  | Show skipped bytes again: the skipped range starting at an offset, or all of them. |
+| [`bookmarks.list`](#bookmarkslist) | read |  | A document's bookmarks, in offset order. |
+| [`bookmarks.add`](#bookmarksadd) | view |  | Bookmark a byte or a span of a document with a name, replacing a bookmark at the same offset; the window keeps them beside the file. |
+| [`bookmarks.remove`](#bookmarksremove) | view |  | Remove the bookmark at an offset. |
+| [`plugins.reload`](#pluginsreload) | view |  | Load the Lua plugins again from disk, so the detectors, parsers, codecs and methods they register are the ones in their files now; the command line and MCP load them once, when they start. |
+| [`sources.watch`](#sourceswatch) | view |  | Watch the window's file for changes on disk, reloading it and marking what changed, or stop watching it. |
+| [`sources.record`](#sourcesrecord) | view |  | Keep every version of a document as it changes (the window's file or capture as it changes on disk, or after each edit), or stop keeping them. |
+| [`sources.stop`](#sourcesstop) | view |  | Stop the window's serial capture. |
+| [`sources.view_version`](#sourcesview_version) | view |  | Open a recorded version of a document as a document derived from it; the window marks what changed from the version before. |
+| [`recipes.list`](#recipeslist) | read |  | The recipes saved in ~/.config/theviewer/recipes/: each one's name, description, steps and the parameters it asks for. |
+| [`recipes.describe`](#recipesdescribe) | read |  | One recipe in full, by name or path, with what to know before running it here: another API version, a plugin missing or changed, a method this build lacks, or mistakes in its anchors. |
+| [`recipes.save`](#recipessave) | read |  | Save a recipe in ~/.config/theviewer/recipes/, given whole or made from steps of this session's journal, to run later on other files. |
+| [`recipes.preview`](#recipespreview) | read |  | What a recipe would do to a document, without changing anything: each step described with its anchors resolved on this file, and where the run would stop. |
+| [`recipes.run`](#recipesrun) | edit |  | Run a recipe on a document, each step called as recipe:NAME with its anchors resolved on this file, waiting for the jobs steps start; its edits undo as one step, and the first failure stops it with which step and why. |
+
+Each method's full JSON schemas are in `api.describe` (`theviewer api --describe`).
 
 ### api.version
 
 The API version: 1.0. Changes within a major version only add methods, optional parameters and result fields.
+
+**Effect:** `read` · **MCP tool:** `api_version`, through `api_call`, or with `--all-tools`
+
+**History:** Kept among the recent reads, which a later step can cite.
 
 Parameters: None.
 
@@ -208,6 +356,10 @@ Parameters: None.
 ### api.describe
 
 Every method with its summary, effect, stability and the JSON schemas of its parameters and result.
+
+**Effect:** `read` · **MCP tool:** `api_describe`, through `api_call`, or with `--all-tools`
+
+**History:** Kept among the recent reads, which a later step can cite.
 
 Parameters: None.
 
@@ -221,6 +373,10 @@ Parameters: None.
 
 The open documents, with their ids, names, paths, lengths and versions.
 
+**Effect:** `read` · **MCP tool:** `documents_list`, listed by default
+
+**History:** Kept among the recent reads, which a later step can cite.
+
 Parameters: None.
 
 | Result field | Type | Required | Description |
@@ -230,6 +386,10 @@ Parameters: None.
 ### documents.info
 
 One document's id, name, path, length, version and whether it has unsaved edits.
+
+**Effect:** `read` · **MCP tool:** `documents_info`, through `api_call`, or with `--all-tools`
+
+**History:** Kept among the recent reads, which a later step can cite.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -248,6 +408,10 @@ One document's id, name, path, length, version and whether it has unsaved edits.
 ### documents.open
 
 Open a file by path, or an open document by id, and make it current; a file already open is made current again. In the window, a parent of the document shown is gone back to, closing what was derived from it; that, or opening another file, is refused while what it closes has unsaved edits, unless the person at the window discards them.
+
+**Effect:** `view` · **MCP tool:** `documents_open`, listed by default
+
+**History:** Journalled as a step; undone by changing back which document is current; not repeated: what it opened is open already.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -269,6 +433,10 @@ Open a file by path, or an open document by id, and make it current; a file alre
 
 Open a new, empty document and make it current; the window refuses while its document has unsaved edits, unless the person at the window discards them.
 
+**Effect:** `view` · **MCP tool:** `documents_new`, through `api_call`, or with `--all-tools`
+
+**History:** Journalled as a step; undone by changing back which document is current; not repeated: what it opened is open already.
+
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `discard_unsaved` | boolean | no | In the window, close documents with unsaved edits, losing them, as File › New does; only the person at the window may. |
@@ -288,6 +456,10 @@ Open a new, empty document and make it current; the window refuses while its doc
 
 Save a document over its file, or to a path, with every edit made so far.
 
+**Effect:** `edit` · **MCP tool:** `documents_save`, listed by default
+
+**History:** Journalled as a step; nothing to undo: it wrote a file, which stays as written; not repeated: the file stays as written. Writes a file, so it needs leave to edit.
+
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `doc` | string | no | Document id, path or "current" (the default). |
@@ -306,6 +478,10 @@ Save a document over its file, or to a path, with every edit made so far.
 ### documents.derive
 
 Open bytes of a document (a span, several ranges one after another, or bytes given), or what a transform such as decompress or XOR makes of them, as a document of their own derived from it, and make it current; in the window, Back goes back to the parent.
+
+**Effect:** `view` · **MCP tool:** `documents_derive`, through `api_call`, or with `--all-tools`
+
+**History:** Journalled as a step; undone by changing back which document is current; not repeated: what it opened is open already.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -332,6 +508,10 @@ Open bytes of a document (a span, several ranges one after another, or bytes giv
 
 Write a span of a document (or several ranges one after another) to a file, or what decompresses at a span's start; the document is left as it is.
 
+**Effect:** `edit` · **MCP tool:** `documents_export`, through `api_call`, or with `--all-tools`
+
+**History:** Journalled as a step; nothing to undo: it wrote a file, which stays as written; not repeated: the file stays as written. Writes a file, so it needs leave to edit.
+
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `decompress` | boolean | no | Write what the first codec that decodes at `start` makes of the bytes, instead of the bytes. |
@@ -351,6 +531,10 @@ Write a span of a document (or several ranges one after another) to a file, or w
 
 Open a file, URL, block device, serial port (serial:PORT@BAUD) or a process's memory region (pid:PID@ADDRESS) as a new document. The window reads a URL, device or region in the background and opens it when it arrives, and pid:PID lists a process's regions in the Live tab; headless, the bytes are read before the call returns.
 
+**Effect:** `view` · **MCP tool:** `documents_open_source`, through `api_call`, or with `--all-tools`
+
+**History:** Journalled as a step; undone by changing back which document is current; not repeated: what it opened is open already.
+
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `uri` | string | yes | A path, an http(s) URL, a block device (/dev/disk2), serial:PORT@BAUD, pid:PID or pid:PID@ADDRESS. |
@@ -363,6 +547,10 @@ Open a file, URL, block device, serial port (serial:PORT@BAUD) or a process's me
 ### bytes.read
 
 Read a span of bytes, as hex by default, or as base64 or text.
+
+**Effect:** `read` · **MCP tool:** `bytes_read`, listed by default
+
+**History:** Kept among the recent reads, which a later step can cite.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -383,6 +571,10 @@ Read a span of bytes, as hex by default, or as base64 or text.
 
 A classic hex dump of a span, 16 bytes per line with an ASCII column, at most 1 MiB.
 
+**Effect:** `read` · **MCP tool:** `bytes_hexdump`, listed by default
+
+**History:** Kept among the recent reads, which a later step can cite.
+
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `doc` | string | no | Document id, path or "current" (the default). |
@@ -399,6 +591,10 @@ A classic hex dump of a span, 16 bytes per line with an ASCII column, at most 1 
 ### bytes.write
 
 Overwrite bytes in place with new ones, as one undoable step; the document keeps its length.
+
+**Effect:** `edit` · **MCP tool:** `bytes_write`, listed by default
+
+**History:** Journalled as a step; its bytes undo through the document's undo; repeated by going back, playback and recipes.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -421,6 +617,10 @@ Overwrite bytes in place with new ones, as one undoable step; the document keeps
 
 Insert bytes at an offset, as one undoable step; the bytes after it move along.
 
+**Effect:** `edit` · **MCP tool:** `bytes_insert`, through `api_call`, or with `--all-tools`
+
+**History:** Journalled as a step; its bytes undo through the document's undo; repeated by going back, playback and recipes.
+
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `at` | integer | yes | Offset to insert at; the document's length appends. |
@@ -442,6 +642,10 @@ Insert bytes at an offset, as one undoable step; the bytes after it move along.
 
 Remove a span of bytes, as one undoable step; the bytes after it move back.
 
+**Effect:** `edit` · **MCP tool:** `bytes_delete`, through `api_call`, or with `--all-tools`
+
+**History:** Journalled as a step; its bytes undo through the document's undo; repeated by going back, playback and recipes.
+
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `doc` | string | no | Document id, path or "current" (the default). |
@@ -460,6 +664,10 @@ Remove a span of bytes, as one undoable step; the bytes after it move back.
 ### bytes.replace
 
 Replace a span of bytes with new bytes of any length, as one undoable step.
+
+**Effect:** `edit` · **MCP tool:** `bytes_replace`, listed by default
+
+**History:** Journalled as a step; its bytes undo through the document's undo; repeated by going back, playback and recipes.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -482,6 +690,10 @@ Replace a span of bytes with new bytes of any length, as one undoable step.
 
 Cut ranges out and put their bytes, one after another, at an offset counted before the cut, as one undoable step, and select them.
 
+**Effect:** `edit` · **MCP tool:** `bytes_move`, through `api_call`, or with `--all-tools`
+
+**History:** Journalled as a step; its bytes undo through the document's undo; repeated by going back, playback and recipes.
+
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `doc` | string | no | Document id, path or "current" (the default). |
@@ -500,6 +712,10 @@ Cut ranges out and put their bytes, one after another, at an offset counted befo
 ### bits.read
 
 Read a span of bits, most or least significant bit of each byte first, as a string of 0s and 1s and, up to 64 bits, as a number.
+
+**Effect:** `read` · **MCP tool:** `bits_read`, through `api_call`, or with `--all-tools`
+
+**History:** Kept among the recent reads, which a later step can cite.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -521,6 +737,10 @@ Read a span of bits, most or least significant bit of each byte first, as a stri
 
 Overwrite bits from any bit offset, most or least significant bit of each byte first, as one undoable step; the bits around them are kept.
 
+**Effect:** `edit` · **MCP tool:** `bits_write`, through `api_call`, or with `--all-tools`
+
+**History:** Journalled as a step; its bytes undo through the document's undo; repeated by going back, playback and recipes.
+
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `bit_start` | integer | yes | Bit offset of the first bit: byte offset × 8 plus the bit within the byte, in `order`. |
@@ -541,6 +761,10 @@ Overwrite bits from any bit offset, most or least significant bit of each byte f
 
 Start a search of a span for bit periods (frames that are not a whole number of bytes) and the sync word of the strongest, comparing the bits with themselves at every lag, as a job: the periods and sync words are job.finished's result, and in the window they fill the Bits panel.
 
+**Effect:** `job` · **MCP tool:** `bits_scan_periods`, through `api_call`, or with `--all-tools`
+
+**History:** Journalled as a step; nothing to undo: a job only adds results, which stay; repeated by going back, playback and recipes.
+
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `doc` | string | no | Document id, path or "current" (the default). |
@@ -557,6 +781,10 @@ Start a search of a span for bit periods (frames that are not a whole number of 
 
 Start splitting a span (at most 1 MiB) into its eight bit planes as a job, scoring how much shape each holds with rows of row_width bytes: the scores are job.finished's result, and in the window the planes fill the Bits panel.
 
+**Effect:** `job` · **MCP tool:** `bits_planes`, through `api_call`, or with `--all-tools`
+
+**History:** Journalled as a step; nothing to undo: a job only adds results, which stay; repeated by going back, playback and recipes.
+
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `doc` | string | no | Document id, path or "current" (the default). |
@@ -571,6 +799,10 @@ Start splitting a span (at most 1 MiB) into its eight bit planes as a job, scori
 ### bits.open_plane
 
 Open one bit plane of a span (at most 1 MiB) as a derived document: bit k of every byte, as a byte of 0 or 255.
+
+**Effect:** `view` · **MCP tool:** `bits_open_plane`, through `api_call`, or with `--all-tools`
+
+**History:** Journalled as a step; undone by changing back which document is current; not repeated: what it opened is open already.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -593,6 +825,10 @@ Open one bit plane of a span (at most 1 MiB) as a derived document: bit k of eve
 
 Start trying Manchester (both conventions), differential Manchester, 8b/10b and packed BCD at every bit alignment of a span (at most 64 KiB) as a job: the decodes, fewest invalid symbols first, and any BCD timestamps are job.finished's result, and in the window they fill the Bits panel.
 
+**Effect:** `job` · **MCP tool:** `bits_detect_linecode`, through `api_call`, or with `--all-tools`
+
+**History:** Journalled as a step; nothing to undo: a job only adds results, which stay; repeated by going back, playback and recipes.
+
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `doc` | string | no | Document id, path or "current" (the default). |
@@ -607,6 +843,10 @@ Start trying Manchester (both conventions), differential Manchester, 8b/10b and 
 ### bits.decode_linecode
 
 Decode a span (at most 64 KiB) from a line code at a bit offset and open the decoded bytes as a derived document.
+
+**Effect:** `view` · **MCP tool:** `bits_decode_linecode`, through `api_call`, or with `--all-tools`
+
+**History:** Journalled as a step; undone by changing back which document is current; not repeated: what it opened is open already.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -627,6 +867,10 @@ Decode a span (at most 64 KiB) from a line code at a bit offset and open the dec
 
 Rank what a field of records holds (integers, floats, fixed point, timestamps, enums…) by how plausible its values are across the records.
 
+**Effect:** `read` · **MCP tool:** `bits_rank_field`, through `api_call`, or with `--all-tools`
+
+**History:** Kept among the recent reads, which a later step can cite.
+
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `doc` | string | no | Document id, path or "current" (the default). |
@@ -644,6 +888,10 @@ Rank what a field of records holds (integers, floats, fixed point, timestamps, e
 
 Start a search of a span (at most 256 KiB, one message or a run of records) for numbers that are distances, as a job: length prefixes, tag-length-value chains and offset tables, best first, are job.finished's result, and in the window they fill the Bits panel.
 
+**Effect:** `job` · **MCP tool:** `bits_find_length_fields`, through `api_call`, or with `--all-tools`
+
+**History:** Journalled as a step; nothing to undo: a job only adds results, which stay; repeated by going back, playback and recipes.
+
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `doc` | string | no | Document id, path or "current" (the default). |
@@ -657,6 +905,10 @@ Start a search of a span (at most 256 KiB, one message or a run of records) for 
 ### transform.apply
 
 Apply an operation (XOR, invert, shift bits, swap byte order, number, compress, decompress and more) to every range of a selection, as one undoable step, and select what it produced.
+
+**Effect:** `edit` · **MCP tool:** `transform_apply`, listed by default
+
+**History:** Journalled as a step; its bytes undo through the document's undo; repeated by going back, playback and recipes.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -677,6 +929,10 @@ Apply an operation (XOR, invert, shift bits, swap byte order, number, compress, 
 
 What transform.apply would write into each range of a selection, without changing anything.
 
+**Effect:** `read` · **MCP tool:** `transform_preview`, through `api_call`, or with `--all-tools`
+
+**History:** Kept among the recent reads, which a later step can cite.
+
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `doc` | string | no | Document id, path or "current" (the default). |
@@ -693,6 +949,10 @@ What transform.apply would write into each range of a selection, without changin
 ### history.undo
 
 Undo the document's last step, whoever made it, and put the cursor where it was.
+
+**Effect:** `edit` · **MCP tool:** `history_undo`, listed by default
+
+**History:** Journalled as a step; a move along the timeline (the document's undo), never repeated.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -711,6 +971,10 @@ Undo the document's last step, whoever made it, and put the cursor where it was.
 
 Redo the last step undone, and put the cursor where it was.
 
+**Effect:** `edit` · **MCP tool:** `history_redo`, through `api_call`, or with `--all-tools`
+
+**History:** Journalled as a step; a move along the timeline (the document's redo), never repeated.
+
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `doc` | string | no | Document id, path or "current" (the default). |
@@ -727,6 +991,10 @@ Redo the last step undone, and put the cursor where it was.
 ### history.transaction
 
 Run several calls on one document as one undoable step; when one fails, every change the others made is reversed.
+
+**Effect:** `edit` · **MCP tool:** `history_transaction`, through `api_call`, or with `--all-tools`
+
+**History:** Journalled as a step; its bytes undo through the document's undo; repeated by going back, playback and recipes.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -747,6 +1015,10 @@ Run several calls on one document as one undoable step; when one fails, every ch
 
 The session's journal: each edit, view change and job made through the API, by any caller, in order, with its parameters, result, outcome and a description; optionally the recent reads too. Pass back next as since to follow it.
 
+**Effect:** `read` · **MCP tool:** `history_list`, through `api_call`, or with `--all-tools`
+
+**History:** Not journalled: it reads the journal or edits where its values came from.
+
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `include_reads` | boolean | no | Also list the recent reads still held, whose effect is `read`. |
@@ -765,6 +1037,10 @@ The session's journal: each edit, view change and job made through the API, by a
 ### history.entry
 
 One step of the journal, or one recent read, in full.
+
+**Effect:** `read` · **MCP tool:** `history_entry`, through `api_call`, or with `--all-tools`
+
+**History:** Not journalled: it reads the journal or edits where its values came from.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -794,6 +1070,10 @@ One step of the journal, or one recent read, in full.
 
 What the journal's session ran with: when it started, the API version, the plugins loaded with their hashes, and each document as first seen, with its size and SHA-256.
 
+**Effect:** `read` · **MCP tool:** `history_session`, through `api_call`, or with `--all-tools`
+
+**History:** Not journalled: it reads the journal or edits where its values came from.
+
 Parameters: None.
 
 | Result field | Type | Required | Description |
@@ -806,6 +1086,10 @@ Parameters: None.
 ### history.inverse
 
 How a step of the journal would be undone now: the calls that undo it (the document's undo for its last edit, or the inverse of a view change, fold, bookmark, selection or document opened), nothing to undo (a job, a read, a file written), or why it cannot be.
+
+**Effect:** `read` · **MCP tool:** `history_inverse`, through `api_call`, or with `--all-tools`
+
+**History:** Not journalled: it reads the journal or edits where its values came from.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -821,6 +1105,10 @@ How a step of the journal would be undone now: the calls that undo it (the docum
 
 Undo one step of the journal through its inverse (see history.inverse), whoever made it, as a step of its own; the step is then shown as undone and left out of recipes and playback.
 
+**Effect:** `edit` · **MCP tool:** `history_undo_step`, through `api_call`, or with `--all-tools`
+
+**History:** Journalled as a step; a move along the timeline (undoing one step), never repeated.
+
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `step` | integer | yes | The step's number. |
@@ -835,6 +1123,10 @@ Undo one step of the journal through its inverse (see history.inverse), whoever 
 ### history.go_back
 
 Go back to a step of the journal (0 for before the first): undo every later step in effect, latest first, or, where one has no inverse, bring the document back to how the session first saw it and run the steps up to it again. The later steps stay in the journal, shown as undone.
+
+**Effect:** `edit` · **MCP tool:** `history_go_back`, through `api_call`, or with `--all-tools`
+
+**History:** Journalled as a step; a move along the timeline (going back), never repeated.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -852,7 +1144,11 @@ Go back to a step of the journal (0 for before the first): undo every later step
 
 ### history.save_recipe
 
-Write the steps in effect (all, or up to a step) to a recipe file, *.theviewer-recipe.json, each with its parameters as recorded, to run on other files.
+Write the steps in effect (all, or up to a step) to a recipe file, *.theviewer-recipe.json, with the anchors and parameters recorded for its steps, to run on other files.
+
+**Effect:** `edit` · **MCP tool:** `history_save_recipe`, through `api_call`, or with `--all-tools`
+
+**History:** Journalled as a step; nothing to undo: it wrote a file, which stays as written; not repeated: the file stays as written. Writes a file, so it needs leave to edit.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -871,6 +1167,10 @@ Write the steps in effect (all, or up to a step) to a recipe file, *.theviewer-r
 
 Anchors that could stand for a step's literals in a recipe: search matches, structure fields and findings at the same offset in its document as it is now, the selection an earlier step set, and earlier steps' values equal to it, those that port to other files first.
 
+**Effect:** `read` · **MCP tool:** `history_suggest_anchors`, through `api_call`, or with `--all-tools`
+
+**History:** Not journalled: it reads the journal or edits where its values came from.
+
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `path` | string | no | Only the literal at this path of its params, such as `start`; every integer when omitted. |
@@ -883,6 +1183,10 @@ Anchors that could stand for a step's literals in a recipe: search matches, stru
 ### history.make_anchor
 
 Turn the literal at a path of a step's params into an anchor in its derived_from, so a recipe made from it finds the value when it runs; a read it cites becomes a step of the journal.
+
+**Effect:** `read` · **MCP tool:** `history_make_anchor`, through `api_call`, or with `--all-tools`
+
+**History:** Not journalled: it reads the journal or edits where its values came from.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -901,6 +1205,10 @@ Turn the literal at a path of a step's params into an anchor in its derived_from
 ### history.make_parameter
 
 Turn the literal at a path of a step's params into a named recipe parameter, the person's to supply when the recipe runs, the literal its default.
+
+**Effect:** `read` · **MCP tool:** `history_make_parameter`, through `api_call`, or with `--all-tools`
+
+**History:** Not journalled: it reads the journal or edits where its values came from.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -923,6 +1231,10 @@ Turn the literal at a path of a step's params into a named recipe parameter, the
 
 Clear the anchor at a path of a step's params, so a recipe made from it repeats the literal.
 
+**Effect:** `read` · **MCP tool:** `history_clear_anchor`, through `api_call`, or with `--all-tools`
+
+**History:** Not journalled: it reads the journal or edits where its values came from.
+
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `path` | string | yes | The parameter's path in the step's params. |
@@ -939,6 +1251,10 @@ Clear the anchor at a path of a step's params, so a recipe made from it repeats 
 ### history.recipe
 
 A recipe of the journal's successful steps (or those chosen, with the steps they cite), each recorded provenance as an anchor, parameters declared, steps numbered from 1 and the recorded document left out.
+
+**Effect:** `read` · **MCP tool:** `history_recipe`, through `api_call`, or with `--all-tools`
+
+**History:** Not journalled: it reads the journal or edits where its values came from.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -961,6 +1277,10 @@ A recipe of the journal's successful steps (or those chosen, with the steps they
 
 The next (or previous) occurrence of hex bytes, text, UTF-16 text or an integer from an offset.
 
+**Effect:** `read` · **MCP tool:** `search_find`, listed by default
+
+**History:** Kept among the recent reads, which a later step can cite.
+
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `backwards` | boolean | no | Search towards the start of the document. |
@@ -978,6 +1298,10 @@ The next (or previous) occurrence of hex bytes, text, UTF-16 text or an integer 
 ### search.find_all
 
 Every occurrence of hex bytes, text, UTF-16 text or an integer in the document, a page at a time.
+
+**Effect:** `read` · **MCP tool:** `search_find_all`, listed by default
+
+**History:** Kept among the recent reads, which a later step can cite.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -997,6 +1321,10 @@ Every occurrence of hex bytes, text, UTF-16 text or an integer in the document, 
 
 How many times hex bytes, text, UTF-16 text or an integer occur in the document, up to a cap.
 
+**Effect:** `read` · **MCP tool:** `search_count`, through `api_call`, or with `--all-tools`
+
+**History:** Kept among the recent reads, which a later step can cite.
+
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `cap` | integer | no | Stop counting here (100000 by default), so huge files stay quick. |
@@ -1013,6 +1341,10 @@ How many times hex bytes, text, UTF-16 text or an integer occur in the document,
 ### numbers.decode
 
 Read the bytes at an offset as integers, floats, fixed-point numbers and timestamps of each width and byte order.
+
+**Effect:** `read` · **MCP tool:** `numbers_decode`, listed by default
+
+**History:** Kept among the recent reads, which a later step can cite.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -1031,6 +1363,10 @@ Read the bytes at an offset as integers, floats, fixed-point numbers and timesta
 
 What is selected in a document: one range, several ranges or a column of every record.
 
+**Effect:** `read` · **MCP tool:** `selection_get`, through `api_call`, or with `--all-tools`
+
+**History:** Kept among the recent reads, which a later step can cite.
+
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `doc` | string | no | Document id, path or "current" (the default). |
@@ -1045,6 +1381,10 @@ What is selected in a document: one range, several ranges or a column of every r
 ### selection.set
 
 Select one range, several ranges or a column of every record in a document, or nothing.
+
+**Effect:** `view` · **MCP tool:** `selection_set`, through `api_call`, or with `--all-tools`
+
+**History:** Journalled as a step; repeated calls by the same caller on the same document merge into one; undone by changing back the selection and cursor; repeated by going back, playback and recipes.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -1063,6 +1403,10 @@ Select one range, several ranges or a column of every record in a document, or n
 
 The cursor's offset in a document.
 
+**Effect:** `read` · **MCP tool:** `cursor_get`, through `api_call`, or with `--all-tools`
+
+**History:** Kept among the recent reads, which a later step can cite.
+
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `doc` | string | no | Document id, path or "current" (the default). |
@@ -1075,6 +1419,10 @@ The cursor's offset in a document.
 ### cursor.set
 
 Move the cursor to an offset, selecting nothing.
+
+**Effect:** `view` · **MCP tool:** `cursor_set`, through `api_call`, or with `--all-tools`
+
+**History:** Journalled as a step; repeated calls by the same caller on the same document merge into one; undone by changing back the selection and cursor; repeated by going back, playback and recipes.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -1089,6 +1437,10 @@ Move the cursor to an offset, selecting nothing.
 ### findings.query
 
 Run the detectors over a span and list what they recognise (signatures, compressed streams, counters, timestamps, text, structures), filtered by category, confidence and producer.
+
+**Effect:** `read` · **MCP tool:** `findings_query`, listed by default
+
+**History:** Kept among the recent reads, which a later step can cite.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -1110,6 +1462,10 @@ Run the detectors over a span and list what they recognise (signatures, compress
 
 Publish findings about a document on the bus as the caller's, for the views, Findings and every other tool to show; they replace the caller's earlier ones under the same key.
 
+**Effect:** `analysis` · **MCP tool:** `findings_publish`, through `api_call`, or with `--all-tools`
+
+**History:** Journalled as a step; undone by changing back the findings its caller published under that key; repeated by going back, playback and recipes.
+
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `doc` | string | no | Document id, path or "current" (the default). |
@@ -1126,6 +1482,10 @@ Publish findings about a document on the bus as the caller's, for the views, Fin
 
 Withdraw the findings the caller published under a key.
 
+**Effect:** `analysis` · **MCP tool:** `findings_retract`, through `api_call`, or with `--all-tools`
+
+**History:** Journalled as a step; undone by changing back the findings its caller published under that key; repeated by going back, playback and recipes.
+
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `doc` | string | no | Document id, path or "current" (the default). |
@@ -1141,6 +1501,10 @@ Withdraw the findings the caller published under a key.
 
 Parse the structure starting exactly at an offset (executables, images, archives, captures, ASN.1, filesystems) into a field tree, best match first.
 
+**Effect:** `read` · **MCP tool:** `structure_parse`, listed by default
+
+**History:** Kept among the recent reads, which a later step can cite.
+
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `at` | integer | yes | Offset where the structure starts. |
@@ -1155,6 +1519,10 @@ Parse the structure starting exactly at an offset (executables, images, archives
 
 The structure parsers available, built in and from plugins.
 
+**Effect:** `read` · **MCP tool:** `structure_parsers`, through `api_call`, or with `--all-tools`
+
+**History:** Kept among the recent reads, which a later step can cite.
+
 Parameters: None.
 
 | Result field | Type | Required | Description |
@@ -1165,6 +1533,10 @@ Parameters: None.
 
 The binary templates available: the built-in ones and the user's own.
 
+**Effect:** `read` · **MCP tool:** `templates_list`, through `api_call`, or with `--all-tools`
+
+**History:** Kept among the recent reads, which a later step can cite.
+
 Parameters: None.
 
 | Result field | Type | Required | Description |
@@ -1174,6 +1546,10 @@ Parameters: None.
 ### templates.apply
 
 Apply a binary template, by name or as source text, at an offset and return its field tree and records; with pin, also show it as the template tool does.
+
+**Effect:** `analysis` · **MCP tool:** `templates_apply`, listed by default
+
+**History:** Journalled as a step; undone by changing back the template pinned over the document (when the call pins or clears one); repeated by going back, playback and recipes.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -1198,6 +1574,10 @@ Apply a binary template, by name or as source text, at an offset and return its 
 
 Propose a template struct from several example records, from what varies between them; with pin, also apply it at the first record and show it as the template tool does.
 
+**Effect:** `read` · **MCP tool:** `templates_infer`, through `api_call`, or with `--all-tools`
+
+**History:** Kept among the recent reads, which a later step can cite.
+
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `doc` | string | no | Document id, path or "current" (the default). |
@@ -1216,6 +1596,10 @@ Propose a template struct from several example records, from what varies between
 
 Withdraw the template pinned over a document: its records are no longer outlined, and it leaves template.applied.
 
+**Effect:** `view` · **MCP tool:** `templates_clear`, through `api_call`, or with `--all-tools`
+
+**History:** Journalled as a step; undone by changing back the template pinned over the document (when the call pins or clears one); repeated by going back, playback and recipes.
+
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `doc` | string | no | Document id, path or "current" (the default). |
@@ -1229,6 +1613,10 @@ Withdraw the template pinned over a document: its records are no longer outlined
 
 The codecs available for decoding, built in and from plugins.
 
+**Effect:** `read` · **MCP tool:** `codecs_list`, through `api_call`, or with `--all-tools`
+
+**History:** Kept among the recent reads, which a later step can cite.
+
 Parameters: None.
 
 | Result field | Type | Required | Description |
@@ -1238,6 +1626,10 @@ Parameters: None.
 ### codecs.detect
 
 The codecs whose header starts at an offset.
+
+**Effect:** `read` · **MCP tool:** `codecs_detect`, through `api_call`, or with `--all-tools`
+
+**History:** Kept among the recent reads, which a later step can cite.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -1251,6 +1643,10 @@ The codecs whose header starts at an offset.
 ### codecs.decode
 
 Decode (decompress) a span with a codec and return the output.
+
+**Effect:** `read` · **MCP tool:** `codecs_decode`, through `api_call`, or with `--all-tools`
+
+**History:** Kept among the recent reads, which a later step can cite.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -1276,6 +1672,10 @@ Decode (decompress) a span with a codec and return the output.
 
 Try every built-in decompressor at the start of a span, headerless ones included, and list those that decode.
 
+**Effect:** `read` · **MCP tool:** `codecs_probe`, listed by default
+
+**History:** Kept among the recent reads, which a later step can cite.
+
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `doc` | string | no | Document id, path or "current" (the default). |
@@ -1290,6 +1690,10 @@ Try every built-in decompressor at the start of a span, headerless ones included
 ### codecs.open_decoded
 
 Decompress the stream starting at an offset, with the first codec that decodes there or the one named, and open what it holds as a document derived from this one; in the window, Back (or opening the parent by id) returns.
+
+**Effect:** `view` · **MCP tool:** `codecs_open_decoded`, through `api_call`, or with `--all-tools`
+
+**History:** Journalled as a step; undone by changing back which document is current; not repeated: what it opened is open already.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -1308,6 +1712,10 @@ Decompress the stream starting at an offset, with the first codec that decodes t
 ### packets.dissect_bytes
 
 Dissect one packet, from a span or from hex bytes, into protocol layers and fields, a summary and its flow.
+
+**Effect:** `read` · **MCP tool:** `packets_dissect_bytes`, listed by default
+
+**History:** Kept among the recent reads, which a later step can cite.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -1334,6 +1742,10 @@ Dissect one packet, from a span or from hex bytes, into protocol layers and fiel
 
 Find the protocol a set of frames of unknown format is, by trying every frame decoder on them.
 
+**Effect:** `read` · **MCP tool:** `packets_detect_frames`, through `api_call`, or with `--all-tools`
+
+**History:** Kept among the recent reads, which a later step can cite.
+
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `doc` | string | no | Document id, path or "current" (the default). |
@@ -1346,6 +1758,10 @@ Find the protocol a set of frames of unknown format is, by trying every frame de
 ### packets.sets.create
 
 Take a set of packets from a document: a capture in it, a range cut into fixed records, by a length field, at a pattern or with the protocol framing, or the selection's ranges, with how to decode frames of unknown format; returns the set's id and what was worked out (the capture found, the framing), so the call can be made again exactly.
+
+**Effect:** `analysis` · **MCP tool:** `packets_sets_create`, listed by default
+
+**History:** Journalled as a step; undone by `packets.sets.remove` on what it made, while no later step uses it; repeated by going back, playback and recipes.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -1387,6 +1803,10 @@ Take a set of packets from a document: a capture in it, a range cut into fixed r
 
 Forget a packet set: its id stops working and it leaves packets.sets.list. Its document is not changed.
 
+**Effect:** `analysis` · **MCP tool:** `packets_sets_remove`, through `api_call`, or with `--all-tools`
+
+**History:** Journalled as a step; it has no inverse, so going back past it runs the session's steps again; repeated by going back, playback and recipes.
+
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `set` | string | yes | The set's id, from packets.sets.create. |
@@ -1399,6 +1819,10 @@ Forget a packet set: its id stops working and it leaves packets.sets.list. Its d
 
 The packet sets made, with their ids, documents, sources, packet counts and decoding.
 
+**Effect:** `read` · **MCP tool:** `packets_sets_list`, through `api_call`, or with `--all-tools`
+
+**History:** Kept among the recent reads, which a later step can cite.
+
 Parameters: None.
 
 | Result field | Type | Required | Description |
@@ -1408,6 +1832,10 @@ Parameters: None.
 ### packets.list
 
 A set's packets the display filter keeps, a page at a time: each one's index, offset, length, summary columns, protocols and addresses.
+
+**Effect:** `read` · **MCP tool:** `packets_list`, through `api_call`, or with `--all-tools`
+
+**History:** Kept among the recent reads, which a later step can cite.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -1428,6 +1856,10 @@ A set's packets the display filter keeps, a page at a time: each one's index, of
 
 Dissect one packet of a set into protocol layers and fields, as the set decodes frames of unknown format.
 
+**Effect:** `read` · **MCP tool:** `packets_dissect`, listed by default
+
+**History:** Kept among the recent reads, which a later step can cite.
+
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `index` | integer | yes | The packet's index in the set. |
@@ -1443,6 +1875,10 @@ Dissect one packet of a set into protocol layers and fields, as the set decodes 
 ### packets.decode_as
 
 Choose the protocol a set's frames of unknown format are decoded as, or detection, and a template for frames no protocol reads.
+
+**Effect:** `analysis` · **MCP tool:** `packets_decode_as`, through `api_call`, or with `--all-tools`
+
+**History:** Journalled as a step; undone by changing back how the packet set decodes; repeated by going back, playback and recipes.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -1475,6 +1911,10 @@ Choose the protocol a set's frames of unknown format are decoded as, or detectio
 
 A set's packets (those a filter keeps) as a pcap file, returned or written to a path given (which needs leave to edit).
 
+**Effect:** `analysis` · **MCP tool:** `packets_export_pcap`, through `api_call`, or with `--all-tools`
+
+**History:** Journalled as a step; nothing to undo: it wrote a file, which stays as written; not repeated: the file stays as written. Writes a file when `path` is given, which then needs leave to edit.
+
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `encoding` | `"hex"` \| `"base64"` \| `"text"` | no | How the returned file is written: base64 (the default) or hex. |
@@ -1494,6 +1934,10 @@ A set's packets (those a filter keeps) as a pcap file, returned or written to a 
 
 The conversations in a set (the packets a filter keeps): each pair of endpoints with its transport, packets and bytes each way, and a filter for it.
 
+**Effect:** `read` · **MCP tool:** `packets_conversations`, through `api_call`, or with `--all-tools`
+
+**History:** Kept among the recent reads, which a later step can cite.
+
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `filter` | string | no | Only the packets this display filter keeps. |
@@ -1506,6 +1950,10 @@ The conversations in a set (the packets a filter keeps): each pair of endpoints 
 ### packets.follow_stream
 
 The payloads of a packet's conversation in order, each with its direction, and the stream as text.
+
+**Effect:** `read` · **MCP tool:** `packets_follow_stream`, through `api_call`, or with `--all-tools`
+
+**History:** Kept among the recent reads, which a later step can cite.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -1524,6 +1972,10 @@ The payloads of a packet's conversation in order, each with its direction, and t
 
 The captures inside a span of a document (pcap, pcapng, snoop, Network Monitor or ERF, or one of these compressed with gzip), each with its offset, format, link type and packets, for packets.sets.create.
 
+**Effect:** `read` · **MCP tool:** `packets_find_captures`, through `api_call`, or with `--all-tools`
+
+**History:** Kept among the recent reads, which a later step can cite.
+
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `doc` | string | no | Document id, path or "current" (the default). |
@@ -1537,6 +1989,10 @@ The captures inside a span of a document (pcap, pcapng, snoop, Network Monitor o
 ### packets.sets.add_packets
 
 Add ranges of the document to a set as packets of their own, so packets can be gathered one at a time; the set then keeps its packets where they are.
+
+**Effect:** `view` · **MCP tool:** `packets_sets_add_packets`, through `api_call`, or with `--all-tools`
+
+**History:** Journalled as a step; it has no inverse, so going back past it runs the session's steps again; repeated by going back, playback and recipes.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -1565,6 +2021,10 @@ Add ranges of the document to a set as packets of their own, so packets can be g
 
 Find a set's packets again, the way they were found, in another document (the current one by default), which the set then belongs to.
 
+**Effect:** `view` · **MCP tool:** `packets_sets_refresh`, through `api_call`, or with `--all-tools`
+
+**History:** Journalled as a step; it has no inverse, so going back past it runs the session's steps again; repeated by going back, playback and recipes.
+
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `doc` | string | no | The document to find the packets in: id, path or "current" (the default). |
@@ -1592,6 +2052,10 @@ Find a set's packets again, the way they were found, in another document (the cu
 
 Look for a length field that cuts a span into frames, with the protocol analysis's framing detection; returns it as packets.sets.create's length_field, or the best framing found instead.
 
+**Effect:** `read` · **MCP tool:** `packets_detect_length_field`, through `api_call`, or with `--all-tools`
+
+**History:** Kept among the recent reads, which a later step can cite.
+
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `doc` | string | no | Document id, path or "current" (the default). |
@@ -1610,6 +2074,10 @@ Look for a length field that cuts a span into frames, with the protocol analysis
 
 The addresses in a set (the packets a filter keeps), busiest first, with the packets and bytes each sent and received.
 
+**Effect:** `read` · **MCP tool:** `packets_endpoints`, through `api_call`, or with `--all-tools`
+
+**History:** Kept among the recent reads, which a later step can cite.
+
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `filter` | string | no | Only the packets this display filter keeps. |
@@ -1622,6 +2090,10 @@ The addresses in a set (the packets a filter keeps), busiest first, with the pac
 ### packets.extract
 
 Some of a set's packets' bytes one after another, returned or written to a path given (which needs leave to edit).
+
+**Effect:** `analysis` · **MCP tool:** `packets_extract`, through `api_call`, or with `--all-tools`
+
+**History:** Journalled as a step; nothing to undo: it wrote a file, which stays as written; not repeated: the file stays as written. Writes a file when `path` is given, which then needs leave to edit.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -1640,6 +2112,10 @@ Some of a set's packets' bytes one after another, returned or written to a path 
 ### packets.delete
 
 Remove packets from the document (their whole capture records, so a capture stays readable), as one undoable step.
+
+**Effect:** `edit` · **MCP tool:** `packets_delete`, through `api_call`, or with `--all-tools`
+
+**History:** Journalled as a step; its bytes undo through the document's undo; repeated by going back, playback and recipes.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -1661,6 +2137,10 @@ Remove packets from the document (their whole capture records, so a capture stay
 
 Recompute the IPv4 header, TCP and UDP checksums of some of a set's packets, as one undoable step.
 
+**Effect:** `edit` · **MCP tool:** `packets_fix_checksums`, through `api_call`, or with `--all-tools`
+
+**History:** Journalled as a step; its bytes undo through the document's undo; repeated by going back, playback and recipes.
+
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `indices` | array of integer | yes | The packets, by their index in the set. |
@@ -1680,6 +2160,10 @@ Recompute the IPv4 header, TCP and UDP checksums of some of a set's packets, as 
 ### packets.apply
 
 Invert, fill or XOR some of a set's packets, or the same field of each, as one undoable step.
+
+**Effect:** `edit` · **MCP tool:** `packets_apply`, through `api_call`, or with `--all-tools`
+
+**History:** Journalled as a step; its bytes undo through the document's undo; repeated by going back, playback and recipes.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -1704,6 +2188,10 @@ Invert, fill or XOR some of a set's packets, or the same field of each, as one u
 
 Write a value (a number, or hex bytes as wide as the field) into a field of one packet, as one undoable step.
 
+**Effect:** `edit` · **MCP tool:** `packets_write_field`, through `api_call`, or with `--all-tools`
+
+**History:** Journalled as a step; its bytes undo through the document's undo; repeated by going back, playback and recipes.
+
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `index` | integer | yes | The packet's index in the set. |
@@ -1727,6 +2215,10 @@ Write a value (a number, or hex bytes as wide as the field) into a field of one 
 ### packets.columns.apply
 
 Change the same columns (byte offsets) of every packet, or of some, laid out one packet per row: invert, fill, XOR, add, set, number or swap the byte order, as one undoable step.
+
+**Effect:** `edit` · **MCP tool:** `packets_columns_apply`, through `api_call`, or with `--all-tools`
+
+**History:** Journalled as a step; its bytes undo through the document's undo; repeated by going back, playback and recipes.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -1759,6 +2251,10 @@ Change the same columns (byte offsets) of every packet, or of some, laid out one
 
 Remove the same columns (byte offsets) from every packet, or from some, as one undoable step; length fields and checksums are not changed.
 
+**Effect:** `edit` · **MCP tool:** `packets_columns_delete`, through `api_call`, or with `--all-tools`
+
+**History:** Journalled as a step; its bytes undo through the document's undo; repeated by going back, playback and recipes.
+
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `first` | integer | yes | The first column, a byte offset into each row. |
@@ -1783,6 +2279,10 @@ Remove the same columns (byte offsets) from every packet, or from some, as one u
 
 The same columns (byte offsets) of every packet, or of some, as hex lines or CSV.
 
+**Effect:** `read` · **MCP tool:** `packets_columns_read`, through `api_call`, or with `--all-tools`
+
+**History:** Kept among the recent reads, which a later step can cite.
+
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `first` | integer | yes |  |
@@ -1803,6 +2303,10 @@ The same columns (byte offsets) of every packet, or of some, as hex lines or CSV
 
 Have Wireshark's tshark decode some of a set's packets (run locally with -n) as a background job; the protocols it named are the job's result, and in the window its layers merge into the Packets panel's.
 
+**Effect:** `job` · **MCP tool:** `packets_tshark_decode`, through `api_call`, or with `--all-tools`
+
+**History:** Journalled as a step; nothing to undo: a job only adds results, which stay; repeated by going back, playback and recipes.
+
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `filter` | string | no | Only the packets this display filter keeps. |
@@ -1817,6 +2321,10 @@ Have Wireshark's tshark decode some of a set's packets (run locally with -n) as 
 ### analysis.overview
 
 Map the whole document: a summary of what it is, its regions with offsets, likely record widths and confident findings.
+
+**Effect:** `read` · **MCP tool:** `analysis_overview`, listed by default
+
+**History:** Kept among the recent reads, which a later step can cite.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -1839,6 +2347,10 @@ Map the whole document: a summary of what it is, its regions with offsets, likel
 
 Start analysis.overview as a background job and return its id at once; the report arrives as job.finished's result and from jobs.status, for large files and clients that should not wait.
 
+**Effect:** `job` · **MCP tool:** `analysis_overview_job`, listed by default
+
+**History:** Journalled as a step; nothing to undo: a job only adds results, which stay; repeated by going back, playback and recipes.
+
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `doc` | string | no | Document id, path or "current" (the default). |
@@ -1851,6 +2363,10 @@ Start analysis.overview as a background job and return its id at once; the repor
 ### analysis.statistics
 
 Measure a span: entropy, chi-square, serial correlation, printable, zero and high-byte fractions, distinct values and a verdict.
+
+**Effect:** `read` · **MCP tool:** `analysis_statistics`, through `api_call`, or with `--all-tools`
+
+**History:** Kept among the recent reads, which a later step can cite.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -1878,6 +2394,10 @@ Measure a span: entropy, chi-square, serial correlation, printable, zero and hig
 
 Split the document into regions of one kind (text, tables, code, compressed, random, padding) and group them into types.
 
+**Effect:** `read` · **MCP tool:** `analysis_segments`, listed by default
+
+**History:** Kept among the recent reads, which a later step can cite.
+
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `doc` | string | no | Document id, path or "current" (the default). |
@@ -1894,6 +2414,10 @@ Split the document into regions of one kind (text, tables, code, compressed, ran
 ### analysis.compressibility
 
 Compress a span with several codecs and report the ratios, with a verdict: encrypted or random, already compressed, lossy media or structured.
+
+**Effect:** `read` · **MCP tool:** `analysis_compressibility`, through `api_call`, or with `--all-tools`
+
+**History:** Kept among the recent reads, which a later step can cite.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -1913,6 +2437,10 @@ Compress a span with several codecs and report the ratios, with a verdict: encry
 
 Identify the character encoding of a span of text, with previews and the likely language.
 
+**Effect:** `read` · **MCP tool:** `analysis_text_encoding`, through `api_call`, or with `--all-tools`
+
+**History:** Kept among the recent reads, which a later step can cite.
+
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `doc` | string | no | Document id, path or "current" (the default). |
@@ -1928,6 +2456,10 @@ Identify the character encoding of a span of text, with previews and the likely 
 ### analysis.processor
 
 Test whether a span is machine code, and for which processor, by disassembling samples for each architecture.
+
+**Effect:** `read` · **MCP tool:** `analysis_processor`, through `api_call`, or with `--all-tools`
+
+**History:** Kept among the recent reads, which a later step can cite.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -1946,6 +2478,10 @@ Test whether a span is machine code, and for which processor, by disassembling s
 
 Start a scan of a window of bytes for repeating periods (record widths) as a background job; the periods found, best first, are job.finished's result, and in the window they fill the structure chart and are published on record_width.estimated.
 
+**Effect:** `job` · **MCP tool:** `analysis_period_scan`, through `api_call`, or with `--all-tools`
+
+**History:** Journalled as a step; nothing to undo: a job only adds results, which stay; repeated by going back, playback and recipes.
+
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `doc` | string | no | Document id, path or "current" (the default). |
@@ -1961,6 +2497,10 @@ Start a scan of a window of bytes for repeating periods (record widths) as a bac
 
 The reference notes on a format or protocol, by id, finding id, layer name, port (udp/67) or number (port, IP protocol or EtherType): layout, field meanings and specifications.
 
+**Effect:** `read` · **MCP tool:** `reference_lookup`, listed by default
+
+**History:** Kept among the recent reads, which a later step can cite.
+
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `name` | string | yes | A format id ("ipv4", "png"), finding id, packet layer name, port ("udp/67") or number (a port, IP protocol number or EtherType). |
@@ -1972,6 +2512,10 @@ The reference notes on a format or protocol, by id, finding id, layer name, port
 ### reference.search
 
 Reference entries whose notes mention every word of a query, or that a port or number names.
+
+**Effect:** `read` · **MCP tool:** `reference_search`, through `api_call`, or with `--all-tools`
+
+**History:** Kept among the recent reads, which a later step can cite.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -1988,6 +2532,10 @@ Reference entries whose notes mention every word of a query, or that a port or n
 
 The plain text of an RFC, or of one of its sections, fetched from the RFC Editor once and then kept in ~/.cache/theviewer/rfc.
 
+**Effect:** `read` · **MCP tool:** `reference_rfc`, through `api_call`, or with `--all-tools`
+
+**History:** Kept among the recent reads, which a later step can cite.
+
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `number` | integer | yes | The RFC's number, such as 768. |
@@ -2003,6 +2551,10 @@ The plain text of an RFC, or of one of its sections, fetched from the RFC Editor
 
 Read the user's own reference notes again, and say which files could not be read.
 
+**Effect:** `view` · **MCP tool:** `reference_reload`, through `api_call`, or with `--all-tools`
+
+**History:** Journalled as a step; it has no inverse, so going back past it runs the session's steps again; repeated by going back, playback and recipes.
+
 Parameters: None.
 
 | Result field | Type | Required | Description |
@@ -2013,6 +2565,10 @@ Parameters: None.
 ### reference.pick_alternative
 
 Take another entry in place of a format guessed from a port, EtherType or IP protocol number, for the payload at an offset; the Reference panel shows it, and the entry's notes are returned.
+
+**Effect:** `view` · **MCP tool:** `reference_pick_alternative`, through `api_call`, or with `--all-tools`
+
+**History:** Journalled as a step; it has no inverse, so going back past it runs the session's steps again; repeated by going back, playback and recipes.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -2028,6 +2584,10 @@ Take another entry in place of a format guessed from a port, EtherType or IP pro
 
 What the tools have learnt about a document and keep: the latest fact per topic, producer and key, by topic, producer or the bytes they cover, each marked stale when the document changed under it.
 
+**Effect:** `read` · **MCP tool:** `events_facts`, through `api_call`, or with `--all-tools`
+
+**History:** Kept among the recent reads, which a later step can cite.
+
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `doc` | string | no | Document id, path or "current" (the default). |
@@ -2042,6 +2602,10 @@ What the tools have learnt about a document and keep: the latest fact per topic,
 ### events.poll
 
 The messages (facts and events) published after a cursor, oldest first, optionally of some topics only; pass back next to keep up.
+
+**Effect:** `read` · **MCP tool:** `events_poll`, through `api_call`, or with `--all-tools`
+
+**History:** Kept among the recent reads, which a later step can cite.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -2059,6 +2623,10 @@ The messages (facts and events) published after a cursor, oldest first, optional
 
 The background jobs tools and callers started (the last 100): what each does, who started it, whether it is running, how far it has got and how it ended.
 
+**Effect:** `read` · **MCP tool:** `jobs_list`, through `api_call`, or with `--all-tools`
+
+**History:** Kept among the recent reads, which a later step can cite.
+
 Parameters: None.
 
 | Result field | Type | Required | Description |
@@ -2068,6 +2636,10 @@ Parameters: None.
 ### jobs.status
 
 One job's state, progress and outcome, and once it has finished, the result of a job a method started.
+
+**Effect:** `read` · **MCP tool:** `jobs_status`, listed by default
+
+**History:** Kept among the recent reads, which a later step can cite.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -2089,6 +2661,10 @@ One job's state, progress and outcome, and once it has finished, the result of a
 
 Ask a running job to stop; it ends as cancelled, without a result, as soon as it notices.
 
+**Effect:** `analysis` · **MCP tool:** `jobs_cancel`, through `api_call`, or with `--all-tools`
+
+**History:** Journalled as a step; nothing to undo: a job cancelled stays cancelled; run it again instead; repeated by going back, playback and recipes.
+
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `job` | string | yes | The job's id, such as "report-3", as `job.started` or a job method gave it. |
@@ -2109,6 +2685,10 @@ Ask a running job to stop; it ends as cancelled, without a result, as soon as it
 
 Start the Statistics tool's measure of a span (at most 64 MiB) as a job: the ent randomness tests with a verdict, the byte histogram, entropy and compressibility along the span and the most repeated byte sequences are job.finished's result, and in the window they fill the Statistics tab.
 
+**Effect:** `job` · **MCP tool:** `statistics_analyse`, through `api_call`, or with `--all-tools`
+
+**History:** Journalled as a step; nothing to undo: a job only adds results, which stay; repeated by going back, playback and recipes.
+
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `doc` | string | no | Document id, path or "current" (the default). |
@@ -2122,6 +2702,10 @@ Start the Statistics tool's measure of a span (at most 64 MiB) as a job: the ent
 ### strings.find
 
 Start the Strings tool's search of a span (at most 64 MiB) for runs of text at least min_chars long in the encodings chosen, as a job: the strings found (at most 200000), each with its offset, length, encoding, text and what it looks like (a URL, a path, a key…), are job.finished's result, and in the window they fill the Strings tab.
+
+**Effect:** `job` · **MCP tool:** `strings_find`, through `api_call`, or with `--all-tools`
+
+**History:** Journalled as a step; nothing to undo: a job only adds results, which stay; repeated by going back, playback and recipes.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -2138,6 +2722,10 @@ Start the Strings tool's search of a span (at most 64 MiB) for runs of text at l
 ### xor.recover_keys
 
 Recover single-byte and repeating XOR keys for a span (at most 1 MiB) by letter frequency, index of coincidence and the key showing through zero padding, best first, with a preview of each decode and the likely key lengths; transform.apply with {"op": "xor"} applies one.
+
+**Effect:** `read` · **MCP tool:** `xor_recover_keys`, through `api_call`, or with `--all-tools`
+
+**History:** Kept among the recent reads, which a later step can cite.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -2156,6 +2744,10 @@ Recover single-byte and repeating XOR keys for a span (at most 1 MiB) by letter 
 ### checksums.digests
 
 The digests of a span (at most 64 MiB): CRC-32, Adler-32, MD5, SHA-1, SHA-256, the 8- and 16-bit sums and the XOR of every byte.
+
+**Effect:** `read` · **MCP tool:** `checksums_digests`, through `api_call`, or with `--all-tools`
+
+**History:** Kept among the recent reads, which a later step can cite.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -2180,6 +2772,10 @@ The digests of a span (at most 64 MiB): CRC-32, Adler-32, MD5, SHA-1, SHA-256, t
 
 Find a CRC, Adler or sum stored in a span (at most 64 MiB) that covers part of it, testing header and trailer fields, and the fields at the boundaries given, against the bytes before, after and around them.
 
+**Effect:** `read` · **MCP tool:** `checksums_find_stored`, through `api_call`, or with `--all-tools`
+
+**History:** Kept among the recent reads, which a later step can cite.
+
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `boundaries` | array of integer | no | Document offsets where known fields start or end (the window passes those of the findings in the span), also tested as stored values and as the edges of covered ranges. |
@@ -2196,6 +2792,10 @@ Find a CRC, Adler or sum stored in a span (at most 64 MiB) that covers part of i
 ### checksums.solve_crc
 
 Start the CRC solver on records of equal length that each carry a stored CRC, as a job: every polynomial, init, xorout and reflection that reproduces all the stored values (like reveng), with the closest catalogue algorithm, is job.finished's result, and in the window it fills the CRC solver.
+
+**Effect:** `job` · **MCP tool:** `checksums_solve_crc`, through `api_call`, or with `--all-tools`
+
+**History:** Journalled as a step; nothing to undo: a job only adds results, which stay; repeated by going back, playback and recipes.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -2216,6 +2816,10 @@ Start the CRC solver on records of equal length that each carry a stored CRC, as
 
 Start a comparison of a document with another file as a job: the regions replaced, only in the document and only in the other file (inserted, deleted and changed, not just flipped bytes), with the bytes equal and changed, are job.finished's result, and in the window they fill the Diff tab and are outlined on the views.
 
+**Effect:** `job` · **MCP tool:** `diff_run`, through `api_call`, or with `--all-tools`
+
+**History:** Journalled as a step; nothing to undo: a job only adds results, which stay; repeated by going back, playback and recipes.
+
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `doc` | string | no | Document id, path or "current" (the default). |
@@ -2228,6 +2832,10 @@ Start a comparison of a document with another file as a job: the regions replace
 ### disasm.set_arch
 
 Choose the architecture the Disassembly tab decodes as, or auto (the executable header's, else a guess from the bytes); headless there is no listing to change, and the choice is only returned.
+
+**Effect:** `view` · **MCP tool:** `disasm_set_arch`, through `api_call`, or with `--all-tools`
+
+**History:** Journalled as a step; it has no inverse, so going back past it runs the session's steps again; repeated by going back, playback and recipes.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -2242,6 +2850,10 @@ Choose the architecture the Disassembly tab decodes as, or auto (the executable 
 
 Start a scan of the whole document (an edited one's first 256 MiB) for well-known constants of crypto and compression code (AES S-boxes, hash initial values, CRC tables, deflate tables, Blowfish, DES, ChaCha, TEA, curve primes, Base64 alphabets) as a job: the matches are job.finished's result, and in the window they fill Crypto constants.
 
+**Effect:** `job` · **MCP tool:** `crypto_scan_constants`, through `api_call`, or with `--all-tools`
+
+**History:** Journalled as a step; nothing to undo: a job only adds results, which stay; repeated by going back, playback and recipes.
+
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `doc` | string | no | Document id, path or "current" (the default). |
@@ -2253,6 +2865,10 @@ Start a scan of the whole document (an edited one's first 256 MiB) for well-know
 ### crypto.repeated_blocks
 
 Start a search of a span (at most 16 MiB) for random-looking 8- and 16-byte blocks that repeat, the mark of ECB-mode encryption, as a job: the verdict, the best block size and alignment, the most repeated blocks and the repeats along the span are job.finished's result, and in the window they fill the Crypto panel.
+
+**Effect:** `job` · **MCP tool:** `crypto_repeated_blocks`, through `api_call`, or with `--all-tools`
+
+**History:** Journalled as a step; nothing to undo: a job only adds results, which stay; repeated by going back, playback and recipes.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -2268,6 +2884,10 @@ Start a search of a span (at most 16 MiB) for random-looking 8- and 16-byte bloc
 
 Start a search of a span (the whole document by default, at most 64 MiB) for PEM blocks, DER certificates and keys, OpenSSH keys and random-looking runs that could be raw symmetric keys, as a job: what was found is job.finished's result, and in the window it fills the Crypto panel.
 
+**Effect:** `job` · **MCP tool:** `crypto_find_keys`, through `api_call`, or with `--all-tools`
+
+**History:** Journalled as a step; nothing to undo: a job only adds results, which stay; repeated by going back, playback and recipes.
+
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `doc` | string | no | Document id, path or "current" (the default). |
@@ -2281,6 +2901,10 @@ Start a search of a span (the whole document by default, at most 64 MiB) for PEM
 ### crypto.attack
 
 Start attacks on simple ciphers over a span (at most 1 MiB): rolling XOR, XOR with the previous byte, ADD/SUB with a constant or repeating key, bit rotation, XOR combined with ADD and, with a crib, crib dragging, as a job: the decodes that look most like text or structured data are job.finished's result, and in the window they fill the Crypto panel.
+
+**Effect:** `job` · **MCP tool:** `crypto_attack`, through `api_call`, or with `--all-tools`
+
+**History:** Journalled as a step; nothing to undo: a job only adds results, which stay; repeated by going back, playback and recipes.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -2297,6 +2921,10 @@ Start attacks on simple ciphers over a span (at most 1 MiB): rolling XOR, XOR wi
 
 Start comparing a document with other files byte position by byte position, each from its own start offset, as a job: the regions that are constant, vary (and how many values) or move one way through the files like a counter are job.finished's result, and in the window they fill Compare.
 
+**Effect:** `job` · **MCP tool:** `compare_variation`, through `api_call`, or with `--all-tools`
+
+**History:** Journalled as a step; nothing to undo: a job only adds results, which stay; repeated by going back, playback and recipes.
+
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `doc` | string | no | Document id, path or "current" (the default): the first file. |
@@ -2310,6 +2938,10 @@ Start comparing a document with other files byte position by byte position, each
 ### compare.correlate
 
 Start a search of a document and other files for fields whose values follow a number known for each file (a temperature, a setting), as a job: the fields, best fit first, with the fitted line, are job.finished's result, and in the window they fill Compare.
+
+**Effect:** `job` · **MCP tool:** `compare_correlate`, through `api_call`, or with `--all-tools`
+
+**History:** Journalled as a step; nothing to undo: a job only adds results, which stay; repeated by going back, playback and recipes.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -2327,6 +2959,10 @@ Start a search of a document and other files for fields whose values follow a nu
 
 Start building the change timeline of the recording of a live source or watched file, as a job: where and how often it changed, snapshot by snapshot, is job.finished's result, and the window fills Compare with it; only the window records, so headless there is none.
 
+**Effect:** `job` · **MCP tool:** `compare_timeline`, through `api_call`, or with `--all-tools`
+
+**History:** Journalled as a step; nothing to undo: a job only adds results, which stay; repeated by going back, playback and recipes.
+
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `doc` | string | no | Document id, path or "current" (the default). |
@@ -2338,6 +2974,10 @@ Start building the change timeline of the recording of a live source or watched 
 ### dotplot.compute
 
 Start comparing every block of a span (at most 64 MiB) with every other, by shared 6-byte substrings or by byte histograms, as a job: the grid of similarities (repeated content shows as lines parallel to the diagonal) is job.finished's result, and in the window it fills the Dot plot.
+
+**Effect:** `job` · **MCP tool:** `dotplot_compute`, through `api_call`, or with `--all-tools`
+
+**History:** Journalled as a step; nothing to undo: a job only adds results, which stay; repeated by going back, playback and recipes.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -2354,6 +2994,10 @@ Start comparing every block of a span (at most 64 MiB) with every other, by shar
 
 Start a search of a span (at most 64 MiB) for uncompressed images, trying 1-bit, 8-bit grey, RGB565, RGB and RGBA at widths from 16 to 2048 pixels, as a job: the regions whose rows resemble each other, best first, are job.finished's result (view.set_shape shows one), and in the window they fill Images.
 
+**Effect:** `job` · **MCP tool:** `images_find`, through `api_call`, or with `--all-tools`
+
+**History:** Journalled as a step; nothing to undo: a job only adds results, which stay; repeated by going back, playback and recipes.
+
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `doc` | string | no | Document id, path or "current" (the default). |
@@ -2367,6 +3011,10 @@ Start a search of a span (at most 64 MiB) for uncompressed images, trying 1-bit,
 ### trigrams.count
 
 Start counting every run of three bytes in a span (sampled beyond 16 MiB) as a job, labelled by segments, by the report's regions or not at all, with a part of it to pick out: the points of the trigram cube, most common first, and the region types they belong to are job.finished's result, and in the window they fill Trigrams.
+
+**Effect:** `job` · **MCP tool:** `trigrams_count`, through `api_call`, or with `--all-tools`
+
+**History:** Journalled as a step; nothing to undo: a job only adds results, which stay; repeated by going back, playback and recipes.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -2384,6 +3032,10 @@ Start counting every run of three bytes in a span (sampled beyond 16 MiB) as a j
 
 Start identifying the processor of a span of headerless code (at most 64 MiB) as a job, disassembling samples as every supported architecture and ranking them by typical instructions, idioms and branch targets: the ranking is job.finished's result, and in the window it fills Firmware (analysis.processor is the quick read).
 
+**Effect:** `job` · **MCP tool:** `firmware_identify`, through `api_call`, or with `--all-tools`
+
+**History:** Journalled as a step; nothing to undo: a job only adds results, which stay; repeated by going back, playback and recipes.
+
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `doc` | string | no | Document id, path or "current" (the default). |
@@ -2397,6 +3049,10 @@ Start identifying the processor of a span of headerless code (at most 64 MiB) as
 ### firmware.find_load_address
 
 Start a search for the address a firmware image is loaded at (the address of offset 0, over the document's first 64 MiB) as a job: the bases that make most stored pointers land on the start of a string, as rbasefind does, are job.finished's result, and in the window they fill Firmware.
+
+**Effect:** `job` · **MCP tool:** `firmware_find_load_address`, through `api_call`, or with `--all-tools`
+
+**History:** Journalled as a step; nothing to undo: a job only adds results, which stay; repeated by going back, playback and recipes.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -2414,6 +3070,10 @@ Start a search for the address a firmware image is loaded at (the address of off
 
 Start a search of a span (the whole document by default, at most 64 MiB) for ARM Cortex-M vector tables as a job: each table's stack pointer, handlers and the flash base they imply are job.finished's result, and in the window they fill Firmware.
 
+**Effect:** `job` · **MCP tool:** `firmware_vector_tables`, through `api_call`, or with `--all-tools`
+
+**History:** Journalled as a step; nothing to undo: a job only adds results, which stay; repeated by going back, playback and recipes.
+
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `doc` | string | no | Document id, path or "current" (the default). |
@@ -2428,6 +3088,10 @@ Start a search of a span (the whole document by default, at most 64 MiB) for ARM
 
 Start a search of the document (its first 256 MiB) for SquashFS, CramFS, JFFS2 and UBI images as a job: each image found, with its files, is job.finished's result, and in the window they fill Forensics.
 
+**Effect:** `job` · **MCP tool:** `forensics_find_filesystems`, through `api_call`, or with `--all-tools`
+
+**History:** Journalled as a step; nothing to undo: a job only adds results, which stay; repeated by going back, playback and recipes.
+
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `doc` | string | no | Document id, path or "current" (the default). |
@@ -2439,6 +3103,10 @@ Start a search of the document (its first 256 MiB) for SquashFS, CramFS, JFFS2 a
 ### forensics.open_entry
 
 Open one file (or volume) of the filesystem image at an offset of the document as a derived document, by its path in the image.
+
+**Effect:** `view` · **MCP tool:** `forensics_open_entry`, through `api_call`, or with `--all-tools`
+
+**History:** Journalled as a step; undone by changing back which document is current; not repeated: what it opened is open already.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -2460,6 +3128,10 @@ Open one file (or volume) of the filesystem image at an offset of the document a
 
 Start labelling every block of the document (its first 256 MiB) as padding, text, markup, machine code, compressed, random, raw image, PCM audio or table data as a job: the runs of one class, with the reason for each, are job.finished's result, and in the window they fill Forensics.
 
+**Effect:** `job` · **MCP tool:** `forensics_classify_blocks`, through `api_call`, or with `--all-tools`
+
+**History:** Journalled as a step; nothing to undo: a job only adds results, which stay; repeated by going back, playback and recipes.
+
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `block_size` | integer | no | Bytes per block, at least 256 (4096 by default). |
@@ -2473,6 +3145,10 @@ Start labelling every block of the document (its first 256 MiB) as padding, text
 
 Start extracting the archives and compressed streams in the document (its first 256 MiB) recursively, like binwalk -e, as a job: the tree of what was found, each node with its kind, size and where its bytes came from, is job.finished's result, and in the window it fills the Unpacked tab and the Size map.
 
+**Effect:** `job` · **MCP tool:** `unpack_run`, through `api_call`, or with `--all-tools`
+
+**History:** Journalled as a step; nothing to undo: a job only adds results, which stay; repeated by going back, playback and recipes.
+
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `doc` | string | no | Document id, path or "current" (the default). |
@@ -2484,6 +3160,10 @@ Start extracting the archives and compressed streams in the document (its first 
 ### unpack.open
 
 Open one node of the unpacked tree (by its path of child indices, as unpack.run gave it) as a derived document.
+
+**Effect:** `view` · **MCP tool:** `unpack_open`, through `api_call`, or with `--all-tools`
+
+**History:** Journalled as a step; undone by changing back which document is current; not repeated: what it opened is open already.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -2504,6 +3184,10 @@ Open one node of the unpacked tree (by its path of child indices, as unpack.run 
 
 Read the bytes of one node of the unpacked tree, by its path of child indices, as hex by default, or as base64 or text.
 
+**Effect:** `read` · **MCP tool:** `unpack_read`, through `api_call`, or with `--all-tools`
+
+**History:** Kept among the recent reads, which a later step can cite.
+
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `doc` | string | no | Document id, path or "current" (the default). |
@@ -2523,6 +3207,10 @@ Read the bytes of one node of the unpacked tree, by its path of child indices, a
 
 Write the bytes of one node of the unpacked tree (by its path of child indices, as node) to a file; the document is left as it is.
 
+**Effect:** `edit` · **MCP tool:** `unpack_save`, through `api_call`, or with `--all-tools`
+
+**History:** Journalled as a step; nothing to undo: it wrote a file, which stays as written; not repeated: the file stays as written. Writes a file, so it needs leave to edit.
+
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `doc` | string | no | Document id, path or "current" (the default). |
@@ -2539,6 +3227,10 @@ Write the bytes of one node of the unpacked tree (by its path of child indices, 
 
 Start compressing a sample of a span with deflate, bzip2, LZ4, zstd and an order-1 entropy coder as a job: the ratios and the verdict they give (encrypted or random, already compressed, lossy media or structured) are job.finished's result, and in the window they fill Characterise (analysis.compressibility is the quick read).
 
+**Effect:** `job` · **MCP tool:** `characterise_profile_selection`, through `api_call`, or with `--all-tools`
+
+**History:** Journalled as a step; nothing to undo: a job only adds results, which stay; repeated by going back, playback and recipes.
+
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `doc` | string | no | Document id, path or "current" (the default). |
@@ -2553,6 +3245,10 @@ Start compressing a sample of a span with deflate, bzip2, LZ4, zstd and an order
 
 Start profiling the compressibility of the whole document as a job, overall and for up to 64 segments sampled along it: the verdicts are job.finished's result, and in the window they fill Characterise with a strip of verdicts.
 
+**Effect:** `job` · **MCP tool:** `characterise_profile_file`, through `api_call`, or with `--all-tools`
+
+**History:** Journalled as a step; nothing to undo: a job only adds results, which stay; repeated by going back, playback and recipes.
+
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `doc` | string | no | Document id, path or "current" (the default). |
@@ -2565,6 +3261,10 @@ Start profiling the compressibility of the whole document as a job, overall and 
 
 Start a search of the document (its first 256 MiB) for raw MP3/MP2 and AAC frames, H.264 and H.265 Annex B video and 16-bit PCM audio without a container as a job: the runs found are job.finished's result, and in the window they fill Characterise.
 
+**Effect:** `job` · **MCP tool:** `characterise_streams`, through `api_call`, or with `--all-tools`
+
+**History:** Journalled as a step; nothing to undo: a job only adds results, which stay; repeated by going back, playback and recipes.
+
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `doc` | string | no | Document id, path or "current" (the default). |
@@ -2576,6 +3276,10 @@ Start a search of the document (its first 256 MiB) for raw MP3/MP2 and AAC frame
 ### columns.profile
 
 Profile the byte columns of fixed-size records from an offset (each column's kind, entropy and values) and group them into likely fields; in the window the Columns tool shows it.
+
+**Effect:** `read` · **MCP tool:** `columns_profile`, through `api_call`, or with `--all-tools`
+
+**History:** Kept among the recent reads, which a later step can cite.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -2597,6 +3301,10 @@ Profile the byte columns of fixed-size records from an offset (each column's kin
 
 Start finding how a span is framed into messages (sync words, delimiters, length prefixes, fixed size) and what their header fields are, as a background job; the framing, messages and fields are job.finished's result and are published on frames.defined and fields.guessed.
 
+**Effect:** `job` · **MCP tool:** `protocol_analyse`, through `api_call`, or with `--all-tools`
+
+**History:** Journalled as a step; nothing to undo: a job only adds results, which stay; repeated by going back, playback and recipes.
+
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `doc` | string | no | Document id, path or "current" (the default). |
@@ -2610,6 +3318,10 @@ Start finding how a span is framed into messages (sync words, delimiters, length
 ### protocol.choose_framing
 
 Split a span into messages with a framing (one protocol.analyse offered, or any other) and work out their fields again; the messages are published on frames.defined, and in the window the Protocol tool shows them.
+
+**Effect:** `view` · **MCP tool:** `protocol_choose_framing`, through `api_call`, or with `--all-tools`
+
+**History:** Journalled as a step; it has no inverse, so going back past it runs the session's steps again; repeated by going back, playback and recipes.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -2637,6 +3349,10 @@ Split a span into messages with a framing (one protocol.analyse offered, or any 
 
 Start explaining the whole document in plain words and mapping its regions, as a background job; the report and regions are job.finished's result and are published on regions.mapped, and in the window the Report tool and the file map show them.
 
+**Effect:** `job` · **MCP tool:** `report_run`, through `api_call`, or with `--all-tools`
+
+**History:** Journalled as a step; nothing to undo: a job only adds results, which stay; repeated by going back, playback and recipes.
+
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `doc` | string | no | Document id, path or "current" (the default). |
@@ -2649,6 +3365,10 @@ Start explaining the whole document in plain words and mapping its regions, as a
 
 Start splitting the document into stretches of uniform character, grouped into types (text, tables, compressed, padding…), as a background job; the segments are job.finished's result, and in the window the Structure map shows them.
 
+**Effect:** `job` · **MCP tool:** `structure_map_segment`, through `api_call`, or with `--all-tools`
+
+**History:** Journalled as a step; nothing to undo: a job only adds results, which stay; repeated by going back, playback and recipes.
+
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `doc` | string | no | Document id, path or "current" (the default). |
@@ -2660,6 +3380,10 @@ Start splitting the document into stretches of uniform character, grouped into t
 ### structure_map.find_similar
 
 Start finding every part of the document whose statistics resemble a span, as a background job; the regions at or above the threshold are job.finished's result, and in the window the Structure map lists them.
+
+**Effect:** `job` · **MCP tool:** `structure_map_find_similar`, through `api_call`, or with `--all-tools`
+
+**History:** Journalled as a step; nothing to undo: a job only adds results, which stay; repeated by going back, playback and recipes.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -2677,6 +3401,10 @@ Start finding every part of the document whose statistics resemble a span, as a 
 
 Start measuring entropy, compressibility, byte kinds and the local record width along the document, as a background job; the tracks are job.finished's result, and in the window the Structure map draws them.
 
+**Effect:** `job` · **MCP tool:** `structure_map_tracks`, through `api_call`, or with `--all-tools`
+
+**History:** Journalled as a step; nothing to undo: a job only adds results, which stay; repeated by going back, playback and recipes.
+
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `doc` | string | no | Document id, path or "current" (the default). |
@@ -2688,6 +3416,10 @@ Start measuring entropy, compressibility, byte kinds and the local record width 
 ### learn.format
 
 Start learning what the document and sample files of the same format share (a magic number, header fields) as a background job; a signature for the catalogue and a template draft are job.finished's result, and in the window the Learn tool shows them.
+
+**Effect:** `job` · **MCP tool:** `learn_format`, through `api_call`, or with `--all-tools`
+
+**History:** Journalled as a step; nothing to undo: a job only adds results, which stay; repeated by going back, playback and recipes.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -2702,6 +3434,10 @@ Start learning what the document and sample files of the same format share (a ma
 
 Write a learned signature to a new file in the user's catalogue folder, never over another, and load it.
 
+**Effect:** `edit` · **MCP tool:** `learn_save_catalogue`, through `api_call`, or with `--all-tools`
+
+**History:** Journalled as a step; nothing to undo: it wrote a file, which stays as written; not repeated: the file stays as written. Writes a file, so it needs leave to edit.
+
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `id` | string | yes | Catalogue id the file is named after, such as "user/learned-51584631". |
@@ -2714,6 +3450,10 @@ Write a learned signature to a new file in the user's catalogue folder, never ov
 ### learn.fuzzy_compare
 
 Start hashing files with ssdeep and scoring how like the document each is, 0 to 100, as a background job; the scores are job.finished's result, and in the window the Learn tool lists them.
+
+**Effect:** `job` · **MCP tool:** `learn_fuzzy_compare`, through `api_call`, or with `--all-tools`
+
+**History:** Journalled as a step; nothing to undo: a job only adds results, which stay; repeated by going back, playback and recipes.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -2728,6 +3468,10 @@ Start hashing files with ssdeep and scoring how like the document each is, 0 to 
 
 Start finding the blocks of the document that also occur in a file, as a background job; the shared fragments are job.finished's result, and in the window the Learn tool lists them.
 
+**Effect:** `job` · **MCP tool:** `learn_fragments`, through `api_call`, or with `--all-tools`
+
+**History:** Journalled as a step; nothing to undo: a job only adds results, which stay; repeated by going back, playback and recipes.
+
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `block` | integer | no | Block size in bytes, 16 to 65536 (512 by default); shared runs are found a whole block at a time. |
@@ -2741,6 +3485,10 @@ Start finding the blocks of the document that also occur in a file, as a backgro
 ### alignment.run
 
 Start clustering messages into probable types and aligning each type byte by byte, marking columns as constant, counter, length or variable, as a background job; the messages are a span cut into rows, or else those the protocol analysis published on frames.defined. The clusters are job.finished's result, and in the window the Alignment tool shows them.
+
+**Effect:** `job` · **MCP tool:** `alignment_run`, through `api_call`, or with `--all-tools`
+
+**History:** Journalled as a step; nothing to undo: a job only adds results, which stay; repeated by going back, playback and recipes.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -2758,6 +3506,10 @@ Start clustering messages into probable types and aligning each type byte by byt
 
 The shape a document's bytes are drawn in: the pixel format, pixels per row, the offset of the first pixel, a bit shift and the bytes skipped after each row.
 
+**Effect:** `read` · **MCP tool:** `view_get_shape`, through `api_call`, or with `--all-tools`
+
+**History:** Kept among the recent reads, which a later step can cite.
+
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `doc` | string | no | Document id, path or "current" (the default). |
@@ -2770,6 +3522,10 @@ The shape a document's bytes are drawn in: the pixel format, pixels per row, the
 ### view.set_shape
 
 Change the shape a document's bytes are drawn in (the pixel format, pixels per row, the first pixel's offset and bit, the padding after each row); what is not given stays as it is.
+
+**Effect:** `view` · **MCP tool:** `view_set_shape`, through `api_call`, or with `--all-tools`
+
+**History:** Journalled as a step; repeated calls by the same caller on the same document merge into one; undone by changing back the shape the bytes are drawn in; repeated by going back, playback and recipes.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -2789,6 +3545,10 @@ Change the shape a document's bytes are drawn in (the pixel format, pixels per r
 
 Skip ranges of a document in its views (the raster and the hex dump) without deleting them; a marker shows where each was.
 
+**Effect:** `view` · **MCP tool:** `view_fold`, through `api_call`, or with `--all-tools`
+
+**History:** Journalled as a step; undone by changing back the folds; repeated by going back, playback and recipes.
+
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `doc` | string | no | Document id, path or "current" (the default). |
@@ -2802,6 +3562,10 @@ Skip ranges of a document in its views (the raster and the hex dump) without del
 ### view.unfold
 
 Show skipped bytes again: the skipped range starting at an offset, or all of them.
+
+**Effect:** `view` · **MCP tool:** `view_unfold`, through `api_call`, or with `--all-tools`
+
+**History:** Journalled as a step; undone by changing back the folds; repeated by going back, playback and recipes.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -2818,6 +3582,10 @@ Show skipped bytes again: the skipped range starting at an offset, or all of the
 
 A document's bookmarks, in offset order.
 
+**Effect:** `read` · **MCP tool:** `bookmarks_list`, through `api_call`, or with `--all-tools`
+
+**History:** Kept among the recent reads, which a later step can cite.
+
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `doc` | string | no | Document id, path or "current" (the default). |
@@ -2830,6 +3598,10 @@ A document's bookmarks, in offset order.
 ### bookmarks.add
 
 Bookmark a byte or a span of a document with a name, replacing a bookmark at the same offset; the window keeps them beside the file.
+
+**Effect:** `view` · **MCP tool:** `bookmarks_add`, through `api_call`, or with `--all-tools`
+
+**History:** Journalled as a step; undone by changing back the bookmark at that offset; repeated by going back, playback and recipes.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -2847,6 +3619,10 @@ Bookmark a byte or a span of a document with a name, replacing a bookmark at the
 
 Remove the bookmark at an offset.
 
+**Effect:** `view` · **MCP tool:** `bookmarks_remove`, through `api_call`, or with `--all-tools`
+
+**History:** Journalled as a step; undone by changing back the bookmark at that offset; repeated by going back, playback and recipes.
+
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `doc` | string | no | Document id, path or "current" (the default). |
@@ -2861,6 +3637,10 @@ Remove the bookmark at an offset.
 
 Load the Lua plugins again from disk, so the detectors, parsers, codecs and methods they register are the ones in their files now; the command line and MCP load them once, when they start.
 
+**Effect:** `view` · **MCP tool:** `plugins_reload`, through `api_call`, or with `--all-tools`
+
+**History:** Journalled as a step; it has no inverse, so going back past it runs the session's steps again; never repeated.
+
 Parameters: None.
 
 | Result field | Type | Required | Description |
@@ -2870,6 +3650,10 @@ Parameters: None.
 ### sources.watch
 
 Watch the window's file for changes on disk, reloading it and marking what changed, or stop watching it.
+
+**Effect:** `view` · **MCP tool:** `sources_watch`, through `api_call`, or with `--all-tools`
+
+**History:** Journalled as a step; it has no inverse, so going back past it runs the session's steps again; never repeated.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -2888,6 +3672,10 @@ Watch the window's file for changes on disk, reloading it and marking what chang
 
 Keep every version of a document as it changes (the window's file or capture as it changes on disk, or after each edit), or stop keeping them.
 
+**Effect:** `view` · **MCP tool:** `sources_record`, through `api_call`, or with `--all-tools`
+
+**History:** Journalled as a step; it has no inverse, so going back past it runs the session's steps again; never repeated.
+
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `doc` | string | no | Document id, path or "current" (the default). |
@@ -2905,6 +3693,10 @@ Keep every version of a document as it changes (the window's file or capture as 
 
 Stop the window's serial capture.
 
+**Effect:** `view` · **MCP tool:** `sources_stop`, through `api_call`, or with `--all-tools`
+
+**History:** Journalled as a step; it has no inverse, so going back past it runs the session's steps again; never repeated.
+
 Parameters: None.
 
 | Result field | Type | Required | Description |
@@ -2918,6 +3710,10 @@ Parameters: None.
 ### sources.view_version
 
 Open a recorded version of a document as a document derived from it; the window marks what changed from the version before.
+
+**Effect:** `view` · **MCP tool:** `sources_view_version`, through `api_call`, or with `--all-tools`
+
+**History:** Journalled as a step; undone by changing back which document is current; not repeated: what it opened is open already.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -2938,6 +3734,10 @@ Open a recorded version of a document as a document derived from it; the window 
 
 The recipes saved in ~/.config/theviewer/recipes/: each one's name, description, steps and the parameters it asks for.
 
+**Effect:** `read` · **MCP tool:** `recipes_list`, through `api_call`, or with `--all-tools`
+
+**History:** Kept among the recent reads, which a later step can cite.
+
 Parameters: None.
 
 | Result field | Type | Required | Description |
@@ -2948,6 +3748,10 @@ Parameters: None.
 ### recipes.describe
 
 One recipe in full, by name or path, with what to know before running it here: another API version, a plugin missing or changed, a method this build lacks, or mistakes in its anchors.
+
+**Effect:** `read` · **MCP tool:** `recipes_describe`, through `api_call`, or with `--all-tools`
+
+**History:** Kept among the recent reads, which a later step can cite.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -2963,6 +3767,10 @@ One recipe in full, by name or path, with what to know before running it here: a
 ### recipes.save
 
 Save a recipe in ~/.config/theviewer/recipes/, given whole or made from steps of this session's journal, to run later on other files.
+
+**Effect:** `read` · **MCP tool:** `recipes_save`, through `api_call`, or with `--all-tools`
+
+**History:** Kept among the recent reads, which a later step can cite.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -2983,6 +3791,10 @@ Save a recipe in ~/.config/theviewer/recipes/, given whole or made from steps of
 
 What a recipe would do to a document, without changing anything: each step described with its anchors resolved on this file, and where the run would stop.
 
+**Effect:** `read` · **MCP tool:** `recipes_preview`, through `api_call`, or with `--all-tools`
+
+**History:** Kept among the recent reads, which a later step can cite.
+
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `doc` | string | no | Document id, path or "current" (the default) to run it on. |
@@ -3002,6 +3814,10 @@ What a recipe would do to a document, without changing anything: each step descr
 
 Run a recipe on a document, each step called as recipe:NAME with its anchors resolved on this file, waiting for the jobs steps start; its edits undo as one step, and the first failure stops it with which step and why.
 
+**Effect:** `edit` · **MCP tool:** `recipes_run`, through `api_call`, or with `--all-tools`
+
+**History:** Journalled as a step; its bytes undo through the document's undo; repeated by going back, playback and recipes.
+
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `doc` | string | no | Document id, path or "current" (the default) to run it on. |
@@ -3019,7 +3835,13 @@ Run a recipe on a document, each step called as recipe:NAME with its anchors res
 
 ## Topics
 
-What tools, panels and plugins publish on the workspace bus. Facts are kept, the latest per producer, document and key, and count as stale once the document has changed since (unless the edits did not touch their span, which carries them forward); events are not kept. Every message has an envelope: `id`, `topic`, `kind`, `producer`, `document`, `version`, `span`, `confidence`, `key`, `caused_by` and the `payload` below.
+The workspace bus is where tools, panels, plugins and clients publish what they learn and what happens. Read it with `events.facts` (what is known about a document now) and `events.poll` (what was published after a cursor); plugins subscribe to topics with `theviewer.subscribe`, and MCP clients that subscribe to a resource hear when the facts behind it change.
+
+There are two kinds of message. **Facts** are kept: the latest per topic, producer, document and key. A fact about an older version of its document counts as stale, unless the edits since did not touch its span, in which case it is carried forward with its offsets moved. **Events** are not kept: something happened.
+
+Every message has an envelope: `id` (such as `evt-12`), `topic`, `kind`, `producer`, `document`, `version` (the document version it describes), `span` (`{start, len}`, the bytes it is about), `confidence` (0 to 1), `key` (which of a producer's facts on a topic it is), `caused_by` (the message whose handling published it) and the `payload` below; `events.facts` and `events.poll` add `stale` and `retracted`. A chain of messages more than 8 reactions deep is dropped as a loop.
+
+Plugins may publish any topic but those the app itself publishes (`document.opened`, `document.closed`, `document.edited`, `cursor.moved`, `selection.changed`, `job.started` and `job.finished`), with a payload that must fit the topic's schema, and their own topics, `x.<plugin>.<name>`, with any payload.
 
 | Topic | Kind | Description |
 | --- | --- | --- |

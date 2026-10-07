@@ -4,7 +4,8 @@
 //!
 //! Every way in uses the same table: Ask's tools are generated from it, the
 //! command line runs one method (`theviewer api bytes.read '{…}' FILE`), and
-//! `docs/api.md` is written from [`describe`]. Rust callers use the typed
+//! `docs/api.md` is written from it by [`reference_markdown`] (its prose is
+//! in `manual.rs`). Rust callers use the typed
 //! functions in each namespace module directly; JSON callers go through
 //! [`call`], which checks the parameters against the method's types.
 //!
@@ -85,6 +86,7 @@ pub mod events;
 pub mod findings;
 pub mod history;
 pub mod jobs;
+mod manual;
 pub mod numbers;
 pub mod packet_sets;
 pub mod packets;
@@ -112,6 +114,7 @@ use serde_json::Value;
 pub use crate::journal::timeline::{Move, Replay};
 pub use crate::journal::undo::{Resource, Reverse, Undo};
 use crate::journal::{self, Journalled, undo};
+pub use manual::reference_markdown;
 pub use permissions::{Caller, Consent, Decision, HeldCall, Policy};
 pub use workspace::{HeadlessWorkspace, Workspace};
 
@@ -882,151 +885,6 @@ fn describe_methods(methods: &[MethodRef]) -> Description {
 /// registered in this workspace.
 fn describe_method(workspace: &mut dyn Workspace, _params: values::NoParams) -> Result<Description, ApiError> {
     Ok(describe_methods(&all_methods(workspace)))
-}
-
-/// The API reference, `docs/api.md`, written from the method table.
-pub fn reference_markdown() -> String {
-    let description = describe();
-    let mut out = String::new();
-    out.push_str("# theviewer data API, version ");
-    out.push_str(&description.version);
-    out.push_str("\n\n");
-    out.push_str("<!-- Generated from the method table (src/api.rs and each module in src/api/) by `cargo run --bin api_docs`. Do not edit by hand. -->\n\n");
-    out.push_str(
-        "Every method can be called from the command line (`theviewer api METHOD '{json params}' FILE`; \
-with `--save`, the file is saved with the call's edits, so `--save history.transaction` edits and saves \
-in one command), \
-Lua plugins call them as `theviewer.api.<namespace>.<method>{…}`, Ask uses the methods that read \
-or edit as its tools, and `theviewer mcp FILE…` offers every method to MCP clients such as Claude \
-Code as a tool named with underscores for dots (`bytes_read`), with resources for each document \
-(`theviewer://doc/{id}`, its `bytes/{start}-{end}`, `findings`, `facts` and `packets/{set}`) and the reference notes \
-(`theviewer://reference/{id}`). Documents are named by id (`doc-1`), by path or as \
-`\"current\"`, which an omitted `doc` also means. Spans are `start` and `len` in bytes; an omitted \
-`len` runs to the end of the document. Bytes are hex strings unless `encoding` says `base64` or \
-`text`. List methods take `limit` and return `next`, a cursor to pass back for the next page. One \
-call reads or returns at most 16 MiB.\n\n",
-    );
-    out.push_str(
-        "Methods whose effect is `edit` change the document. Each call is one undo step, labelled with \
-what it did and who called it (\"XOR by mcp:claude-code\"), and published on `document.edited` as the \
-caller's. Any edit takes `expect_version`: when the document has changed since, the call fails with \
-`version_conflict` and changes nothing. `history.transaction` runs several calls as one step and \
-reverses them all when one fails. In the app, an edit or view change from a plugin, Ask or another \
-client is checked against that client's setting under Settings › Permissions (always allow, always \
-ask, never allow; a new client is asked about): when it asks, a window shows the change for the \
-person to allow once, always allow or deny. On the command line and through `theviewer mcp` every \
-call is allowed: the files are the ones the person named. Methods \
-plugins register join the table at run time; `api.describe` lists them as experimental.\n\n",
-    );
-    out.push_str("Errors are `{code, message, data}`, with these codes:\n\n| Code | Meaning |\n| --- | --- |\n");
-    for (code, meaning) in [
-        ("invalid_params", "The parameters don't match the schema"),
-        ("out_of_range", "A span falls outside the document"),
-        ("not_found", "No such document, method or entry"),
-        ("version_conflict", "The document changed since `expect_version`"),
-        ("read_only", "The caller may not edit"),
-        ("too_large", "Over the per-call limit"),
-        ("cancelled", "A job was cancelled"),
-        ("plugin_failed", "A plugin raised an error or used up its budget"),
-        ("unavailable", "Something needed is missing, such as tshark"),
-    ] {
-        out.push_str(&format!("| `{code}` | {meaning} |\n"));
-    }
-    out.push_str("\n## Methods\n\n| Method | Effect | Summary |\n| --- | --- | --- |\n");
-    for method in &description.methods {
-        let effect = serde_json::to_value(method.effect).ok().and_then(|value| value.as_str().map(str::to_string)).unwrap_or_default();
-        out.push_str(&format!("| [`{}`](#{}) | {effect} | {} |\n", method.name, method.name.replace('.', ""), method.summary));
-    }
-    out.push_str("\nEach method's full JSON schemas are in `theviewer api --describe`.\n");
-    for method in &description.methods {
-        out.push_str(&format!("\n### {}\n\n{}\n\n", method.name, method.summary));
-        out.push_str(&properties_table("Parameter", &method.params, "None."));
-        out.push('\n');
-        out.push_str(&properties_table("Result field", &method.result, "Nothing."));
-    }
-    out.push_str(
-        "\n## Topics\n\nWhat tools, panels and plugins publish on the workspace bus. Facts are kept, the latest per \
-producer, document and key, and count as stale once the document has changed since (unless the edits did not touch \
-their span, which carries them forward); events are not kept. Every message has an envelope: `id`, `topic`, `kind`, \
-`producer`, `document`, `version`, `span`, `confidence`, `key`, `caused_by` and the `payload` below.\n\n\
-| Topic | Kind | Description |\n| --- | --- | --- |\n",
-    );
-    for topic in &description.topics {
-        let kind = serde_json::to_value(topic.kind).ok().and_then(|value| value.as_str().map(str::to_string)).unwrap_or_default();
-        out.push_str(&format!("| [`{}`](#{}) | {kind} | {} |\n", topic.name, topic.name.replace('.', ""), topic.description));
-    }
-    for topic in &description.topics {
-        out.push_str(&format!("\n### {}\n\n{}\n\n", topic.name, topic.description));
-        out.push_str(&properties_table("Payload field", &topic.payload, "None."));
-    }
-    out
-}
-
-/// A Markdown table of an object schema's properties: name, type, whether
-/// required, and description.
-fn properties_table(heading: &str, schema: &Value, when_empty: &str) -> String {
-    let Some(properties) = schema["properties"].as_object().filter(|properties| !properties.is_empty()) else {
-        return format!("{heading}s: {when_empty}\n");
-    };
-    let required: Vec<&str> = schema["required"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
-    let mut out = format!("| {heading} | Type | Required | Description |\n| --- | --- | --- | --- |\n");
-    for (name, property) in properties {
-        let description = property["description"].as_str().or_else(|| referenced(property, schema)["description"].as_str()).unwrap_or_default();
-        let required = if required.contains(&name.as_str()) { "yes" } else { "no" };
-        out.push_str(&format!("| `{name}` | {} | {required} | {} |\n", type_label(property, schema), description.replace('\n', " ").replace('|', "\\|")));
-    }
-    out
-}
-
-/// The definition a `$ref` schema points to, or the schema itself.
-fn referenced<'a>(schema: &'a Value, root: &'a Value) -> &'a Value {
-    match schema["$ref"].as_str().and_then(|reference| reference.strip_prefix("#/$defs/")) {
-        Some(name) => &root["$defs"][name],
-        None => schema,
-    }
-}
-
-/// The values an enumeration schema allows: an `enum`, or `oneOf` options
-/// that are each a `const` or an `enum`.
-fn enum_values(schema: &Value) -> Option<Vec<Value>> {
-    if let Some(values) = schema["enum"].as_array() {
-        return Some(values.clone());
-    }
-    let mut values = Vec::new();
-    for option in schema["oneOf"].as_array()? {
-        match (option.get("const"), option["enum"].as_array()) {
-            (Some(constant), _) => values.push(constant.clone()),
-            (None, Some(more)) => values.extend(more.iter().cloned()),
-            (None, None) => return None,
-        }
-    }
-    Some(values)
-}
-
-/// A short name for a schema's type, such as "integer", "array of string"
-/// or `"hex" \| "base64"`, for the reference tables.
-fn type_label(schema: &Value, root: &Value) -> String {
-    if let Some(values) = enum_values(referenced(schema, root)) {
-        return values.iter().map(|value| format!("`{value}`")).collect::<Vec<_>>().join(" \\| ");
-    }
-    if let Some(name) = schema["$ref"].as_str().and_then(|reference| reference.strip_prefix("#/$defs/")) {
-        return name.to_string();
-    }
-    if let Some(options) = schema["anyOf"].as_array() {
-        let labels: Vec<String> = options.iter().filter(|option| option["type"] != "null").map(|option| type_label(option, root)).collect();
-        return labels.join(" or ");
-    }
-    let types: Vec<&str> = match &schema["type"] {
-        Value::String(name) => vec![name.as_str()],
-        Value::Array(names) => names.iter().filter_map(Value::as_str).filter(|name| *name != "null").collect(),
-        _ => Vec::new(),
-    };
-    match types.as_slice() {
-        ["array"] if schema.get("prefixItems").is_some() => "pair".to_string(),
-        ["array"] => format!("array of {}", type_label(&schema["items"], root)),
-        [] => "any".to_string(),
-        names => names.join(" or "),
-    }
 }
 
 #[cfg(test)]
