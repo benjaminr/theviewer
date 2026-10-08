@@ -642,6 +642,10 @@ pub struct MessageField {
     /// True for a trailer: `start` is then the distance from the message end
     /// to the field's first byte (so a 2-byte checksum has start 2).
     pub from_end: bool,
+    /// The message types whose messages carry the field, such as "0x81",
+    /// when only some do; empty when every message carries it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub types: Vec<String>,
 }
 
 /// Fraction of messages a field pattern must hold for.
@@ -702,6 +706,7 @@ fn sequence_field(bytes: &[u8], messages: &[Message], start: usize) -> Option<Me
                     detail: format!("increases by 1 from one message to the next ({} to {})", values[0].1, values[values.len() - 1].1),
                     values: examples(values.iter().map(|v| v.1), width),
                     from_end: false,
+                    types: Vec::new(),
                 });
             }
         }
@@ -735,6 +740,7 @@ fn length_field(bytes: &[u8], messages: &[Message], start: usize) -> Option<(Mes
                         detail,
                         values: examples(values.iter().map(|v| v.1), width),
                         from_end: false,
+                        types: Vec::new(),
                     },
                     difference,
                 ));
@@ -762,6 +768,7 @@ fn timestamp_field(bytes: &[u8], messages: &[Message], start: usize) -> Option<M
                 detail: "Unix seconds that never go backwards".to_string(),
                 values: examples(values.iter().map(|v| v.1), 4),
                 from_end: false,
+                types: Vec::new(),
             });
         }
     }
@@ -820,6 +827,7 @@ fn checksum_field(bytes: &[u8], messages: &[Message], body_starts: &[usize]) -> 
                         detail: format!("{name} of the message from byte {body_start} to just before the checksum, in {matching} of {} messages", usable.len()),
                         values: Vec::new(),
                         from_end: true,
+                        types: Vec::new(),
                     });
                 }
             }
@@ -898,6 +906,7 @@ pub fn analyse_fields(bytes: &[u8], messages: &[Message], max_prefix: usize) -> 
                 detail: format!("{} distinct values: {}", counts.len(), counts.iter().map(|(v, c)| format!("{v:#04x}×{c}")).collect::<Vec<_>>().join(", ")),
                 values: counts.iter().take(8).map(|(v, _)| format!("{v:#04x}")).collect(),
                 from_end: false,
+                types: Vec::new(),
             });
             unrecognised = 0;
             position += 1;
@@ -927,6 +936,7 @@ pub fn analyse_fields(bytes: &[u8], messages: &[Message], max_prefix: usize) -> 
             detail: "variable length, given by the length field".to_string(),
             values: Vec::new(),
             from_end: false,
+            types: Vec::new(),
         });
     }
     choose_message_type(bytes, &messages, &mut fields);
@@ -940,10 +950,89 @@ pub fn analyse_fields(bytes: &[u8], messages: &[Message], max_prefix: usize) -> 
     }
     body_starts.sort_unstable();
     body_starts.dedup();
-    if let Some(field) = checksum_field(bytes, &messages, &body_starts) {
-        fields.push(field);
-    }
+    let trailer = checksum_field(bytes, &messages, &body_starts).or_else(|| length_found.and_then(|(after_length, difference)| uncounted_trailer(bytes, &messages, after_length, difference)));
+    let trailer_len = trailer.as_ref().map_or(0, |trailer| trailer.len);
+    guard_type_specific_fields(bytes, &messages, &mut fields, trailer_len);
+    fields.extend(trailer);
     fields
+}
+
+/// Most bytes after what a length field counts that are taken as a trailer.
+const MOST_TRAILER: usize = 4;
+/// Normalised entropy above which the bytes at the end of the messages look
+/// like a checksum rather than data.
+const CHECKSUM_ENTROPY: f64 = 0.85;
+
+/// The bytes at the end of each message that a length field leaves out
+/// (it counts from `after_length` and the message is `difference` longer
+/// than its value), when they vary like a checksum of a kind none of the
+/// common algorithms matches.
+fn uncounted_trailer(bytes: &[u8], messages: &[Message], after_length: usize, difference: i64) -> Option<MessageField> {
+    let len = usize::try_from(difference).ok()?.checked_sub(after_length).filter(|&len| (1..=MOST_TRAILER).contains(&len))?;
+    let random_like = (1..=len).all(|from_end| {
+        let values: Vec<u8> = messages.iter().filter(|m| m.len >= after_length + len).map(|m| bytes[m.offset + m.len - from_end]).collect();
+        let ideal = (values.len().min(256) as f64).log2();
+        values.len() >= MIN_MESSAGES && ideal > 0.0 && shannon_entropy(&values) as f64 / ideal >= CHECKSUM_ENTROPY
+    });
+    random_like.then(|| MessageField {
+        start: len,
+        len,
+        kind: "trailer".to_string(),
+        detail: format!("{len} bytes after what the length counts, varied like a checksum that no common algorithm matches"),
+        values: Vec::new(),
+        from_end: true,
+        types: Vec::new(),
+    })
+}
+
+/// Header fields that run past the end of the shortest messages are carried
+/// only by some message types: name those types on each, by the messages
+/// of each type that are long enough and (for a timestamp or sequence
+/// number) show the field too. A field no type carries is dropped, with
+/// those after it, and left to the payload.
+fn guard_type_specific_fields(bytes: &[u8], messages: &[Message], fields: &mut Vec<MessageField>, trailer_len: usize) {
+    let Some(type_start) = fields.iter().find(|field| field.kind == MESSAGE_TYPE_KIND).map(|field| field.start) else { return };
+    let shortest_body = messages.iter().map(|m| m.len.saturating_sub(trailer_len)).min().unwrap_or(0);
+    let mut by_type: Vec<(u8, Vec<Message>)> = Vec::new();
+    for message in messages.iter().filter(|m| m.len > type_start) {
+        let value = bytes[message.offset + type_start];
+        match by_type.iter_mut().find(|(seen, _)| *seen == value) {
+            Some((_, group)) => group.push(*message),
+            None => by_type.push((value, vec![*message])),
+        }
+    }
+    by_type.sort_by_key(|(value, _)| *value);
+    let mut dropped_from = None;
+    for (index, field) in fields.iter_mut().enumerate() {
+        if field.from_end || field.kind == "payload" || field.start <= type_start || field.start + field.len <= shortest_body {
+            continue;
+        }
+        let carried_by = |group: &[Message]| {
+            let long_enough = group.iter().all(|m| m.len >= field.start + field.len + trailer_len);
+            long_enough
+                && if field.kind.starts_with("timestamp") {
+                    timestamp_field(bytes, group, field.start).is_some()
+                } else if field.kind.starts_with("sequence") {
+                    sequence_field(bytes, group, field.start).is_some()
+                } else {
+                    true
+                }
+        };
+        field.types = by_type.iter().filter(|(_, group)| carried_by(group)).map(|(value, _)| format!("{value:#04x}")).collect();
+        if field.types.is_empty() {
+            dropped_from = Some(index);
+            break;
+        }
+    }
+    if let Some(index) = dropped_from {
+        let start = fields[index].start;
+        fields.retain(|field| field.kind == "payload" || field.start < start);
+    }
+    // Every message's payload starts where the fields all of them carry end.
+    let common_end = fields.iter().filter(|field| field.kind != "payload" && field.types.is_empty()).map(|field| field.start + field.len).max().unwrap_or(0);
+    if let Some(payload) = fields.iter_mut().find(|field| field.kind == "payload") {
+        payload.start = common_end;
+    }
 }
 
 /// Of the columns with few values, the one that best tells messages'
@@ -992,7 +1081,7 @@ fn merge_or_push(fields: &mut Vec<MessageField>, position: usize, kind: &str, va
     } else {
         ("varies between messages".to_string(), Vec::new())
     };
-    fields.push(MessageField { start: position, len: 1, kind: kind.to_string(), detail, values, from_end: false });
+    fields.push(MessageField { start: position, len: 1, kind: kind.to_string(), detail, values, from_end: false, types: Vec::new() });
 }
 
 // ---------------------------------------------------------------------------
@@ -1077,7 +1166,9 @@ pub fn to_template(report: &ProtocolReport) -> Option<String> {
         "// Inferred from the message stream. Rename fields as you learn what they mean.".to_string(),
         "struct Message {".to_string(),
     ];
+    // Bytes every message's header has, and the fields only some types carry.
     let mut header_len = 0;
+    let mut type_specific: Vec<(usize, String)> = Vec::new();
     let mut names: Vec<String> = Vec::new();
     for field in &header {
         if field.kind == "payload" {
@@ -1094,7 +1185,7 @@ pub fn to_template(report: &ProtocolReport) -> Option<String> {
             name = format!("{name}_{}", field.start);
         }
         names.push(name.clone());
-        let declaration = match template_type(&field.kind) {
+        let mut declaration = match template_type(&field.kind) {
             Some(ty) if field.len <= 8 => format!("{name}: {ty}"),
             _ if field.kind == "constant" => {
                 let hex = field.values.first().cloned().unwrap_or_default();
@@ -1103,30 +1194,46 @@ pub fn to_template(report: &ProtocolReport) -> Option<String> {
             }
             _ => format!("{name}: bytes[{}]", field.len),
         };
+        match type_guard(&field.types) {
+            Some(guard) => {
+                declaration.push_str(&format!(" if {guard}"));
+                type_specific.push((field.len, guard));
+            }
+            None => header_len = field.start + field.len,
+        }
         lines.push(format!("    {declaration:<36} // {}", field.detail));
-        header_len = field.start + field.len;
     }
+    // A type's own fields come out of its payload.
+    let type_specific_len: String = type_specific.iter().map(|(len, guard)| format!(" - {len} * ({guard})")).collect();
     let payload = if let Some(length) = length {
         let role_name = format!("length_{}", length.start);
         let difference: i64 = length.detail.strip_prefix("message length = value + ").and_then(|d| d.parse().ok()).unwrap_or(0);
         let extra = difference - header_len as i64 - trailer_len as i64;
         match extra.cmp(&0) {
-            std::cmp::Ordering::Equal => format!("bytes[{role_name}]"),
-            std::cmp::Ordering::Greater => format!("bytes[{role_name} + {extra}]"),
-            std::cmp::Ordering::Less => format!("bytes[{role_name} - {}]", extra.unsigned_abs()),
+            std::cmp::Ordering::Equal => format!("bytes[{role_name}{type_specific_len}]"),
+            std::cmp::Ordering::Greater => format!("bytes[{role_name} + {extra}{type_specific_len}]"),
+            std::cmp::Ordering::Less => format!("bytes[{role_name} - {}{type_specific_len}]", extra.unsigned_abs()),
         }
     } else if fixed_len {
-        format!("bytes[{}]", report.length_min.saturating_sub(header_len + trailer_len))
+        format!("bytes[{}{type_specific_len}]", report.length_min.saturating_sub(header_len + trailer_len))
     } else {
         return None;
     };
     lines.push(format!("    {:<36} // the rest of the message", format!("payload: {payload}")));
     if let Some(trailer) = trailer {
-        let algorithm_order = if trailer.kind.contains(" BE ") { "be" } else if trailer.kind.contains(" LE ") { "le" } else { "" };
-        lines.push(format!("    {:<36} // {}", format!("checksum: u{}{algorithm_order}", trailer.len * 8), trailer.detail));
+        let declaration = if trailer.kind == "trailer" {
+            format!("trailer: bytes[{}]", trailer.len)
+        } else {
+            let algorithm_order = if trailer.kind.contains(" BE ") { "be" } else if trailer.kind.contains(" LE ") { "le" } else { "" };
+            format!("checksum: u{}{algorithm_order}", trailer.len * 8)
+        };
+        lines.push(format!("    {declaration:<36} // {}", trailer.detail));
     }
     lines.push("}".to_string());
     lines.push(String::new());
+    if let Some(first) = report.messages.first().map(|first| first.offset).filter(|&offset| offset != 0) {
+        lines.push(format!("// The first message is at {first:#x}, after bytes that are not one: apply the template there."));
+    }
     if let Some(gap) = first_gap(&report.messages) {
         lines.push(format!("// The messages are not back to back (the first gap is at {gap:#x} from the start), so"));
         lines.push("// Message[until_end] stops there: to read every message, decode the messages as".to_string());
@@ -1136,12 +1243,18 @@ pub fn to_template(report: &ProtocolReport) -> Option<String> {
     Some(lines.join("\n") + "\n")
 }
 
-/// Where the first message does not follow straight on from the one before
-/// (or the first does not start the stream), if anywhere.
-fn first_gap(messages: &[Message]) -> Option<usize> {
-    if messages.first().is_some_and(|first| first.offset != 0) {
-        return Some(0);
+/// The condition that a message is of one of `types`: `message_type ==
+/// 0x81`, or a sum of such comparisons for several; `None` for none.
+fn type_guard(types: &[String]) -> Option<String> {
+    match types {
+        [] => None,
+        [only] => Some(format!("message_type == {only}")),
+        several => Some(several.iter().map(|value| format!("(message_type == {value})")).collect::<Vec<_>>().join(" + ")),
     }
+}
+
+/// Where a message first ends without the next one following straight on.
+fn first_gap(messages: &[Message]) -> Option<usize> {
     messages.windows(2).find(|pair| pair[0].offset + pair[0].len != pair[1].offset).map(|pair| pair[0].offset + pair[0].len)
 }
 
@@ -1335,7 +1448,60 @@ mod tests {
         unique.dedup();
         assert_eq!(names.len(), unique.len(), "{source}");
         assert!(source.contains("not back to back"), "until_end stopping at a gap is said: {source}");
+        assert!(source.contains("The first message is at 0x5") && !source.contains("at 0x0"), "the lead-in is told apart from a gap: {source}");
         assert!(Template::parse(&source).is_ok(), "{source}");
+    }
+
+    /// The kiln bus with what its messages carry: polls with no payload,
+    /// telemetry that starts with a Unix time, time syncs that are only a
+    /// time, and one-byte acks, each ending in a CRC of no common kind.
+    fn kiln_bus_with_times(frames: usize) -> Vec<u8> {
+        let mut state = 0x7777_1234u32;
+        let mut time = 1_760_000_000u32;
+        let mut stream = vec![0x10, 0x00, 0x3C, 0x99, 0x01];
+        for index in 0..frames {
+            let kind = [0x01u8, 0x81, 0x01, 0x81, 0x01, 0x81, 0x10, 0xA0][index % 8];
+            let payload: Vec<u8> = match kind {
+                0x81 => time.to_le_bytes().into_iter().chain((0..12).map(|_| xorshift(&mut state))).collect(),
+                0x10 => time.to_le_bytes().to_vec(),
+                0xA0 => vec![0x00],
+                _ => Vec::new(),
+            };
+            let (dst, src) = if kind & 0x80 != 0 { (0x01, 0x10 + (index % 3) as u8) } else { (0x10 + (index % 3) as u8, 0x01) };
+            let mut frame = vec![0xA5, 0x5A, (payload.len() + 4) as u8, dst, src, (index / 2) as u8, kind];
+            frame.extend(payload);
+            frame.extend([xorshift(&mut state), xorshift(&mut state)]);
+            stream.extend(frame);
+            time += (index % 3) as u32;
+        }
+        stream
+    }
+
+    #[test]
+    fn a_template_for_mixed_messages_reads_a_types_own_fields_only_in_that_type_and_keeps_the_crc_out_of_the_payload() {
+        let stream = kiln_bus_with_times(800);
+        let framing = Framing::SyncLength { bytes: vec![0xA5, 0x5A], offset: 2, width: 1, big_endian: true, adjustment: 5 };
+        let messages = split(&stream, &framing, 10_000);
+        let fields = analyse_fields(&stream, &messages, 32);
+        let report = ProtocolReport { framing: None, messages, fields, length_min: 9, length_max: 25, length_mean: 15.0, type_counts: Vec::new() };
+        let kinds: Vec<(usize, &str, &[String])> = report.fields.iter().map(|f| (f.start, f.kind.as_str(), f.types.as_slice())).collect();
+        let time = report.fields.iter().find(|f| f.kind.starts_with("timestamp")).unwrap_or_else(|| panic!("{kinds:?}"));
+        assert_eq!((time.start, time.types.clone()), (7, vec!["0x10".to_string(), "0x81".to_string()]), "{kinds:?}");
+        assert!(report.fields.iter().any(|f| f.from_end && f.len == 2 && f.kind == "trailer"), "{kinds:?}");
+
+        let source = to_template(&report).expect("a template");
+        let template = Template::parse(&source).unwrap_or_else(|e| panic!("{e}\n{source}"));
+        for message in report.messages.iter().take(16) {
+            let bytes = &stream[message.offset..message.offset + message.len];
+            let applied = template.apply(bytes, 0);
+            assert!(applied.warnings.is_empty(), "{:?}\n{source}", applied.warnings);
+            let record = &applied.records[0];
+            assert_eq!(record.len, message.len, "the whole message, CRC and all:\n{source}");
+            let carries_time = matches!(bytes[6], 0x81 | 0x10);
+            assert_eq!(record.value("timestamp_7").is_some(), carries_time, "type {:#04x}:\n{source}", bytes[6]);
+            let crc = format!("{:02X} {:02X} (2 bytes)", bytes[message.len - 2], bytes[message.len - 1]);
+            assert_eq!(record.value("trailer"), Some(crc.as_str()), "{source}");
+        }
     }
 
     #[test]

@@ -1166,10 +1166,10 @@ mod tests {
         assert!(dissection.summary.info.contains("kind="), "{}", dissection.summary.info);
 
         let guesses = vec![
-            MessageField { start: 0, len: 2, kind: "constant".to_string(), detail: String::new(), values: vec![], from_end: false },
-            MessageField { start: 3, len: 2, kind: "sequence number u16 BE".to_string(), detail: "counts up".to_string(), values: vec![], from_end: false },
-            MessageField { start: 2, len: 2, kind: "checksum".to_string(), detail: String::new(), values: vec![], from_end: true },
-            MessageField { start: 40, len: 2, kind: "beyond".to_string(), detail: String::new(), values: vec![], from_end: false },
+            MessageField { start: 0, len: 2, kind: "constant".to_string(), detail: String::new(), values: vec![], from_end: false, types: vec![] },
+            MessageField { start: 3, len: 2, kind: "sequence number u16 BE".to_string(), detail: "counts up".to_string(), values: vec![], from_end: false, types: vec![] },
+            MessageField { start: 2, len: 2, kind: "checksum".to_string(), detail: String::new(), values: vec![], from_end: true, types: vec![] },
+            MessageField { start: 40, len: 2, kind: "beyond".to_string(), detail: String::new(), values: vec![], from_end: false, types: vec![] },
         ];
         let dissection = dissect_with(&frame, LinkKind::Unknown, &RawFrames { guesses, ..RawFrames::default() });
         let data = layer(&dissection, "Data");
