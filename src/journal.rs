@@ -456,6 +456,10 @@ pub struct Journal {
     /// The session's variables, by name: values bound with `vars.set`,
     /// which `{"var": name}` anchors read.
     variables: BTreeMap<String, Binding>,
+    /// Labels given to sheets after they were made (Label… in the window's
+    /// tree of sheets), by document id: a recipe names the sheet by it, in
+    /// place of the label its step gave it.
+    sheet_labels: BTreeMap<String, String>,
 }
 
 /// A value bound to a variable with `vars.set`: a clipboard with
@@ -501,7 +505,23 @@ impl Journal {
             timeline: Timeline::default(),
             parameters: BTreeMap::new(),
             variables: BTreeMap::new(),
+            sheet_labels: BTreeMap::new(),
         }
+    }
+
+    /// Label sheet `doc` `label` from now on (none takes the label away),
+    /// as a recipe made from the journal names it.
+    pub fn label_sheet(&mut self, doc: &str, label: Option<String>) {
+        match label {
+            Some(label) => self.sheet_labels.insert(doc.to_string(), label),
+            None => self.sheet_labels.remove(doc),
+        };
+        self.revision += 1;
+    }
+
+    /// The label sheet `doc` was given after it was made, if any.
+    pub fn sheet_label(&self, doc: &str) -> Option<&str> {
+        self.sheet_labels.get(doc).map(String::as_str)
     }
 
     /// The session's variables, by name.

@@ -667,6 +667,59 @@ fn compressed_blocks_are_found_decompressed_and_recompressed() {
 
 
 #[test]
+fn the_worksheet_strip_shows_an_ancestor_keeping_the_sheets_below_it_open() {
+    let path = sample_file("strip");
+    let root = path.file_name().unwrap().to_string_lossy().into_owned();
+    let mut harness = harness(path);
+    harness.state_mut().open_derived(vec![1u8; 4096], "payload".to_string());
+    let payload = harness.state().document_id();
+    harness.state_mut().open_derived(vec![2u8; 1024], "plane 0".to_string());
+    let plane = harness.state().document_id();
+    steps(&mut harness, 2);
+    assert_eq!(harness.state().window_title(), format!("plane 0 · {root} — theviewer"));
+
+    // The trail is root ▸ payload ▸ plane 0; clicking the root shows it.
+    harness.get_by_label(&root).click();
+    steps(&mut harness, 3);
+    assert_eq!(harness.state().active_ancestry().len(), 1, "the file is shown");
+    assert!(harness.state().is_open_sheet(&payload) && harness.state().is_open_sheet(&plane), "the sheets below it stay open");
+
+    // Its ▸ drops down its children; picking one shows it again as it was.
+    harness.get_by_label("▸").click();
+    steps(&mut harness, 2);
+    harness.get_by_label_contains("payload").click();
+    steps(&mut harness, 3);
+    assert_eq!(harness.state().document_id(), payload);
+    assert_eq!(harness.state().document.len(), 4096);
+
+    // Cmd+W closes the sheet shown with the one derived from it.
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::W);
+    steps(&mut harness, 3);
+    assert_eq!(harness.state().sheets().len(), 1, "payload and plane 0 closed: {}", harness.state().status);
+    assert_eq!(harness.state().document.len(), SAMPLE_LEN, "the file is shown again");
+}
+
+#[test]
+fn closing_a_sheet_with_unsaved_edits_asks_first() {
+    let mut harness = harness(sample_file("close-unsaved"));
+    harness.state_mut().open_derived(vec![1u8; 64], "payload".to_string());
+    harness.state_mut().document.overwrite(0, b"X");
+    steps(&mut harness, 2);
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::W);
+    steps(&mut harness, 2);
+    assert_eq!(harness.state().sheets().len(), 2, "nothing closes before the person says so");
+    harness.get_by_label("Cancel").click();
+    steps(&mut harness, 2);
+    assert_eq!(harness.state().sheets().len(), 2);
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::W);
+    steps(&mut harness, 2);
+    harness.get_by_label("Close and lose the edits").click();
+    steps(&mut harness, 3);
+    assert_eq!(harness.state().sheets().len(), 1);
+    assert_eq!(harness.state().document.len(), SAMPLE_LEN);
+}
+
+#[test]
 fn flipping_extracting_and_repacking_a_stream() {
     use theviewer::compress::{self, Codec};
     use theviewer::plugin::Category;

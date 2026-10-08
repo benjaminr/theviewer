@@ -228,6 +228,8 @@ pub struct ViewerApp {
     pub parked: Vec<crate::sheets::ParkedSheet>,
     /// Where the sheet shown came from: its parent and the step that made it.
     pub active_lineage: crate::api::workspace::Lineage,
+    /// The worksheet strip's and the tree of sheets' state.
+    pub sheets_view: crate::sheets::view::SheetsView,
     /// Name shown for a derived (decompressed) document, which has no path.
     pub derived_name: Option<String>,
     /// Codec used by "Compress selection".
@@ -576,6 +578,7 @@ impl ViewerApp {
             analysis_rx,
             parked: Vec::new(),
             active_lineage: Default::default(),
+            sheets_view: Default::default(),
             derived_name: None,
             compress_codec: Codec::Zlib,
             inplace_codec: None,
@@ -3038,6 +3041,21 @@ impl ViewerApp {
         if ctx.input_mut(|i| i.consume_key(cmd, Key::N)) {
             self.open_new_document();
         }
+        if ctx.input_mut(|i| i.consume_key(cmd, Key::W)) {
+            let shown = self.document_id();
+            self.request_close_sheet(&shown);
+        }
+        if ctx.input_mut(|i| i.consume_key(cmd_shift, Key::T)) {
+            self.toggle_sheet_tree();
+        }
+        // Shifted first, as egui's matching ignores Shift on a binding that
+        // does not mention it.
+        if ctx.input_mut(|i| i.consume_key(Modifiers::CTRL | Modifiers::SHIFT, Key::Tab)) {
+            self.cycle_sheet(false);
+        }
+        if ctx.input_mut(|i| i.consume_key(Modifiers::CTRL, Key::Tab)) {
+            self.cycle_sheet(true);
+        }
         if ctx.input_mut(|i| i.consume_key(cmd, Key::D)) {
             self.toggle_compressed_view();
         }
@@ -3281,6 +3299,10 @@ impl ViewerApp {
                 if ui.button("Save   Cmd+S").clicked() { self.save(); ui.close(); }
                 if ui.button("Save as…   Shift+Cmd+S").clicked() { self.save_as_dialog(); ui.close(); }
                 ui.separator();
+                if ui.button("Close worksheet   Cmd+W").on_hover_text("Close the sheet shown and the sheets derived from it").clicked() { let shown = self.document_id(); self.request_close_sheet(&shown); ui.close(); }
+                if ui.add_enabled(self.sheets().len() > 1, egui::Button::new("Close other worksheets")).on_hover_text("Close every sheet but this one and those it came from").clicked() { self.request_close_other_sheets(); ui.close(); }
+                if ui.button("Worksheets…   Shift+Cmd+T").clicked() { self.toggle_sheet_tree(); ui.close(); }
+                ui.separator();
                 if ui.button("Settings…   Cmd+,").clicked() { self.open_settings(); ui.close(); }
                 ui.separator();
                 if ui.button("Extract selection or stream to file…   Cmd+E").clicked() { self.export_dialog(false); ui.close(); }
@@ -3309,7 +3331,7 @@ impl ViewerApp {
                         if ui.button(codec.label()).clicked() { self.compress_selection(codec); ui.close(); }
                     }
                 });
-                if ui.add_enabled(self.active_parent().is_some(), egui::Button::new("Back to parent document   Cmd+[")).clicked() { self.go_back_to_parent(); ui.close(); }
+                if ui.add_enabled(self.active_parent().is_some(), egui::Button::new("Back to parent document   Cmd+[")).on_hover_text("Show the sheet this one was derived from; this one stays open").clicked() { self.go_back_to_parent(); ui.close(); }
             });
             ui.menu_button("Go", |ui| {
                 if ui.button("Command palette   Cmd+K").clicked() { self.palette.toggle(); ui.close(); }
@@ -3974,7 +3996,10 @@ impl ViewerApp {
                     ("Alt+Left Alt+Right", "Origin -1 / +1 bit (when nothing is selected)"),
                     ("- +", "Zoom out / in (also Cmd+ + scroll, pinch)"),
                     ("Scroll", "Rows; Shift+scroll pans horizontally"),
-                    ("Cmd+O Cmd+S Shift+Cmd+S Cmd+N", "Open, save, save as, new"),
+                    ("Cmd+O Cmd+S Shift+Cmd+S Cmd+N", "Open (as a new worksheet), save, save as, new"),
+                    ("Cmd+W", "Close the worksheet shown and those derived from it"),
+                    ("Shift+Cmd+T", "The tree of every open worksheet"),
+                    ("Ctrl+Tab Ctrl+Shift+Tab", "Next and previous worksheet"),
                     ("Esc", "Close the image or video being viewed, else clear the selection"),
                     ("Cmd+K", "Command palette: every action, searchable"),
                     ("Cmd+F  F3  Shift+F3", "Find bytes, text or a number; next and previous match"),
@@ -3986,7 +4011,7 @@ impl ViewerApp {
                     ("H", "Toggle pattern highlights"),
                     ("Cmd+D", "Open the compressed block at the cursor; back up a level where there is none"),
                     ("Cmd+E", "Extract the selection or stream to a file"),
-                    ("Cmd+[", "Back to the parent document"),
+                    ("Cmd+[", "Back to the parent worksheet; this one stays open"),
                     ("?", "Toggle this window"),
                 ];
                 egui::Grid::new("help-grid").num_columns(2).spacing([16.0, 6.0]).show(ui, |ui| {
@@ -4011,12 +4036,22 @@ impl ViewerApp {
         })
     }
 
+    /// The window's title: the sheet shown, `*` when it has unsaved edits,
+    /// and for a derived sheet the file it all came from.
+    pub fn window_title(&self) -> String {
+        let shown = self.sheets().into_iter().find(|sheet| sheet.active).map_or_else(|| self.display_name(), |sheet| sheet.short);
+        let modified = if self.document.is_modified() { "*" } else { "" };
+        let root = self.active_ancestry().first().filter(|root| **root != self.document_id).and_then(|root| self.sheet_title(root));
+        match root {
+            Some(root) => format!("{shown}{modified} · {root} — theviewer"),
+            None => format!("{shown}{modified} — theviewer"),
+        }
+    }
+
     /// Only sends the viewport command when the title actually changes:
     /// re-sending it every frame makes macOS re-present the window.
     fn update_title(&mut self, ctx: &Context) {
-        let name = self.display_name();
-        let modified = if self.document.is_modified() { "*" } else { "" };
-        let title = format!("{name}{modified} — theviewer");
+        let title = self.window_title();
         if title != self.last_title {
             ctx.send_viewport_cmd(ViewportCommand::Title(title.clone()));
             self.last_title = title;
@@ -4077,6 +4112,7 @@ impl eframe::App for ViewerApp {
         self.emphasis = self.emphasis_next.take();
         egui::Panel::top("menu").show(ui, |ui| self.show_menu_bar(ui));
         egui::Panel::top("toolbar").show(ui, |ui| self.show_toolbar(ui));
+        egui::Panel::top("worksheets").show(ui, |ui| crate::sheets::view::show_strip(self, ui));
         egui::Panel::bottom("status").show(ui, |ui| self.show_status_bar(ui));
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE.fill(theme::BACKGROUND))
@@ -4091,6 +4127,8 @@ impl eframe::App for ViewerApp {
         self.show_settings_window(&ctx);
         self.show_confirmation_window(&ctx);
         self.show_recipe_window(&ctx);
+        crate::sheets::view::show_tree_window(self, &ctx);
+        crate::sheets::view::show_close_confirmation(self, &ctx);
         self.show_bookmark_prompt(&ctx);
         crate::selection_menu::show_insert_dialog(self, &ctx);
         commands::show_palette(self, &ctx);

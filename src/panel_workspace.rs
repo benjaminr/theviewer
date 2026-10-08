@@ -1,5 +1,5 @@
-//! Dock panel: what is known about the document and what has happened, as
-//! the workspace bus holds it.
+//! Dock panel: the open worksheets, as a tree, then what is known about the
+//! document and what has happened, as the workspace bus holds it.
 //!
 //! Retained facts are listed by topic, each with its producer, the document
 //! version it describes (dimmed once stale) and its span, which selects the
@@ -33,6 +33,10 @@ pub struct WorkspaceState {
 }
 
 pub fn show_workspace(state: &mut WorkspaceState, app: &mut ViewerApp, ui: &mut Ui) {
+    egui::CollapsingHeader::new(RichText::new("Worksheets").strong()).id_salt("workspace-sheets").default_open(true).show(ui, |ui| {
+        crate::sheets::view::show_tree(app, ui);
+    });
+    ui.separator();
     let facts: Vec<Arc<Message>> = app.bus.facts().cloned().collect();
     ui.label(
         RichText::new(format!("{} facts kept · {} messages delivered · {} reactions", facts.len(), app.bus.cursor(), app.reactions().len()))

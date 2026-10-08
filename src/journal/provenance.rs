@@ -533,7 +533,7 @@ impl SheetLineage {
         for entry in journal.entries().filter(|entry| entry.outcome.is_ok()) {
             let labels: Vec<Option<String>> = entry.result.as_ref().map(super::sheets_made).unwrap_or_default().into_iter().map(|sheet| sheet.label).collect();
             for (nth, doc) in entry.made.iter().enumerate() {
-                let label = labels.get(nth).cloned().flatten();
+                let label = journal.sheet_label(doc).map(str::to_string).or_else(|| labels.get(nth).cloned().flatten());
                 lineage.made.insert(doc.clone(), Maker { step: entry.step, method: entry.method.clone(), parent: entry.doc.clone(), nth, label });
             }
             if matches!(super::timeline::replay_of_entry(entry), super::timeline::Replay::OpensDocument { .. })

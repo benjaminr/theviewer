@@ -145,13 +145,22 @@ pub struct SheetSummary {
     pub active: bool,
     /// The method that made it and its step, for a sheet a step made.
     pub made_by: Option<(String, Option<u64>)>,
+    /// Its title without its parent's name in front ("zlib@0x40" for
+    /// "fw.bin › zlib@0x40"), as the strip shows it after its parent.
+    pub short: String,
 }
 
 impl SheetSummary {
-    /// The label when it has one, else its name: what the strip shows.
+    /// The label when it has one, else its name.
     pub fn title(&self) -> &str {
         self.label.as_deref().unwrap_or(&self.name)
     }
+}
+
+/// `title` without `parent_name` and the `›` after it in front, when it
+/// starts so, as the names of derived sheets do.
+fn without_parent(title: &str, parent_name: Option<&str>) -> String {
+    parent_name.and_then(|parent| title.strip_prefix(parent)).and_then(|rest| rest.strip_prefix(" › ")).filter(|rest| !rest.is_empty()).unwrap_or(title).to_string()
 }
 
 /// The number in a sheet id ("doc-12" is 12), for listing sheets in the
@@ -271,6 +280,7 @@ impl ViewerApp {
                 modified: sheet.document.is_modified(),
                 active: false,
                 made_by: made_by(&sheet.lineage),
+                short: String::new(),
             })
             .collect();
         sheets.push(SheetSummary {
@@ -283,8 +293,13 @@ impl ViewerApp {
             modified: self.document.is_modified(),
             active: true,
             made_by: made_by(&self.active_lineage),
+            short: String::new(),
         });
         sheets.sort_by_key(|sheet| opening_order(&sheet.id));
+        let names: HashMap<String, String> = sheets.iter().map(|sheet| (sheet.id.clone(), sheet.name.clone())).collect();
+        for sheet in &mut sheets {
+            sheet.short = without_parent(sheet.title(), sheet.parent.as_ref().and_then(|parent| names.get(parent)).map(String::as_str));
+        }
         sheets
     }
 
@@ -607,6 +622,20 @@ mod tests {
             assert_eq!(strings_shown(&app), ["child payload"]);
             app.close_sheet_tree(&child);
             assert!(app.bench.tools.stats.strings.of(&child).is_none(), "a closed sheet's results go");
+        }
+
+        #[test]
+        fn a_label_given_in_the_tree_names_the_sheet_for_the_api_and_recipes_and_is_not_given_twice() {
+            let mut app = app_with(b"header payload");
+            let call = |app: &mut ViewerApp, method: &str, params| crate::api::call(app, &crate::api::Caller::Panel, method, params).unwrap();
+            let first = call(&mut app, "documents.derive", serde_json::json!({"start": 7}))["output"]["doc"].as_str().unwrap().to_string();
+            let second = call(&mut app, "documents.derive", serde_json::json!({"doc": "doc-2", "start": 0, "len": 6}))["output"]["doc"].as_str().unwrap().to_string();
+            app.label_sheet(&first, "payload").unwrap();
+            assert_eq!(call(&mut app, "documents.info", serde_json::json!({"doc": first}))["label"], "payload");
+            assert_eq!(app.journal.sheet_label(&first), Some("payload"), "a recipe names it so");
+            assert!(app.label_sheet(&second, "payload").unwrap_err().contains("labelled payload already"));
+            let root = app.active_ancestry()[0].clone();
+            assert!(app.label_sheet(&root, "file").is_err(), "a file opened has no step to label");
         }
 
         #[test]
