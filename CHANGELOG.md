@@ -8,6 +8,27 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Then anchors work on text and with other anchors.** New operations:
+  `match` (a regex's first group, or a group named by number), `after`,
+  `before`, `split` (a piece by index, or every piece), `format` (the value
+  written into a text, with more values from `with`), `hex` (an integer as
+  zero-padded hex digits), `div` and `mod`. The number `add`, `sub`, `mul`,
+  `div` and `mod` take may be an anchor, so a table's length is one marker
+  less another; a recipe keeps and renumbers the steps such operands cite.
+- **`part: "end"`** on find, finding, structure and selection anchors: the
+  offset just past the match, field or span.
+- **A pinned template is a structure.** `{"structure": "template:ncupd",
+  "field": "Ncupd.record_len"}` reads a field of the template pinned over
+  the document with `templates.apply {pin: true}`.
+- **Picks find their list wherever it is.** `[field=value]` in a pick's
+  `list` keeps the items of a list on the way (`job.filesystems[kind=FAT].entries`),
+  and `..key` gathers a key at any depth (`job..children`, every node of an
+  unpacked tree). A pick's `where` takes anchors and `{"$var": name}` as
+  values and bounds, and a field matches a value that reads as the same
+  number.
+- A pick over one page of a longer list (its holder has a `next` cursor)
+  warns that it saw only the first page, in the step's anchors and the
+  run's warnings.
 - **Notes in the history.** Write what you are doing and why into the
   History tab as you work: the box at its foot adds a note where you are
   (`Cmd+Enter` or *Add note*), and each step's *Note* button starts one
@@ -175,6 +196,9 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - The replay warning that literal offsets may not fit another file is
   given only when the recipe has one, and names it.
 
+- A value marked as an anchor that is not one is refused with what is
+  wrong with it: a then anchor without `then`, an operation it does not know
+  with those there are, a `part` or needle that does not read.
 - A recipe run no longer takes the first document id its steps name for
   the file it runs on. A step naming a document by an id that is neither
   the run's input nor a sheet the run made stops the run (format 1 recipes

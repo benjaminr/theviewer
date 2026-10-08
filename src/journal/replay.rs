@@ -127,6 +127,10 @@ pub struct ResolvedAnchor {
     /// not run.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending: Option<String>,
+    /// What resolving it found worth knowing, such as a pick that saw only
+    /// the first page of a list.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 /// What one step did (or, in a preview, would do).
@@ -253,6 +257,7 @@ pub fn run(workspace: &mut dyn Workspace, steps: &[RecipeStep], options: &Replay
             report.stopped = Some(Stopped { step: step.step, error: error.clone() });
         }
         let failed = !step_report.outcome.is_ok();
+        report.warnings.extend(step_report.anchors.iter().flat_map(|anchor| anchor.warnings.iter().map(|warning| format!("step {}, {}: {warning}", step.step, anchor.path))));
         report.steps.push(step_report);
         if failed && !options.preview {
             break;
@@ -469,7 +474,7 @@ impl Run<'_> {
                 && !matches!(anchor, Anchor::Param { .. } | Anchor::Step { .. } | Anchor::Sheet { .. } | Anchor::Pick { .. } | Anchor::Var { .. })
             {
                 let pending = format!("found in {waiting}");
-                report.anchors.push(ResolvedAnchor { path, anchor, value: Value::Null, pending: Some(pending) });
+                report.anchors.push(ResolvedAnchor { path, anchor, value: Value::Null, pending: Some(pending), warnings: Vec::new() });
                 continue;
             }
             self.resolve_into(workspace, report, &path, &anchor, &step_doc)?;
@@ -551,13 +556,14 @@ impl Run<'_> {
         if self.options.preview
             && let Some(pending) = self.waiting_for(anchor)
         {
-            report.anchors.push(ResolvedAnchor { path: path.to_string(), anchor: anchor.clone(), value: Value::Null, pending: Some(pending) });
+            report.anchors.push(ResolvedAnchor { path: path.to_string(), anchor: anchor.clone(), value: Value::Null, pending: Some(pending), warnings: Vec::new() });
             return Ok(());
         }
-        let mut context = ResolveContext { workspace, doc: Some(doc.to_string()), steps: &self.done, parameters: &self.options.parameters, sheets: &self.sheets };
+        let mut context = ResolveContext { workspace, doc: Some(doc.to_string()), steps: &self.done, parameters: &self.options.parameters, sheets: &self.sheets, warnings: Vec::new() };
         let value = anchor.resolve(&mut context).map_err(|error| at_parameter(error, path))?;
+        let warnings = context.warnings;
         replace_at(&mut report.params, path, value.clone())?;
-        report.anchors.push(ResolvedAnchor { path: path.to_string(), anchor: anchor.clone(), value, pending: None });
+        report.anchors.push(ResolvedAnchor { path: path.to_string(), anchor: anchor.clone(), value, pending: None, warnings });
         Ok(())
     }
 
@@ -570,7 +576,7 @@ impl Run<'_> {
             Anchor::Sheet { sheet } if self.sheets.is_waiting_for(sheet) => return Some(format!("{}, once it is made", sheet.describe())),
             Anchor::Pick { pick } if pick.step.number(&self.sheets).is_err() => return Some(format!("found once {} has run", pick.step.describe())),
             Anchor::Var { var } if self.previewed_bindings.contains(var) => return Some(format!("found once the step that binds ${var} has run")),
-            Anchor::Then { of, .. } => return self.waiting_for(of),
+            Anchor::Then { .. } => return anchor.within().iter().skip(1).find_map(|inner| self.waiting_for(inner)),
             Anchor::Param { param } => return self.options.parameters.get(param).and_then(super::anchors::as_anchor).and_then(|default| self.waiting_for(&default)),
             _ => {}
         }

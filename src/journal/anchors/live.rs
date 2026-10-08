@@ -14,7 +14,7 @@ use std::collections::BTreeMap;
 
 use serde_json::Value;
 
-use super::{Anchor, ResolveContext, RunSheets, anchors_in, as_anchor, is_marked, replace_at, visit_paths};
+use super::{Anchor, ResolveContext, RunSheets, anchors_in, as_anchor, is_marked, replace_at, visit_paths, why_not_an_anchor};
 use crate::api::workspace::{self, Workspace};
 use crate::api::{ApiError, Caller};
 use crate::bus::JobState;
@@ -82,7 +82,7 @@ impl LiveAnchors {
             self.load_step(workspace, step).map_err(at_parameter)?;
         }
         let parameters = BTreeMap::new();
-        let mut context = ResolveContext { workspace, doc, steps: &self.steps, parameters: &parameters, sheets: &sheets };
+        let mut context = ResolveContext { workspace, doc, steps: &self.steps, parameters: &parameters, sheets: &sheets, warnings: Vec::new() };
         anchor.resolve(&mut context).map_err(at_parameter)
     }
 
@@ -121,15 +121,13 @@ fn check_markers(params: &Value) -> Result<(), ApiError> {
             return false;
         }
         if malformed.is_none() && is_marked(value) {
-            malformed = Some(path.to_string());
+            malformed = Some((path.to_string(), why_not_an_anchor(value)));
         }
         true
     });
     match malformed {
         None => Ok(()),
-        Some(path) => Err(ApiError::invalid_params(format!(
-            "the parameter {path} is marked as an anchor but is not one: an anchor is a step, find, structure, finding, selection, param, sheet, pick, then or var anchor (see docs/recipes.md), $var takes a name and $sheet a step number or label"
-        ))),
+        Some((path, why)) => Err(ApiError::invalid_params(format!("the parameter {path} is marked as an anchor but is not one: {why}"))),
     }
 }
 
@@ -192,6 +190,8 @@ mod tests {
         let refused = call(&mut workspace, "bytes.read", json!({"start": {"$anchor": {"stpe": 1}}, "len": 1})).unwrap_err();
         assert_eq!(refused.code, ErrorCode::InvalidParams);
         assert!(refused.message.starts_with("the parameter start is marked as an anchor but is not one"), "{}", refused.message);
+        let unknown = call(&mut workspace, "bytes.read", json!({"start": {"$anchor": {"of": {"find": {"text": "b"}}, "then": [{"regex": "x"}]}}, "len": 1})).unwrap_err();
+        assert!(unknown.message.contains("operation 0 of `then`") && unknown.message.contains("unknown variant `regex`, expected one of"), "{}", unknown.message);
         let entry = workspace.journal().reads().last();
         assert!(entry.is_none_or(|entry| entry.method != "bytes.read"), "a refused read is not kept");
     }

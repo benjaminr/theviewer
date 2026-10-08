@@ -27,7 +27,7 @@ fn bytes_of(workspace: &mut HeadlessWorkspace) -> Vec<u8> {
 /// done and `parameters` given.
 fn resolve(workspace: &mut HeadlessWorkspace, anchor: Anchor, steps: &BTreeMap<u64, Value>, parameters: &BTreeMap<String, Value>) -> Result<Value, ApiError> {
     let sheets = RunSheets::on("doc-1");
-    let mut context = ResolveContext { workspace, doc: None, steps, parameters, sheets: &sheets };
+    let mut context = ResolveContext { workspace, doc: None, steps, parameters, sheets: &sheets, warnings: Vec::new() };
     anchor.resolve(&mut context)
 }
 
@@ -194,7 +194,7 @@ fn a_run_resolves_each_anchor_calls_each_step_as_the_recipe_and_reports_both() {
     let report = run(&mut workspace, &steps, &ReplayOptions::new(recipe_caller()));
     assert!(report.completed(), "{report:?}");
     assert_eq!(bytes_of(&mut workspace), b"header..\x00\x00\x01\x02\x03\x04");
-    assert_eq!(report.steps[1].anchors, [ResolvedAnchor { path: "start".into(), anchor: Anchor::Step { step: 1, path: "result.at".into() }, value: json!(8), pending: None }]);
+    assert_eq!(report.steps[1].anchors, [ResolvedAnchor { path: "start".into(), anchor: Anchor::Step { step: 1, path: "result.at".into() }, value: json!(8), pending: None, warnings: Vec::new() }]);
     assert_eq!(report.steps[1].params, json!({"doc": "doc-1", "start": 8, "data": "0000"}), "the run's document is named and the anchor resolved");
     assert_eq!(report.steps[1].result.as_ref().unwrap()["label"], "Overwrite 2 bytes by recipe:Patch");
     assert_eq!(report.steps[2].params["offset"], 10);

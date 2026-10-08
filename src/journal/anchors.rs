@@ -8,14 +8,14 @@
 //! | Anchor | JSON | Means |
 //! | --- | --- | --- |
 //! | [`Anchor::Step`] | `{"step": 12, "path": "result.matches[0].offset"}` | a value an earlier step was given or returned |
-//! | [`Anchor::Find`] | `{"find": {"hex": "7EA5"}, "nth": 0}` | where a search matches |
-//! | [`Anchor::Structure`] | `{"structure": "png", "field": "IHDR.width", "part": "value"}` | a parsed field's offset, length or value |
+//! | [`Anchor::Find`] | `{"find": {"hex": "7EA5"}, "nth": 0}`, `{"find": {"text": "key="}, "part": "end"}` | where a search matches, or ends |
+//! | [`Anchor::Structure`] | `{"structure": "png", "field": "IHDR.width", "part": "value"}`, `{"structure": "template:ncupd", "field": "Ncupd.record_len"}` | a parsed field's offset, length, end or value, by a parser or the pinned template |
 //! | [`Anchor::Finding`] | `{"finding": {"category": "compressed", "nth": 0}}` | a finding's span |
 //! | [`Anchor::Selection`] | `{"selection": "current"}` | whatever is selected when the recipe runs |
 //! | [`Anchor::Param`] | `{"param": "key"}` | a value the person supplies when running the recipe |
 //! | [`Anchor::Sheet`] | `{"sheet": {"step": 3}}`, `{"sheet": "payload"}`, `{"sheet": "input"}` | the sheet step 3 made, the sheet labelled payload, or the run's input |
 //! | [`Anchor::Pick`] | `{"pick": {"step": 5, "list": "job.strings", "where": {"text": {"regex": "^NC500-"}}, "field": "text"}}` | an item chosen by what it holds from a list in a step's result ([`pick`]) |
-//! | [`Anchor::Then`] | `{"of": ANCHOR, "then": [{"add": 16}, {"encode": "text_to_hex"}]}` | a value another anchor finds, transformed ([`then`]) |
+//! | [`Anchor::Then`] | `{"of": ANCHOR, "then": [{"add": 16}, {"match": "key=(\\w+)"}, {"sub": ANCHOR}]}` | a value another anchor finds, transformed, with numbers or other anchors ([`then`]) |
 //! | [`Anchor::Var`] | `{"var": "serial"}` | the value last bound to a variable with `vars.set` |
 //!
 //! **How an anchor is marked in a recipe step's parameters.** Any value at
@@ -59,6 +59,7 @@ use crate::api::selection::DocParams;
 use crate::api::structure::{self, ParseParams};
 use crate::api::values::MAX_PAGE;
 use crate::api::{ApiError, MAX_CALL_BYTES, Workspace, workspace};
+use crate::bus::topics::TemplateApplied;
 use crate::plugin::{Category, Field, Finding};
 use crate::search::SearchMode;
 
@@ -251,6 +252,8 @@ pub enum Part {
     Offset,
     /// Its length in bytes.
     Len,
+    /// Where it ends: its offset plus its length, the first byte after it.
+    End,
     /// Its value (a field's decoded value, the selection itself).
     Value,
 }
@@ -309,6 +312,88 @@ pub fn as_anchor(value: &Value) -> Option<Anchor> {
 /// an anchor is a mistake to report, not a literal to pass on.
 pub fn is_marked(value: &Value) -> bool {
     value.as_object().filter(|object| object.len() == 1).and_then(|object| object.keys().next()).is_some_and(|key| [ANCHOR_KEY, VAR_KEY, SHEET_KEY].contains(&key.as_str()))
+}
+
+/// Why `value`, marked as an anchor ([`is_marked`]), does not read as one:
+/// what the kind of anchor its keys name is missing, or serde's own words
+/// about the part that does not read, such as an operation it does not know
+/// and those there are.
+pub fn why_not_an_anchor(value: &Value) -> String {
+    let Some((key, marked)) = value.as_object().filter(|object| object.len() == 1).and_then(|object| object.iter().next()) else {
+        return format!("{value} is not an object of one key, $anchor, $var or $sheet");
+    };
+    match key.as_str() {
+        VAR_KEY => format!("$var takes a variable's name, not {marked}"),
+        SHEET_KEY => format!("$sheet takes a step number or a sheet's label, not {marked}"),
+        _ => why_not(marked),
+    }
+}
+
+/// Why `anchor`, written bare, does not read as an anchor.
+fn why_not(anchor: &Value) -> String {
+    let Some(fields) = anchor.as_object() else { return format!("an anchor is an object, not {anchor}") };
+    let has = |key: &str| fields.contains_key(key);
+    let problem = if has("of") || has("then") {
+        let of = fields.get("of").map(|of| (of, serde_json::from_value::<Anchor>(of.clone()).is_err()));
+        match (of, fields.get("then")) {
+            (None, _) => Some("a then anchor needs `of`, the anchor whose value it transforms".to_string()),
+            (Some((of, true)), _) => Some(format!("its `of`: {}", why_not(of))),
+            (Some(_), None) => Some("a then anchor needs `then`, a list of operations such as [{\"add\": 16}]".to_string()),
+            (Some(_), Some(then)) => why_not_operations(then),
+        }
+    } else if has("pick") {
+        part_problem::<Pick>(fields, "pick", "pick")
+    } else if has("find") {
+        part_problem::<Needle>(fields, "find", "find").or_else(|| part_problem::<usize>(fields, "nth", "find")).or_else(|| part_problem::<Part>(fields, "part", "find"))
+    } else if has("structure") {
+        part_problem::<String>(fields, "structure", "structure").or_else(|| required::<String>(fields, "field", "structure")).or_else(|| part_problem::<Part>(fields, "part", "structure"))
+    } else if has("finding") {
+        part_problem::<FindingMatch>(fields, "finding", "finding").or_else(|| part_problem::<Part>(fields, "part", "finding"))
+    } else if has("selection") {
+        part_problem::<SelectionWhich>(fields, "selection", "selection").or_else(|| part_problem::<Part>(fields, "part", "selection"))
+    } else if has("sheet") {
+        part_problem::<SheetRef>(fields, "sheet", "sheet")
+    } else if has("step") {
+        part_problem::<u64>(fields, "step", "step").or_else(|| required::<String>(fields, "path", "step"))
+    } else if has("param") {
+        part_problem::<String>(fields, "param", "param")
+    } else if has("var") {
+        part_problem::<String>(fields, "var", "var")
+    } else {
+        let keys: Vec<&str> = fields.keys().map(String::as_str).collect();
+        return format!("it has the keys {}, and an anchor is a step, find, structure, finding, selection, param, sheet, pick, then (of and then) or var anchor (see docs/recipes.md)", keys.join(", "));
+    };
+    problem.unwrap_or_else(|| "it does not read as any kind of anchor (see docs/recipes.md)".to_string())
+}
+
+/// What is wrong with the operations of a then anchor, the first that does
+/// not read named by its place.
+fn why_not_operations(then: &Value) -> Option<String> {
+    let Some(operations) = then.as_array() else { return Some(format!("`then` is a list of operations, not {then}")) };
+    operations.iter().enumerate().find_map(|(index, operation)| {
+        let error = serde_json::from_value::<Operation>(operation.clone()).err()?;
+        let operand = operation.as_object().and_then(|operation| operation.values().next()).filter(|operand| operand.is_object());
+        let detail = match operand {
+            Some(operand) if error.to_string().contains("untagged enum Operand") => format!("its operand is a number or an anchor written bare, and {}", why_not(operand)),
+            _ => error.to_string(),
+        };
+        Some(format!("operation {index} of `then`, {operation}: {detail}"))
+    })
+}
+
+/// What is wrong with `key` of a `kind` anchor, when it is given and does
+/// not read as a `T`.
+fn part_problem<T: serde::de::DeserializeOwned>(fields: &serde_json::Map<String, Value>, key: &str, kind: &str) -> Option<String> {
+    let error = serde_json::from_value::<T>(fields.get(key)?.clone()).err()?;
+    Some(format!("the `{key}` of a {kind} anchor: {error}"))
+}
+
+/// What is wrong with `key` of a `kind` anchor, which it must have.
+fn required<T: serde::de::DeserializeOwned>(fields: &serde_json::Map<String, Value>, key: &str, kind: &str) -> Option<String> {
+    if !fields.contains_key(key) {
+        return Some(format!("a {kind} anchor needs `{key}`"));
+    }
+    part_problem::<T>(fields, key, kind)
 }
 
 /// Every anchor marked in `params`, with its path (`start`,
@@ -425,6 +510,9 @@ pub struct ResolveContext<'a> {
     /// The run's input and the sheets its steps have made, which sheet
     /// anchors name.
     pub sheets: &'a RunSheets,
+    /// What resolving found worth knowing that did not stop it, such as a
+    /// pick that saw only the first page of a list.
+    pub warnings: Vec<String>,
 }
 
 impl Anchor {
@@ -436,25 +524,27 @@ impl Anchor {
     ///   waited for: `job.candidates[0].period`).
     /// * **Find**: the `nth` match (from 0) of the bytes or text in the
     ///   step's document, searching from its start; `part` gives its
-    ///   offset (the default), its length, or `{"range": [offset, len]}`.
+    ///   offset (the default), its length, its end (offset plus length), or
+    ///   `{"range": [offset, len]}`.
     /// * **Structure**: `structure` is the structure's finding id (for the
     ///   built-in parsers, the parser's id: png, jpeg, mbr). The structure is
     ///   the parser's at offset 0 of the document, or else the first found
-    ///   among the findings (in the first 16 MiB). `field` is the names from
+    ///   among the findings (in the first 16 MiB); `template:name` is the
+    ///   template pinned over the document. `field` is the names from
     ///   the structure's root joined with dots, a second or later sibling of
     ///   the same name written `name[n]` (from 0): `chunks.IDAT[1].data`. As
     ///   a shorthand the first name may also be one at any depth (the first
     ///   so named, depth first), so `IHDR.width` works too. `part` gives the
-    ///   field's offset (the default), length, or value (a number when it
-    ///   reads as one, else the text the parser shows).
+    ///   field's offset (the default), length, end, or value (a number when
+    ///   it reads as one, else the text the parser shows).
     /// * **Finding**: the `nth` (from 0, in offset order) of the findings the
     ///   Findings list would show in the first 16 MiB that are of the
     ///   category and whose id starts with `id` (or whose id's part after
     ///   its kind does: `image/png` finds `signature:image/png`); `part` gives its start
-    ///   (the default), length, or `{"range": [start, len]}`.
+    ///   (the default), length, end, or `{"range": [start, len]}`.
     /// * **Selection**: what is selected in the step's document when the
     ///   step runs, as `selection.set` takes it (the default, and `value`),
-    ///   or its first range's start or length.
+    ///   or its first range's start, length or end.
     /// * **Param**: the value given for the recipe's parameter, or, given
     ///   none, what the anchor its default names finds.
     /// * **Sheet**: the run's input, or a sheet a step of the run made.
@@ -475,7 +565,7 @@ impl Anchor {
             Anchor::Param { param } => resolve_param(param, context),
             Anchor::Sheet { sheet } => resolve_sheet(sheet, context.sheets, &*context.workspace),
             Anchor::Pick { pick } => pick.resolve(context),
-            Anchor::Then { of, then } => of.resolve(context).and_then(|value| then.iter().try_fold(value, |value, operation| operation.apply(value))),
+            Anchor::Then { of, then } => resolve_then(of, then, context),
             Anchor::Var { var } => resolve_var(var, &*context.workspace),
         };
         resolved.map_err(|error| {
@@ -504,25 +594,45 @@ impl Anchor {
         }
     }
 
-    /// The earlier steps whose values this anchor reads (a step anchor's,
-    /// a pick's, and those of the anchor a then transforms), the steps of
-    /// a pick named by label found in `sheets`.
-    pub fn cited_steps(&self, sheets: &RunSheets) -> Vec<u64> {
+    /// This anchor and every anchor inside it, outermost first: the anchor
+    /// a then transforms and those its operations take, and those a pick's
+    /// `where` compares with.
+    pub fn within(&self) -> Vec<Anchor> {
+        let mut all = vec![self.clone()];
         match self {
-            Anchor::Step { step, .. } => vec![*step],
-            Anchor::Pick { pick } => pick.step.number(sheets).ok().into_iter().collect(),
-            Anchor::Then { of, .. } => of.cited_steps(sheets),
-            _ => Vec::new(),
+            Anchor::Then { of, then } => {
+                all.extend(of.within());
+                all.extend(then.iter().flat_map(Operation::operands).flat_map(Anchor::within));
+            }
+            Anchor::Pick { pick } => all.extend(pick.anchors().iter().flat_map(Anchor::within)),
+            _ => {}
         }
+        all
+    }
+
+    /// The earlier steps whose values this anchor reads (a step anchor's,
+    /// a pick's, and those of the anchors inside it), the steps of a pick
+    /// named by label found in `sheets`.
+    pub fn cited_steps(&self, sheets: &RunSheets) -> Vec<u64> {
+        self.within()
+            .into_iter()
+            .flat_map(|anchor| match anchor {
+                Anchor::Step { step, .. } => vec![step],
+                Anchor::Pick { pick } => pick.step.number(sheets).ok().into_iter().collect(),
+                _ => Vec::new(),
+            })
+            .collect()
     }
 
     /// The variables this anchor reads, at any depth.
     pub fn variables(&self) -> Vec<String> {
-        match self {
-            Anchor::Var { var } => vec![var.clone()],
-            Anchor::Then { of, .. } => of.variables(),
-            _ => Vec::new(),
-        }
+        self.within()
+            .into_iter()
+            .filter_map(|anchor| match anchor {
+                Anchor::Var { var } => Some(var),
+                _ => None,
+            })
+            .collect()
     }
 
     /// This anchor with each step it names by number changed as `renumber`
@@ -532,14 +642,11 @@ impl Anchor {
             Anchor::Step { step, path } => Anchor::Step { step: renumber(*step)?, path: path.clone() },
             Anchor::Sheet { sheet: SheetRef::Step { step, nth } } => Anchor::Sheet { sheet: SheetRef::Step { step: renumber(*step)?, nth: *nth } },
             Anchor::Sheet { sheet: SheetRef::Labelled { step, label } } => Anchor::Sheet { sheet: SheetRef::Labelled { step: renumber(*step)?, label: label.clone() } },
-            Anchor::Pick { pick } => {
-                let mut pick = pick.clone();
-                if let StepRef::Number(step) = pick.step {
-                    pick.step = StepRef::Number(renumber(step)?);
-                }
-                Anchor::Pick { pick }
+            Anchor::Pick { pick } => Anchor::Pick { pick: pick.renumbered(renumber)? },
+            Anchor::Then { of, then } => {
+                let then = then.iter().map(|operation| operation.renumbered(renumber)).collect::<Option<Vec<_>>>()?;
+                Anchor::Then { of: Box::new(of.renumbered(renumber)?), then }
             }
-            Anchor::Then { of, then } => Anchor::Then { of: Box::new(of.renumbered(renumber)?), then: then.clone() },
             other => other.clone(),
         })
     }
@@ -625,19 +732,30 @@ fn part_phrase(part: Option<Part>) -> &'static str {
         None => "",
         Some(Part::Offset) => "offset of the ",
         Some(Part::Len) => "length of the ",
+        Some(Part::End) => "end of the ",
         Some(Part::Value) => "value of the ",
     }
 }
 
 /// The part of a span an anchor asks for: its offset (the default), its
-/// length, or the span itself as `{"range": [start, len]}`, as
+/// length, its end, or the span itself as `{"range": [start, len]}`, as
 /// `selection.set` and the edits take it.
 fn span_part(start: usize, len: usize, part: Option<Part>) -> Value {
     match part.unwrap_or(Part::Offset) {
         Part::Offset => Value::from(start),
         Part::Len => Value::from(len),
+        Part::End => Value::from(start + len),
         Part::Value => serde_json::json!({ "range": [start, len] }),
     }
+}
+
+/// What `of` finds, through each operation of `then` in turn.
+fn resolve_then(of: &Anchor, then: &[Operation], context: &mut ResolveContext<'_>) -> Result<Value, ApiError> {
+    let mut value = of.resolve(context)?;
+    for operation in then {
+        value = operation.apply(value, context)?;
+    }
+    Ok(value)
 }
 
 fn resolve_step(step: u64, path: &str, context: &ResolveContext<'_>) -> Result<Value, ApiError> {
@@ -722,6 +840,7 @@ fn resolve_structure(parser: &str, field: &str, part: Option<Part>, context: &mu
     let made_at_start = if is_parser { parse_at(context, parser, 0)? } else { None };
     let structure = match made_at_start {
         Some(structure) => structure,
+        None if parser.starts_with(TEMPLATE_PREFIX) => pinned_template(context, parser)?,
         None => find_structure(context, parser, is_parser)?.ok_or_else(|| {
             let message = if is_parser {
                 format!("the {parser} parser recognises nothing at offset 0 or at any finding in the first 16 MiB")
@@ -738,8 +857,26 @@ fn resolve_structure(parser: &str, field: &str, part: Option<Part>, context: &mu
     Ok(match part.unwrap_or(Part::Offset) {
         Part::Offset => Value::from(found.offset),
         Part::Len => Value::from(found.len),
+        Part::End => Value::from(found.offset + found.len),
         Part::Value => field_value(&found.value),
     })
+}
+
+/// How a structure anchor names the template pinned over the document:
+/// `template:` and the template's name, as `template:ncupd`.
+const TEMPLATE_PREFIX: &str = "template:";
+
+/// The parse of the template pinned over the step's document with
+/// `templates.apply {pin: true}`, when `wanted` (`template:ncupd`) names it.
+fn pinned_template(context: &mut ResolveContext<'_>, wanted: &str) -> Result<Finding, ApiError> {
+    let doc = workspace::resolve(&*context.workspace, context.doc.as_deref())?;
+    let name = &wanted[TEMPLATE_PREFIX.len()..];
+    let pinned = context.workspace.bus().latest::<TemplateApplied>(&doc).map(|(_, applied)| applied.clone()).filter(|applied| !applied.name.is_empty());
+    match pinned {
+        Some(applied) if applied.name.eq_ignore_ascii_case(name) || applied.structure.id.eq_ignore_ascii_case(wanted) => Ok(applied.structure),
+        Some(applied) => Err(ApiError::not_found(format!("the template pinned over {doc} is {}, not {name}", applied.name))),
+        None => Err(ApiError::not_found(format!("no template is pinned over {doc}; pin one with templates.apply {{pin: true}}"))),
+    }
 }
 
 /// The structure `parser` makes of the step's document from `at`, if any,
@@ -845,6 +982,7 @@ fn resolve_selection(part: Option<Part>, context: &mut ResolveContext<'_>) -> Re
         None | Some(Part::Value) => serde_json::to_value(selection).unwrap_or(Value::Null),
         Some(Part::Offset) => Value::from(start),
         Some(Part::Len) => Value::from(len),
+        Some(Part::End) => Value::from(start + len),
     })
 }
 
@@ -942,7 +1080,7 @@ mod tests {
             Anchor::Then { of: Box::new(Anchor::Var { var: "serial".into() }), then: vec![Operation::Encode(then::Encoding::TextToHex)] },
             json!({"of": {"var": "serial"}, "then": [{"encode": "text_to_hex"}]}),
         );
-        round_trip(Anchor::Then { of: Box::new(Anchor::Param { param: "lba".into() }), then: vec![Operation::Mul(512), Operation::Int, Operation::Len] }, json!({"of": {"param": "lba"}, "then": [{"mul": 512}, "int", "len"]}));
+        round_trip(Anchor::Then { of: Box::new(Anchor::Param { param: "lba".into() }), then: vec![Operation::Mul(then::Operand::Number(512)), Operation::Int, Operation::Len] }, json!({"of": {"param": "lba"}, "then": [{"mul": 512}, "int", "len"]}));
         round_trip(Anchor::Var { var: "serial".into() }, json!({"var": "serial"}));
     }
 
@@ -967,7 +1105,7 @@ mod tests {
         let candidates = json!([{"key": "65ffb33565ffb335", "score": 0.67}, {"key": "65ffb335", "score": 0.66}]);
         let done = BTreeMap::from([(7, json!({"params": {}, "result": {"job": "job-1"}, "job": {"strings": strings}})), (9, json!({"params": {}, "result": {"candidates": candidates}}))]);
         let sheets = RunSheets::on("doc-1");
-        let mut resolve = |anchor: Value| serde_json::from_value::<Anchor>(anchor).unwrap().resolve(&mut ResolveContext { workspace: &mut workspace, doc: None, steps: &done, parameters: &BTreeMap::new(), sheets: &sheets });
+        let mut resolve = |anchor: Value| serde_json::from_value::<Anchor>(anchor).unwrap().resolve(&mut ResolveContext { workspace: &mut workspace, doc: None, steps: &done, parameters: &BTreeMap::new(), sheets: &sheets, warnings: Vec::new() });
         let serial = resolve(json!({"pick": {"step": 7, "list": "job.strings", "where": {"text": {"regex": "^NC500-[0-9A-F]{8}$"}}, "field": "text"}}));
         assert_eq!(serial.unwrap(), json!("NC500-2F357657"));
         assert_eq!(resolve(json!({"pick": {"step": 7, "list": "job.strings", "where": {"tag": "serial"}, "field": "offset"}})).unwrap(), json!(40));
@@ -987,9 +1125,81 @@ mod tests {
         let sheets = RunSheets::on("doc-1");
         let none = BTreeMap::new();
         let anchor: Anchor = serde_json::from_value(json!({"of": {"find": {"text": "SYNCLOG"}}, "then": [{"add": 16}]})).unwrap();
-        let value = anchor.resolve(&mut ResolveContext { workspace: &mut workspace, doc: None, steps: &none, parameters: &BTreeMap::new(), sheets: &sheets }).unwrap();
+        let value = anchor.resolve(&mut ResolveContext { workspace: &mut workspace, doc: None, steps: &none, parameters: &BTreeMap::new(), sheets: &sheets, warnings: Vec::new() }).unwrap();
         assert_eq!(value, json!(20));
         assert_eq!(anchor.describe(), "the 1st match of the text 'SYNCLOG', plus 16");
+    }
+
+    fn resolve_on(workspace: &mut dyn Workspace, anchor: Value) -> Result<Value, ApiError> {
+        let sheets = RunSheets::on("doc-1");
+        let anchor: Anchor = serde_json::from_value(anchor).unwrap();
+        anchor.resolve(&mut ResolveContext { workspace, doc: None, steps: &BTreeMap::new(), parameters: &BTreeMap::new(), sheets: &sheets, warnings: Vec::new() })
+    }
+
+    #[test]
+    fn the_byte_just_past_a_marker_is_found_without_counting_its_length() {
+        let mut workspace = crate::api::test_support::workspace_with("a.bin", b"..\"payload_b64\": \"aGVsbG8=\"");
+        assert_eq!(resolve_on(&mut workspace, json!({"find": {"text": "\"payload_b64\": \""}, "part": "end"})).unwrap(), json!(18));
+        let anchor: Anchor = serde_json::from_value(json!({"find": {"text": "PK"}, "part": "end"})).unwrap();
+        assert_eq!(anchor.describe(), "the end of the 1st match of the text 'PK'");
+    }
+
+    #[test]
+    fn a_field_s_end_and_a_finding_s_end_are_where_the_next_thing_starts() {
+        let image = image::RgbaImage::from_fn(3, 2, |x, y| image::Rgba([x as u8 * 80, y as u8 * 120, 200, 255]));
+        let mut encoded = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgba8(image).write_to(&mut encoded, image::ImageFormat::Png).unwrap();
+        let mut workspace = crate::api::test_support::workspace_with("a.png", &encoded.into_inner());
+        let offset = resolve_on(&mut workspace, json!({"structure": "png", "field": "IHDR.width"})).unwrap();
+        let len = resolve_on(&mut workspace, json!({"structure": "png", "field": "IHDR.width", "part": "len"})).unwrap();
+        let end = resolve_on(&mut workspace, json!({"structure": "png", "field": "IHDR.width", "part": "end"})).unwrap();
+        assert_eq!(end.as_u64(), Some(offset.as_u64().unwrap() + len.as_u64().unwrap()));
+        let mut compressed = crate::api::test_support::workspace_with("example.bin", &crate::api::test_support::example_bytes());
+        let start = resolve_on(&mut compressed, json!({"finding": {"category": "compressed"}})).unwrap();
+        let length = resolve_on(&mut compressed, json!({"finding": {"category": "compressed"}, "part": "len"})).unwrap();
+        let finish = resolve_on(&mut compressed, json!({"finding": {"category": "compressed"}, "part": "end"})).unwrap();
+        assert!(length.as_u64().unwrap() > 2, "{length}");
+        assert_eq!(finish.as_u64(), Some(start.as_u64().unwrap() + length.as_u64().unwrap()));
+    }
+
+    #[test]
+    fn a_header_read_by_a_pinned_template_is_named_by_a_structure_anchor() {
+        let mut workspace = crate::api::test_support::workspace_with("fw.upd", &[0x4e, 0x43, 0x00, 0x01, 0x04, 0x01, 0, 0]);
+        let source = "endian little\nstruct Ncupd { magic: u16, version: u16, record_len: u16 }\nroot Ncupd";
+        let unpinned = resolve_on(&mut workspace, json!({"structure": "template:ncupd", "field": "Ncupd.record_len", "part": "value"})).unwrap_err();
+        assert!(unpinned.message.contains("no template is pinned over doc-1"), "{}", unpinned.message);
+        crate::api::test_support::call(&mut workspace, "templates.apply", json!({"source": source, "pin": true})).unwrap();
+        let record_len = resolve_on(&mut workspace, json!({"structure": "template:ncupd", "field": "Ncupd.record_len", "part": "value"})).unwrap();
+        assert_eq!(record_len, json!(260));
+        assert_eq!(resolve_on(&mut workspace, json!({"structure": "template:Ncupd", "field": "record_len"})).unwrap(), json!(4));
+        let other = resolve_on(&mut workspace, json!({"structure": "template:header", "field": "record_len"})).unwrap_err();
+        assert!(other.message.contains("the template pinned over doc-1 is Ncupd, not header"), "{}", other.message);
+    }
+
+    #[test]
+    fn the_steps_and_variables_an_operand_reads_are_cited_and_renumbered() {
+        let anchor: Anchor = serde_json::from_value(json!({"of": {"var": "end"}, "then": [{"sub": {"step": 12, "path": "result.at"}}, {"div": {"pick": {"step": 9, "list": "result.rows", "where": {"seq": {"$var": "seq"}}, "field": "len"}}}]})).unwrap();
+        assert_eq!(anchor.cited_steps(&RunSheets::default()), [12, 9]);
+        assert_eq!(anchor.variables(), ["end", "seq"]);
+        let renumbered = anchor.renumbered(&|step| Some(step - 5)).unwrap();
+        assert_eq!(renumbered.cited_steps(&RunSheets::default()), [7, 4]);
+        assert_eq!(anchor.renumbered(&|step| (step == 9).then_some(1)), None, "an operand citing a step the recipe does not hold cannot be named");
+        assert_eq!(anchor.describe(), "the variable $end, minus (the value at result.at of step 12), divided by (the len of the 1st item of result.rows of step 9 where seq is the variable $seq)");
+    }
+
+    #[test]
+    fn a_malformed_anchor_says_what_is_wrong_with_it() {
+        let why = |value: Value| why_not_an_anchor(&json!({"$anchor": value}));
+        assert!(why(json!({"of": {"var": "x"}})).contains("a then anchor needs `then`"), "{}", why(json!({"of": {"var": "x"}})));
+        let unknown = why(json!({"of": {"var": "x"}, "then": [{"add": 1}, {"regex": "a"}]}));
+        assert!(unknown.starts_with("operation 1 of `then`") && unknown.contains("unknown variant `regex`") && unknown.contains("`match`"), "{unknown}");
+        let operand = why(json!({"of": {"var": "x"}, "then": [{"sub": {"fnd": {"text": "a"}}}]}));
+        assert!(operand.contains("its operand is a number or an anchor written bare") && operand.contains("the keys fnd"), "{operand}");
+        assert!(why(json!({"find": {"hexx": "7e"}})).contains("the `find` of a find anchor: unknown variant `hexx`"), "{}", why(json!({"find": {"hexx": "7e"}})));
+        assert!(why(json!({"find": {"hex": "7e"}, "part": "tail"})).contains("unknown variant `tail`"));
+        assert!(why(json!({"structure": "png"})).contains("a structure anchor needs `field`"));
+        assert!(why(json!({"stpe": 1})).contains("it has the keys stpe"));
+        assert!(why_not_an_anchor(&json!({"$var": 3})).contains("$var takes a variable's name"));
     }
 
     #[test]
@@ -998,10 +1208,10 @@ mod tests {
         let sheets = RunSheets::on("doc-1");
         let none = BTreeMap::new();
         let anchor = Anchor::Var { var: "serial".into() };
-        let unbound = anchor.resolve(&mut ResolveContext { workspace: &mut workspace, doc: None, steps: &none, parameters: &BTreeMap::new(), sheets: &sheets }).unwrap_err();
+        let unbound = anchor.resolve(&mut ResolveContext { workspace: &mut workspace, doc: None, steps: &none, parameters: &BTreeMap::new(), sheets: &sheets, warnings: Vec::new() }).unwrap_err();
         assert!(unbound.message.contains("no value is bound to $serial; bind one with vars.set (none is)"), "{}", unbound.message);
         workspace.journal_mut().bind_variable("serial", json!("NC500-2F357657"), Some(4));
-        let bound = anchor.resolve(&mut ResolveContext { workspace: &mut workspace, doc: None, steps: &none, parameters: &BTreeMap::new(), sheets: &sheets }).unwrap();
+        let bound = anchor.resolve(&mut ResolveContext { workspace: &mut workspace, doc: None, steps: &none, parameters: &BTreeMap::new(), sheets: &sheets, warnings: Vec::new() }).unwrap();
         assert_eq!(bound, json!("NC500-2F357657"));
     }
 
@@ -1021,7 +1231,7 @@ mod tests {
         let mut workspace = crate::api::test_support::workspace_with("a.bin", b"abc");
         let sheets = RunSheets { input: Some("doc-1".into()), made: BTreeMap::from([(2, vec!["doc-2".into(), "doc-3".into()]), (4, Vec::new())]), labels: BTreeMap::from([("payload".into(), "doc-3".into())]) };
         let none = BTreeMap::new();
-        let mut resolve = |sheet: SheetRef| Anchor::Sheet { sheet }.resolve(&mut ResolveContext { workspace: &mut workspace, doc: None, steps: &none, parameters: &BTreeMap::new(), sheets: &sheets });
+        let mut resolve = |sheet: SheetRef| Anchor::Sheet { sheet }.resolve(&mut ResolveContext { workspace: &mut workspace, doc: None, steps: &none, parameters: &BTreeMap::new(), sheets: &sheets, warnings: Vec::new() });
         assert_eq!(resolve(SheetRef::Named(INPUT.into())).unwrap(), json!("doc-1"));
         assert_eq!(resolve(SheetRef::Step { step: 2, nth: 0 }).unwrap(), json!("doc-2"));
         assert_eq!(resolve(SheetRef::Step { step: 2, nth: 1 }).unwrap(), json!("doc-3"));

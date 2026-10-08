@@ -8,9 +8,13 @@
 //! * `step` is the earlier step, by number or as `"@label"`: the step that
 //!   made the sheet labelled so.
 //! * `list` is the path of a list in that step's `{"params", "result",
-//!   "job"}`, as a step anchor's path is written.
-//! * `where` keeps the items that pass it (see [`Condition`]); every item
-//!   when omitted.
+//!   "job"}`, as a step anchor's path is written; `[field=value]` in it
+//!   keeps the items of a list on the way whose field is that value
+//!   (`job.filesystems[kind=FAT].entries`), and `..name` gathers what is
+//!   called so at any depth (`job..children`, every node of a tree).
+//! * `where` keeps the items that pass it (see [`passes`]); every item
+//!   when omitted. A bound or value in it may be an anchor, marked as in
+//!   a step's params (`{"$var": "seq"}`), which is resolved first.
 //! * `sort` orders what is kept by a field, before `nth` (from 0) chooses
 //!   one.
 //! * `field` is the path of the value to give inside the chosen item; the
@@ -22,7 +26,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-use super::{ResolveContext, RunSheets, ordinal, value_at};
+use super::{Anchor, ResolveContext, RunSheets, as_anchor, is_marked, marked, ordinal, value_at};
 use crate::api::ApiError;
 
 /// An item chosen from a list in an earlier step's result.
@@ -31,12 +35,14 @@ pub struct Pick {
     /// The earlier step: its number, or "@label" for the step that made the
     /// sheet labelled so.
     pub step: StepRef,
-    /// Where the list is in that step: `job.strings`, `result.candidates`.
+    /// Where the list is in that step: `job.strings`, `result.candidates`,
+    /// `job.filesystems[kind=FAT].entries`, `job..children`.
     pub list: String,
     /// Which items to keep, such as {"text": {"regex": "^NC500-"}}: each
     /// key a field of the item with a test (regex, equals, contains, min,
     /// max) or a value it must equal; "tag" a tag the item has; "all" and
-    /// "any" lists of such conditions. Every item when omitted.
+    /// "any" lists of such conditions. A value or bound may be a marked
+    /// anchor, such as {"$var": "seq"}. Every item when omitted.
     #[serde(default, rename = "where", skip_serializing_if = "Option::is_none")]
     pub condition: Option<Map<String, Value>>,
     /// The order to choose from, by a field of the items; as listed when
@@ -115,15 +121,21 @@ impl Pick {
     }
 
     /// The value the pick chooses, from the steps `context` has done.
-    pub fn resolve(&self, context: &ResolveContext<'_>) -> Result<Value, ApiError> {
+    pub fn resolve(&self, context: &mut ResolveContext<'_>) -> Result<Value, ApiError> {
         let step = self.step.number(context.sheets)?;
+        let condition = match &self.condition {
+            Some(condition) => Some(resolve_marked(condition, context)?),
+            None => None,
+        };
         let entry = context.steps.get(&step).ok_or_else(|| ApiError::not_found(format!("step {step} has not run before this one")))?;
-        let list = value_at(entry, &self.list)?.ok_or_else(|| ApiError::not_found(format!("step {step} has nothing at {}", self.list)))?;
-        let items = list.as_array().ok_or_else(|| ApiError::invalid_params(format!("{} of step {step} is not a list", self.list)))?;
+        let items = items_at(entry, &self.list, step)?;
+        if let Some(warning) = only_a_page(entry, &self.list, step) {
+            context.warnings.push(warning);
+        }
         let mut kept = Vec::new();
-        for item in items {
-            if self.condition.as_ref().map_or(Ok(true), |condition| passes(item, condition))? {
-                kept.push(item);
+        for item in &items {
+            if condition.as_ref().map_or(Ok(true), |condition| passes(item, condition))? {
+                kept.push(*item);
             }
         }
         if let Some(sort) = &self.sort {
@@ -144,6 +156,185 @@ impl Pick {
             Some(field) => value_at(chosen, field)?.cloned().ok_or_else(|| ApiError::not_found(format!("the item chosen from {} of step {step} has no {field}", self.list))),
         }
     }
+
+    /// The anchors marked in `where`, which the pick compares with.
+    pub fn anchors(&self) -> Vec<Anchor> {
+        let mut found = Vec::new();
+        if let Some(condition) = &self.condition {
+            let _ = change_marked(condition, &mut |anchor| {
+                found.push(anchor.clone());
+                Ok(marked(&anchor))
+            });
+        }
+        found
+    }
+
+    /// This pick with the steps it names by number, its own and those of
+    /// the anchors in its `where`, changed as `renumber` says; `None` when
+    /// one is not there to name.
+    pub fn renumbered(&self, renumber: &impl Fn(u64) -> Option<u64>) -> Option<Pick> {
+        let mut pick = self.clone();
+        if let StepRef::Number(step) = pick.step {
+            pick.step = StepRef::Number(renumber(step)?);
+        }
+        if let Some(condition) = &self.condition {
+            let renumbered = change_marked(condition, &mut |anchor| anchor.renumbered(renumber).map(|anchor| marked(&anchor)).ok_or_else(|| ApiError::not_found("a step not held")));
+            pick.condition = Some(renumbered.ok()?);
+        }
+        Some(pick)
+    }
+}
+
+/// `condition` with each anchor marked in it replaced by what it finds.
+fn resolve_marked(condition: &Map<String, Value>, context: &mut ResolveContext<'_>) -> Result<Map<String, Value>, ApiError> {
+    change_marked(condition, &mut |anchor| anchor.resolve(context))
+}
+
+/// `condition` with each anchor marked in it, at any depth, replaced by
+/// what `change` makes of it. The keys of a condition are paths that may
+/// hold dots, so it is walked here rather than by path.
+fn change_marked(condition: &Map<String, Value>, change: &mut impl FnMut(Anchor) -> Result<Value, ApiError>) -> Result<Map<String, Value>, ApiError> {
+    let mut changed = Map::new();
+    for (key, value) in condition {
+        changed.insert(key.clone(), change_value(key, value, change)?);
+    }
+    Ok(changed)
+}
+
+fn change_value(key: &str, value: &Value, change: &mut impl FnMut(Anchor) -> Result<Value, ApiError>) -> Result<Value, ApiError> {
+    if let Some(anchor) = as_anchor(value) {
+        return change(anchor);
+    }
+    if is_marked(value) {
+        return Err(ApiError::invalid_params(format!("{key} in the where is marked as an anchor but is not one: {}", super::why_not_an_anchor(value))));
+    }
+    Ok(match value {
+        Value::Object(fields) => Value::Object(change_marked(fields, change)?),
+        Value::Array(items) => Value::Array(items.iter().map(|item| change_value(key, item, change)).collect::<Result<_, _>>()?),
+        other => other.clone(),
+    })
+}
+
+/// One step of a pick's list path: a key, an index, a filter of a list's
+/// items, or a key gathered at any depth.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum ListStep {
+    Key(String),
+    Index(usize),
+    /// `[field=value]`: the items whose field is the value.
+    Filter(String, String),
+    /// `..key`: every value called `key`, at any depth.
+    Deep(String),
+}
+
+/// `path` split into its steps, as a pick's `list` is written.
+fn list_path(path: &str) -> Result<Vec<ListStep>, ApiError> {
+    let invalid = |why: &str| {
+        ApiError::invalid_params(format!(
+            "'{path}' is not a list path ({why}); write keys with dots, an index or field=value in brackets, and ..key for a key at any depth, such as job.filesystems[kind=FAT].entries or job..children"
+        ))
+    };
+    let mut steps = Vec::new();
+    let mut characters = path.chars().peekable();
+    let mut first = true;
+    while characters.peek().is_some() {
+        let deep = !first && {
+            if characters.next() != Some('.') {
+                return Err(invalid("a key follows a dot"));
+            }
+            characters.next_if_eq(&'.').is_some()
+        };
+        first = false;
+        let mut key = String::new();
+        while let Some(character) = characters.next_if(|character| *character != '.' && *character != '[') {
+            key.push(character);
+        }
+        match (key.is_empty(), deep) {
+            (false, true) => steps.push(ListStep::Deep(key)),
+            (false, false) => steps.push(ListStep::Key(key)),
+            (true, true) => return Err(invalid("a key follows ..")),
+            (true, false) if characters.peek() != Some(&'[') => return Err(invalid("a key is empty")),
+            (true, false) => {}
+        }
+        while characters.next_if_eq(&'[').is_some() {
+            let inside: String = characters.by_ref().take_while(|character| *character != ']').collect();
+            match inside.split_once('=') {
+                Some((field, value)) if !field.trim().is_empty() => steps.push(ListStep::Filter(field.trim().to_string(), value.trim().to_string())),
+                _ => steps.push(ListStep::Index(inside.trim().parse().map_err(|_| invalid("an index is a number, a filter field=value"))?)),
+            }
+        }
+    }
+    Ok(steps)
+}
+
+/// The items of the list `path` names in `entry`, step `step`'s. A plain
+/// path names one list; one with filters or `..` gathers what it reaches:
+/// the items of each list reached, and each other value reached as an item.
+fn items_at<'a>(entry: &'a Value, path: &str, step: u64) -> Result<Vec<&'a Value>, ApiError> {
+    let steps = list_path(path)?;
+    if steps.iter().all(|step| matches!(step, ListStep::Key(_) | ListStep::Index(_))) {
+        let list = value_at(entry, path)?.ok_or_else(|| ApiError::not_found(format!("step {step} has nothing at {path}")))?;
+        return list.as_array().map(|items| items.iter().collect()).ok_or_else(|| ApiError::invalid_params(format!("{path} of step {step} is not a list")));
+    }
+    let mut reached = vec![entry];
+    for list_step in &steps {
+        let mut next = Vec::new();
+        for value in reached {
+            match (list_step, value) {
+                (ListStep::Key(key), Value::Array(items)) => next.extend(items.iter().filter_map(|item| item.get(key.as_str()))),
+                (ListStep::Key(key), value) => next.extend(value.get(key.as_str())),
+                (ListStep::Index(index), value) => next.extend(value.get(*index)),
+                (ListStep::Filter(field, wanted), Value::Array(items)) => next.extend(items.iter().filter(|item| field_is(item, field, wanted))),
+                (ListStep::Filter(field, wanted), value) => next.extend(field_is(value, field, wanted).then_some(value)),
+                (ListStep::Deep(key), value) => gather(value, key, &mut next),
+            }
+        }
+        reached = next;
+    }
+    let mut items = Vec::new();
+    for value in reached {
+        match value {
+            Value::Array(inner) => items.extend(inner),
+            other => items.push(other),
+        }
+    }
+    Ok(items)
+}
+
+/// Whether `item`'s field at `path` is `wanted`, written as text.
+fn field_is(item: &Value, path: &str, wanted: &str) -> bool {
+    match field_of(item, path) {
+        Some(Value::String(text)) => text == wanted,
+        Some(other) => serde_json::from_str::<Value>(wanted).is_ok_and(|parsed| parsed == *other) || same_value(other, &Value::String(wanted.to_string())),
+        None => false,
+    }
+}
+
+/// Every value called `key` in `value`, at any depth, depth first.
+fn gather<'a>(value: &'a Value, key: &str, found: &mut Vec<&'a Value>) {
+    match value {
+        Value::Object(fields) => {
+            for (name, inner) in fields {
+                if name == key {
+                    found.push(inner);
+                }
+                gather(inner, key, found);
+            }
+        }
+        Value::Array(items) => items.iter().for_each(|item| gather(item, key, found)),
+        _ => {}
+    }
+}
+
+/// A warning when the list at `path` of step `step` is one page of more:
+/// the object holding it has a `next` cursor, so a pick saw only some of
+/// the items.
+fn only_a_page(entry: &Value, path: &str, step: u64) -> Option<String> {
+    let (holder, _) = path.rsplit_once('.')?;
+    let cursor = value_at(entry, holder).ok().flatten()?.get("next").filter(|next| !next.is_null())?;
+    Some(format!(
+        "the pick on {path} of step {step} saw only the first page: {holder} has a next cursor ({cursor}), so items on later pages were not looked at; ask that step for more with a larger limit"
+    ))
 }
 
 /// The value at `path` in `item`, or none.
@@ -191,7 +382,7 @@ pub fn passes(item: &Value, condition: &Map<String, Value>) -> Result<bool, ApiE
             "tag" if wanted.is_string() => has_tag(item, wanted),
             path => match wanted {
                 Value::Object(tests) => passes_tests(field_of(item, path), path, tests)?,
-                literal => field_of(item, path) == Some(literal),
+                literal => field_of(item, path).is_some_and(|value| same_value(value, literal)),
             },
         };
         if !holds {
@@ -216,7 +407,7 @@ fn has_tag(item: &Value, tag: &Value) -> bool {
 fn passes_tests(value: Option<&Value>, path: &str, tests: &Map<String, Value>) -> Result<bool, ApiError> {
     for (test, wanted) in tests {
         let holds = match test.as_str() {
-            "equals" => value == Some(wanted),
+            "equals" => value.is_some_and(|value| same_value(value, wanted)),
             "regex" => {
                 let pattern = wanted.as_str().ok_or_else(|| ApiError::invalid_params(format!("the regex for {path} is not text")))?;
                 let regex = regex_lite::Regex::new(pattern).map_err(|error| ApiError::invalid_params(format!("the regex for {path}, /{pattern}/, does not read: {error}")))?;
@@ -228,7 +419,7 @@ fn passes_tests(value: Option<&Value>, path: &str, tests: &Map<String, Value>) -
                 _ => false,
             },
             "min" | "max" => {
-                let bound = wanted.as_f64().ok_or_else(|| ApiError::invalid_params(format!("the {test} for {path} is not a number")))?;
+                let bound = number_of(wanted).ok_or_else(|| ApiError::invalid_params(format!("the {test} for {path} is {wanted}, which is not a number")))?;
                 match value.and_then(number_of) {
                     Some(number) if test == "min" => number >= bound,
                     Some(number) => number <= bound,
@@ -242,6 +433,13 @@ fn passes_tests(value: Option<&Value>, path: &str, tests: &Map<String, Value>) -
         }
     }
     Ok(true)
+}
+
+/// Whether a field's value is the value wanted: equal, or both numbers
+/// (or text that reads as one) of the same size, so a field shown as
+/// `0x10` is 16.
+fn same_value(value: &Value, wanted: &Value) -> bool {
+    value == wanted || number_of(value).zip(number_of(wanted)).is_some_and(|(value, wanted)| value == wanted)
 }
 
 /// A field's value as a number: a number, or text that reads as an integer.
@@ -263,16 +461,17 @@ pub fn describe_condition(condition: &Map<String, Value>) -> String {
                 format!("({})", joined.join(if key == "all" { " and " } else { " or " }))
             }
             ("tag", Value::String(tag)) => format!("tagged {tag}"),
+            (path, value) if is_marked(value) => format!("{path} is {}", describe_value(value)),
             (path, Value::Object(tests)) => {
                 let tests: Vec<String> = tests
                     .iter()
                     .map(|(test, value)| match (test.as_str(), value) {
                         ("regex", Value::String(pattern)) => format!("{path} matches /{pattern}/"),
-                        ("equals", value) => format!("{path} is {value}"),
-                        ("contains", value) => format!("{path} contains {value}"),
-                        ("min", value) => format!("{path} is at least {value}"),
-                        ("max", value) => format!("{path} is at most {value}"),
-                        (test, value) => format!("{path} {test} {value}"),
+                        ("equals", value) => format!("{path} is {}", describe_value(value)),
+                        ("contains", value) => format!("{path} contains {}", describe_value(value)),
+                        ("min", value) => format!("{path} is at least {}", describe_value(value)),
+                        ("max", value) => format!("{path} is at most {}", describe_value(value)),
+                        (test, value) => format!("{path} {test} {}", describe_value(value)),
                     })
                     .collect();
                 tests.join(" and ")
@@ -283,11 +482,18 @@ pub fn describe_condition(condition: &Map<String, Value>) -> String {
     parts.join(" and ")
 }
 
+/// A value of a condition in words: an anchor marked there as what it
+/// finds, any other value as JSON.
+fn describe_value(value: &Value) -> String {
+    as_anchor(value).map_or_else(|| value.to_string(), |anchor| anchor.describe())
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
 
     use super::*;
+    use crate::api::Workspace;
 
     fn condition(value: Value) -> Map<String, Value> {
         value.as_object().unwrap().clone()
@@ -308,6 +514,81 @@ mod tests {
         assert!(!passes(&serial, &condition(json!({"all": [{"tag": "serial"}, {"offset": 0}]}))).unwrap());
         let unknown = passes(&serial, &condition(json!({"text": {"like": "NC%"}}))).unwrap_err();
         assert!(unknown.message.contains("'like' is not a test"), "{}", unknown.message);
+    }
+
+    /// Resolve `pick` against earlier steps `done`, with `reply` bound to 1406 and `seq` to
+    /// "0x2a"; what it chose and the warnings.
+    fn pick_from(done: &std::collections::BTreeMap<u64, Value>, pick: Value) -> (Result<Value, ApiError>, Vec<String>) {
+        let mut workspace = crate::api::test_support::workspace_with("a.bin", b"abc");
+        workspace.journal_mut().bind_variable("reply", json!(1406), Some(1));
+        workspace.journal_mut().bind_variable("seq", json!("0x2a"), Some(1));
+        let sheets = RunSheets::on("doc-1");
+        let parameters = std::collections::BTreeMap::new();
+        let mut context = ResolveContext { workspace: &mut workspace, doc: None, steps: done, parameters: &parameters, sheets: &sheets, warnings: Vec::new() };
+        let pick: Pick = serde_json::from_value(pick).unwrap();
+        let chosen = pick.resolve(&mut context);
+        (chosen, context.warnings)
+    }
+
+    #[test]
+    fn the_unlock_request_is_picked_by_the_sequence_number_its_reply_carries() {
+        let packets = json!([
+            {"index": 917, "template": {"type": 60, "seq": 41}},
+            {"index": 1405, "template": {"type": 60, "seq": 42}},
+            {"index": 1406, "template": {"type": 61, "seq": 42}},
+            {"index": 1425, "template": {"type": 60, "seq": 43}},
+        ]);
+        let done = std::collections::BTreeMap::from([(4, json!({"params": {}, "result": {"packets": packets}}))]);
+        let by_seq = json!({"step": 4, "list": "result.packets", "where": {"template.seq": {"$var": "seq"}, "template.type": 60}, "field": "index"});
+        assert_eq!(pick_from(&done, by_seq).0.unwrap(), json!(1405), "the variable's 0x2a is the field's 42");
+        let before_reply = json!({"step": 4, "list": "result.packets", "where": {"index": {"max": {"$var": "reply"}}}, "sort": {"by": "index", "order": "descending"}, "nth": 1, "field": "index"});
+        assert_eq!(pick_from(&done, before_reply).0.unwrap(), json!(1405));
+        let unbound = pick_from(&done, json!({"step": 4, "list": "result.packets", "where": {"index": {"$var": "missing"}}})).0.unwrap_err();
+        assert!(unbound.message.contains("no value is bound to $missing"), "{}", unbound.message);
+        let condition = json!({"template.seq": {"$var": "seq"}});
+        assert_eq!(describe_condition(condition.as_object().unwrap()), "template.seq is the variable $seq");
+    }
+
+    #[test]
+    fn an_entry_is_picked_from_the_fat_volume_whatever_its_place_among_the_volumes() {
+        let filesystems = json!([
+            {"kind": "NTFS", "entries": [{"path": "/pagefile.sys", "deleted": false}]},
+            {"kind": "FAT", "entries": [{"path": "/notes.txt", "deleted": false}, {"path": "/IMG_0001.JPG", "deleted": true}]},
+        ]);
+        let done = std::collections::BTreeMap::from([(2, json!({"params": {}, "result": {"job": "find-1"}, "job": {"filesystems": filesystems}}))]);
+        let deleted = json!({"step": 2, "list": "job.filesystems[kind=FAT].entries", "where": {"deleted": true}, "field": "path"});
+        assert_eq!(pick_from(&done, deleted).0.unwrap(), json!("/IMG_0001.JPG"));
+        let none = pick_from(&done, json!({"step": 2, "list": "job.filesystems[kind=exFAT].entries"})).0.unwrap_err();
+        assert!(none.message.contains("none of the 0 items"), "{}", none.message);
+        let unclosed = pick_from(&done, json!({"step": 2, "list": "job.filesystems[kind=FAT]..", "field": "path"})).0.unwrap_err();
+        assert!(unclosed.message.contains("is not a list path"), "{}", unclosed.message);
+    }
+
+    #[test]
+    fn a_file_is_picked_from_an_unpacked_tree_at_any_depth() {
+        let tree = json!({"name": "/", "children": [
+            {"name": "bin", "children": [{"name": "busybox", "path": "bin/busybox"}, {"name": "novacamd", "path": "bin/novacamd"}]},
+            {"name": "etc", "children": [{"name": "deep", "children": [{"name": "config.enc", "path": "etc/deep/config.enc"}]}]},
+        ]});
+        let done = std::collections::BTreeMap::from([(5, json!({"params": {}, "result": {"job": "unpack-1"}, "job": tree}))]);
+        let daemon = json!({"step": 5, "list": "job..children", "where": {"name": "novacamd"}, "field": "path"});
+        assert_eq!(pick_from(&done, daemon).0.unwrap(), json!("bin/novacamd"));
+        let config = json!({"step": 5, "list": "job..children", "where": {"name": {"regex": "\\.enc$"}}, "field": "path"});
+        assert_eq!(pick_from(&done, config).0.unwrap(), json!("etc/deep/config.enc"));
+    }
+
+    #[test]
+    fn a_pick_over_one_page_of_records_warns_that_later_pages_were_not_looked_at() {
+        let done = std::collections::BTreeMap::from([
+            (3, json!({"params": {}, "result": {"records": [{"action": "sync"}, {"action": "delete"}], "next": "100"}})),
+            (4, json!({"params": {}, "result": {"records": [{"action": "delete"}], "next": null}})),
+        ]);
+        let (chosen, warnings) = pick_from(&done, json!({"step": 3, "list": "result.records", "where": {"action": "delete"}}));
+        assert_eq!(chosen.unwrap(), json!({"action": "delete"}));
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].starts_with("the pick on result.records of step 3 saw only the first page"), "{}", warnings[0]);
+        let (_, last_page) = pick_from(&done, json!({"step": 4, "list": "result.records"}));
+        assert!(last_page.is_empty(), "the last page has no next cursor");
     }
 
     #[test]

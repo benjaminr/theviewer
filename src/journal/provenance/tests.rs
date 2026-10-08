@@ -152,7 +152,7 @@ fn a_finding_is_counted_among_those_whose_id_starts_like_its_own() {
 fn resolved(workspace: &mut dyn Workspace, anchor: &Anchor) -> Value {
     let (steps, parameters) = (BTreeMap::new(), BTreeMap::new());
     let sheets = anchors::RunSheets::default();
-    let mut context = anchors::ResolveContext { workspace, doc: None, steps: &steps, parameters: &parameters, sheets: &sheets };
+    let mut context = anchors::ResolveContext { workspace, doc: None, steps: &steps, parameters: &parameters, sheets: &sheets, warnings: Vec::new() };
     anchor.resolve(&mut context).unwrap()
 }
 

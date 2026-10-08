@@ -475,13 +475,9 @@ impl ParameterType {
 }
 
 /// `anchor` and every anchor inside it, outermost first: a then anchor's
-/// value comes from the anchor it transforms.
+/// value comes from the anchor it transforms and its operands.
 fn inside(anchor: &Anchor) -> Vec<Anchor> {
-    let mut all = vec![anchor.clone()];
-    if let Anchor::Then { of, .. } = anchor {
-        all.extend(inside(of));
-    }
-    all
+    anchor.within()
 }
 
 /// "1.x" for "1.0": a recipe runs on any API of the same major version.

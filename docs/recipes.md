@@ -285,7 +285,9 @@ Two shorthands mark the commonest anchors: `{"$var": "serial"}` is
 `{"$anchor": {"var": "serial"}}`, and `{"$sheet": 7}` or `{"$sheet":
 "payload"}` is a sheet anchor. A value marked with `$anchor`, `$var` or
 `$sheet` that is not an anchor is refused rather than passed on as a
-literal.
+literal, and the refusal says what is wrong with it: a then anchor without
+`then`, an operation it does not know (with those there are), a `part` that
+is not one.
 
 ### Anchors at call time
 
@@ -351,9 +353,15 @@ in the recipe, is a mistake the recipe's warnings point out.
 The `nth` match (from 0, the default) of the bytes (`hex`) or UTF-8 text
 (`text`), searching the whole document from its start, overlapping matches
 included, as `search.find_all` counts them. `part` gives the match's
-offset (`"offset"`, the default), its length (`"len"`), or the match as a
-range, `{"range": [offset, len]}` (`"value"`), as `selection.set` and the
-edits take it.
+offset (`"offset"`, the default), its length (`"len"`), where it ends
+(`"end"`: its offset plus its length, the first byte after it), or the
+match as a range, `{"range": [offset, len]}` (`"value"`), as
+`selection.set` and the edits take it. `"end"` finds what follows a
+marker without writing the marker's length into the recipe:
+
+```json
+{ "find": { "text": "\"payload_b64\": \"" }, "part": "end" }
+```
 
 ### Structure: a field of a parsed structure
 
@@ -367,6 +375,18 @@ edits take it.
 the one that parser recognises at offset 0 of the document, or else the
 first found among the document's findings in its first 16 MiB.
 
+`template:` and a template's name, such as `template:ncupd`, names the
+template pinned over the document with `templates.apply {pin: true}` (or
+`templates.infer`), so a header read by a template written for the file is
+read by field name, as a parser's is:
+
+```json
+{ "structure": "template:ncupd", "field": "Ncupd.record_len", "part": "value" }
+```
+
+The name is matched without regard to case; a document with no template
+pinned, or another one, does not resolve.
+
 `field` is the field names from the structure's root, joined with dots.
 When siblings share a name, the second and later are written `name[n]`,
 counting from 0 (`IDAT[1]` is the second `IDAT`). As a shorthand the first
@@ -374,9 +394,10 @@ name may be one at any depth: `IHDR.width` finds the first field called
 `IHDR`, depth first, then its child `width`. Names may hold spaces
 (`bit depth`).
 
-`part` gives the field's offset (the default), its length (`"len"`), or its
-value (`"value"`): a number when the parser's text for it reads as an
-integer (decimal or `0x` hex), otherwise that text.
+`part` gives the field's offset (the default), its length (`"len"`), where
+it ends (`"end"`, its offset plus its length), or its value (`"value"`): a
+number when the parser's text for it reads as an integer (decimal or `0x`
+hex), otherwise that text.
 
 ### Finding: a span something recognised
 
@@ -393,7 +414,7 @@ part after its kind does (`image/png` finds `signature:image/png`). The
 Findings list and `findings.query` show each finding's id; a zlib or other
 compressed stream is `compressed-streams`, so the category `compressed`
 finds it. Give `category`, `id` or both. `part` gives the finding's start (the default), its length,
-or `{"range": [start, len]}`.
+where it ends (`"end"`), or `{"range": [start, len]}`.
 
 ### Selection: what is selected when the step runs
 
@@ -404,7 +425,7 @@ or `{"range": [start, len]}`.
 
 What is selected in the step's document when the step runs, as
 `selection.set` takes it (the default, and `"value"`), or its first range's
-start (`"offset"`) or length (`"len"`). Nothing selected stops the run.
+start (`"offset"`), length (`"len"`) or end (`"end"`). Nothing selected stops the run.
 In a recipe that selects bytes in an earlier step, this is what that step
 selected.
 
@@ -453,7 +474,9 @@ step, and the anchors to be found in it with it.
 ```json
 { "pick": { "step": 5, "list": "job.strings", "where": { "text": { "regex": "^NC500-[0-9A-F]{8}$" } }, "field": "text" } }
 { "pick": { "step": 9, "list": "result.candidates", "where": { "key": { "regex": "^([0-9a-f]{2}){1,8}$" } }, "field": "key" } }
-{ "pick": { "step": "@rootfs", "list": "job.children", "where": { "name": { "equals": "config.enc" } }, "field": "path" } }
+{ "pick": { "step": "@rootfs", "list": "job..children", "where": { "name": "novacamd" }, "field": "path" } }
+{ "pick": { "step": 3, "list": "job.filesystems[kind=FAT].entries", "where": { "deleted": true, "path": { "regex": "\\.jpe?g$" } }, "field": "path" } }
+{ "pick": { "step": 12, "list": "result.packets", "where": { "template.type": 60, "template.seq": { "$var": "reply_seq" } }, "field": "index" } }
 ```
 
 An item of a list in what an earlier step was given or returned, chosen by
@@ -463,12 +486,27 @@ another length or order:
 - `step` is the earlier step, by number, or as `"@label"` for the step that
   made the sheet labelled so;
 - `list` is the list's path in the step's `{"params", "result", "job"}`, as
-  a step anchor's path is written (`job.strings`, `result.candidates`);
+  a step anchor's path is written (`job.strings`, `result.candidates`).
+  Two more forms find a list wherever it is:
+  - `[field=value]` keeps, of a list on the way, the items whose field is
+    that value, so `job.filesystems[kind=FAT].entries` is the entries of
+    the FAT volume, whichever place it has among the volumes (of every
+    FAT volume, when there are several);
+  - `..key` gathers every value called `key` at any depth, so
+    `job..children` is every node of an unpacked tree below its root,
+    however deep the directories go.
+
+  What such a path reaches is one list: the items of each list it reaches,
+  and each other value it reaches as an item;
 - `where` keeps the items that pass: each key a field of the item (a path)
   with a test, `regex`, `equals`, `contains` (text or a list), `min` or
   `max`, every test given holding, or a value the field equals; `tag` a
   tag the item has (its `tag`, or one of its `tags`); `all` and `any`
-  lists of such conditions. Every item when omitted;
+  lists of such conditions. Every item when omitted. A value or bound may
+  be an anchor, marked as in a step's params (`{"$var": "seq"}`,
+  `{"$anchor": {"step": 4, "path": "result.at"}}`), which is resolved
+  first. A field and a value are the same when they are equal or read as
+  the same number, so a field shown as `0x2a` is 42;
 - `sort` orders those kept, `{"by": "score", "order": "descending"}`
   (ascending when `order` is omitted), before `nth` (from 0) chooses one;
 - `field` is the value to give inside the chosen item; the whole item when
@@ -477,6 +515,12 @@ another length or order:
 A pick that keeps no item, or fewer than `nth + 1`, does not resolve and
 says how many passed. In a preview, a pick waits for its step as a step
 anchor does.
+
+A list that is one page of more, whose holder has a `next` cursor (as
+`templates.apply`'s `result.records` has past its `limit`), may not hold
+the item wanted. A pick on it still resolves, with a warning in the step's
+report and the run's warnings that it saw only the first page; ask the step
+for more with a larger `limit`.
 
 ### Then: a value transformed
 
@@ -491,12 +535,34 @@ What the anchor `of` finds, through each operation of `then` in turn:
 | Operation | Gives |
 | --- | --- |
 | `{"add": 16}`, `{"sub": 4}`, `{"mul": 512}` | the integer (or text read as one) plus, minus or times the number |
+| `{"div": 8}`, `{"mod": 16}` | the integer divided by the number, the remainder dropped, or that remainder |
 | `{"and": 255}` | the integer with only the mask's bits kept |
+| `{"hex": 2}` | the integer as hex digits, without `0x`, zero-padded to at least that many: 10 is `"0a"` |
 | `{"encode": "text_to_hex"}` | text as the hex of its UTF-8 bytes: `"NC5"` is `"4e4335"` |
 | `{"encode": "hex_to_text"}` | hex as the UTF-8 text its bytes spell |
 | `"int"` | text read as an integer, decimal or `0x` hex |
 | `{"slice": [start]}`, `{"slice": [start, len]}` | part of a text (by characters) or a list |
 | `"len"` | the length of a text (in characters) or a list |
+| `{"match": "password: (\\S+)"}` | what the regex matches in a text: its first group, or the whole match when it has none; `{"match": {"regex": "…", "group": 2}}` names the group (0 is the whole match) |
+| `{"after": "password: "}`, `{"before": ","}` | the text after, or before, the first occurrence of the text |
+| `{"split": [",", 1]}` | the piece of a text at that index when cut at each separator, counting from 0 (from the end when negative); `{"split": ","}` every piece, as a list |
+| `{"format": "FLAG{{{}}}"}` | the value written into a text at `{}` (or `{0}`), with `{{` and `}}` for braces; `{"format": {"text": "{0}-{1}", "with": [ANCHOR]}}` writes what the anchors of `with` find at `{1}` onwards |
+
+The number `add`, `sub`, `mul`, `div` and `mod` take may be an anchor,
+written bare as `of` is, whose value is read as an integer when the
+operation runs. The length of what lies between two markers is then one
+anchor less another, with nothing counted by hand:
+
+```json
+{ "of": { "find": { "text": "ENDCRED" } }, "then": [ { "sub": { "find": { "text": "CREDTBL\u0000" }, "part": "end" } } ] }
+```
+
+The steps and variables an operand reads are cited as the anchor's own
+are: a recipe made from the session keeps the steps they name, and
+renumbers them.
+
+A text operation on a value that is not text, a regex that does not match,
+or a marker that does not occur, does not resolve, saying so.
 
 ### Var: a variable
 
