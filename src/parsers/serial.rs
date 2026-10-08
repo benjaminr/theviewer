@@ -458,6 +458,81 @@ fn json_value_len(bytes: &[u8]) -> Option<usize> {
     None
 }
 
+/// Deepest nesting of JSON values walked into fields.
+const MAX_JSON_DEPTH: usize = 32;
+
+/// `at` moved past any JSON white space.
+fn skip_json_space(bytes: &[u8], mut at: usize) -> usize {
+    while bytes.get(at).is_some_and(|byte| matches!(byte, b' ' | b'\t' | b'\r' | b'\n')) {
+        at += 1;
+    }
+    at
+}
+
+/// Where the JSON string opening at `bytes[at]` ends, after its closing quote.
+fn json_string_end(bytes: &[u8], at: usize) -> Option<usize> {
+    let mut escaped = false;
+    for (index, &byte) in bytes.iter().enumerate().skip(at + 1) {
+        match byte {
+            _ if escaped => escaped = false,
+            b'\\' => escaped = true,
+            b'"' => return Some(index + 1),
+            _ => {}
+        }
+    }
+    None
+}
+
+/// The JSON value at `bytes[at]` as a field named `name`, and where it
+/// ends: an object's members are its children by key, an array's elements
+/// its children named `item`, and a string's span leaves out its quotes.
+fn json_value(bytes: &[u8], at: usize, base: usize, name: &str, depth: usize) -> Option<(usize, Field)> {
+    let text = |from: usize, to: usize| String::from_utf8_lossy(&bytes[from..to]).into_owned();
+    match *bytes.get(at)? {
+        b'"' => {
+            let end = json_string_end(bytes, at)?;
+            Some((end, Field::new(name, base + at + 1, end - at - 2, text(at + 1, end - 1))))
+        }
+        open @ (b'{' | b'[') if depth < MAX_JSON_DEPTH => {
+            let close = if open == b'{' { b'}' } else { b']' };
+            let mut children = Vec::new();
+            let mut position = skip_json_space(bytes, at + 1);
+            if bytes.get(position) != Some(&close) {
+                loop {
+                    let (member, value_at) = if open == b'{' {
+                        if bytes.get(position) != Some(&b'"') {
+                            return None;
+                        }
+                        let key_end = json_string_end(bytes, position)?;
+                        let colon = skip_json_space(bytes, key_end);
+                        if bytes.get(colon) != Some(&b':') {
+                            return None;
+                        }
+                        (text(position + 1, key_end - 1), skip_json_space(bytes, colon + 1))
+                    } else {
+                        ("item".to_string(), position)
+                    };
+                    let (end, child) = json_value(bytes, value_at, base, &member, depth + 1)?;
+                    children.push(child);
+                    position = skip_json_space(bytes, end);
+                    match bytes.get(position) {
+                        Some(b',') => position = skip_json_space(bytes, position + 1),
+                        Some(&byte) if byte == close => break,
+                        _ => return None,
+                    }
+                }
+            }
+            let end = position + 1;
+            let summary = if open == b'{' { format!("{} members", children.len()) } else { format!("{} items", children.len()) };
+            Some((end, Field::new(name, base + at, end - at, summary).with_children(children)))
+        }
+        _ => {
+            let end = (at..bytes.len()).find(|&index| matches!(bytes[index], b',' | b'}' | b']' | b' ' | b'\t' | b'\r' | b'\n')).unwrap_or(bytes.len());
+            (end > at).then(|| (end, Field::new(name, base + at, end - at, text(at, end))))
+        }
+    }
+}
+
 pub struct JsonParser;
 
 impl Parser for JsonParser {
@@ -483,11 +558,13 @@ impl Parser for JsonParser {
         }
         let text = std::str::from_utf8(&bytes[..len]).ok()?;
         let confidence = if len >= 64 { 0.9 } else { 0.7 };
+        let fields = json_value(&bytes[..len], 0, base, "value", 0).map(|(_, root)| root.children).unwrap_or_default();
         Some(
             Finding::new("json", SOURCE, Category::Encoding, base, len)
                 .title("JSON document")
                 .detail(format!("{len} bytes: {}", text_preview(text.as_bytes(), 60)))
-                .confidence(confidence),
+                .confidence(confidence)
+                .fields(fields),
         )
     }
 }
@@ -806,6 +883,24 @@ mod tests {
         let finding = XmlParser.parse(xml, 0).expect("xml");
         assert_eq!(finding.len, xml.len() - 4);
         assert!(finding.confidence > 0.9);
+    }
+
+    #[test]
+    fn a_json_documents_members_are_fields_a_structure_anchor_can_name() {
+        let json = br#"{"stage": 2, "payload_b64": "SGVsbG8=", "cfg": {"port": 8443, "hosts": ["a.example", "b.example"]}}"#;
+        let finding = JsonParser.parse(json, 100).expect("json");
+        let names: Vec<&str> = finding.fields.iter().map(|field| field.name.as_str()).collect();
+        assert_eq!(names, ["stage", "payload_b64", "cfg"]);
+        let payload = &finding.fields[1];
+        let at = json.windows(8).position(|window| window == b"SGVsbG8=").unwrap();
+        assert_eq!((payload.offset, payload.len, payload.value.as_str()), (100 + at, 8, "SGVsbG8="), "the value's span leaves out its quotes");
+        assert_eq!(finding.fields[0].value, "2");
+        let cfg = &finding.fields[2];
+        assert_eq!((cfg.children[0].name.as_str(), cfg.children[0].value.as_str()), ("port", "8443"));
+        let hosts = &cfg.children[1];
+        assert_eq!(hosts.children.iter().map(|host| host.value.as_str()).collect::<Vec<_>>(), ["a.example", "b.example"]);
+        let named = crate::journal::provenance::named_fields(&finding);
+        assert!(named.iter().any(|(name, field)| name == "cfg.port" && field.value == "8443"), "{:?}", named.iter().map(|(name, _)| name).collect::<Vec<_>>());
     }
 
     #[test]
