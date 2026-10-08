@@ -356,11 +356,13 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   says where the first message is rather than "the first gap is at 0x0".
 - `analysis.overview` headlines a file that starts with a partition table
   as a disk image ("Disk image: MBR partition table, FAT16 boot sector,
-  holding …"), and a raw dump of framed messages as such, not as machine
-  code.
+  holding …"), and a raw dump of frames headed by a sync word as framed
+  messages, not as machine code.
 - `templates.infer` reads a timestamp the detectors find in the records as
   one time field, and a span that ends inside a record (a finding's) as
-  that record whole.
+  that record whole. It also reads a NUL-padded name to the end of its
+  padding, a column of a few values as a `kind` and a varying number below
+  2^24 as a u32.
 
 ### Fixed
 
