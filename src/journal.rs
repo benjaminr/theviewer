@@ -17,6 +17,8 @@
 //!   sequence as the steps. A later step that used a value a read returned
 //!   cites it as provenance, and [`promote`] moves the read into the journal
 //!   under its own step number, so `{"step": 12, "path": …}` stays valid.
+//!   A read a note cites is moved in as evidence ([`promote_as_evidence`]),
+//!   which recipes leave out unless an anchor cites it.
 //! * **Not** calls made inside another call (a transaction's, or those a
 //!   plugin method makes while it runs): the outer call is the step.
 //!   Not the app's own work either, which does not go through the API.
@@ -223,6 +225,11 @@ pub struct JournalEntry {
     /// a recipe names them by this step.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub made: Vec<String>,
+    /// Whether it is a read moved into the journal only because a note
+    /// cites it: evidence the reasoning rests on, not a step of the
+    /// analysis, so recipes leave it out unless an anchor cites it.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub evidence: bool,
 }
 
 fn is_false(value: &bool) -> bool {
@@ -685,14 +692,15 @@ impl Journal {
     }
 
     /// Move the read numbered `step` from the ring into the journal, with
-    /// `description`, keeping its number. Returns the entry, or `None` when
-    /// no such read is held.
-    fn promote_read(&mut self, step: u64, description: String) -> Option<&JournalEntry> {
+    /// `description`, keeping its number, as `evidence` when only a note
+    /// cites it. Returns the entry, or `None` when no such read is held.
+    fn promote_read(&mut self, step: u64, description: String, evidence: bool) -> Option<&JournalEntry> {
         let index = self.reads.iter().position(|read| read.entry.step == step)?;
         let read = self.reads.remove(index)?;
         self.reads_bytes = self.reads_bytes.saturating_sub(read.size);
         let mut entry = read.entry;
         entry.description = description;
+        entry.evidence = evidence;
         let held = Held::new(entry);
         self.bytes += held.size;
         let at = self.entries.partition_point(|entry| entry.entry.step < step);
@@ -702,6 +710,15 @@ impl Journal {
         self.trim();
         self.revision += 1;
         self.entry(step)
+    }
+
+    /// Make the evidence read `step` a step of the analysis, now that a
+    /// later step used a value it returned.
+    fn rely_on(&mut self, step: u64) {
+        if let Some(entry) = self.entry_mut(step).filter(|entry| entry.evidence) {
+            entry.evidence = false;
+            self.revision += 1;
+        }
     }
 
     fn take_step(&mut self) -> u64 {
@@ -860,6 +877,7 @@ pub(crate) fn begin(workspace: &mut dyn Workspace, caller: &Caller, method: &Met
         note: None,
         notes: Vec::new(),
         made: Vec::new(),
+        evidence: false,
     });
     // A read is about its document once it has succeeded, and is described
     // only if promoted: most never are, and only steps can be undone, so
@@ -972,15 +990,35 @@ pub fn with_provenance<W: Workspace + ?Sized, T>(workspace: &mut W, derived_from
 
 /// Move the recent read numbered `step` into the journal, because a later
 /// step used a value it returned, and publish it. Returns whether `step`
-/// is now in the journal (it may already have been).
+/// is now in the journal (it may already have been, as evidence a note
+/// cites, which it is no longer only).
 pub fn promote(workspace: &mut dyn Workspace, step: u64) -> bool {
+    let promoted = move_into_journal(workspace, step, false);
+    if promoted {
+        workspace.journal_mut().rely_on(step);
+    }
+    promoted
+}
+
+/// Move the recent read numbered `step` into the journal as evidence,
+/// because a note cites it: the History tab and the notes show it, and
+/// recipes leave it out unless an anchor cites it. Returns whether `step`
+/// is now in the journal (it may already have been, as a step or as
+/// evidence).
+pub fn promote_as_evidence(workspace: &mut dyn Workspace, step: u64) -> bool {
+    move_into_journal(workspace, step, true)
+}
+
+/// Move the recent read numbered `step` into the journal, as `evidence`
+/// or not, and publish it; whether `step` is now in the journal.
+fn move_into_journal(workspace: &mut dyn Workspace, step: u64, evidence: bool) -> bool {
     if workspace.journal().entry(step).is_some() {
         return true;
     }
     let Some(read) = workspace.journal().read(step) else { return false };
     let (method, params) = (read.method.clone(), read.params.clone());
     let description = cut_to_a_line(api::describe_call(workspace, &method, &params));
-    if workspace.journal_mut().promote_read(step, description).is_none() {
+    if workspace.journal_mut().promote_read(step, description, evidence).is_none() {
         return false;
     }
     publish(workspace, step);

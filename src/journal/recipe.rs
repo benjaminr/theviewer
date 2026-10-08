@@ -519,6 +519,7 @@ mod tests {
             note: None,
             notes: Vec::new(),
             made: Vec::new(),
+            evidence: false,
         }
     }
 

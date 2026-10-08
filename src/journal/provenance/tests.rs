@@ -29,6 +29,7 @@ fn entry(step: u64, method: &str, params: Value, derived_from: DerivedFrom) -> J
         note: None,
         notes: Vec::new(),
         made: Vec::new(),
+        evidence: false,
     }
 }
 

@@ -5,15 +5,18 @@
 //! The tab follows the journal by its revision (a read promoted into the
 //! journal takes an earlier number, so following by the last step alone
 //! would miss it), and lists each step with its caller, its description
-//! and marks: bytes changed, failed or refused, merged moves, undone. A
+//! (sheets by label, sets by name: [`notes::Names`]) and marks: bytes
+//! changed, failed or refused, merged moves, undone, and evidence (a read
+//! kept because a note cites it, dimmed, which recipes leave out). A
 //! step clicked shows its parameters, result and how it would be undone,
 //! with the bytes it touched a click away, and the literals a recipe would
 //! repeat, each of which can become an anchor or a named parameter.
 //!
 //! Notes written into the history (`history.note`) are shown among the
-//! steps as cards of their own: who wrote one, when, and its text, in which
-//! `#12` is a link to step 12. The box at the foot of the tab writes one;
-//! each step's *Note* button starts one about it. A note card can be
+//! steps as cards of their own: who wrote one, when, its kind and its text,
+//! in which `#12` is a link to step 12. The box at the foot of the tab
+//! writes one, of the kind chosen beside it; each step's *Note* button
+//! starts one about it. A note card can be
 //! edited or deleted, and steps with notes linked to them link back.
 //!
 //! Everything the person does here is a method call as the panel:
@@ -32,7 +35,7 @@ use serde_json::{Value, json};
 
 use crate::api::ErrorCode;
 use crate::app::ViewerApp;
-use crate::journal::notes::{self, Note, Segment};
+use crate::journal::notes::{self, Names, Note, NoteKind, Segment};
 use crate::journal::provenance::{self, LiteralSuggestions};
 use crate::journal::timeline::{self, Inverse, Playback, StepStatus, Timeline};
 use crate::journal::{JournalEntry, Outcome};
@@ -108,16 +111,18 @@ pub struct Row {
     pub note: Option<Note>,
     /// The notes linked to it: each one's step and text.
     pub noted_by: Vec<(u64, String)>,
+    /// Whether it is a read kept only because a note cites it.
+    pub evidence: bool,
 }
 
 impl Row {
-    fn of(entry: &JournalEntry, status: StepStatus, noted_by: Vec<(u64, String)>) -> Row {
+    fn of(entry: &JournalEntry, names: &Names, status: StepStatus, noted_by: Vec<(u64, String)>) -> Row {
         let error = match &entry.outcome {
             Outcome::Ok => None,
             Outcome::Error(error) => Some(error.message.clone()),
         };
         let refused = matches!(&entry.outcome, Outcome::Error(error) if error.code == ErrorCode::ReadOnly);
-        let description = if entry.description.is_empty() { entry.method.clone() } else { entry.description.clone() };
+        let description = names.describe(entry);
         Row {
             step: entry.step,
             caller: entry.caller.clone(),
@@ -131,6 +136,7 @@ impl Row {
             at: entry.at.clone(),
             note: entry.note.clone(),
             noted_by,
+            evidence: entry.evidence,
         }
     }
 
@@ -240,6 +246,8 @@ pub struct HistoryState {
     pub message: Option<String>,
     /// The note being written in the box at the foot of the tab.
     pub note_draft: String,
+    /// The kind of note the box writes.
+    pub note_kind: NoteKind,
     /// Put the cursor in the note box on the next frame.
     focus_note_box: bool,
     /// The note being edited in its card.
@@ -276,6 +284,7 @@ impl Default for HistoryState {
             playback: None,
             message: None,
             note_draft: String::new(),
+            note_kind: NoteKind::default(),
             focus_note_box: false,
             editing: None,
             scroll_to: None,
@@ -294,13 +303,14 @@ impl HistoryState {
         }
         self.seen_revision = Some(revision);
         let timeline = Timeline::of(&app.journal);
+        let names = Names::of(&app.journal);
         let mut noted = app.journal.notes_by_step();
         self.rows = app
             .journal
             .entries()
             .map(|entry| {
                 let noted_by = noted.remove(&entry.step).unwrap_or_default().into_iter().map(|note| (note.step, note.text)).collect();
-                Row::of(entry, timeline.status(entry.step).unwrap_or(StepStatus::Active), noted_by)
+                Row::of(entry, &names, timeline.status(entry.step).unwrap_or(StepStatus::Active), noted_by)
             })
             .collect();
         self.undone = self.rows.iter().filter(|row| row.is_undone()).count();
@@ -493,6 +503,7 @@ fn show_note_card(state: &mut HistoryState, app: &mut ViewerApp, ui: &mut Ui, ro
         ui.horizontal(|ui| {
             ui.label(RichText::new(format!("{:>4}", row.step)).monospace().small().color(theme::TEXT_DIM));
             ui.label(RichText::new("note").small().strong().color(theme::CURSOR));
+            ui.label(RichText::new(note.kind.name()).small().color(kind_colour(note.kind)));
             ui.label(RichText::new(&row.caller).small().color(theme::ACCENT));
             ui.label(RichText::new(time_of_day(&row.at)).small().color(theme::TEXT_DIM)).on_hover_text(&row.at);
             if let (Some(at), Some(by)) = (&note.edited_at, &note.edited_by) {
@@ -592,6 +603,11 @@ fn show_note_box(state: &mut HistoryState, app: &mut ViewerApp, ui: &mut Ui) {
     let mut add = added_by_key;
     ui.horizontal(|ui| {
         add |= ui.add_enabled(!state.note_draft.trim().is_empty(), egui::Button::new("Add note")).on_hover_text("Add the note to the history here (Cmd+Enter)").clicked();
+        egui::ComboBox::from_id_salt("history-note-kind").selected_text(state.note_kind.name()).show_ui(ui, |ui| {
+            for kind in NoteKind::ALL {
+                ui.selectable_value(&mut state.note_kind, kind, kind.name());
+            }
+        });
         ui.label(RichText::new("A note changes nothing and is never undone or played back.").small().color(theme::TEXT_DIM));
     });
     if add && !state.note_draft.trim().is_empty() {
@@ -599,11 +615,22 @@ fn show_note_box(state: &mut HistoryState, app: &mut ViewerApp, ui: &mut Ui) {
     }
 }
 
-/// Write the note in the box into the history, as the person.
+/// The colour of a note kind's tag: a fallback stands out.
+fn kind_colour(kind: NoteKind) -> egui::Color32 {
+    match kind {
+        NoteKind::Fallback => theme::DANGER,
+        NoteKind::Conclusion => theme::ACCENT,
+        _ => theme::TEXT_DIM,
+    }
+}
+
+/// Write the note in the box into the history, of the kind chosen, as the
+/// person.
 pub fn add_note(state: &mut HistoryState, app: &mut ViewerApp) {
-    match app.perform("history.note", json!({"text": state.note_draft})) {
+    match app.perform("history.note", json!({"text": state.note_draft, "kind": state.note_kind})) {
         Ok(_) => {
             state.note_draft.clear();
+            state.note_kind = NoteKind::default();
             state.message = None;
         }
         Err(error) => state.message = Some(format!("The note was not added: {}", error.message)),
@@ -826,7 +853,13 @@ fn show_row(state: &mut HistoryState, app: &mut ViewerApp, ui: &mut Ui, row: &Ro
         if row.merged > 0 {
             ui.label(RichText::new(format!("×{}", row.merged + 1)).small().color(theme::TEXT_DIM)).on_hover_text(format!("{} moves in a row, kept as one step", row.merged + 1));
         }
+        if row.evidence {
+            ui.label(RichText::new("evidence").small().italics().color(theme::TEXT_DIM)).on_hover_text("A read kept because a note cites it; recipes leave it out unless an anchor cites it");
+        }
         let mut text = RichText::new(&row.description);
+        if row.evidence {
+            text = text.color(theme::TEXT_DIM);
+        }
         text = match row.status {
             StepStatus::Undone { by } => {
                 ui.label(RichText::new(format!("undone by {by}")).small().color(theme::TEXT_DIM));
@@ -1393,8 +1426,31 @@ mod tests {
         harness.step();
         harness.get_by_label("Add note").click();
         harness.step();
-        assert_eq!(take_performed(), [("history.note".to_string(), json!({"text": "#1 sets the magic"}))]);
+        assert_eq!(take_performed(), [("history.note".to_string(), json!({"text": "#1 sets the magic", "kind": "observation"}))]);
         assert_eq!(harness.state().journal.entry(2).and_then(|entry| entry.note.as_ref()).map(|note| note.steps.clone()), Some(vec![1]));
+    }
+
+    #[test]
+    fn the_note_box_writes_a_note_of_the_kind_chosen_then_goes_back_to_an_observation() {
+        let mut app = app_with(&[0u8; 8]);
+        let mut state = HistoryState { note_draft: "Cut the frames by hand".into(), note_kind: NoteKind::Fallback, ..HistoryState::default() };
+        add_note(&mut state, &mut app);
+        assert_eq!(app.journal.notes().next().and_then(|entry| entry.note.as_ref()).map(|note| note.kind), Some(NoteKind::Fallback));
+        assert_eq!((state.note_draft.as_str(), state.note_kind), ("", NoteKind::Observation));
+    }
+
+    #[test]
+    fn a_read_a_note_cites_is_shown_as_evidence_named_by_its_sheet_s_label() {
+        let mut app = app_with(&[0u8; 64]);
+        app.perform("documents.derive", json!({"start": 0, "len": 16, "output": {"new": {"label": "head"}}})).unwrap();
+        app.perform("analysis.overview", json!({"doc": {"$sheet": "head"}})).unwrap();
+        app.perform("history.note", json!({"text": "#2 shows nothing yet"})).unwrap();
+        let mut state = HistoryState::default();
+        state.follow(&app);
+        let read = state.row(2).unwrap();
+        assert!(read.evidence);
+        assert_eq!(read.description, "analysis.overview on \"head\"");
+        assert!(!state.row(1).unwrap().evidence);
     }
 
     #[test]

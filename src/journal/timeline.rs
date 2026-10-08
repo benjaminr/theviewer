@@ -1040,11 +1040,12 @@ impl Playback {
 
 /// The steps a recipe made from the history takes: those in effect up to
 /// `through` (every one when `None`) that playback and going back repeat,
-/// and those that made sheets.
+/// and those that made sheets. Reads a note cites as evidence are left
+/// out; the recipe takes one back when an anchor of its steps cites it.
 pub fn entries_for_recipe(journal: &Journal, through: Option<u64>) -> Vec<&JournalEntry> {
     let timeline = journal.timeline();
     let through = through.unwrap_or(u64::MAX);
-    journal.entries().filter(|entry| entry.step <= through && timeline.is_active(entry.step) && is_kept_by_recipes(entry)).collect()
+    journal.entries().filter(|entry| entry.step <= through && !entry.evidence && timeline.is_active(entry.step) && is_kept_by_recipes(entry)).collect()
 }
 
 /// A recipe called `name` of the history in effect up to `through`, made

@@ -31,24 +31,24 @@ use serde_json::Value;
 use super::values::{self, NoParams};
 use super::workspace::Workspace;
 use super::{ApiError, Caller, ErrorCode};
-use crate::journal::notes::{self, Note};
+use crate::journal::notes::{self, Note, NoteChange, NoteKind};
 use crate::journal::timeline::{self, Inverse, StepStatus, Timeline};
 use crate::journal::{Dropped, Journal, JournalEntry, JournalSession};
 
 /// This module's methods, in the order `api.describe` lists them within
 /// their namespace. A new method is added here, and only here.
 pub(super) const METHODS: &[super::Method] = &[
-    method!("history.list", Read, list, ListParams, HistoryList, "The session's journal: each edit, view change and job made through the API, by any caller, in order, with its parameters, result, outcome and a description; optionally the recent reads too. Pass back next as since to follow it.").not_journalled(),
+    method!("history.list", Read, list, ListParams, HistoryList, "The session's journal: each edit, view change and job made through the API, by any caller, in order, with its parameters, result, outcome and a description; optionally the recent reads too. Pass back next as since to follow it, or ask for the newest entries with order newest.").not_journalled(),
     method!("history.entry", Read, entry, EntryParams, crate::journal::JournalEntry, "One step of the journal, or one recent read, in full.").not_journalled(),
     method!("history.session", Read, session, super::values::NoParams, crate::journal::JournalSession, "What the journal's session ran with: when it started, the API version, the plugins loaded with their hashes, and each document as first seen, with its size and SHA-256.").not_journalled(),
     method!("history.inverse", Read, inverse, EntryParams, StepInverse, "How a step of the journal would be undone now: the calls that undo it (the document's undo for its last edit, or the inverse of a view change, fold, bookmark, selection or document opened), nothing to undo (a job, a read, a file written), or why it cannot be.").not_journalled(),
     method!("history.undo_step", Edit, caller undo_step, EntryParams, timeline::UndoneStep, "Undo one step of the journal through its inverse (see history.inverse), whoever made it, as a step of its own; the step is then shown as undone and left out of recipes and playback.").moves_along_the_timeline(crate::api::Move::UndoStep),
     method!("history.go_back", Edit, caller go_back, GoBackParams, timeline::WentBack, "Go back to a step of the journal (0 for before the first): undo every later step in effect, latest first, or, where one has no inverse, bring the document back to how the session first saw it and run the steps up to it again. The later steps stay in the journal, shown as undone.").moves_along_the_timeline(crate::api::Move::GoBack),
     method!("history.save_recipe", Edit, save_recipe, SaveRecipeParams, SavedRecipe, "Write the steps in effect (all, or up to a step) to a recipe file, *.theviewer-recipe.json, with the anchors and parameters recorded for its steps, to run on other files.").writes_file(crate::api::WritesFile::Always),
-    method!("history.note", Analysis, note, NoteParams, WrittenNote, "Write a note in the history where you are now: what you are doing and why, by you, linked to the steps its text cites as #12 and those given; it changes nothing, is never undone or repeated, and is shown beside the steps it links. Returns its step number.").writes_a_note(),
-    method!("history.edit_note", Read, caller edit_note, EditNoteParams, EditedNote, "Change a note's text and the steps it is linked to, in place; the note then says when and by whom it was edited. Only notes can be edited.").not_journalled(),
+    method!("history.note", Analysis, note, NoteParams, WrittenNote, "Write a note in the history where you are now: what you are doing and why, by you, of a kind (observation, hypothesis, decision, fallback or conclusion), linked to the steps its text cites as #12 (\\#12 cites nothing) and those given; a read it cites is kept as evidence, which recipes leave out. It changes nothing, is never undone or repeated, and is shown beside the steps it links. Returns its step number.").writes_a_note(),
+    method!("history.edit_note", Read, caller edit_note, EditNoteParams, EditedNote, "Change a note's text, kind and the steps it is linked to, in place; the note then says when and by whom it was edited. Only notes can be edited.").not_journalled(),
     method!("history.delete_note", Read, delete_note, DeleteNoteParams, DeletedNote, "Take a note out of the history; the steps it was linked to no longer list it. Only notes can be deleted.").not_journalled(),
-    method!("history.export_notes", Read, export_notes, ExportNotesParams, ExportedNotes, "The session's notes as Markdown, in the order written, each with the steps it cites (number, caller and description), returned or written to a path given (which needs leave to edit).").writes_file(crate::api::WritesFile::WhenGiven("path")).not_journalled(),
+    method!("history.export_notes", Read, export_notes, ExportNotesParams, ExportedNotes, "The session's notes as Markdown, titled by the input file, in the order written, each with its kind and the steps it cites in plain words (sheets by label, the anchors their values came from, what they returned, evidence marked), ending with the fallbacks noted; returned or written to a path given (which needs leave to edit).").writes_file(crate::api::WritesFile::WhenGiven("path")).not_journalled(),
 ];
 
 /// An example call of each of [`METHODS`], run in order on a fresh
@@ -140,6 +140,23 @@ pub struct ListParams {
     /// Also list the recent reads still held, whose effect is `read`.
     #[serde(default)]
     pub include_reads: bool,
+    /// Which entries `limit` keeps: the oldest (when omitted), to page
+    /// through with `next`, or the newest, such as `{"limit": 1, "order":
+    /// "newest"}` for the last step. Either way they are listed in step
+    /// order.
+    #[serde(default)]
+    pub order: ListOrder,
+}
+
+/// Which end of the journal `history.list` lists from.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ListOrder {
+    /// The oldest entries after `since`, then `next` for the rest.
+    #[default]
+    Oldest,
+    /// The newest entries after `since`.
+    Newest,
 }
 
 /// The result of `history.list`.
@@ -148,7 +165,7 @@ pub struct HistoryList {
     /// The entries, in step order.
     pub entries: Vec<JournalEntry>,
     /// The last step listed, to pass as `since` for the entries after it;
-    /// none when this is all there is now.
+    /// none when this is all there is now, or the newest were asked for.
     pub next: Option<u64>,
     /// The last step recorded or read in the session.
     pub last_step: Option<u64>,
@@ -229,11 +246,18 @@ pub struct EntryParams {
 #[serde(deny_unknown_fields)]
 pub struct NoteParams {
     /// What you are doing and why, at most 4 KiB; `#12` in it cites step
-    /// 12 and links the note to it.
+    /// 12 and links the note to it, and `\#12` writes "#12" citing
+    /// nothing (a packet number, say).
     pub text: String,
     /// More steps the note is about, beside those its text cites.
     #[serde(default)]
     pub steps: Vec<u64>,
+    /// What it records: an observation (when omitted), a hypothesis, a
+    /// decision, a fallback (a gap worked round with a literal, a plugin or
+    /// work outside) or a conclusion. The export marks each and lists the
+    /// fallbacks at the end.
+    #[serde(default)]
+    pub kind: NoteKind,
 }
 
 /// The result of `history.note`.
@@ -258,6 +282,9 @@ pub struct EditNoteParams {
     /// only to the steps its text cites.
     #[serde(default)]
     pub steps: Option<Vec<u64>>,
+    /// What it records now; as it was when omitted.
+    #[serde(default)]
+    pub kind: Option<NoteKind>,
 }
 
 /// The result of `history.edit_note`.
@@ -317,9 +344,13 @@ pub fn list(workspace: &mut dyn Workspace, params: ListParams) -> Result<History
         entries.sort_by_key(|entry| entry.step);
     }
     let more = entries.len() > limit;
+    let kept = match params.order {
+        ListOrder::Oldest => &entries[..limit.min(entries.len())],
+        ListOrder::Newest => &entries[entries.len().saturating_sub(limit)..],
+    };
     let noted = journal.notes_by_step();
-    let entries: Vec<JournalEntry> = entries.into_iter().take(limit).map(|entry| Journal::with_notes(entry, &noted)).collect();
-    let next = if more { entries.last().map(|entry| entry.step) } else { None };
+    let entries: Vec<JournalEntry> = kept.iter().map(|entry| Journal::with_notes(entry, &noted)).collect();
+    let next = if more && params.order == ListOrder::Oldest { entries.last().map(|entry| entry.step) } else { None };
     let timeline = Timeline::of(journal);
     let undone = entries
         .iter()
@@ -378,7 +409,8 @@ pub fn note(workspace: &mut dyn Workspace, params: NoteParams) -> Result<Written
 }
 
 pub fn edit_note(workspace: &mut dyn Workspace, caller: &Caller, params: EditNoteParams) -> Result<EditedNote, ApiError> {
-    let note = notes::edit(workspace, caller, params.step, &params.text, params.steps)?;
+    let change = NoteChange { text: &params.text, given: params.steps, kind: params.kind };
+    let note = notes::edit(workspace, caller, params.step, change)?;
     Ok(EditedNote { step: params.step, note })
 }
 
@@ -400,6 +432,7 @@ mod tests {
 
     use crate::api::test_support::{call, workspace_with};
     use crate::api::{Caller, ErrorCode};
+    use crate::journal::notes::NoteKind;
 
     #[test]
     fn the_history_lists_each_step_in_order_and_pages_through_them() {
@@ -471,7 +504,10 @@ mod tests {
         let notes: Vec<Option<&str>> = recipe.steps.iter().map(|step| step.note.as_deref()).collect();
         assert_eq!(
             notes,
-            [Some("#1 fixes the magic; session step 2 was a dead end"), Some("Narrower rows show the records\n\nAnd #2 lines up the length fields")],
+            [
+                Some("As recorded on flight.bin: #1 fixes the magic; session step 2 was a dead end"),
+                Some("As recorded on flight.bin: Narrower rows show the records\n\nAnd #2 lines up the length fields")
+            ],
             "renumbered as the recipe numbers its steps; the unlinked note is left out"
         );
     }
@@ -488,7 +524,7 @@ mod tests {
         let (recipe, _) = crate::recipes::find(&dir.clone(), "Patch").unwrap();
         std::fs::remove_dir_all(&dir).ok();
         assert_eq!(saved["steps"], 1);
-        assert_eq!((recipe.steps[0].method.as_str(), recipe.steps[0].note.as_deref()), ("bytes.write", Some("Why #1")));
+        assert_eq!((recipe.steps[0].method.as_str(), recipe.steps[0].note.as_deref()), ("bytes.write", Some("As recorded on flight.bin: Why #1")));
     }
 
     #[test]
@@ -650,8 +686,8 @@ mod tests {
         let note = &listed["entries"][2];
         assert_eq!((note["step"].as_u64(), note["caller"].as_str(), note["method"].as_str()), (Some(3), Some("mcp:claude-code"), Some("history.note")));
         assert_eq!(note["description"], "Note: #1 marks the header, so the payload starts after it");
-        assert_eq!(note["note"], json!({"text": "#1 marks the header,\nso the payload starts after it", "steps": [1, 2]}));
-        let beside = json!([{"step": 3, "caller": "mcp:claude-code", "text": "#1 marks the header,\nso the payload starts after it"}]);
+        assert_eq!(note["note"], json!({"text": "#1 marks the header,\nso the payload starts after it", "kind": "observation", "steps": [1, 2]}));
+        let beside = json!([{"step": 3, "caller": "mcp:claude-code", "kind": "observation", "text": "#1 marks the header,\nso the payload starts after it"}]);
         assert_eq!(listed["entries"][0]["notes"], beside, "the reasoning is listed beside the action");
         assert_eq!(call(&mut workspace, "history.entry", json!({"step": 2})).unwrap()["notes"], beside);
         assert_eq!(call(&mut workspace, "bytes.read", json!({"start": 0, "len": 2})).unwrap()["data"], "4142", "a note changes no document");
@@ -680,6 +716,47 @@ mod tests {
         assert_eq!((read["method"].as_str(), read["notes"][0]["step"].as_u64()), (Some("bytes.read"), Some(2)));
         let steps: Vec<u64> = crate::api::Workspace::journal(&workspace).entries().map(|entry| entry.step).collect();
         assert_eq!(steps, [1, 2], "the read was moved into the journal");
+    }
+
+    #[test]
+    fn a_read_a_note_cites_is_evidence_that_a_recipe_leaves_out() {
+        let mut workspace = workspace_with("a.bin", b"0123456789");
+        call(&mut workspace, "analysis.overview", json!({})).unwrap();
+        call(&mut workspace, "bytes.write", json!({"start": 0, "data": "41"})).unwrap();
+        call(&mut workspace, "history.note", json!({"text": "#1 says nothing about the header, so I patch it in #2"})).unwrap();
+        assert_eq!(call(&mut workspace, "history.entry", json!({"step": 1})).unwrap()["evidence"], true);
+        assert!(call(&mut workspace, "history.entry", json!({"step": 2})).unwrap().get("evidence").is_none(), "a step is not evidence");
+        let recipe: crate::journal::Recipe = serde_json::from_value(call(&mut workspace, "history.recipe", json!({"name": "Patch"})).unwrap()).unwrap();
+        let methods: Vec<&str> = recipe.steps.iter().map(|step| step.method.as_str()).collect();
+        assert_eq!(methods, ["bytes.write"], "the overview the note cites is not repeated by the recipe");
+    }
+
+    #[test]
+    fn an_evidence_read_whose_value_a_step_uses_goes_into_the_recipe() {
+        let mut workspace = workspace_with("a.bin", b"....MAGIC....");
+        call(&mut workspace, "search.find", json!({"query": "MAGIC", "mode": "text"})).unwrap();
+        call(&mut workspace, "history.note", json!({"text": "#1 finds the magic"})).unwrap();
+        call(&mut workspace, "bookmarks.add", json!({"start": {"$anchor": {"step": 1, "path": "result.at"}}, "len": 5, "name": "magic"})).unwrap();
+        assert!(call(&mut workspace, "history.entry", json!({"step": 1})).unwrap().get("evidence").is_none(), "a step relies on it now");
+        let recipe: crate::journal::Recipe = serde_json::from_value(call(&mut workspace, "history.recipe", json!({"name": "Mark"})).unwrap()).unwrap();
+        let methods: Vec<&str> = recipe.steps.iter().map(|step| step.method.as_str()).collect();
+        assert_eq!(methods, ["search.find", "bookmarks.add"]);
+    }
+
+    #[test]
+    fn undoing_a_sheet_that_an_evidence_read_looked_at_does_not_stop_the_recipe_being_saved() {
+        let mut workspace = workspace_with("capture.bin", b"HEADpayload");
+        call(&mut workspace, "documents.derive", json!({"doc": "doc-1", "start": 4, "len": 7})).unwrap();
+        call(&mut workspace, "bytes.read", json!({"doc": "doc-2", "start": 0, "len": 4})).unwrap();
+        call(&mut workspace, "history.note", json!({"text": "#2 reads the payload's first bytes"})).unwrap();
+        call(&mut workspace, "history.undo_step", json!({"step": 1})).unwrap();
+        call(&mut workspace, "bytes.write", json!({"doc": "doc-1", "start": 0, "data": "48"})).unwrap();
+        let path = temporary_recipe("evidence-undone");
+        call(&mut workspace, "history.save_recipe", json!({"path": path.display().to_string(), "name": "Patch"})).unwrap();
+        let recipe = crate::recipes::load(&path).unwrap();
+        std::fs::remove_file(&path).ok();
+        let methods: Vec<&str> = recipe.steps.iter().map(|step| step.method.as_str()).collect();
+        assert_eq!(methods, ["bytes.write"], "the read of the sheet undone is evidence, not a step");
     }
 
     #[test]
@@ -777,19 +854,126 @@ mod tests {
         call(&mut workspace, "bytes.write", json!({"start": 0, "data": "41"})).unwrap();
         call(&mut workspace, "bytes.write", json!({"start": 1, "data": "42"})).unwrap();
         call(&mut workspace, "history.undo_step", json!({"step": 2})).unwrap();
-        call_as_client(&mut workspace, "history.note", json!({"text": "Why #1?\nBecause the magic was wrong.", "steps": [2]})).unwrap();
-        call(&mut workspace, "history.note", json!({"text": "Nothing more to patch"})).unwrap();
+        call_as_client(&mut workspace, "history.note", json!({"text": "Why #1?\nBecause the magic was wrong.", "steps": [2], "kind": "decision"})).unwrap();
+        call(&mut workspace, "history.note", json!({"text": "Nothing more to patch", "kind": "conclusion"})).unwrap();
         let exported = call(&mut workspace, "history.export_notes", json!({})).unwrap();
         assert_eq!(exported["notes"], 2);
         let markdown = exported["markdown"].as_str().unwrap();
         let journal = crate::api::Workspace::journal(&workspace);
         let (first, second) = (journal.entry(4).unwrap().at.clone(), journal.entry(5).unwrap().at.clone());
         let expected = format!(
-            "# Notes on flight.bin\n\nSession started {}.\n\n## Note 4 · mcp:claude-code · {first}\n\nWhy #1?\nBecause the magic was wrong.\n\nSteps cited:\n\n\
-- #1 · panel · Overwrite 1 byte at 0x0 with 41\n- #2 · panel · Overwrite 1 byte at 0x1 with 42 (undone by step 3)\n\n## Note 5 · panel · {second}\n\nNothing more to patch\n",
+            "# Notes on flight.bin\n\nSession started {}.\n\n## Note 4 · decision · mcp:claude-code · {first}\n\nWhy #1?\nBecause the magic was wrong.\n\nSteps cited:\n\n\
+- #1 · panel · Overwrite 1 byte at 0x0 with 41\n- #2 · panel · Overwrite 1 byte at 0x1 with 42 (undone by step 3)\n\n## Note 5 · conclusion · panel · {second}\n\nNothing more to patch\n\n\
+## Fallbacks\n\nNo note was marked as a fallback.\n",
             journal.session().started_at
         );
         assert_eq!(markdown, expected);
+    }
+
+    #[test]
+    fn the_notes_are_titled_by_the_input_file_and_list_the_sheets_by_label() {
+        let mut workspace = workspace_with("capture.bin", b"HEADpayloadTAIL");
+        call(&mut workspace, "documents.derive", json!({"doc": "doc-1", "start": 4, "len": 7, "output": {"new": {"label": "payload"}}})).unwrap();
+        call(&mut workspace, "documents.derive", json!({"doc": "doc-2", "start": 0, "len": 3})).unwrap();
+        call(&mut workspace, "history.note", json!({"text": "Peeled the payload in #1, then its head in #2"})).unwrap();
+        let markdown = call(&mut workspace, "history.export_notes", json!({})).unwrap()["markdown"].as_str().unwrap().to_string();
+        let mut lines = markdown.lines();
+        assert_eq!(lines.next(), Some("# Notes on capture.bin"), "the sheets are not in the title");
+        assert_eq!((lines.next(), lines.next()), (Some(""), Some("Sheets: \"payload\" and 1 unlabelled.")));
+    }
+
+    #[test]
+    fn a_step_a_note_cites_is_described_by_sheet_label_with_its_anchors_and_what_it_returned() {
+        let mut workspace = workspace_with("a.bin", b"....MAGIC....");
+        call(&mut workspace, "documents.derive", json!({"doc": "doc-1", "start": 0, "len": 13, "output": {"new": {"label": "body"}}})).unwrap();
+        call(&mut workspace, "search.find", json!({"doc": "doc-2", "query": "MAGIC", "mode": "text"})).unwrap();
+        call(&mut workspace, "bookmarks.add", json!({"doc": "doc-2", "start": {"$anchor": {"step": 2, "path": "result.at"}}, "len": 5, "name": "magic"})).unwrap();
+        call(&mut workspace, "analysis.overview", json!({"doc": "doc-2"})).unwrap();
+        call(&mut workspace, "history.note", json!({"text": "#1 made the body, #3 marks the magic and #4 says what the body looks like"})).unwrap();
+        let markdown = call(&mut workspace, "history.export_notes", json!({})).unwrap()["markdown"].as_str().unwrap().to_string();
+        assert!(markdown.contains("- #1 · Take 13 bytes from 0x0 and open them as a document of their own"), "{markdown}");
+        assert!(markdown.contains("→ made \"body\" (13 bytes)"), "what a step returned is summed up: {markdown}");
+        assert!(markdown.contains("  - `start` from the value at result.at of step 2\n"), "the anchor its value came from: {markdown}");
+        let overview = markdown.lines().find(|line| line.starts_with("- #4")).unwrap();
+        assert!(overview.starts_with("- #4 · evidence · analysis.overview on \"body\""), "a read the note cites is marked as evidence and its sheet named by label: {overview}");
+        assert!(!markdown.contains("doc-2") && !markdown.contains("Call analysis.overview"), "{markdown}");
+    }
+
+    #[test]
+    fn the_export_marks_each_note_s_kind_and_ends_with_every_fallback() {
+        let mut workspace = workspace_with("a.bin", b"0123456789");
+        call(&mut workspace, "bytes.write", json!({"start": 0, "data": "41"})).unwrap();
+        call(&mut workspace, "history.note", json!({"text": "The length looks like a u16", "kind": "hypothesis"})).unwrap();
+        call(&mut workspace, "history.note", json!({"text": "No tool splits on a bit pattern,\nso #1 writes the length by hand", "kind": "fallback"})).unwrap();
+        call(&mut workspace, "history.note", json!({"text": "The key is a literal", "kind": "fallback"})).unwrap();
+        let markdown = call(&mut workspace, "history.export_notes", json!({})).unwrap()["markdown"].as_str().unwrap().to_string();
+        assert!(markdown.contains("## Note 2 · hypothesis · panel · "), "{markdown}");
+        assert!(markdown.contains("## Note 3 · fallback · panel · "), "{markdown}");
+        assert!(markdown.ends_with("## Fallbacks\n\n- Note 3: No tool splits on a bit pattern, so #1 writes the length by hand\n- Note 4: The key is a literal\n"), "{markdown}");
+    }
+
+    #[test]
+    fn a_note_is_an_observation_unless_it_says_otherwise_and_editing_keeps_its_kind() {
+        let mut workspace = workspace_with("a.bin", b"0123456789");
+        call(&mut workspace, "history.note", json!({"text": "The header is 4 bytes"})).unwrap();
+        call(&mut workspace, "history.note", json!({"text": "Use the header length", "kind": "decision"})).unwrap();
+        let kinds = |workspace: &crate::api::HeadlessWorkspace| crate::api::Workspace::journal(workspace).notes().map(|entry| entry.note.as_ref().unwrap().kind).collect::<Vec<_>>();
+        assert_eq!(kinds(&workspace), [NoteKind::Observation, NoteKind::Decision]);
+        call(&mut workspace, "history.edit_note", json!({"step": 2, "text": "Use the header's length"})).unwrap();
+        call(&mut workspace, "history.edit_note", json!({"step": 1, "text": "The header is 4 bytes", "kind": "conclusion"})).unwrap();
+        assert_eq!(kinds(&workspace), [NoteKind::Conclusion, NoteKind::Decision]);
+        assert_eq!(call(&mut workspace, "history.note", json!({"text": "?", "kind": "rumour"})).unwrap_err().code, ErrorCode::InvalidParams);
+    }
+
+    #[test]
+    fn a_backslash_before_a_hash_writes_a_packet_number_without_citing_a_step() {
+        let mut workspace = workspace_with("a.bin", b"0123456789");
+        call(&mut workspace, "bytes.write", json!({"start": 0, "data": "41"})).unwrap();
+        let written = call(&mut workspace, "history.note", json!({"text": "Packet \\#917 is the unlock; #1 patches it"})).unwrap();
+        assert_eq!(written["steps"], json!([1]), "only #1 is cited");
+        let listed = call(&mut workspace, "history.list", json!({})).unwrap();
+        assert_eq!(listed["entries"][1]["description"], "Note: Packet #917 is the unlock; #1 patches it");
+        let markdown = call(&mut workspace, "history.export_notes", json!({})).unwrap()["markdown"].as_str().unwrap().to_string();
+        assert!(markdown.contains("\nPacket #917 is the unlock; #1 patches it\n"), "{markdown}");
+    }
+
+    #[test]
+    fn a_note_linked_to_several_recipe_steps_is_written_once_and_the_others_point_to_it() {
+        let mut workspace = workspace_with("flight.bin", b"0123456789");
+        call(&mut workspace, "bytes.write", json!({"start": 0, "data": "41"})).unwrap();
+        call(&mut workspace, "bytes.write", json!({"start": 1, "data": "42"})).unwrap();
+        call(&mut workspace, "bytes.write", json!({"start": 2, "data": "43"})).unwrap();
+        call(&mut workspace, "history.note", json!({"text": "#1, #2 and #3 spell ABC"})).unwrap();
+        let recipe: crate::journal::Recipe = serde_json::from_value(call(&mut workspace, "history.recipe", json!({"name": "Spell"})).unwrap()).unwrap();
+        let notes: Vec<Option<&str>> = recipe.steps.iter().map(|step| step.note.as_deref()).collect();
+        assert_eq!(notes, [Some("As recorded on flight.bin: #1, #2 and #3 spell ABC"), Some("See the note on step 1."), Some("See the note on step 1.")]);
+    }
+
+    #[test]
+    fn a_note_about_evidence_alone_goes_on_the_next_step_of_the_recipe() {
+        let mut workspace = workspace_with("flight.bin", b"0123456789");
+        call(&mut workspace, "analysis.overview", json!({})).unwrap();
+        call(&mut workspace, "history.note", json!({"text": "#1 shows a header, so I patch its magic"})).unwrap();
+        call(&mut workspace, "bytes.write", json!({"start": 0, "data": "41"})).unwrap();
+        let recipe: crate::journal::Recipe = serde_json::from_value(call(&mut workspace, "history.recipe", json!({"name": "Patch"})).unwrap()).unwrap();
+        assert_eq!(recipe.steps.len(), 1);
+        assert_eq!(recipe.steps[0].note.as_deref(), Some("As recorded on flight.bin: session step 1 shows a header, so I patch its magic"));
+    }
+
+    #[test]
+    fn the_newest_entries_are_listed_when_asked_for_and_paging_from_the_oldest_still_works() {
+        let mut workspace = workspace_with("a.bin", b"0123456789");
+        for start in 0..3 {
+            call(&mut workspace, "bytes.write", json!({"start": start, "data": "41"})).unwrap();
+        }
+        call(&mut workspace, "bytes.read", json!({"start": 0, "len": 1})).unwrap();
+        let steps = |listed: &serde_json::Value| listed["entries"].as_array().unwrap().iter().map(|entry| entry["step"].as_u64().unwrap()).collect::<Vec<_>>();
+        let newest = call(&mut workspace, "history.list", json!({"limit": 1, "order": "newest"})).unwrap();
+        assert_eq!((steps(&newest), &newest["next"]), (vec![3], &serde_json::Value::Null), "the last step, not the first");
+        let with_reads = call(&mut workspace, "history.list", json!({"limit": 2, "order": "newest", "include_reads": true})).unwrap();
+        assert_eq!(steps(&with_reads), [3, 4], "listed in step order");
+        let oldest = call(&mut workspace, "history.list", json!({"limit": 1})).unwrap();
+        assert_eq!((steps(&oldest), oldest["next"].as_u64()), (vec![1], Some(1)));
     }
 
     #[test]

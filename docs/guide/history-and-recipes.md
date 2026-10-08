@@ -27,7 +27,12 @@ Marks beside a step say more:
 - **bytes:** it changed the document's bytes;
 - **failed** or **refused:** it did not happen (point at the mark for why);
 - **×3:** several moves in a row, kept as one step;
-- **undone by …:** a later step undid it; the text is struck through.
+- **undone by …:** a later step undid it; the text is struck through;
+- **evidence:** a read kept only because a note cites it, dimmed (see
+  [Notes](#notes)).
+
+A step is described in plain words, its sheets by their labels and its
+packet sets by their names, rather than by ids such as `doc-2` and `set-1`.
 
 Who took a step is shown as `panel` for you, `ask`, `plugin:NAME`,
 `mcp:CLIENT`, `cli` for `theviewer api`, or `recipe:NAME` for a recipe's
@@ -52,10 +57,23 @@ actions it explains.
   with `#12 `, linking it to that step.
 - `#12` anywhere in a note links it to step 12. The steps must be in the
   history; a note about something missing is refused, and its text stays in
-  the box.
+  the box. To write a number that is not a step, such as packet 917, put a
+  backslash before it: `\#917` reads "#917" and links nothing.
+- The menu beside **Add note** says what kind of note it is: an
+  **observation** (what a step showed, and the choice unless you pick
+  another), a **hypothesis**, a **decision**, a **fallback** (a gap the
+  tools could not fill, worked round with a literal, a plugin or work done
+  elsewhere) or a **conclusion**. Clients pass `kind` to `history.note`.
+
+**Evidence.** A note can cite a read, such as the overview or a search,
+that no step used. That read is kept in the history as **evidence**,
+dimmed and tagged, so the note's link still works, but it is not a step of
+the analysis: recipes leave it out, and undoing a sheet the read looked at
+does not stop the recipe being saved. A read whose value a later step uses
+through an anchor is a step of the recipe as before.
 
 A note is shown as a card with a different background: who wrote it, the
-time, then the text, in which each `#12` is a link. Click it to scroll to
+time, its kind, then the text, in which each `#12` is a link. Click it to scroll to
 step 12 and highlight it (the filters are cleared if they hide it). A step
 with notes about it shows a *note 14* link back to each.
 
@@ -69,14 +87,22 @@ they are shown as theirs (`mcp:claude-code`). The MCP server asks a model
 to note its reasoning as it works, so you can follow what it was thinking.
 
 **Notes in recipes.** Saving the history as a recipe puts each note into
-the `note` of the steps it is linked to, with its `#12`s renumbered as the
-recipe numbers the steps. A note linked to no step of the recipe is left
-out.
+the `note` of the first recipe step it is linked to, with its `#12`s
+renumbered as the recipe numbers the steps, and the other steps it is
+linked to say "See the note on step 3." Each starts "As recorded on
+capture.bin:", so a run on another file does not present the values the
+note quotes as that file's. A note about evidence alone goes on the next
+step of the recipe; a note linked to no step of the recipe is otherwise
+left out.
 
 **Exporting.** *Export notes…* saves the notes as Markdown: a title naming
-the documents and when the session started, then each note in the order
-written, with the steps it cites (number, who took it and what it did).
-`history.export_notes` gives the same text to clients.
+the file the session started from, the sheets made by their labels and
+when the session started, then each note in the order written, with its
+kind and the steps it cites. Each cited step says what it did in plain
+words, where its values came from (the anchors, such as "the 1st match of
+hex 7EA5"), what it returned in a few words, and whether it is evidence.
+The notes end with a list of every fallback. `history.export_notes` gives
+the same text to clients.
 
 The history, notes included, lasts as long as the session: it is not saved
 when you quit. Export the notes to keep them.

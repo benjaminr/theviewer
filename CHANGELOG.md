@@ -25,6 +25,16 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   model to note its reasoning as it works.
 - A recipe made from the history carries the notes linked to each step in
   that step's `note`.
+- **Note kinds.** `history.note {kind}` takes `observation` (the default),
+  `hypothesis`, `decision`, `fallback` or `conclusion`, and
+  `history.edit_note` can change it. The History tab shows the kind as a
+  tag on each note card and has a kind menu beside *Add note*; the export
+  marks each note's kind and ends with a list of every fallback.
+- `\#917` in a note writes "#917" without citing a step, for packet
+  numbers and the like.
+- `history.list {order: "newest"}` lists the newest entries, so
+  `{limit: 1, order: "newest"}` gives the last step; without it, `limit`
+  keeps the oldest as before.
 - **Packet filters as expressions.** `and`/`&&`, `or`/`||`, `not`/`!` and
   brackets; `"quoted text"`; `tcp.port`, `udp.port` and `ip.addr` for
   either end; the DNS flag bits (`dns.flags.response==0`); the parts of an
@@ -214,6 +224,21 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- A note citing a read made the read a step of every recipe saved from the
+  history, and once a sheet the read looked at was undone, the recipe
+  could not be saved at all. A read kept only because a note cites it is
+  now evidence: the History tab shows it dimmed and tagged, the export
+  marks it, and recipes leave it out unless an anchor cites it.
+- The exported notes were titled with every sheet's full lineage name and
+  showed cited steps as "Call X with {json}" naming `doc-7` and `set-1`.
+  The title names the input file, a *Sheets* line lists their labels, and
+  each cited step is described in plain words with sheets by label, sets
+  by name, the anchors its values came from and a short summary of what it
+  returned. The History tab's rows describe steps the same way.
+- A note linked to several recipe steps was copied whole into each. It is
+  written on the first, after "As recorded on <file>:" so a replay on
+  another file does not present its values as that file's, and the others
+  say "See the note on step N."
 - Recipes saved from a session that derived documents did not replay:
   the steps that made the documents were left out, later steps kept their
   session's ids (`doc-4`), and the replay ran such a step on the input, or
