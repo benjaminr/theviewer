@@ -9,7 +9,7 @@ use super::workspace::{self, Workspace};
 use super::{ApiError, MAX_CALL_BYTES};
 use crate::bus::topics::{FindingsPublished, TemplateApplied};
 use crate::bus::{Draft, Payload, Topic};
-use crate::plugin::Finding;
+use crate::plugin::{Category, Finding, ScanContext};
 use crate::templates::{self, Applied, Template};
 
 /// This module's methods, in the order `api.describe` lists them within
@@ -294,14 +294,19 @@ pub fn infer_template(workspace: &mut dyn Workspace, params: InferParams) -> Res
     if len == 0 {
         return Err(ApiError::invalid_params("give the example records' len; a struct is inferred from several records"));
     }
-    let bytes = document.read_range(start, len);
     let record_len = match params.record_len {
         Some(0) => return Err(ApiError::invalid_params("a record_len of 0 holds nothing")),
         Some(record_len) => record_len,
-        None => templates::guess_record_length(&bytes).ok_or_else(|| ApiError::invalid_params("no record length repeats in these bytes; give record_len"))?,
+        None => templates::guess_record_length(&document.read_range(start, len))
+            .ok_or_else(|| ApiError::invalid_params("no record length repeats in these bytes; give record_len"))?,
     };
-    let records = (len / record_len).max(1);
-    let source = templates::infer_struct(&bytes, record_len, records, document_len);
+    // A span that ends inside a record (a finding's, which stops at its
+    // last element) still means that record: read up to its end.
+    let whole_len = len.div_ceil(record_len).saturating_mul(record_len).min(document_len - start).min(MAX_CALL_BYTES);
+    let bytes = document.read_range(start, whole_len);
+    let records = (bytes.len() / record_len).max(1);
+    let times = timestamps_in_records(workspace, &bytes, start, document_len, record_len);
+    let source = templates::infer_struct(&bytes, record_len, records, document_len, &times);
     if params.pin {
         let template = Template::parse(&source).map_err(|error| ApiError::invalid_params(format!("the inferred struct does not parse: {error}")))?;
         let (_, document) = workspace::document(workspace, Some(&doc))?;
@@ -310,6 +315,26 @@ pub fn infer_template(workspace: &mut dyn Workspace, params: InferParams) -> Res
         pin(workspace, &doc, &template, source.clone(), &applied);
     }
     Ok(InferResult { source, record_len, records })
+}
+
+/// The timestamps the detectors find at the same place in every record of
+/// `bytes` (read at `start`), to infer as one field each.
+fn timestamps_in_records(workspace: &mut dyn Workspace, bytes: &[u8], start: usize, document_len: usize, record_len: usize) -> Vec<templates::KnownTime> {
+    const MIN_CONFIDENCE: f32 = 0.5;
+    let context = ScanContext { base: start, document_len, strides: vec![record_len] };
+    let found = workspace.registry().scan(bytes, &context);
+    let mut times: Vec<templates::KnownTime> = found
+        .iter()
+        .filter(|finding| finding.category == Category::Timestamp && finding.confidence >= MIN_CONFIDENCE)
+        .filter_map(|finding| {
+            let sequence = finding.sequence.as_ref().filter(|sequence| sequence.stride == record_len)?;
+            let offset = (finding.start - start) % record_len;
+            (offset + sequence.element <= record_len).then_some(templates::KnownTime { offset, width: sequence.element })
+        })
+        .collect();
+    times.sort_by_key(|time| (time.offset, time.width));
+    times.dedup();
+    times
 }
 
 /// `templates.clear`: in the window the Template tool clears its template;
@@ -448,6 +473,39 @@ mod tests {
         call(&mut workspace, "templates.infer", json!({"start": 0, "len": 256, "pin": true})).unwrap();
         let pinned = call(&mut workspace, "events.facts", json!({"topic": "template.applied", "producer": "tool:templates"})).unwrap();
         assert_eq!(pinned["facts"][0]["payload"]["source"], json!(source));
+    }
+
+    /// A sync journal: a 16-byte header, then 13 records of a Unix time, a
+    /// size, an action, a reserved word and a 36-byte name.
+    fn sync_log() -> Vec<u8> {
+        let mut log = b"SYNCLOG\0".to_vec();
+        log.extend([1, 0, 13, 0, 0, 0, 0, 0]);
+        let mut time = 1_788_000_000u32;
+        for index in 0..13u32 {
+            log.extend(time.to_le_bytes());
+            log.extend((1000 + index * 977).to_le_bytes());
+            log.extend((1 + (index % 3 == 2) as u16).to_le_bytes());
+            log.extend([0, 0]);
+            let mut name = format!("file_{index:02}.dat").into_bytes();
+            name.resize(36, 0);
+            log.extend(name);
+            time += 60 + (index * index * 37) % 900;
+        }
+        log
+    }
+
+    #[test]
+    fn a_struct_inferred_over_a_timestamp_finding_reads_the_time_whole_and_every_record() {
+        let log = sync_log();
+        let mut workspace = workspace_with("synclog.dat", &log);
+        let stamps = call(&mut workspace, "findings.query", json!({"categories": ["timestamp"]})).unwrap();
+        let stamp = &stamps["findings"][0];
+        assert_eq!(stamp["start"], 16);
+        let inferred = call(&mut workspace, "templates.infer", json!({"start": stamp["start"], "len": stamp["len"], "record_len": 48})).unwrap();
+        let source = inferred["source"].as_str().unwrap();
+        assert_eq!(inferred["records"], 13, "the finding's span ends 44 bytes into the last record:\n{source}");
+        assert!(source.contains("time: u32 "), "the time is one field, as the finding says:\n{source}");
+        assert!(!source.contains("unknown_0"), "{source}");
     }
 
     #[test]

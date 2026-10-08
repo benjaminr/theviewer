@@ -1422,17 +1422,28 @@ fn same_in_every_record(bytes: &[u8], record_len: usize, records: usize, offset:
     (1..records).all(|r| &bytes[r * record_len + offset..r * record_len + offset + len] == first)
 }
 
+/// A timestamp a detector found at the same place in every record, which
+/// inference reads as one field rather than guessing at its bytes again.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct KnownTime {
+    /// Offset within the record.
+    pub offset: usize,
+    /// Bytes of the time: 4 or 8.
+    pub width: usize,
+}
+
 /// Template source for one record, inferred from `records` consecutive
 /// records of `record_len` bytes at the start of `bytes`. `document_len`
-/// bounds what counts as an in-file offset.
-pub fn infer_struct(bytes: &[u8], record_len: usize, records: usize, document_len: usize) -> String {
+/// bounds what counts as an in-file offset; `times` are timestamps already
+/// found in the records.
+pub fn infer_struct(bytes: &[u8], record_len: usize, records: usize, document_len: usize, times: &[KnownTime]) -> String {
     let records = bytes.len().checked_div(record_len).map_or(0, |whole| records.min(whole));
     let mut book = NameBook::default();
     let fields = if record_len == 0 || records < 2 {
         let comment = "need at least two whole records to infer anything".to_string();
         vec![Inferred { name: "unknown_0".to_string(), ty: format!("bytes[{record_len}]"), expected: None, comment }]
     } else {
-        infer_fields(bytes, record_len, records, document_len, &mut book)
+        infer_fields(bytes, record_len, records, document_len, times, &mut book)
     };
     let mut source = format!(
         "// Inferred from {records} records of {record_len} bytes. Rename fields as you learn what they mean.\nendian little\n\nstruct Record {{\n"
@@ -1446,12 +1457,15 @@ pub fn infer_struct(bytes: &[u8], record_len: usize, records: usize, document_le
     source
 }
 
-fn infer_fields(bytes: &[u8], record_len: usize, records: usize, document_len: usize, book: &mut NameBook) -> Vec<Inferred> {
+fn infer_fields(bytes: &[u8], record_len: usize, records: usize, document_len: usize, times: &[KnownTime], book: &mut NameBook) -> Vec<Inferred> {
     let mut fields = Vec::new();
     let mut unknown_start: Option<usize> = None;
     let mut offset = 0;
     while offset < record_len {
-        let found = infer_text(bytes, record_len, records, offset, book)
+        let known_time = times.iter().find(|time| time.offset == offset && offset + time.width <= record_len);
+        let found = known_time
+            .and_then(|time| infer_time(bytes, record_len, records, *time, book))
+            .or_else(|| infer_text(bytes, record_len, records, offset, book))
             .or_else(|| infer_number(bytes, record_len, records, offset, document_len, book));
         match found {
             Some((field, width)) => {
@@ -1478,6 +1492,33 @@ fn flush_unknown(fields: &mut Vec<Inferred>, unknown_start: &mut Option<usize>, 
             comment: "no pattern found".to_string(),
         });
     }
+}
+
+/// The known timestamp at `time`, in the byte order and format whose every
+/// value is a plausible time.
+fn infer_time(bytes: &[u8], record_len: usize, records: usize, time: KnownTime, book: &mut NameBook) -> Option<(Inferred, usize)> {
+    use crate::patterns::TimeFormat;
+    let formats: &[TimeFormat] = match time.width {
+        4 => &[TimeFormat::UnixSeconds],
+        8 => &[TimeFormat::UnixMillis, TimeFormat::FileTime],
+        _ => return None,
+    };
+    for big in [false, true] {
+        let values = column(bytes, record_len, records, time.offset, time.width, big);
+        for &format in formats {
+            if values.iter().all(|&value| format.to_unix_seconds(value).is_some()) {
+                let suffix = if big { "be" } else { "" };
+                let field = Inferred {
+                    name: book.name("time"),
+                    ty: format!("u{}{suffix}", time.width * 8),
+                    expected: None,
+                    comment: format!("{}, found by the timestamp detector", format.label()),
+                };
+                return Some((field, time.width));
+            }
+        }
+    }
+    None
 }
 
 fn infer_text(bytes: &[u8], record_len: usize, records: usize, offset: usize, book: &mut NameBook) -> Option<(Inferred, usize)> {
@@ -1810,7 +1851,7 @@ mod tests {
     #[test]
     fn inferred_templates_round_trip_and_recover_the_counter() {
         let bytes = synthetic_records(200);
-        let source = infer_struct(&bytes, 24, 200, 1_000_000);
+        let source = infer_struct(&bytes, 24, 200, 1_000_000, &[]);
         assert!(source.contains("magic: char[4] = \"REC1\""), "{source}");
         assert!(source.contains("counter: u32"), "{source}");
         assert!(source.contains("offset: u32"), "{source}");
@@ -1827,10 +1868,10 @@ mod tests {
 
     #[test]
     fn inference_with_too_few_records_still_parses() {
-        let source = infer_struct(&[1, 2, 3], 8, 5, 100);
+        let source = infer_struct(&[1, 2, 3], 8, 5, 100, &[]);
         assert!(source.contains("bytes[8]"));
         assert!(Template::parse(&source).is_ok());
-        assert!(Template::parse(&infer_struct(&[], 0, 0, 0)).is_ok());
+        assert!(Template::parse(&infer_struct(&[], 0, 0, 0, &[])).is_ok());
     }
 
     #[test]
