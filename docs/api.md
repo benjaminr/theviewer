@@ -306,7 +306,7 @@ A recipe step that starts a job waits for it (up to 10 minutes), and later steps
 | [`checksums.digests`](#checksumsdigests) | read |  | The digests of a span (at most 64 MiB): CRC-32, Adler-32, MD5, SHA-1, SHA-256, the 8- and 16-bit sums and the XOR of every byte. |
 | [`checksums.find_stored`](#checksumsfind_stored) | read |  | Find a CRC, Adler or sum stored in a span (at most 64 MiB) that covers part of it, testing header and trailer fields, and the fields at the boundaries given, against the bytes before, after and around them. |
 | [`checksums.solve_crc`](#checksumssolve_crc) | job |  | Start the CRC solver on records of equal length that each carry a stored CRC, as a job: every polynomial, init, xorout and reflection that reproduces all the stored values (like reveng), with the closest catalogue algorithm, is job.finished's result, and in the window it fills the CRC solver. |
-| [`diff.run`](#diffrun) | job |  | Start a comparison of a document with another file as a job: the regions replaced, only in the document and only in the other file (inserted, deleted and changed, not just flipped bytes), with the bytes equal and changed, are job.finished's result, and in the window they fill the Diff tab and are outlined on the views. |
+| [`diff.run`](#diffrun) | job |  | Start a comparison of a document with another file (path) or another open document (other) as a job: the regions replaced, only in the document and only in the other file (inserted, deleted and changed, not just flipped bytes), with the bytes equal and changed, are job.finished's result, and in the window they fill the Diff tab and are outlined on the views. |
 | [`disasm.set_arch`](#disasmset_arch) | view |  | Choose the architecture the Disassembly tab decodes as, or auto (the executable header's, else a guess from the bytes); headless there is no listing to change, and the choice is only returned. |
 | [`crypto.scan_constants`](#cryptoscan_constants) | job |  | Start a scan of the whole document (an edited one's first 256 MiB) for well-known constants of crypto and compression code (AES S-boxes, hash initial values, CRC tables, deflate tables, Blowfish, DES, ChaCha, TEA, curve primes, Base64 alphabets) as a job: the matches are job.finished's result, and in the window they fill Crypto constants. |
 | [`crypto.repeated_blocks`](#cryptorepeated_blocks) | job |  | Start a search of a span (at most 16 MiB) for random-looking 8- and 16-byte blocks that repeat, the mark of ECB-mode encryption, as a job: the verdict, the best block size and alignment, the most repeated blocks and the repeats along the span are job.finished's result, and in the window they fill the Crypto panel. |
@@ -3071,7 +3071,7 @@ Start the CRC solver on records of equal length that each carry a stored CRC, as
 
 ### diff.run
 
-Start a comparison of a document with another file as a job: the regions replaced, only in the document and only in the other file (inserted, deleted and changed, not just flipped bytes), with the bytes equal and changed, are job.finished's result, and in the window they fill the Diff tab and are outlined on the views.
+Start a comparison of a document with another file (path) or another open document (other) as a job: the regions replaced, only in the document and only in the other file (inserted, deleted and changed, not just flipped bytes), with the bytes equal and changed, are job.finished's result, and in the window they fill the Diff tab and are outlined on the views.
 
 **Effect:** `job` · **MCP tool:** `diff_run`, through `api_call`, or with `--all-tools`
 
@@ -3080,7 +3080,8 @@ Start a comparison of a document with another file as a job: the regions replace
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `doc` | string | no | Document id, path or "current" (the default). |
-| `path` | string | yes | The file to compare it with. |
+| `other` | string | no | An open document to compare it with, by id or path, such as a sheet derived from it; give this or `path`. |
+| `path` | string | no | The file to compare it with; give this or `other`. |
 
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |

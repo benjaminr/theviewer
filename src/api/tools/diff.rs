@@ -1,5 +1,6 @@
-//! `diff.run`: the Diff tool's comparison of a document with another file,
-//! finding inserted, deleted and changed regions rather than flipped bytes.
+//! `diff.run`: the Diff tool's comparison of a document with another file
+//! or another open document, finding inserted, deleted and changed regions
+//! rather than flipped bytes.
 
 use std::path::PathBuf;
 
@@ -21,7 +22,7 @@ pub(super) const METHODS: &[crate::api::Method] = &[method!(
     caller run,
     DiffParams,
     JobStartedResult,
-    "Start a comparison of a document with another file as a job: the regions replaced, only in the document and only in the other file (inserted, deleted and changed, not just flipped bytes), with the bytes equal and changed, are job.finished's result, and in the window they fill the Diff tab and are outlined on the views."
+    "Start a comparison of a document with another file (path) or another open document (other) as a job: the regions replaced, only in the document and only in the other file (inserted, deleted and changed, not just flipped bytes), with the bytes equal and changed, are job.finished's result, and in the window they fill the Diff tab and are outlined on the views."
 )];
 
 /// An example call of each of [`METHODS`], run in order on a fresh
@@ -42,8 +43,13 @@ pub struct DiffParams {
     /// Document id, path or "current" (the default).
     #[serde(default)]
     pub doc: Option<String>,
-    /// The file to compare it with.
-    pub path: String,
+    /// The file to compare it with; give this or `other`.
+    #[serde(default)]
+    pub path: Option<String>,
+    /// An open document to compare it with, by id or path, such as a sheet
+    /// derived from it; give this or `path`.
+    #[serde(default)]
+    pub other: Option<String>,
 }
 
 /// One region where the two differ.
@@ -61,8 +67,12 @@ pub enum DiffRegion {
 /// What `diff.run`'s job finishes with.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct DiffRunResult {
-    /// The file compared with.
-    pub path: String,
+    /// The file compared with, when it was a file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    /// The open document compared with, when it was one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub other: Option<String>,
     pub equal_bytes: u64,
     pub changed_bytes: u64,
     /// Whether the comparison stopped at its limit of operations.
@@ -72,8 +82,8 @@ pub struct DiffRunResult {
 }
 
 impl DiffRunResult {
-    /// The comparison as an API caller collects it.
-    pub fn of(path: &str, result: &DiffResult) -> Self {
+    /// The comparison with `against` as an API caller collects it.
+    pub fn of(against: &Against, result: &DiffResult) -> Self {
         let regions = result
             .ops
             .iter()
@@ -84,57 +94,90 @@ impl DiffRunResult {
                 DiffOp::Delete { a, len } => Some(DiffRegion::Delete { a: a as u64, len: len as u64 }),
             })
             .collect();
-        DiffRunResult { path: path.to_string(), equal_bytes: result.equal_bytes as u64, changed_bytes: result.changed_bytes as u64, truncated: result.truncated, regions }
+        let (path, other) = match against {
+            Against::File(path) => (Some(path.clone()), None),
+            Against::Document(id) => (None, Some(id.clone())),
+        };
+        DiffRunResult { path, other, equal_bytes: result.equal_bytes as u64, changed_bytes: result.changed_bytes as u64, truncated: result.truncated, regions }
     }
 }
 
-/// The document's side of a comparison: its file when it has no unsaved
-/// edits, else a copy of its bytes.
-enum OwnSide {
+/// What a document is compared with: a file, or another open document.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Against {
+    File(String),
+    Document(String),
+}
+
+/// One side of a comparison: a file, or a copy of a document's bytes when
+/// it has unsaved edits or no file.
+enum Side {
     Path(PathBuf),
     Bytes(Vec<u8>),
+}
+
+impl Side {
+    /// Open the side to compare.
+    fn open(self) -> Result<Document, String> {
+        match self {
+            Side::Path(path) => Document::open(&path).map_err(|error| format!("{error:#}")),
+            Side::Bytes(bytes) => Ok(Document::from_bytes(bytes)),
+        }
+    }
+
+    /// The side of the open document `id`: its file when it has no unsaved
+    /// edits, else a copy of its bytes.
+    fn of(workspace: &mut dyn Workspace, id: &str) -> Result<Side, ApiError> {
+        let (_, document) = workspace::document(workspace, Some(id))?;
+        Ok(match document.path().filter(|_| !document.is_modified()) {
+            Some(path) => Side::Path(path.to_path_buf()),
+            None => Side::Bytes(document.read_range(0, DIFF_COPY_LIMIT)),
+        })
+    }
 }
 
 /// What a comparison ends with: the other file opened and the differences,
 /// or why it could not be made.
 pub type DiffOutcome = Result<(Document, DiffResult), String>;
 
-/// Compare `own` with the file at `other`.
-fn compare(own: OwnSide, other: &std::path::Path) -> DiffOutcome {
-    let mut a = match own {
-        OwnSide::Path(path) => Document::open(&path).map_err(|error| format!("{error:#}"))?,
-        OwnSide::Bytes(bytes) => Document::from_bytes(bytes),
-    };
-    let mut b = Document::open(other).map_err(|error| format!("{error:#}"))?;
+/// Compare `own` with `other`.
+fn compare(own: Side, other: Side) -> DiffOutcome {
+    let mut a = own.open()?;
+    let mut b = other.open()?;
     let result = crate::diff::diff(&mut a, &mut b, DiffLimits::default());
     Ok((b, result))
 }
 
 /// `diff.run`: compare on a thread, reading the other file there.
 pub fn run(workspace: &mut dyn Workspace, caller: &Caller, params: DiffParams) -> Result<JobStartedResult, ApiError> {
-    let other = PathBuf::from(&params.path);
-    if !other.is_file() {
-        return Err(ApiError::not_found(format!("there is no file at {}; give the path of a file to compare with", params.path)));
-    }
+    let (against, other) = match (&params.path, &params.other) {
+        (Some(path), None) => {
+            let file = PathBuf::from(path);
+            if !file.is_file() {
+                return Err(ApiError::not_found(format!("there is no file at {path}; give the path of a file to compare with")));
+            }
+            (Against::File(path.clone()), Side::Path(file))
+        }
+        (None, Some(other)) => {
+            let other = workspace::resolve(workspace, Some(other))?;
+            (Against::Document(other.clone()), Side::of(workspace, &other)?)
+        }
+        _ => return Err(ApiError::invalid_params("give what to compare with one way: a file's path, or an open document as other")),
+    };
     let id = workspace::resolve(workspace, params.doc.as_deref())?;
     let info = workspace::info(workspace, &id)?;
-    let (_, document) = workspace::document(workspace, Some(&id))?;
-    let own = match document.path().filter(|_| !document.is_modified()) {
-        Some(path) => OwnSide::Path(path.to_path_buf()),
-        None => OwnSide::Bytes(document.read_range(0, DIFF_COPY_LIMIT)),
-    };
+    let own = Side::of(workspace, &id)?;
     let span = ToolSpan { doc: id, version: info.version, start: 0, len: info.len as usize };
     let deliver = tool_jobs::window_showing(workspace, &span.doc).map(crate::analysis_tabs::await_diff);
-    let path = params.path;
     Ok(tool_jobs::spawn(
         workspace,
         &caller.producer(),
         ("diff", "Diff"),
         &span,
         deliver,
-        move |_| compare(own, &other),
+        move |_| compare(own, other),
         move |outcome| match outcome {
-            Ok((_, result)) => Summary::of(format!("{} bytes equal, {} differ", result.equal_bytes, result.changed_bytes), DiffRunResult::of(&path, result)),
+            Ok((_, result)) => Summary::of(format!("{} bytes equal, {} differ", result.equal_bytes, result.changed_bytes), DiffRunResult::of(&against, result)),
             Err(message) => Summary::failed(message.clone()),
         },
     ))
@@ -162,6 +205,17 @@ mod tests {
         let result = &status["result"];
         assert_eq!(result["changed_bytes"], 10, "{result}");
         assert_eq!(result["regions"][0], json!({"op": "replace", "a": 5000, "a_len": 10, "b": 5000, "b_len": 10}));
+    }
+
+    #[test]
+    fn comparing_with_another_open_document_lists_where_they_differ() {
+        let mut workspace = workspace_with("a.bin", b"0123456789");
+        call(&mut workspace, "documents.derive", json!({"data": "0123XY6789", "encoding": "text"})).unwrap();
+        let status = run_job(&mut workspace, "diff.run", json!({"doc": "doc-1", "other": "doc-2"}));
+        assert_eq!(status["state"], "finished", "{status}");
+        assert_eq!(status["result"]["other"], "doc-2");
+        assert_eq!(status["result"]["regions"][0], json!({"op": "replace", "a": 4, "a_len": 2, "b": 4, "b_len": 2}));
+        assert_eq!(call(&mut workspace, "diff.run", json!({"other": "doc-2", "path": "/tmp/x"})).unwrap_err().code, ErrorCode::InvalidParams, "one way only");
     }
 
     #[test]

@@ -122,7 +122,9 @@ impl ViewerApp {
             }
             DockTab::Xor => crate::analysis_stats::refresh_xor(self),
             DockTab::Diff => {
-                if let Some(path) = self.bench.analysis.diff_other.clone() {
+                if let Some(other) = self.bench.analysis.diff_other_sheet.clone() {
+                    crate::analysis_tabs::start_diff_with_sheet(self, &other);
+                } else if let Some(path) = self.bench.analysis.diff_other.clone() {
                     crate::analysis_tabs::start_diff(self, path.into());
                 }
             }

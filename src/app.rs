@@ -927,6 +927,7 @@ impl ViewerApp {
                 self.dock.open = true;
                 self.dock.tab = DockTab::Diff;
                 self.bench.analysis.diff_other = Some(path.display().to_string());
+                self.bench.analysis.diff_other_sheet = None;
                 crate::analysis_tabs::start_diff(self, path.to_path_buf());
             }
             FileAction::Call { method, params, path_field } => {

@@ -53,6 +53,8 @@ pub struct AnalysisState {
     pub checksum_matches: Option<Vec<StoredChecksum>>,
 
     pub diff_other: Option<String>,
+    /// The open sheet compared with, when it was one rather than a file.
+    pub diff_other_sheet: Option<String>,
     diff_pending: Option<Receiver<DiffOutcome>>,
     pub diff: Option<DiffResult>,
     other: Option<Document>,
@@ -71,6 +73,7 @@ impl Default for AnalysisState {
             digests: None,
             checksum_matches: None,
             diff_other: None,
+            diff_other_sheet: None,
             diff_pending: None,
             diff: None,
             other: None,
@@ -353,6 +356,19 @@ fn show_stored_checksum(app: &mut ViewerApp, found: &StoredChecksum) {
 /// The person compares the open document with another file: `diff.run`.
 pub fn start_diff(app: &mut ViewerApp, other_path: std::path::PathBuf) {
     let _ = app.perform("diff.run", serde_json::json!({ "path": other_path.display().to_string() }));
+}
+
+/// The person compares the sheet shown with the open sheet `other`
+/// (Compare with active, in the tree of sheets): `diff.run`, shown in the
+/// Diff tab.
+pub fn start_diff_with_sheet(app: &mut ViewerApp, other: &str) {
+    app.dock.open = true;
+    app.dock.tab = crate::dock::DockTab::Diff;
+    let title = app.sheet_title(other).unwrap_or_else(|| other.to_string());
+    if app.perform("diff.run", serde_json::json!({ "other": other })).is_ok() {
+        app.bench.analysis.diff_other = Some(format!("{title} ({other})"));
+        app.bench.analysis.diff_other_sheet = Some(other.to_string());
+    }
 }
 
 /// Wait for a comparison `diff.run` started, to show it in the Diff tab;
