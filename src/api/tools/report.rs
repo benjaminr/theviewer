@@ -117,14 +117,14 @@ pub fn run(workspace: &mut dyn Workspace, caller: &Caller, params: RunParams) ->
     if let Some(app) = workspace.window()
         && app.document_id() == id
     {
-        return app.report_as(&caller.producer()).map(|job| JobStartedResult { job }).ok_or_else(|| ApiError::invalid_params("the report is already being worked out; wait for it to finish"));
+        return app.report_as(&caller.producer()).map(JobStartedResult::started).ok_or_else(|| ApiError::invalid_params("the report is already being worked out; wait for it to finish"));
     }
     let registry = workspace.registry();
     let (_, document) = workspace::document(workspace, Some(&id))?;
     let bytes = document.read_range(0, REPORT_READ_LIMIT);
     let publisher = workspace.bus().publisher();
     let job = workspace.bus().start_job("report", "Report", caller.producer(), Some((id.clone(), info.version)));
-    let started = JobStartedResult { job: job.id().to_string() };
+    let started = JobStartedResult::started(job.id().to_string());
     std::thread::spawn(move || {
         if let Some((regions, _)) = run_report(&bytes, &info.name, &registry, &job) {
             let regions = mapped_regions(&regions);

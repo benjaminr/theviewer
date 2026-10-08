@@ -156,11 +156,11 @@ pub fn analyse(workspace: &mut dyn Workspace, caller: &Caller, params: AnalysePa
     if let Some(app) = workspace.window()
         && app.document_id() == id
     {
-        return Ok(JobStartedResult { job: analysis_tools::analyse_protocol_from(app, start, bytes.len(), &caller.producer()) });
+        return Ok(JobStartedResult::started(analysis_tools::analyse_protocol_from(app, start, bytes.len(), &caller.producer())));
     }
     let publisher = workspace.bus().publisher();
     let job = workspace.bus().start_job("protocol", "Protocol analysis", caller.producer(), Some((id.clone(), version)));
-    let started = JobStartedResult { job: job.id().to_string() };
+    let started = JobStartedResult::started(job.id().to_string());
     std::thread::spawn(move || analysis_tools::run_protocol_analysis(start, bytes, &job, &publisher, (id, version)));
     Ok(started)
 }

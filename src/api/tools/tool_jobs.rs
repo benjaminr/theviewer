@@ -87,7 +87,7 @@ pub(crate) fn spawn<T: Send + 'static>(
     summarise: impl FnOnce(&T) -> Summary + Send + 'static,
 ) -> JobStartedResult {
     let job = workspace.bus().start_job(kind, title, producer, Some((span.doc.clone(), span.version)));
-    let started = JobStartedResult { job: job.id().to_string() };
+    let started = JobStartedResult::started(job.id());
     std::thread::spawn(move || {
         let result = work(&job);
         if job.is_cancelled() {

@@ -194,10 +194,10 @@ pub fn run(workspace: &mut dyn Workspace, caller: &Caller, params: RunParams) ->
     if let Some(app) = workspace.window()
         && app.document_id() == id
     {
-        return Ok(JobStartedResult { job: crate::panel_alignment::align_as(app, gathered, threshold, &caller.producer()) });
+        return Ok(JobStartedResult::started(crate::panel_alignment::align_as(app, gathered, threshold, &caller.producer())));
     }
     let job = workspace.bus().start_job("alignment", "Message alignment", caller.producer(), Some((id, version)));
-    let started = JobStartedResult { job: job.id().to_string() };
+    let started = JobStartedResult::started(job.id().to_string());
     std::thread::spawn(move || run_alignment(&gathered, threshold, &job));
     Ok(started)
 }

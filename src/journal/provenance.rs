@@ -36,8 +36,12 @@
 //!   the params no longer hold (summarised, say) stays literal;
 //! * steps are numbered 1, 2, 3… in step order, and step anchors (and the
 //!   steps of picks and thens) are renumbered to match; an anchor citing a
-//!   step the recipe does not hold (failed, left out or dropped) stays
-//!   literal;
+//!   step the recipe does not hold (failed, dropped, or a read never
+//!   cited) fails the recipe, naming the step, rather than quietly
+//!   repeating the literal;
+//! * an anchor on a job's result (`job.…`) cites the step that started the
+//!   job: `jobs.status` polls are not journalled, and
+//!   [`make_anchor`] refuses a `job.` path on a step that started none;
 //! * a step that reads a variable brings the `vars.set` step that bound it,
 //!   and a parameter whose default is an anchor brings the steps that
 //!   anchor cites;
@@ -317,13 +321,12 @@ fn literal_at(workspace: &dyn Workspace, step: u64, path: &str) -> Result<Value,
 /// path; a read it cites is moved into the journal first.
 pub fn make_anchor(workspace: &mut dyn Workspace, step: u64, path: &str, anchor: Anchor) -> Result<AnchorChange, ApiError> {
     let value = literal_at(workspace, step, path)?;
-    match &anchor {
-        Anchor::Step { step: cited, path: cited_path } => check_cited(workspace, step, *cited, cited_path)?,
-        Anchor::Param { param } => {
-            check_parameter_name(param)?;
-            parameter_type_of(&value).ok_or_else(|| ApiError::invalid_params(format!("the value at '{path}' is not a string, number or true/false, so it cannot be a parameter")))?;
-        }
-        _ => {}
+    for (cited, cited_path) in cited_paths(&anchor) {
+        check_cited(workspace, step, cited, &cited_path)?;
+    }
+    if let Anchor::Param { param } = &anchor {
+        check_parameter_name(param)?;
+        parameter_type_of(&value).ok_or_else(|| ApiError::invalid_params(format!("the value at '{path}' is not a string, number or true/false, so it cannot be a parameter")))?;
     }
     let replaced = workspace.journal_mut().set_anchor(step, path, Some(anchor.clone()))?;
     Ok(AnchorChange { step, path: path.to_string(), value, anchor: Some(anchor), replaced })
@@ -335,6 +338,21 @@ pub fn clear_anchor(workspace: &mut dyn Workspace, step: u64, path: &str) -> Res
     let value = anchors::value_at(&value, path)?.cloned().unwrap_or(Value::Null);
     let replaced = workspace.journal_mut().set_anchor(step, path, None)?;
     Ok(AnchorChange { step, path: path.to_string(), value, anchor: None, replaced })
+}
+
+/// The steps `anchor` reads by number, each with the path it reads there:
+/// a step anchor's path, a pick's list, and those of the anchor a then
+/// transforms.
+fn cited_paths(anchor: &Anchor) -> Vec<(u64, String)> {
+    match anchor {
+        Anchor::Step { step, path } => vec![(*step, path.clone())],
+        Anchor::Pick { pick } => match pick.step {
+            anchors::StepRef::Number(step) => vec![(step, pick.list.clone())],
+            anchors::StepRef::Label(_) => Vec::new(),
+        },
+        Anchor::Then { of, .. } => cited_paths(of),
+        _ => Vec::new(),
+    }
 }
 
 /// Check that step `step` may cite `cited_path` of step `cited`, promoting
@@ -352,12 +370,33 @@ fn check_cited(workspace: &mut dyn Workspace, step: u64, cited: u64, cited_path:
     if !cited_entry.outcome.is_ok() {
         return Err(ApiError::invalid_params(format!("step {cited} failed, so it has no value to take")));
     }
+    if in_job && cited_entry.effect != api::Effect::Job {
+        return Err(started_no_job(workspace.journal(), &cited_entry, cited_path));
+    }
     // A job's result is not in the journal: the runner keeps it.
     if !in_job && anchors::value_at(&entry_value(&cited_entry), cited_path)?.is_none() {
         return Err(ApiError::not_found(format!("step {cited} ({}) has no value at '{cited_path}'", cited_entry.method)));
     }
     super::promote(workspace, cited);
     Ok(())
+}
+
+/// The error for a `job.` path on `cited`, a step that started no job,
+/// naming the step that started the job it is about when there is one (a
+/// `jobs.status` poll recorded by an older build names its job).
+fn started_no_job(journal: &Journal, cited: &JournalEntry, cited_path: &str) -> ApiError {
+    let about = cited.params.get("job").or_else(|| cited.result.as_ref().and_then(|result| result.get("job"))).and_then(Value::as_str);
+    let starter = about.and_then(|job| job_starter(journal, job));
+    let instead = match (starter, about) {
+        (Some(starter), Some(job)) => format!("; cite step {} ({}), which started {job}", starter.step, starter.method),
+        _ => String::new(),
+    };
+    ApiError::invalid_params(format!("step {} ({}) started no job, so it has nothing at {cited_path}{instead}", cited.step, cited.method))
+}
+
+/// The successful step of the journal that started job `job`.
+pub fn job_starter<'a>(journal: &'a Journal, job: &str) -> Option<&'a JournalEntry> {
+    journal.entries().find(|entry| entry.effect == api::Effect::Job && entry.outcome.is_ok() && entry.result.as_ref().and_then(|result| result.get("job")).and_then(Value::as_str) == Some(job))
 }
 
 /// An entry as a step anchor's path reads it: `{"params", "result"}`.
@@ -617,10 +656,14 @@ impl Recipe {
         }
         let numbers: BTreeMap<u64, u64> = entries.iter().zip(1..).map(|(entry, number)| (entry.step, number)).collect();
         let mut problems = Vec::new();
+        let mut lost_anchors = Vec::new();
         for (step, entry) in recipe.steps.iter_mut().zip(&entries) {
             step.step = numbers[&entry.step];
             for (path, anchor) in &entry.derived_from {
-                let Some(anchor) = renumbered(anchor, &numbers) else { continue };
+                let Some(anchor) = renumbered(anchor, &numbers) else {
+                    lost_anchors.push(lost_anchor(entry, path, anchor, &numbers));
+                    continue;
+                };
                 let Ok(Some(literal)) = anchors::value_at(&step.params, path).map(|value| value.cloned()) else { continue };
                 if let Anchor::Param { param } = &anchor {
                     let Some(kind) = parameter_type_of(&literal) else { continue };
@@ -636,10 +679,10 @@ impl Recipe {
             name_documents(step, entry, root.as_deref(), lineage, &numbers, &mut problems);
             name_jobs(step, entry, &entries, &numbers);
         }
-        if !problems.is_empty() {
-            let listed: Vec<String> = problems.iter().map(DocumentProblem::describe).collect();
+        if !problems.is_empty() || !lost_anchors.is_empty() {
+            let listed: Vec<String> = problems.iter().map(DocumentProblem::describe).chain(lost_anchors.iter().cloned()).collect();
             let message = format!("the recipe would not replay: {}", listed.join("; "));
-            return Err(ApiError::invalid_params(message).with_data(serde_json::json!({ "problems": problems })));
+            return Err(ApiError::invalid_params(message).with_data(serde_json::json!({ "problems": problems, "anchors": lost_anchors })));
         }
         Ok(recipe)
     }
@@ -680,9 +723,13 @@ fn recorded_root(entries: &[&JournalEntry], lineage: &SheetLineage, session: &Jo
 /// params; the input left out of `doc` (the run's document) or a
 /// `{"sheet": "input"}` anchor elsewhere; a sheet a step of the recipe made
 /// as a sheet anchor on that step (by its label, when it has one). Any
-/// other document is a problem, said in `problems`.
+/// other document is a problem, said in `problems`. A `doc` the caller gave
+/// as an anchor (a pick of one of the sheets a step made, say) keeps it.
 fn name_documents(step: &mut super::recipe::RecipeStep, entry: &JournalEntry, root: Option<&str>, lineage: &SheetLineage, numbers: &BTreeMap<u64, u64>, problems: &mut Vec<DocumentProblem>) {
     for (path, doc) in documents_named(entry) {
+        if entry.derived_from.contains_key(&path) {
+            continue;
+        }
         let replacement = if Some(doc.as_str()) == root {
             None
         } else {
@@ -828,6 +875,30 @@ fn binding_step(journal: &Journal, name: &str, before: u64) -> Option<u64> {
         .map(|entry| entry.step)
 }
 
+/// Why the anchor `entry` recorded at `path` cannot be in the recipe: it
+/// cites a step the recipe does not hold, so the recipe would repeat the
+/// literal and find the old value on every file.
+fn lost_anchor(entry: &JournalEntry, path: &str, anchor: &Anchor, numbers: &BTreeMap<u64, u64>) -> String {
+    let missing: Vec<String> = cited_paths(anchor).into_iter().map(|(step, _)| step).chain(sheet_step(anchor)).filter(|step| !numbers.contains_key(step)).map(|step| step.to_string()).collect();
+    let cited = match missing.as_slice() {
+        [] => "a step".to_string(),
+        [one] => format!("step {one}"),
+        several => format!("steps {}", several.join(", ")),
+    };
+    format!(
+        "step {} ({}) takes {path} from {cited}, which the recipe does not hold (it failed, was undone, is a read that was never cited, or is not among the steps saved), so the recipe would repeat the literal; cite a step the recipe keeps (history.make_anchor) or clear the anchor (history.clear_anchor)",
+        entry.step, entry.method
+    )
+}
+
+/// The step a sheet anchor names by number.
+fn sheet_step(anchor: &Anchor) -> Option<u64> {
+    match anchor {
+        Anchor::Sheet { sheet: SheetRef::Step { step, .. } | SheetRef::Labelled { step, .. } } => Some(*step),
+        _ => None,
+    }
+}
+
 /// `anchor` with its steps renumbered as the recipe numbers them; `None`
 /// when it cites a step the recipe does not hold.
 fn renumbered(anchor: &Anchor, numbers: &BTreeMap<u64, u64>) -> Option<Anchor> {
@@ -967,7 +1038,10 @@ fn earlier_lists(workspace: &mut dyn Workspace, earlier: &[JournalEntry]) -> Vec
     let mut lists = Vec::new();
     for entry in earlier {
         let mut value = entry_value(entry);
-        if let Some(job) = entry.result.as_ref().and_then(|result| result.get("job")).and_then(Value::as_str)
+        // Only the step that started a job has its result: a poll of it
+        // (`jobs.status`) names the job too, but a recipe cannot cite it.
+        if entry.effect == api::Effect::Job
+            && let Some(job) = entry.result.as_ref().and_then(|result| result.get("job")).and_then(Value::as_str)
             && let Some(result) = workspace.bus().jobs().status(job).and_then(|status| status.result)
         {
             value["job"] = result;

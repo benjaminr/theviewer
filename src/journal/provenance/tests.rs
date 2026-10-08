@@ -76,13 +76,14 @@ fn a_parameter_declared_for_the_session_keeps_its_description_and_type() {
 }
 
 #[test]
-fn a_step_anchor_citing_a_step_the_recipe_leaves_out_stays_literal() {
+fn a_recipe_whose_anchor_cites_a_step_it_cannot_hold_is_refused_rather_than_repeating_the_old_value() {
     let mut failed = entry(3, "search.find", json!({"query": "PK"}), DerivedFrom::new());
     failed.outcome = Outcome::Error(ApiError::not_found("gone"));
     let entries = [failed, entry(5, "cursor.set", json!({"offset": 40}), DerivedFrom::from([("offset".into(), Anchor::Step { step: 3, path: "result.at".into() })]))];
-    let recipe = Recipe::with_anchors("Jump", &session(), &entries, &BTreeMap::new(), &SheetLineage::default()).unwrap();
-    assert_eq!(recipe.steps.len(), 1);
-    assert_eq!(recipe.steps[0].params, json!({"offset": 40}));
+    let refused = Recipe::with_anchors("Jump", &session(), &entries, &BTreeMap::new(), &SheetLineage::default()).unwrap_err();
+    assert_eq!(refused.code, crate::api::ErrorCode::InvalidParams);
+    assert!(refused.message.contains("step 5 (cursor.set) takes offset from step 3, which the recipe does not hold"), "{}", refused.message);
+    assert!(refused.message.contains("so the recipe would repeat the literal"), "{}", refused.message);
 }
 
 #[test]

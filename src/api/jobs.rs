@@ -17,7 +17,7 @@ use crate::bus::JobStatus;
 /// their namespace. A new method is added here, and only here.
 pub(super) const METHODS: &[super::Method] = &[
     method!("jobs.list", Read, list, super::values::NoParams, JobList, "The background jobs tools and callers started (the last 100): what each does, who started it, whether it is running, how far it has got and how it ended."),
-    method!("jobs.status", Read, status, JobParams, crate::bus::JobStatus, "One job's state, progress and outcome, and once it has finished, the result of a job a method started."),
+    method!("jobs.status", Read, status, JobParams, crate::bus::JobStatus, "One job's state, progress and outcome, and once it has finished, the result of a job a method started. Polls are not journalled and take no step number: an anchor on a job's result cites the step that started it.").not_journalled(),
     method!("jobs.cancel", Analysis, cancel, JobParams, crate::bus::JobStatus, "Ask a running job to stop; it ends as cancelled, without a result, as soon as it notices.").leaves_nothing_to_undo("a job cancelled stays cancelled; run it again instead"),
 ];
 
@@ -62,6 +62,18 @@ pub struct JobParams {
 pub struct JobStartedResult {
     /// Follow it with jobs.status, or on job.progress and job.finished.
     pub job: String,
+    /// The journal step that started it, which an anchor on the job's
+    /// result cites (`{"step": N, "path": "job.…"}`); none for a call
+    /// inside another, such as a recipe's step.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step: Option<u64>,
+}
+
+impl JobStartedResult {
+    /// The result of starting job `job`; the call fills in its step.
+    pub fn started(job: impl Into<String>) -> Self {
+        JobStartedResult { job: job.into(), step: None }
+    }
 }
 
 pub fn list(workspace: &mut dyn Workspace, _params: NoParams) -> Result<JobList, ApiError> {

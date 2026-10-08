@@ -219,7 +219,7 @@ fn document_bytes(workspace: &mut dyn Workspace, doc: Option<&str>) -> Result<(T
 pub fn run(workspace: &mut dyn Workspace, caller: &Caller, params: UnpackParams) -> Result<JobStartedResult, ApiError> {
     let id = workspace::resolve(workspace, params.doc.as_deref())?;
     if let Some(app) = tool_jobs::window_showing(workspace, &id) {
-        return Ok(JobStartedResult { job: app.unpack_as(&caller.producer(), params.password) });
+        return Ok(JobStartedResult::started(app.unpack_as(&caller.producer(), params.password)));
     }
     let (span, name, bytes) = document_bytes(workspace, Some(&id))?;
     let password = params.password;

@@ -246,11 +246,11 @@ pub fn segment(workspace: &mut dyn Workspace, caller: &Caller, params: DocOnlyPa
     if shown_in_window(workspace, &id)
         && let Some(app) = workspace.window()
     {
-        return Ok(JobStartedResult { job: crate::panel_structure_map::segment_as(app, &caller.producer()) });
+        return Ok(JobStartedResult::started(crate::panel_structure_map::segment_as(app, &caller.producer())));
     }
     let (id, version, bytes) = scanned(workspace, Some(&id))?;
     let job = workspace.bus().start_job("structure-map", "Segmenting the file", caller.producer(), Some((id, version)));
-    let started = JobStartedResult { job: job.id().to_string() };
+    let started = JobStartedResult::started(job.id().to_string());
     std::thread::spawn(move || run_segmentation(&bytes, &job));
     Ok(started)
 }
@@ -275,11 +275,11 @@ pub fn find_similar(workspace: &mut dyn Workspace, caller: &Caller, params: Find
     if shown_in_window(workspace, &id)
         && let Some(app) = workspace.window()
     {
-        return Ok(JobStartedResult { job: crate::panel_structure_map::find_similar_as(app, span, histogram_weight, threshold, &caller.producer()) });
+        return Ok(JobStartedResult::started(crate::panel_structure_map::find_similar_as(app, span, histogram_weight, threshold, &caller.producer())));
     }
     let (id, version, bytes) = scanned(workspace, Some(&id))?;
     let job = workspace.bus().start_job("similar-blocks", "Finding blocks like the selection", caller.producer(), Some((id, version)));
-    let started = JobStartedResult { job: job.id().to_string() };
+    let started = JobStartedResult::started(job.id().to_string());
     std::thread::spawn(move || run_similar(&bytes, span, histogram_weight, threshold, &job));
     Ok(started)
 }
@@ -289,11 +289,11 @@ pub fn compute_tracks(workspace: &mut dyn Workspace, caller: &Caller, params: Do
     if shown_in_window(workspace, &id)
         && let Some(app) = workspace.window()
     {
-        return Ok(JobStartedResult { job: crate::panel_structure_map::tracks_as(app, &caller.producer()) });
+        return Ok(JobStartedResult::started(crate::panel_structure_map::tracks_as(app, &caller.producer())));
     }
     let (id, version, bytes) = scanned(workspace, Some(&id))?;
     let job = workspace.bus().start_job("feature-tracks", "Feature tracks", caller.producer(), Some((id, version)));
-    let started = JobStartedResult { job: job.id().to_string() };
+    let started = JobStartedResult::started(job.id().to_string());
     std::thread::spawn(move || run_tracks(&bytes, &job));
     Ok(started)
 }

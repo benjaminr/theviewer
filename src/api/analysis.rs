@@ -328,7 +328,7 @@ pub fn overview_job(workspace: &mut dyn Workspace, caller: &Caller, params: Over
     let bytes = whole_file(document);
     let len = document.len();
     let job = workspace.bus().start_job("overview", "File overview", caller.producer(), Some((id, info.version)));
-    let started = JobStartedResult { job: job.id().to_string() };
+    let started = JobStartedResult::started(job.id().to_string());
     std::thread::spawn(move || {
         let mut report = headless::analyse_bytes(&bytes, &info.name, &info.name, len, &registry);
         if job.is_cancelled() {
@@ -359,12 +359,12 @@ pub fn period_scan(workspace: &mut dyn Workspace, caller: &Caller, params: Perio
     if let Some(app) = workspace.window()
         && app.document_id() == id
     {
-        return Ok(JobStartedResult { job: app.scan_periods_from(start, len, max_period, &caller.producer()) });
+        return Ok(JobStartedResult::started(app.scan_periods_from(start, len, max_period, &caller.producer())));
     }
     let (_, document) = workspace::document(workspace, Some(&id))?;
     let bytes = document.read_range(start, len);
     let job = workspace.bus().start_job("period-scan", "Period scan", caller.producer(), Some((id, version)));
-    let started = JobStartedResult { job: job.id().to_string() };
+    let started = JobStartedResult::started(job.id().to_string());
     std::thread::spawn(move || run_period_scan(&bytes, start, max_period, &job));
     Ok(started)
 }

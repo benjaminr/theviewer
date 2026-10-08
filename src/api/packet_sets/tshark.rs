@@ -109,10 +109,10 @@ pub fn decode(workspace: &mut dyn Workspace, caller: &Caller, params: TsharkPara
     if let Some(app) = workspace.window()
         && app.bench.panels.packets.api_set.as_deref() == Some(params.set.as_str())
     {
-        return Ok(JobStartedResult { job: panel_tshark::start_for(app, Some(indices), mode, Some(Box::new(keep))) });
+        return Ok(JobStartedResult::started(panel_tshark::start_for(app, Some(indices), mode, Some(Box::new(keep)))));
     }
     let job = workspace.bus().start_job("tshark", "Decoding with tshark", caller.producer(), Some((doc, version)));
-    let started = JobStartedResult { job: job.id().to_string() };
+    let started = JobStartedResult::started(job.id().to_string());
     std::thread::spawn(move || {
         let Some(program) = find_tshark(None) else {
             return job.finish(false, panel_tshark::NOT_FOUND);

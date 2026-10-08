@@ -300,3 +300,57 @@ fn a_sheet_passed_by_anchor_brings_the_step_that_made_it_into_a_recipe_of_chosen
     assert_eq!(methods, ["documents.derive", "unpack.open"], "the sheet's maker is kept");
     assert_eq!(recipe["steps"][1]["params"]["tree_doc"], json!({"$anchor": {"sheet": {"step": 1}}}));
 }
+
+/// Wait for job `job` the way a client does: polling `jobs.status`.
+fn poll_until_finished(workspace: &mut crate::api::HeadlessWorkspace, job: &str) {
+    while call(workspace, "jobs.status", json!({"job": job})).unwrap()["state"] == "running" {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
+
+#[test]
+fn a_value_found_in_a_job_s_result_is_suggested_from_the_step_that_started_it_and_kept_in_the_recipe() {
+    let mut workspace = workspace_with("novacam.upd", &firmware_with_serial("NC500-2F357657"));
+    let started = call(&mut workspace, "strings.find", json!({"min_chars": 5})).unwrap();
+    let strings = started["step"].as_u64().unwrap();
+    poll_until_finished(&mut workspace, started["job"].as_str().unwrap());
+    call(&mut workspace, "vars.set", json!({"name": "serial", "value": "NC500-2F357657"})).unwrap();
+    let bound = workspace.journal().last_step().unwrap();
+    assert_eq!(bound, strings + 1, "the polls took no step numbers");
+    let suggested = call(&mut workspace, "history.suggest_anchors", json!({"step": bound, "path": "value"})).unwrap();
+    let first = suggested["literals"][0]["suggestions"][0]["anchor"].clone();
+    assert_eq!(first["pick"]["step"], strings, "the pick cites the step that started the job: {first}");
+    call(&mut workspace, "history.make_anchor", json!({"step": bound, "path": "value", "anchor": first})).unwrap();
+    let recipe = call(&mut workspace, "history.recipe", json!({"name": "Serial"})).unwrap();
+    assert_eq!(recipe["steps"][1]["params"]["value"]["$anchor"]["pick"]["step"], 1, "the recipe keeps the pick: {recipe}");
+}
+
+#[test]
+fn a_job_path_on_a_step_that_started_no_job_is_refused_naming_the_step_that_did() {
+    let mut workspace = workspace_with("notes.txt", &b"The quick brown fox jumps over the lazy dog. ".repeat(50));
+    let started = call(&mut workspace, "analysis.overview_job", json!({"max_findings": 1})).unwrap();
+    let job = started["job"].as_str().unwrap().to_string();
+    crate::journal::replay::wait_for_job(&mut workspace, &job).unwrap();
+    call(&mut workspace, "jobs.cancel", json!({"job": job})).unwrap();
+    let cancelled = workspace.journal().last_step().unwrap();
+    call(&mut workspace, "vars.set", json!({"name": "file", "value": "notes.txt"})).unwrap();
+    let bound = workspace.journal().last_step().unwrap();
+    let refused = call(&mut workspace, "history.make_anchor", json!({"step": bound, "path": "value", "anchor": {"pick": {"step": cancelled, "list": "job.findings"}}})).unwrap_err();
+    assert_eq!(refused.code, ErrorCode::InvalidParams);
+    assert!(refused.message.contains(&format!("step {cancelled} (jobs.cancel) started no job, so it has nothing at job.findings")), "{}", refused.message);
+    assert!(refused.message.contains(&format!("cite step {} (analysis.overview_job), which started {job}", started["step"])), "{}", refused.message);
+}
+
+#[test]
+fn a_document_given_as_an_anchor_keeps_its_anchor_in_the_recipe() {
+    let mut workspace = workspace_with("bodies.bin", b"first body|second body");
+    let client = Caller::Mcp("claude-code".into());
+    api::call(&mut workspace, &client, "documents.derive", json!({"doc": "doc-1", "start": 0, "len": 10})).unwrap();
+    let first = workspace.journal().last_step().unwrap();
+    api::call(&mut workspace, &client, "documents.derive", json!({"doc": "doc-1", "start": 11})).unwrap();
+    let body = json!({"$anchor": {"step": first, "path": "result.output.doc"}});
+    api::call(&mut workspace, &client, "transform.apply", json!({"doc": body, "selection": {"range": [0, 5]}, "operation": {"op": "invert"}})).unwrap();
+    let recipe = call(&mut workspace, "history.recipe", json!({"name": "Bodies"})).unwrap();
+    assert_eq!(recipe["steps"][2]["method"], "transform.apply");
+    assert_eq!(recipe["steps"][2]["params"]["doc"], json!({"$anchor": {"step": 1, "path": "result.output.doc"}}), "the caller's anchor, not the sheet's place: {recipe}");
+}

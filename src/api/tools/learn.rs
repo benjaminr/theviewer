@@ -289,10 +289,10 @@ pub fn format(workspace: &mut dyn Workspace, caller: &Caller, params: FormatPara
     if shown_in_window(workspace, &id)
         && let Some(app) = workspace.window()
     {
-        return Ok(JobStartedResult { job: crate::panel_learn::learn_as(app, params.paths, &caller.producer()) });
+        return Ok(JobStartedResult::started(crate::panel_learn::learn_as(app, params.paths, &caller.producer())));
     }
     let job = workspace.bus().start_job("learn", "Learning a format", caller.producer(), Some((id, version)));
-    let started = JobStartedResult { job: job.id().to_string() };
+    let started = JobStartedResult::started(job.id().to_string());
     std::thread::spawn(move || run_learning(document, document_len, &params.paths, &job));
     Ok(started)
 }
@@ -303,10 +303,10 @@ pub fn fuzzy_compare(workspace: &mut dyn Workspace, caller: &Caller, params: Fuz
     if shown_in_window(workspace, &id)
         && let Some(app) = workspace.window()
     {
-        return Ok(JobStartedResult { job: crate::panel_learn::compare_as(app, params.paths, &caller.producer()) });
+        return Ok(JobStartedResult::started(crate::panel_learn::compare_as(app, params.paths, &caller.producer())));
     }
     let job = workspace.bus().start_job("fuzzy-compare", "Comparing files", caller.producer(), Some((id, version)));
-    let started = JobStartedResult { job: job.id().to_string() };
+    let started = JobStartedResult::started(job.id().to_string());
     std::thread::spawn(move || run_comparison(&document, &params.paths, &job));
     Ok(started)
 }
@@ -321,10 +321,10 @@ pub fn fragments(workspace: &mut dyn Workspace, caller: &Caller, params: Fragmen
     if shown_in_window(workspace, &id)
         && let Some(app) = workspace.window()
     {
-        return Ok(JobStartedResult { job: crate::panel_learn::fragments_as(app, params.path, block, &caller.producer()) });
+        return Ok(JobStartedResult::started(crate::panel_learn::fragments_as(app, params.path, block, &caller.producer())));
     }
     let job = workspace.bus().start_job("fragments", "Finding shared fragments", caller.producer(), Some((id, version)));
-    let started = JobStartedResult { job: job.id().to_string() };
+    let started = JobStartedResult::started(job.id().to_string());
     std::thread::spawn(move || run_fragments(&document, &params.path, block, &job));
     Ok(started)
 }

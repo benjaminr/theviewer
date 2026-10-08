@@ -1129,10 +1129,20 @@ fn leave<'a>(workspace: &dyn Workspace, method: &MethodRef, params: &Value, cons
     }
 }
 
-/// Run `method` for `caller` and record the call in the journal.
+/// Run `method` for `caller` and record the call in the journal. A call
+/// that started a job says which step it is (`{job, step}`), for an anchor
+/// on the job's result to cite.
 fn run_journalled(workspace: &mut dyn Workspace, method: &MethodRef, caller: &Caller, consent: Consent<'_>, params: Value) -> Result<Value, ApiError> {
+    let starts_a_job = method.effect_for(&params) == Effect::Job;
     let record = journal::begin(workspace, caller, method, &params);
-    let result = method.run(workspace, caller, consent, params);
+    let mut result = method.run(workspace, caller, consent, params);
+    if starts_a_job
+        && let Ok(Value::Object(fields)) = &mut result
+        && fields.contains_key("job")
+        && let Some(step) = workspace.journal().step_being_recorded()
+    {
+        fields.insert("step".to_string(), Value::from(step));
+    }
     journal::finish(workspace, record, &result);
     result
 }
