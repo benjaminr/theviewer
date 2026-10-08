@@ -68,6 +68,9 @@ pub struct ColumnResult {
 /// A likely field of the records.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct FieldResult {
+    /// The field's name in `template`, from where it starts (`field_7`):
+    /// the same whatever the field is guessed to be.
+    pub name: String,
     /// Position within the record.
     pub start: usize,
     pub len: usize,
@@ -140,7 +143,7 @@ pub fn profile(workspace: &mut dyn Workspace, params: ProfileParams) -> Result<P
                 changes_fraction: column.changes_fraction,
             })
             .collect(),
-        fields: profiled.fields.iter().map(|field| FieldResult { start: field.start, len: field.len, kind: field.kind.clone(), detail: field.detail.clone() }).collect(),
+        fields: profiled.fields.iter().map(|field| FieldResult { name: field.name.clone(), start: field.start, len: field.len, kind: field.kind.clone(), detail: field.detail.clone() }).collect(),
         template: columns::to_template(record_len, &profiled.fields),
     };
     if let Some(app) = workspace.window()
@@ -170,7 +173,10 @@ mod tests {
         assert_eq!(profiled["columns"][0]["kind"], "constant");
         assert_eq!(profiled["columns"][1]["kind"], "counter");
         assert!(!profiled["fields"].as_array().unwrap().is_empty());
-        assert!(profiled["template"].as_str().unwrap().contains("struct"), "{profiled}");
+        let template = profiled["template"].as_str().unwrap();
+        assert!(template.contains("struct"), "{profiled}");
+        let name = profiled["fields"][0]["name"].as_str().unwrap();
+        assert!(template.contains(&format!("    {name}:")), "a field is named as the template names it: {profiled}");
         let selected = call(&mut workspace, "columns.profile", json!({"start": 8, "record_len": 4, "len": 40})).unwrap();
         assert_eq!(selected["records"], 10, "within a selection every record counts");
     }
