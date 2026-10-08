@@ -297,7 +297,7 @@ A recipe step that starts a job waits for it (up to 10 minutes), and later steps
 | [`events.facts`](#eventsfacts) | read |  | What the tools have learnt about a document and keep: the latest fact per topic, producer and key, by topic, producer or the bytes they cover, each marked stale when the document changed under it. |
 | [`events.poll`](#eventspoll) | read |  | The messages (facts and events) published after a cursor, oldest first, optionally of some topics only; pass back next to keep up. |
 | [`jobs.list`](#jobslist) | read |  | The background jobs tools and callers started (the last 100): what each does, who started it, whether it is running, how far it has got and how it ended. |
-| [`jobs.status`](#jobsstatus) | read | core | One job's state, progress and outcome, and once it has finished, the result of a job a method started. |
+| [`jobs.status`](#jobsstatus) | read | core | One job's state, progress and outcome, and once it has finished, the result of a job a method started. Polls are not journalled and take no step number: an anchor on a job's result cites the step that started it. |
 | [`jobs.cancel`](#jobscancel) | analysis |  | Ask a running job to stop; it ends as cancelled, without a result, as soon as it notices. |
 | [`statistics.analyse`](#statisticsanalyse) | job |  | Start the Statistics tool's measure of a span (at most 64 MiB) as a job: the ent randomness tests with a verdict, the byte histogram, entropy and compressibility along the span and the most repeated byte sequences are job.finished's result, and in the window they fill the Statistics tab. |
 | [`strings.find`](#stringsfind) | job |  | Start the Strings tool's search of a span (at most 64 MiB) for runs of text at least min_chars long in the encodings chosen, as a job: the strings found (at most 200000), each with its offset, length, encoding, text and what it looks like (a URL, a path, a key…), are job.finished's result, and in the window they fill the Strings tab. |
@@ -362,7 +362,7 @@ A recipe step that starts a job waits for it (up to 10 minutes), and later steps
 | [`recipes.save`](#recipessave) | read |  | Save a recipe in ~/.config/theviewer/recipes/, given whole or made from steps of this session's journal, to run later on other files. |
 | [`recipes.preview`](#recipespreview) | read |  | What a recipe would do to a document, without changing anything: each step described with its anchors resolved on this file, and where the run would stop. |
 | [`recipes.run`](#recipesrun) | edit |  | Run a recipe on a document, each step called as recipe:NAME with its anchors resolved on this file, waiting for the jobs steps start; its edits undo as one step, and the first failure stops it with which step and why. |
-| [`vars.set`](#varsset) | analysis | core | Bind a value to a variable by name, so later calls can pass it as {"$var": name}: give the value as an anchor ({"$anchor": {"pick": …}}) to keep where it came from, and a recipe finds it again on the next file. Undone by putting back the value bound before. |
+| [`vars.set`](#varsset) | analysis | core | Bind a value to a variable by name, so later calls can pass it as {"$var": name}: give the value as an anchor ({"$anchor": {"pick": …}}) to keep where it came from, and a recipe finds it again on the next file; doc is the document its anchor is found in (the caller's focus by default). Undone by putting back the value bound before. |
 | [`vars.list`](#varslist) | read |  | The session's variables, each with its value, the step that bound it and the anchor it was found by. |
 | [`vars.clear`](#varsclear) | analysis |  | Remove a variable's binding, or every variable's. |
 
@@ -857,6 +857,7 @@ Start a search of a span for bit periods (frames that are not a whole number of 
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `job` | string | yes | Follow it with jobs.status, or on job.progress and job.finished. |
+| `step` | integer | no | The journal step that started it, which an anchor on the job's result cites (`{"step": N, "path": "job.…"}`); none for a call inside another, such as a recipe's step. |
 
 ### bits.planes
 
@@ -876,6 +877,7 @@ Start splitting a span (at most 1 MiB) into its eight bit planes as a job, scori
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `job` | string | yes | Follow it with jobs.status, or on job.progress and job.finished. |
+| `step` | integer | no | The journal step that started it, which an anchor on the job's result cites (`{"step": N, "path": "job.…"}`); none for a call inside another, such as a recipe's step. |
 
 ### bits.open_plane
 
@@ -928,6 +930,7 @@ Start trying Manchester (both conventions), differential Manchester, 8b/10b and 
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `job` | string | yes | Follow it with jobs.status, or on job.progress and job.finished. |
+| `step` | integer | no | The journal step that started it, which an anchor on the job's result cites (`{"step": N, "path": "job.…"}`); none for a call inside another, such as a recipe's step. |
 
 ### bits.decode_linecode
 
@@ -994,6 +997,7 @@ Start a search of a span (at most 256 KiB, one message or a run of records) for 
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `job` | string | yes | Follow it with jobs.status, or on job.progress and job.finished. |
+| `step` | integer | no | The journal step that started it, which an anchor on the job's result cites (`{"step": N, "path": "job.…"}`); none for a call inside another, such as a recipe's step. |
 
 ### transform.apply
 
@@ -2541,6 +2545,7 @@ Have Wireshark's tshark decode some of a set's packets (run locally with -n) as 
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `job` | string | yes | Follow it with jobs.status, or on job.progress and job.finished. |
+| `step` | integer | no | The journal step that started it, which an anchor on the job's result cites (`{"step": N, "path": "job.…"}`); none for a call inside another, such as a recipe's step. |
 
 ### analysis.overview
 
@@ -2583,6 +2588,7 @@ Start analysis.overview as a background job and return its id at once; the repor
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `job` | string | yes | Follow it with jobs.status, or on job.progress and job.finished. |
+| `step` | integer | no | The journal step that started it, which an anchor on the job's result cites (`{"step": N, "path": "job.…"}`); none for a call inside another, such as a recipe's step. |
 
 ### analysis.statistics
 
@@ -2716,6 +2722,7 @@ Start a scan of a window of bytes for repeating periods (record widths) as a bac
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `job` | string | yes | Follow it with jobs.status, or on job.progress and job.finished. |
+| `step` | integer | no | The journal step that started it, which an anchor on the job's result cites (`{"step": N, "path": "job.…"}`); none for a call inside another, such as a recipe's step. |
 
 ### reference.lookup
 
@@ -2859,11 +2866,11 @@ Parameters: None.
 
 ### jobs.status
 
-One job's state, progress and outcome, and once it has finished, the result of a job a method started.
+One job's state, progress and outcome, and once it has finished, the result of a job a method started. Polls are not journalled and take no step number: an anchor on a job's result cites the step that started it.
 
 **Effect:** `read` · **MCP tool:** `jobs_status`, listed by default
 
-**History:** Kept among the recent reads, which a later step can cite.
+**History:** Not journalled: it reads the journal, or edits where its values came from or its notes.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -2922,6 +2929,7 @@ Start the Statistics tool's measure of a span (at most 64 MiB) as a job: the ent
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `job` | string | yes | Follow it with jobs.status, or on job.progress and job.finished. |
+| `step` | integer | no | The journal step that started it, which an anchor on the job's result cites (`{"step": N, "path": "job.…"}`); none for a call inside another, such as a recipe's step. |
 
 ### strings.find
 
@@ -2942,6 +2950,7 @@ Start the Strings tool's search of a span (at most 64 MiB) for runs of text at l
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `job` | string | yes | Follow it with jobs.status, or on job.progress and job.finished. |
+| `step` | integer | no | The journal step that started it, which an anchor on the job's result cites (`{"step": N, "path": "job.…"}`); none for a call inside another, such as a recipe's step. |
 
 ### xor.recover_keys
 
@@ -3035,6 +3044,7 @@ Start the CRC solver on records of equal length that each carry a stored CRC, as
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `job` | string | yes | Follow it with jobs.status, or on job.progress and job.finished. |
+| `step` | integer | no | The journal step that started it, which an anchor on the job's result cites (`{"step": N, "path": "job.…"}`); none for a call inside another, such as a recipe's step. |
 
 ### diff.run
 
@@ -3052,6 +3062,7 @@ Start a comparison of a document with another file as a job: the regions replace
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `job` | string | yes | Follow it with jobs.status, or on job.progress and job.finished. |
+| `step` | integer | no | The journal step that started it, which an anchor on the job's result cites (`{"step": N, "path": "job.…"}`); none for a call inside another, such as a recipe's step. |
 
 ### disasm.set_arch
 
@@ -3085,6 +3096,7 @@ Start a scan of the whole document (an edited one's first 256 MiB) for well-know
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `job` | string | yes | Follow it with jobs.status, or on job.progress and job.finished. |
+| `step` | integer | no | The journal step that started it, which an anchor on the job's result cites (`{"step": N, "path": "job.…"}`); none for a call inside another, such as a recipe's step. |
 
 ### crypto.repeated_blocks
 
@@ -3103,6 +3115,7 @@ Start a search of a span (at most 16 MiB) for random-looking 8- and 16-byte bloc
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `job` | string | yes | Follow it with jobs.status, or on job.progress and job.finished. |
+| `step` | integer | no | The journal step that started it, which an anchor on the job's result cites (`{"step": N, "path": "job.…"}`); none for a call inside another, such as a recipe's step. |
 
 ### crypto.find_keys
 
@@ -3121,6 +3134,7 @@ Start a search of a span (the whole document by default, at most 64 MiB) for PEM
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `job` | string | yes | Follow it with jobs.status, or on job.progress and job.finished. |
+| `step` | integer | no | The journal step that started it, which an anchor on the job's result cites (`{"step": N, "path": "job.…"}`); none for a call inside another, such as a recipe's step. |
 
 ### crypto.attack
 
@@ -3140,6 +3154,7 @@ Start attacks on simple ciphers over a span (at most 1 MiB): rolling XOR, XOR wi
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `job` | string | yes | Follow it with jobs.status, or on job.progress and job.finished. |
+| `step` | integer | no | The journal step that started it, which an anchor on the job's result cites (`{"step": N, "path": "job.…"}`); none for a call inside another, such as a recipe's step. |
 
 ### crypto.decrypt
 
@@ -3267,6 +3282,7 @@ Start comparing a document with other files byte position by byte position, each
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `job` | string | yes | Follow it with jobs.status, or on job.progress and job.finished. |
+| `step` | integer | no | The journal step that started it, which an anchor on the job's result cites (`{"step": N, "path": "job.…"}`); none for a call inside another, such as a recipe's step. |
 
 ### compare.correlate
 
@@ -3287,6 +3303,7 @@ Start a search of a document and other files for fields whose values follow a nu
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `job` | string | yes | Follow it with jobs.status, or on job.progress and job.finished. |
+| `step` | integer | no | The journal step that started it, which an anchor on the job's result cites (`{"step": N, "path": "job.…"}`); none for a call inside another, such as a recipe's step. |
 
 ### compare.timeline
 
@@ -3303,6 +3320,7 @@ Start building the change timeline of the recording of a live source or watched 
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `job` | string | yes | Follow it with jobs.status, or on job.progress and job.finished. |
+| `step` | integer | no | The journal step that started it, which an anchor on the job's result cites (`{"step": N, "path": "job.…"}`); none for a call inside another, such as a recipe's step. |
 
 ### dotplot.compute
 
@@ -3322,6 +3340,7 @@ Start comparing every block of a span (at most 64 MiB) with every other, by shar
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `job` | string | yes | Follow it with jobs.status, or on job.progress and job.finished. |
+| `step` | integer | no | The journal step that started it, which an anchor on the job's result cites (`{"step": N, "path": "job.…"}`); none for a call inside another, such as a recipe's step. |
 
 ### images.find
 
@@ -3340,6 +3359,7 @@ Start a search of a span (at most 64 MiB) for uncompressed images, trying 1-bit,
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `job` | string | yes | Follow it with jobs.status, or on job.progress and job.finished. |
+| `step` | integer | no | The journal step that started it, which an anchor on the job's result cites (`{"step": N, "path": "job.…"}`); none for a call inside another, such as a recipe's step. |
 
 ### trigrams.count
 
@@ -3360,6 +3380,7 @@ Start counting every run of three bytes in a span (sampled beyond 16 MiB) as a j
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `job` | string | yes | Follow it with jobs.status, or on job.progress and job.finished. |
+| `step` | integer | no | The journal step that started it, which an anchor on the job's result cites (`{"step": N, "path": "job.…"}`); none for a call inside another, such as a recipe's step. |
 
 ### firmware.identify
 
@@ -3378,6 +3399,7 @@ Start identifying the processor of a span of headerless code (at most 64 MiB) as
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `job` | string | yes | Follow it with jobs.status, or on job.progress and job.finished. |
+| `step` | integer | no | The journal step that started it, which an anchor on the job's result cites (`{"step": N, "path": "job.…"}`); none for a call inside another, such as a recipe's step. |
 
 ### firmware.find_load_address
 
@@ -3398,6 +3420,7 @@ Start a search for the address a firmware image is loaded at (the address of off
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `job` | string | yes | Follow it with jobs.status, or on job.progress and job.finished. |
+| `step` | integer | no | The journal step that started it, which an anchor on the job's result cites (`{"step": N, "path": "job.…"}`); none for a call inside another, such as a recipe's step. |
 
 ### firmware.vector_tables
 
@@ -3416,6 +3439,7 @@ Start a search of a span (the whole document by default, at most 64 MiB) for ARM
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `job` | string | yes | Follow it with jobs.status, or on job.progress and job.finished. |
+| `step` | integer | no | The journal step that started it, which an anchor on the job's result cites (`{"step": N, "path": "job.…"}`); none for a call inside another, such as a recipe's step. |
 
 ### forensics.find_filesystems
 
@@ -3432,6 +3456,7 @@ Start a search of the document (its first 256 MiB) for SquashFS, CramFS, JFFS2, 
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `job` | string | yes | Follow it with jobs.status, or on job.progress and job.finished. |
+| `step` | integer | no | The journal step that started it, which an anchor on the job's result cites (`{"step": N, "path": "job.…"}`); none for a call inside another, such as a recipe's step. |
 
 ### forensics.open_entry
 
@@ -3481,6 +3506,7 @@ Start labelling every block of the document (its first 256 MiB) as padding, text
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `job` | string | yes | Follow it with jobs.status, or on job.progress and job.finished. |
+| `step` | integer | no | The journal step that started it, which an anchor on the job's result cites (`{"step": N, "path": "job.…"}`); none for a call inside another, such as a recipe's step. |
 
 ### unpack.run
 
@@ -3498,6 +3524,7 @@ Start extracting the archives and compressed streams in the document (its first 
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `job` | string | yes | Follow it with jobs.status, or on job.progress and job.finished. |
+| `step` | integer | no | The journal step that started it, which an anchor on the job's result cites (`{"step": N, "path": "job.…"}`); none for a call inside another, such as a recipe's step. |
 
 ### unpack.open
 
@@ -3596,6 +3623,7 @@ Start compressing a sample of a span with deflate, bzip2, LZ4, zstd and an order
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `job` | string | yes | Follow it with jobs.status, or on job.progress and job.finished. |
+| `step` | integer | no | The journal step that started it, which an anchor on the job's result cites (`{"step": N, "path": "job.…"}`); none for a call inside another, such as a recipe's step. |
 
 ### characterise.profile_file
 
@@ -3612,6 +3640,7 @@ Start profiling the compressibility of the whole document as a job, overall and 
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `job` | string | yes | Follow it with jobs.status, or on job.progress and job.finished. |
+| `step` | integer | no | The journal step that started it, which an anchor on the job's result cites (`{"step": N, "path": "job.…"}`); none for a call inside another, such as a recipe's step. |
 
 ### characterise.streams
 
@@ -3628,6 +3657,7 @@ Start a search of the document (its first 256 MiB) for raw MP3/MP2 and AAC frame
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `job` | string | yes | Follow it with jobs.status, or on job.progress and job.finished. |
+| `step` | integer | no | The journal step that started it, which an anchor on the job's result cites (`{"step": N, "path": "job.…"}`); none for a call inside another, such as a recipe's step. |
 
 ### columns.profile
 
@@ -3670,6 +3700,7 @@ Start finding how a span is framed into messages (sync words, delimiters, length
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `job` | string | yes | Follow it with jobs.status, or on job.progress and job.finished. |
+| `step` | integer | no | The journal step that started it, which an anchor on the job's result cites (`{"step": N, "path": "job.…"}`); none for a call inside another, such as a recipe's step. |
 
 ### protocol.choose_framing
 
@@ -3716,6 +3747,7 @@ Start explaining the whole document in plain words and mapping its regions, as a
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `job` | string | yes | Follow it with jobs.status, or on job.progress and job.finished. |
+| `step` | integer | no | The journal step that started it, which an anchor on the job's result cites (`{"step": N, "path": "job.…"}`); none for a call inside another, such as a recipe's step. |
 
 ### structure_map.segment
 
@@ -3732,6 +3764,7 @@ Start splitting the document into stretches of uniform character, grouped into t
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `job` | string | yes | Follow it with jobs.status, or on job.progress and job.finished. |
+| `step` | integer | no | The journal step that started it, which an anchor on the job's result cites (`{"step": N, "path": "job.…"}`); none for a call inside another, such as a recipe's step. |
 
 ### structure_map.find_similar
 
@@ -3752,6 +3785,7 @@ Start finding every part of the document whose statistics resemble a span, as a 
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `job` | string | yes | Follow it with jobs.status, or on job.progress and job.finished. |
+| `step` | integer | no | The journal step that started it, which an anchor on the job's result cites (`{"step": N, "path": "job.…"}`); none for a call inside another, such as a recipe's step. |
 
 ### structure_map.tracks
 
@@ -3768,6 +3802,7 @@ Start measuring entropy, compressibility, byte kinds and the local record width 
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `job` | string | yes | Follow it with jobs.status, or on job.progress and job.finished. |
+| `step` | integer | no | The journal step that started it, which an anchor on the job's result cites (`{"step": N, "path": "job.…"}`); none for a call inside another, such as a recipe's step. |
 
 ### learn.format
 
@@ -3785,6 +3820,7 @@ Start learning what the document and sample files of the same format share (a ma
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `job` | string | yes | Follow it with jobs.status, or on job.progress and job.finished. |
+| `step` | integer | no | The journal step that started it, which an anchor on the job's result cites (`{"step": N, "path": "job.…"}`); none for a call inside another, such as a recipe's step. |
 
 ### learn.save_catalogue
 
@@ -3819,6 +3855,7 @@ Start hashing files with ssdeep and scoring how like the document each is, 0 to 
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `job` | string | yes | Follow it with jobs.status, or on job.progress and job.finished. |
+| `step` | integer | no | The journal step that started it, which an anchor on the job's result cites (`{"step": N, "path": "job.…"}`); none for a call inside another, such as a recipe's step. |
 
 ### learn.fragments
 
@@ -3837,6 +3874,7 @@ Start finding the blocks of the document that also occur in a file, as a backgro
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `job` | string | yes | Follow it with jobs.status, or on job.progress and job.finished. |
+| `step` | integer | no | The journal step that started it, which an anchor on the job's result cites (`{"step": N, "path": "job.…"}`); none for a call inside another, such as a recipe's step. |
 
 ### alignment.run
 
@@ -3857,6 +3895,7 @@ Start clustering messages into probable types and aligning each type byte by byt
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `job` | string | yes | Follow it with jobs.status, or on job.progress and job.finished. |
+| `step` | integer | no | The journal step that started it, which an anchor on the job's result cites (`{"step": N, "path": "job.…"}`); none for a call inside another, such as a recipe's step. |
 
 ### view.get_shape
 
@@ -4166,6 +4205,7 @@ What a recipe would do to a document, without changing anything: each step descr
 
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
+| `outputs` | array of SheetOutput | no | The same sheets as every call that makes sheets names them, so the `recipes.run` step that made them is their maker in the session's journal: `{"$sheet": {"step": N, "label": "firmware"}}` names one. |
 | `sheets` | array of RunSheet | no | The sheets the run made, in the order made. |
 | `steps` | array of StepReport | yes | Each step run (or previewed), in order. |
 | `stopped` | Stopped | no | Why the run stopped early, if it did. |
@@ -4190,6 +4230,7 @@ Run a recipe on a document, each step called as recipe:NAME with its anchors res
 
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
+| `outputs` | array of SheetOutput | no | The same sheets as every call that makes sheets names them, so the `recipes.run` step that made them is their maker in the session's journal: `{"$sheet": {"step": N, "label": "firmware"}}` names one. |
 | `sheets` | array of RunSheet | no | The sheets the run made, in the order made. |
 | `steps` | array of StepReport | yes | Each step run (or previewed), in order. |
 | `stopped` | Stopped | no | Why the run stopped early, if it did. |
@@ -4197,7 +4238,7 @@ Run a recipe on a document, each step called as recipe:NAME with its anchors res
 
 ### vars.set
 
-Bind a value to a variable by name, so later calls can pass it as {"$var": name}: give the value as an anchor ({"$anchor": {"pick": …}}) to keep where it came from, and a recipe finds it again on the next file. Undone by putting back the value bound before.
+Bind a value to a variable by name, so later calls can pass it as {"$var": name}: give the value as an anchor ({"$anchor": {"pick": …}}) to keep where it came from, and a recipe finds it again on the next file; doc is the document its anchor is found in (the caller's focus by default). Undone by putting back the value bound before.
 
 **Effect:** `analysis` · **MCP tool:** `vars_set`, listed by default
 
@@ -4205,6 +4246,7 @@ Bind a value to a variable by name, so later calls can pass it as {"$var": name}
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
+| `doc` | string | no | The document the value's anchor is found in, such as a sheet's id or {"$sheet": "photo"}: a structure, find, finding or selection anchor reads it. The caller's focus when omitted. |
 | `name` | string | yes | The variable's name: letters, digits, '_' or '-', such as "serial". |
 | `value` | any | yes | The value: any JSON, or an anchor that finds it, such as {"$anchor": {"pick": {"step": 7, "list": "job.strings", "where": {"text": {"regex": "^NC500-"}}, "field": "text"}}}. |
 

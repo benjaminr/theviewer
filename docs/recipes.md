@@ -147,6 +147,77 @@ before it calls anything, rather than running on some other document. Ids
 belong to the session that made them, so a recipe made from the journal
 never names a document by id.
 
+## Jobs and steps
+
+**Which step to cite.** Every journalled call and every read takes the
+next step number; `jobs.status` does not. Polling a job takes no number, so
+the step before the next call is the one that started the job. A method
+that starts a job returns `{job, step}`, and through MCP every result says
+in `_meta.step` the step its call became, so a note or an anchor can cite
+it without asking `history.list`.
+
+**A job's result is the starting step's.** `job.…` in a step or pick
+anchor (`{"pick": {"step": 7, "list": "job.strings", …}}`) reads the
+result of the job step 7 started, which the run waits for. Only a step
+that started a job has one: `history.make_anchor` refuses a `job.` path on
+any other step, naming the step that started the job when it can ("step 9
+(jobs.cancel) started no job, so it has nothing at job.findings; cite step
+7 (strings.find), which started strings-1"), and `history.suggest_anchors`
+offers picks from a job's result only on the step that started it.
+
+**An anchor the recipe cannot keep fails the save.** A step anchor, pick
+or sheet anchor that cites a step the recipe does not hold (a step that
+failed, one dropped from the journal, a read never cited) would leave the
+step repeating the literal, finding the old value on every file. Saving
+fails instead, naming the step, the parameter and the step it cites; cite
+a step the recipe keeps with `history.make_anchor`, or clear the anchor
+with `history.clear_anchor` to repeat the literal on purpose.
+
+**A `doc` given as an anchor stays one.** A call whose `doc` was an anchor
+(a pick of one of the sheets `packets.http_bodies` opened, say) keeps that
+anchor in the recipe, so the run chooses the document as the session did
+rather than by the order the sheets were made in. `vars.set` takes a `doc`
+too: the document its value's anchor is found in, the caller's focus when
+omitted.
+
+**What a step must give.** A step's `expect` (format 2) stops the run
+when the step does not give what the rest of the recipe needs, rather than
+carrying on with nothing:
+
+```json
+{ "step": 4, "method": "codecs.detect", "params": { "doc": { "$anchor": { "sheet": "labels" } }, "at": 0 },
+  "expect": { "path": "result.codecs", "matches": "base32" } }
+```
+
+`path` is written as a step anchor's path, in the step's `{"params",
+"result", "job"}`; the value there must be present and not empty (not
+null, `""`, `[]` or `{}`). With `matches`, it must also match that regular
+expression: text as it is, a number or true/false as written, anything
+else as JSON. A run on a file where it does not stops at that step: "step 4
+(codecs.detect) did not give what the recipe expects: result.codecs is
+empty ([])".
+
+**Sheets a `recipes.run` made.** A `recipes.run` step's result lists the
+sheets its recipe made under `outputs`, each with the label its step's
+`makes` gave it, and the workspace knows them by that label
+(`documents.list` shows it). A recipe's labels are its own, so a later
+call names one by the run's step and the label:
+`{"$sheet": {"step": 12, "label": "firmware"}}`, or `{"$anchor": {"sheet":
+{"step": 12, "label": "firmware"}}}`. A recipe made from the session names
+such a sheet the same way.
+
+**Inputs of one name.** `theviewer replay --save-sheets` names each sheet
+after the file the run was on. When two of the files given share a name
+(`variant/fw.upd` and `files/fw.upd`), each one's sheets carry its place
+among the files, `fw.upd.1.step22.config.bin` and
+`fw.upd.2.step22.config.bin`, so neither overwrites the other's.
+
+**The "literal offsets" warning** on a file other than the one recorded on
+is given only when the recipe has a literal offset (`start`, `offset`,
+`at`, `end`, `range` or `ranges` given as a number other than 0), and
+names the first: "…but literal offsets may not fit, such as step 11's
+offset (7)".
+
 ## Parameters
 
 ```json

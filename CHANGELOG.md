@@ -139,8 +139,31 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   index, or an operation, over a span: to a new sheet by default, or in
   place, returned or to a file. A recipe applies the candidate of the
   attack its own step ran.
+- **Results say their step.** Through MCP, a result's `_meta.step` is the
+  journal step its call became (a read's number included), and a method
+  that starts a job returns `{job, step}`, so a note or anchor can cite it
+  without a `history.list` after every call.
+- **A recipe step's `expect`** (format 2): a path in the step's params,
+  result or job that must be there and not empty, or match a regular
+  expression; a run where it does not stops at that step, saying why.
+- `vars.set` takes a `doc`: the document its value's anchor is found in.
+- A sheet a `recipes.run` made is named by the run's step and its label,
+  `{"$sheet": {"step": 12, "label": "firmware"}}`, and `recipes.run` lists
+  the sheets it made under `outputs`, as other sheet-making methods do.
 
 ### Changed
+
+- `jobs.status` is no longer journalled: polling a job takes no step
+  number, so the step before the next call is the one that started it.
+- Saving a recipe whose anchor cites a step the recipe cannot hold (one
+  that failed, was dropped or is a read never cited) fails, naming the
+  step, instead of quietly repeating the literal.
+- `history.make_anchor` refuses a `job.` path on a step that started no
+  job, naming the step that did, and checks and promotes the step a pick
+  cites, as it does a step anchor's; `history.suggest_anchors` offers
+  picks from a job's result only on the step that started it.
+- The replay warning that literal offsets may not fit another file is
+  given only when the recipe has one, and names it.
 
 - A recipe run no longer takes the first document id its steps name for
   the file it runs on. A step naming a document by an id that is neither
@@ -204,6 +227,19 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   made outside the history or by a step it leaves out) is refused, naming
   the step and why; the History tab says so before asking where to save.
 - `history.recipe` and `history.save_recipe` kept different steps.
+- An anchor `history.suggest_anchors` proposed on a job's result could cite
+  a `jobs.status` poll; the recipe then dropped the poll and kept the
+  literal, so a replay bound the recorded file's value.
+- The recipe builder replaced a `doc` given as an anchor (a pick of one of
+  the sheets a step made) with the sheet's place among those the step
+  made.
+- `crypto.apply` with `candidate.job` given as an anchor and no `doc` ran
+  on the caller's focus rather than the sheet the attack read.
+- Sheets a `recipes.run` made had no label in the session, so
+  `documents.list` showed none and `{"$sheet": label}` could not name them.
+- `theviewer replay --save-sheets` overwrote one file's sheets with
+  another's when two files given shared a name; each now carries its place
+  among the files (`fw.upd.2.step22.config.bin`).
 - `packets.follow_stream` and a filtered `packets.conversations` gave a
   conversation's first packet as 0, or as its place among the packets
   kept, rather than its index in the set.

@@ -190,6 +190,12 @@ next file (see [Recipes](recipes.md#anchors-at-call-time)):
 
 `vars_set {name, value}` binds a value found to a name, a clipboard with
 provenance: given as an anchor, the binding keeps where the value came from.
+Its `doc` says which document the anchor is found in (`{"$sheet":
+"photo"}`), the client's focus when it is left out.
+
+A sheet a `recipes.run` made is named by the run's step and the label its
+recipe gave it, `{"$sheet": {"step": 12, "label": "firmware"}}`, since the
+session may have a sheet of that label of its own.
 
 ```json
 {"name": "vars_set", "arguments": {"name": "serial", "value": {"$anchor": {"pick": {"step": 7, "list": "job.strings", "where": {"text": {"regex": "^NC500-[0-9A-F]{8}$"}}, "field": "text"}}}}}
@@ -242,11 +248,31 @@ filter language, and `packets.decode_as`, `packets.conversations`,
 `packets.follow_stream`, `packets.extract` and `packets.export_pcap` work on
 it.
 
-A method whose effect is `job` returns `{"job": "…"}` at once:
+A method whose effect is `job` returns `{"job": "…", "step": N}` at once:
 `analysis_overview_job` maps a large file in the background, and
 `jobs_status` gives its progress and, once it has finished, the result.
 `jobs.list` and `jobs.cancel` (through `api_call`) cover every background
 job. See [Jobs](api.md#jobs).
+
+Polling `jobs_status` is not journalled and takes no step number. An anchor
+on the job's result cites the step that started it, `step` above:
+`{"$anchor": {"pick": {"step": N, "list": "job.strings", …}}}`. A `job.`
+path on any other step is refused, naming the step that started the job
+(see [Recipes](recipes.md#jobs-and-steps)).
+
+### Which step a call became
+
+Every successful result of a call the journal kept says which step it
+became in `_meta.step`, a read's number included, so a note (`#N`) or an
+anchor (`{"step": N, …}`) can cite it at once, without a `history.list`
+after each call:
+
+```json
+{"content": [{"type": "text", "text": "{\"at\":64}"}], "isError": false, "_meta": {"step": 12}}
+```
+
+A call that is not journalled (`history.list`, `jobs_status`,
+`history.make_anchor`…) has no `_meta.step`.
 
 ## Resources
 
