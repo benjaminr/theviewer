@@ -219,6 +219,21 @@ mod tests {
     }
 
     #[test]
+    fn two_firmware_sheets_compare_by_their_labels_without_a_file_being_written() {
+        let older: Vec<u8> = (0..20_000u32).map(|index| (index * 31 % 251) as u8).collect();
+        let mut newer = older.clone();
+        newer[700..704].copy_from_slice(b"2.11");
+        let mut workspace = workspace_with("update.bin", &[older.clone(), newer].concat());
+        call(&mut workspace, "documents.derive", json!({"start": 0, "len": older.len(), "output": {"new": {"label": "2.1.0"}}})).unwrap();
+        call(&mut workspace, "documents.derive", json!({"doc": "doc-1", "start": older.len(), "len": older.len(), "output": {"new": {"label": "2.1.1"}}})).unwrap();
+        let status = run_job(&mut workspace, "diff.run", json!({"doc": {"$sheet": "2.1.0"}, "other": {"$sheet": "2.1.1"}}));
+        assert_eq!(status["state"], "finished", "{status}");
+        let result = &status["result"];
+        assert_eq!((result["other"].as_str(), result.get("path")), (Some("doc-3"), None), "{result}");
+        assert_eq!(result["regions"], json!([{"op": "replace", "a": 700, "a_len": 4, "b": 700, "b_len": 4}]));
+    }
+
+    #[test]
     fn comparing_with_a_file_that_is_not_there_is_refused() {
         let mut workspace = workspace_with("a.bin", b"abc");
         assert_eq!(call(&mut workspace, "diff.run", json!({"path": "/nowhere/at/all.bin"})).unwrap_err().code, ErrorCode::NotFound);
