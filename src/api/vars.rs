@@ -22,7 +22,7 @@ const NAME_LIMIT: usize = 64;
 /// This module's methods, in the order `api.describe` lists them within
 /// their namespace. A new method is added here, and only here.
 pub(super) const METHODS: &[super::Method] = &[
-    method!("vars.set", Analysis, set, SetParams, VariableSet, "Bind a value to a variable by name, so later calls can pass it as {\"$var\": name}: give the value as an anchor ({\"$anchor\": {\"pick\": …}}) to keep where it came from, and a recipe finds it again on the next file. Undone by putting back the value bound before.").reverses(Reverse::Variable),
+    method!("vars.set", Analysis, set, SetParams, VariableSet, "Bind a value to a variable by name, so later calls can pass it as {\"$var\": name}: give the value as an anchor ({\"$anchor\": {\"pick\": …}}) to keep where it came from, and a recipe finds it again on the next file; doc is the document its anchor is found in (the caller's focus by default). Undone by putting back the value bound before.").reverses(Reverse::Variable).leaves_doc_out(),
     method!("vars.list", Read, list, super::values::NoParams, VariableList, "The session's variables, each with its value, the step that bound it and the anchor it was found by."),
     method!("vars.clear", Analysis, clear, ClearParams, VariablesCleared, "Remove a variable's binding, or every variable's."),
 ];
@@ -61,6 +61,11 @@ pub struct SetParams {
     /// The value: any JSON, or an anchor that finds it, such as
     /// {"$anchor": {"pick": {"step": 7, "list": "job.strings", "where": {"text": {"regex": "^NC500-"}}, "field": "text"}}}.
     pub value: Value,
+    /// The document the value's anchor is found in, such as a sheet's id
+    /// or {"$sheet": "photo"}: a structure, find, finding or selection
+    /// anchor reads it. The caller's focus when omitted.
+    #[serde(default)]
+    pub doc: Option<String>,
 }
 
 /// The result of `vars.set`.
@@ -122,6 +127,10 @@ fn check_name(name: &str) -> Result<(), ApiError> {
 
 pub fn set(workspace: &mut dyn Workspace, params: SetParams) -> Result<VariableSet, ApiError> {
     check_name(&params.name)?;
+    // Its anchor was found in it; a document there is not is a mistake.
+    if let Some(doc) = params.doc.as_deref() {
+        super::workspace::resolve(workspace, Some(doc))?;
+    }
     let step = workspace.journal().step_being_recorded();
     let replaced = workspace.journal_mut().bind_variable(&params.name, params.value.clone(), step);
     Ok(VariableSet { name: params.name, value: params.value, replaced: replaced.map(|binding| binding.value) })
@@ -185,6 +194,23 @@ mod tests {
         assert_eq!((magic["name"].as_str(), magic["value"].as_u64()), (Some("magic"), Some(7)));
         assert_eq!(magic["anchor"], json!({"step": read_step, "path": "result.at"}));
         assert_eq!(magic["from"], format!("the value at result.at of step {read_step}"));
+    }
+
+    #[test]
+    fn a_value_found_in_a_sheet_given_as_doc_is_found_there_not_in_the_caller_s_focus() {
+        let mut workspace = workspace_with("image.dd", b"....MAGIC....");
+        let client = crate::api::Caller::Mcp("solver".into());
+        let as_client = |workspace: &mut crate::api::HeadlessWorkspace, method: &str, params: serde_json::Value| crate::api::call(workspace, &client, method, params);
+        let carved = as_client(&mut workspace, "documents.derive", json!({"start": 2, "output": {"new": {"label": "carved"}}})).unwrap();
+        let magic = json!({"$anchor": {"find": {"text": "MAGIC"}}});
+        let in_focus = as_client(&mut workspace, "vars.set", json!({"name": "at", "value": magic})).unwrap();
+        assert_eq!(in_focus["value"], 4, "the focus, the image, by default");
+        let in_sheet = as_client(&mut workspace, "vars.set", json!({"name": "at", "doc": {"$sheet": "carved"}, "value": magic})).unwrap();
+        assert_eq!(in_sheet["value"], 2, "found in the sheet given");
+        let entry = workspace.journal().entries().last().unwrap();
+        assert_eq!(entry.doc, carved["output"]["doc"].as_str().map(str::to_string), "the step is about the sheet");
+        let unknown = as_client(&mut workspace, "vars.set", json!({"name": "at", "doc": "doc-99", "value": 1})).unwrap_err();
+        assert_eq!(unknown.code, ErrorCode::NotFound);
     }
 
     #[test]

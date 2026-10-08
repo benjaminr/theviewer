@@ -593,12 +593,14 @@ fn takes_doc(method: &str, params: &Value) -> bool {
 }
 
 /// The documents `entry` is about, each with where it names it: its `doc`
-/// (from the entry, as the call resolved it, for a method that takes one),
-/// and every other document id in its params outside the paths its
+/// (from the entry, as the call resolved it, for a method that takes one
+/// and was given or filled in one: `vars.set` without a `doc` is about
+/// none), and every other document id in its params outside the paths its
 /// provenance anchors.
 fn documents_named(entry: &JournalEntry) -> Vec<(String, String)> {
     let mut named = Vec::new();
     if takes_doc(&entry.method, &entry.params)
+        && entry.params.get("doc").is_some_and(|doc| !doc.is_null())
         && let Some(doc) = &entry.doc
     {
         named.push(("doc".to_string(), doc.clone()));

@@ -1094,7 +1094,10 @@ fn prepare_call(workspace: &mut dyn Workspace, caller: &Caller, method: &MethodR
     if takes_doc && params.get("doc").is_none_or(Value::is_null) {
         let filled = match method.doc_default() {
             DocDefault::LeftOut => None,
-            DocDefault::Chosen(choose) => choose(workspace, caller, &params).or(focus),
+            DocDefault::Chosen(choose) => {
+                let chosen_from = if method.resolves_anchors() { with_journal_anchors_resolved(workspace, &mut live, &params) } else { params.clone() };
+                choose(workspace, caller, &chosen_from).or(focus)
+            }
             DocDefault::Focus => focus,
         };
         if let (Some(doc), Some(fields)) = (filled, params.as_object_mut()) {
@@ -1108,6 +1111,45 @@ fn prepare_call(workspace: &mut dyn Workspace, caller: &Caller, method: &MethodR
         }
     }
     Ok(PreparedCall { params, derived_from })
+}
+
+/// `params` with the anchors that read the journal rather than a document
+/// resolved (step, pick, sheet, parameter and variable anchors, and thens
+/// of them), for a method that chooses its document from its params: a
+/// `crypto.apply` whose `candidate.job` is a step anchor runs on the sheet
+/// that job read, not the caller's focus. The rest stay marked, and one
+/// that does not resolve is left for [`LiveAnchors::resolve_rest`] to
+/// report.
+///
+/// [`LiveAnchors::resolve_rest`]: journal::anchors::live::LiveAnchors::resolve_rest
+fn with_journal_anchors_resolved(workspace: &mut dyn Workspace, live: &mut journal::anchors::live::LiveAnchors, params: &Value) -> Value {
+    let mut readable = params.clone();
+    let mut any = false;
+    for (path, anchor) in journal::anchors::anchors_in(params) {
+        if reads_the_journal(&anchor) {
+            any = true;
+        } else {
+            let _ = journal::anchors::replace_at(&mut readable, &path, Value::Null);
+        }
+    }
+    if !any {
+        return params.clone();
+    }
+    match live.resolve_rest(workspace, &mut readable) {
+        Ok(_) => readable,
+        Err(_) => params.clone(),
+    }
+}
+
+/// Whether `anchor` finds its value in the journal or the run, not in a
+/// document.
+fn reads_the_journal(anchor: &journal::Anchor) -> bool {
+    use journal::Anchor;
+    match anchor {
+        Anchor::Step { .. } | Anchor::Pick { .. } | Anchor::Sheet { .. } | Anchor::Param { .. } | Anchor::Var { .. } => true,
+        Anchor::Then { of, .. } => reads_the_journal(of),
+        Anchor::Find { .. } | Anchor::Structure { .. } | Anchor::Finding { .. } | Anchor::Selection { .. } => false,
+    }
 }
 
 /// Whether a call may run now.
@@ -1566,6 +1608,41 @@ mod tests {
         app.preferences.permissions.insert("mcp:claude-code".into(), Policy::Ask);
         let asked = super::call(&mut app, &client, "packets.export_pcap", json!({"set": "set-1", "path": path.display().to_string()})).unwrap_err();
         assert!(asked.needs_confirmation(), "the person can be asked: {}", asked.message);
+    }
+
+    /// A loader with a stage scrambled by a rolling XOR after four bytes.
+    fn loader_with_a_scrambled_stage() -> HeadlessWorkspace {
+        let plain = b"Attack at dawn, the quick brown fox jumps over the lazy dog. ".repeat(20);
+        let hidden: Vec<u8> = plain.iter().enumerate().map(|(index, byte)| byte ^ (0x51u8.wrapping_add((index as u8).wrapping_mul(5)))).collect();
+        workspace_with("loader.bin", &[b"head".as_slice(), &hidden].concat())
+    }
+
+    #[test]
+    fn a_candidate_whose_job_is_an_anchor_is_applied_to_the_sheet_attacked_not_the_caller_s_focus() {
+        let mut workspace = loader_with_a_scrambled_stage();
+        let client = Caller::Mcp("solver".into());
+        let stage = super::call(&mut workspace, &client, "documents.derive", json!({"start": 4, "output": {"new": {"label": "scrambled"}}})).unwrap();
+        let stage = stage["output"]["doc"].as_str().unwrap().to_string();
+        let started = super::call(&mut workspace, &client, "crypto.attack", json!({"doc": stage})).unwrap();
+        let attack_step = started["step"].as_u64().expect("a job's start says its step");
+        journal::replay::wait_for_job(&mut workspace, started["job"].as_str().unwrap()).unwrap();
+        let candidate = json!({"job": {"$anchor": {"step": attack_step, "path": "result.job"}}, "index": 0});
+        let applied = super::call(&mut workspace, &client, "crypto.apply", json!({"candidate": candidate, "output": {"return": {"encoding": "text"}}})).unwrap();
+        assert!(applied["output"]["data"].as_str().is_some_and(|text| text.starts_with("Attack at dawn")), "{applied}");
+        let entry = workspace.journal().entries().last().unwrap();
+        assert_eq!(entry.doc.as_deref(), Some(stage.as_str()), "the journal says it ran on the sheet attacked");
+    }
+
+    #[test]
+    fn a_job_s_start_gives_its_step_and_polling_it_takes_no_step_number() {
+        let mut workspace = workspace_with("notes.txt", &b"The quick brown fox jumps over the lazy dog. ".repeat(50));
+        let started = call(&mut workspace, "analysis.overview_job", json!({"max_findings": 1})).unwrap();
+        let step = workspace.journal().last_step();
+        assert_eq!(started["step"].as_u64(), step, "{started}");
+        journal::replay::wait_for_job(&mut workspace, started["job"].as_str().unwrap()).unwrap();
+        call(&mut workspace, "jobs.status", json!({"job": started["job"]})).unwrap();
+        call(&mut workspace, "jobs.status", json!({"job": started["job"]})).unwrap();
+        assert_eq!(workspace.journal().last_step(), step, "polls are not numbered, so the next step follows the job's");
     }
 
     #[test]
