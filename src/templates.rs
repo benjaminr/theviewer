@@ -1452,6 +1452,26 @@ fn printable_run(bytes: &[u8], record_len: usize, records: usize, offset: usize)
     len
 }
 
+/// Length of the run from `offset` that holds text in every record: at
+/// least `printable` bytes of printable ASCII, then more of it or NULs, and
+/// only NULs after a record's first NUL.
+fn padded_text_run(bytes: &[u8], record_len: usize, records: usize, offset: usize, printable: usize) -> usize {
+    let mut ended = vec![false; records];
+    let mut len = printable;
+    while offset + len < record_len {
+        let at = |record: usize| bytes[record * record_len + offset + len];
+        let fits = (0..records).all(|record| if ended[record] { at(record) == 0 } else { at(record) == 0 || (0x20..0x7F).contains(&at(record)) });
+        if !fits {
+            break;
+        }
+        for (record, done) in ended.iter_mut().enumerate() {
+            *done |= at(record) == 0;
+        }
+        len += 1;
+    }
+    len
+}
+
 fn same_in_every_record(bytes: &[u8], record_len: usize, records: usize, offset: usize, len: usize) -> bool {
     let first = &bytes[offset..offset + len];
     (1..records).all(|r| &bytes[r * record_len + offset..r * record_len + offset + len] == first)
@@ -1558,10 +1578,11 @@ fn infer_time(bytes: &[u8], record_len: usize, records: usize, time: KnownTime, 
 
 fn infer_text(bytes: &[u8], record_len: usize, records: usize, offset: usize, book: &mut NameBook) -> Option<(Inferred, usize)> {
     const MIN_TEXT: usize = 3;
-    let run = printable_run(bytes, record_len, records, offset);
-    if run < MIN_TEXT {
+    let printable = printable_run(bytes, record_len, records, offset);
+    if printable < MIN_TEXT {
         return None;
     }
+    let run = padded_text_run(bytes, record_len, records, offset, printable);
     let field = if same_in_every_record(bytes, record_len, records, offset, run) {
         Inferred {
             name: book.name("magic"),
@@ -1595,7 +1616,42 @@ fn infer_number(
             }
         }
     }
+    // Failing those, the narrowest reading of a few values or a number.
+    for width in [1usize, 2, 4] {
+        if !offset.is_multiple_of(width) || offset + width > record_len {
+            continue;
+        }
+        let values = column(bytes, record_len, records, offset, width, false);
+        if let Some(field) = classify_plain_column(&values, width, records, book) {
+            return Some((field, width));
+        }
+    }
     None
+}
+
+/// A column with no stronger role: one of a few values (a type, an action),
+/// or a 4-byte number whose top byte is always zero (a size, a count).
+fn classify_plain_column(values: &[u64], width: usize, records: usize, book: &mut NameBook) -> Option<Inferred> {
+    const MOST_KINDS: usize = 4;
+    const SMALL_NUMBER: u64 = 1 << 24;
+    let mut distinct: Vec<u64> = values.to_vec();
+    distinct.sort_unstable();
+    distinct.dedup();
+    if distinct.len() < 2 {
+        return None;
+    }
+    let ty = format!("u{}", width * 8);
+    if distinct.len() <= MOST_KINDS && distinct.len() * 4 <= records {
+        let shown: Vec<String> = distinct.iter().map(u64::to_string).collect();
+        let comment = format!("only {} values: {}", distinct.len(), shown.join(", "));
+        return Some(Inferred { name: book.name("kind"), ty, expected: None, comment });
+    }
+    (width == 4 && values.iter().all(|&value| value < SMALL_NUMBER)).then(|| Inferred {
+        name: book.name("number"),
+        ty,
+        expected: None,
+        comment: "varies, always below 2^24".to_string(),
+    })
 }
 
 /// Decide what a numeric column is: constant, offset, counter or float.
@@ -1917,6 +1973,28 @@ mod tests {
         for (index, record) in applied.records.iter().enumerate() {
             assert_eq!(record.value("counter"), Some(index.to_string().as_str()));
         }
+    }
+
+    #[test]
+    fn an_inferred_struct_reads_a_padded_name_whole_with_the_size_and_action_before_it() {
+        // A sync journal's records: size u32, action u8 (1 copied, 2 deleted),
+        // three zero bytes, a 36-byte name padded with NULs.
+        let names = ["//fs01/eng/q3/Q3_specs.pdf", "E:/backup_0912.zip", "C:/tmp/ledger.csv", "E:/IMG_20260912_0814.jpg", "//fs01/eng/q3/board_rev3.png"];
+        let mut bytes = Vec::new();
+        for index in 0..13usize {
+            bytes.extend((1000 + index as u32 * 7919 % 50_000).to_le_bytes());
+            bytes.extend([1 + u8::from(index >= 9), 0, 0, 0]);
+            let mut name = names[index % names.len()].as_bytes().to_vec();
+            name.resize(36, 0);
+            bytes.extend(name);
+        }
+        let source = infer_struct(&bytes, 44, 13, 1_000_000, &[]);
+        assert!(source.contains("text: char[36]"), "the name runs to the end of its padding:\n{source}");
+        assert!(source.contains("kind: u8"), "two values are a kind:\n{source}");
+        assert!(source.contains("number: u32"), "a size that varies below 2^24 is a number:\n{source}");
+        let applied = Template::parse(&source).unwrap().apply(&bytes, 0);
+        assert_eq!(applied.records[3].value("text"), Some("\"E:/IMG_20260912_0814.jpg\""));
+        assert_eq!(applied.records[12].value("kind"), Some("2"));
     }
 
     #[test]
