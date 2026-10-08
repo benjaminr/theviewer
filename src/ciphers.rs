@@ -35,6 +35,9 @@ pub const MAX_CRIB_KEY_LEN: usize = 64;
 pub const MAX_CRIB_LEN: usize = 256;
 /// Repeating-key lengths (from the index of coincidence) tried per search.
 const LENGTHS_TO_TRY: usize = 3;
+/// Longest repeating XOR key tried without a crib, as xor.recover_keys
+/// looks by default.
+const MAX_XOR_KEY_LEN: usize = 32;
 /// Longest repeating ADD key tried.
 const MAX_ADD_KEY_LEN: usize = 16;
 /// Best candidates per family kept for full scoring.
@@ -231,6 +234,7 @@ pub fn attack(bytes: &[u8], options: &AttackOptions) -> Vec<CipherCandidate> {
     proposals.extend(xor_previous_proposals(sample));
     proposals.extend(substitution_proposals(sample));
     proposals.extend(repeating_add_proposals(sample));
+    proposals.extend(repeating_xor_proposals(sample));
     proposals.extend(magic_crib_proposals(sample));
     if let Some(crib) = options.crib.as_deref().filter(|crib| !crib.is_empty()) {
         proposals.extend(crib_proposals(sample, crib, MAX_CRIB_OFFSETS));
@@ -610,6 +614,21 @@ fn repeating_add_proposals(sample: &[u8]) -> Vec<(Transform, String)> {
         .collect()
 }
 
+/// XOR with a repeating key, without a crib: the keys `xor.recover_keys`
+/// proposes, from letter frequency, the index of coincidence and the key
+/// showing through zeros. A key that nearly repeats a shorter one proposed
+/// is left out: it fits the sample's own letters a column at a time, so
+/// its decode can rate higher while getting a letter wrong.
+fn repeating_xor_proposals(sample: &[u8]) -> Vec<(Transform, String)> {
+    let candidates = xor::recover_keys(sample, MAX_XOR_KEY_LEN, KEEP_PER_FAMILY);
+    let over_fitted = |key: &[u8]| candidates.iter().any(|shorter| shorter.key.len() < key.len() && xor::repeats_nearly(key, &shorter.key));
+    candidates
+        .iter()
+        .filter(|candidate| !over_fitted(&candidate.key))
+        .map(|candidate| (Transform::RepeatingXor { key: candidate.key.clone() }, format!("repeating XOR key: {}", candidate.reason)))
+        .collect()
+}
+
 fn solve_add_column(sample: &[u8], column: usize, len: usize) -> u8 {
     let counts = byte_counts(&sample.iter().skip(column).step_by(len).copied().collect::<Vec<u8>>());
     let n = counts.iter().sum::<u32>().max(1) as f64;
@@ -825,6 +844,18 @@ mod tests {
         let key = [0x11u8, 0x9C, 0x42];
         let cipher: Vec<u8> = plain.bytes().enumerate().map(|(i, byte)| byte.wrapping_sub(key[i % 3])).collect();
         assert_recovered(&cipher, plain.as_bytes(), &options());
+    }
+
+    #[test]
+    fn a_report_hidden_by_a_repeating_xor_key_is_recovered_without_a_crib() {
+        let plain = "NIGHT OWL - staging report\n==========================\nTarget: payroll export for Q3, all cost centres.\n\
+Archive split in two halves so that neither channel carries the whole file.\nHalf one went out over DNS TXT lookups, half two over the telemetry upload.\n\
+Operator: remember to rotate the XOR key for the next job.\nProof of access: FLAG{owls_midnight_reunited_twice_9d82}\nEnd of report.\n";
+        let key = [0x65u8, 0xFF, 0xB3, 0x35];
+        let cipher: Vec<u8> = plain.bytes().enumerate().map(|(i, byte)| byte ^ key[i % key.len()]).collect();
+        assert_recovered(&cipher, plain.as_bytes(), &options());
+        let best = attack(&cipher, &options()).remove(0);
+        assert_eq!(best.transform, Transform::RepeatingXor { key: key.to_vec() }, "{}", best.reason);
     }
 
     #[test]

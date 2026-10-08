@@ -239,7 +239,7 @@ fn ranking_score(candidate: &XorCandidate, all: &[XorCandidate]) -> f64 {
 
 /// Whether `key` is `shorter` repeated, at least [`FOLD_AGREEMENT`] of its
 /// bytes agreeing.
-fn repeats_nearly(key: &[u8], shorter: &[u8]) -> bool {
+pub fn repeats_nearly(key: &[u8], shorter: &[u8]) -> bool {
     !shorter.is_empty() && key.len().is_multiple_of(shorter.len()) && agreement(key, shorter) as f64 >= FOLD_AGREEMENT * key.len() as f64
 }
 
