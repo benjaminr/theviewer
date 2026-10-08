@@ -6,6 +6,7 @@ use `Ctrl` on Linux and Windows.
 
 | Page | What it covers |
 | --- | --- |
+| [Worksheets](worksheets.md) | Files and the sheets made from them open side by side: the worksheet strip, Back, the tree of sheets, closing, labels, and what the tools keep for each sheet |
 | [Viewing and editing](viewing-and-editing.md) | Pixel formats, width, origin and zoom, curve layouts, the legend, hex and inspector, selections, the byte operations, skipping bytes, compressed streams and media, undo and saving |
 | [Finding structure](finding-structure.md) | Detecting the record width, Findings, Report, Structure map, Columns, Templates, Learn and the signature catalogue |
 | [Packets](packets.md) | The packet viewer: captures, splitting frames, dissection, *Decode frames as*, filters with Wireshark names, grids, editing, conversations and streams, tshark, export |

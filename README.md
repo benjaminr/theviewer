@@ -167,6 +167,8 @@ file formats, firmware, bit streams, forensics and comparing files.
 
 The [user guide](docs/guide/README.md) covers each part in full:
 
+- [Worksheets](docs/guide/worksheets.md): files and the sheets made from
+  them, open side by side, with the worksheet strip and the tree of sheets.
 - [Viewing and editing](docs/guide/viewing-and-editing.md): formats, width
   and zoom, selections and the byte operations, compressed streams and
   media.

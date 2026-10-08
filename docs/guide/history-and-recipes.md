@@ -218,8 +218,9 @@ left out. The notes linked to a step become its note in the recipe (see
 (opening the selection as a document, decompressing a stream, opening an
 unpacked file, decoding a line code, or any call through the API whose
 `output` was `"new"`), is kept. The steps after it that work on the sheet
-name it by the step that made it, or by the label the call gave it, not by
-its id in this session, so on the next file they work on the sheet made
+name it by the step that made it, or by its label (the one the call gave
+it, or one given with *Label…* in the [tree of sheets](worksheets.md#the-tree-of-sheets)),
+not by its id in this session, so on the next file they work on the sheet made
 there, not on the file itself. Each step is saved on the document it
 actually ran on, and the recipe's file is the one its sheets all came from.
 

@@ -180,11 +180,13 @@ skipped range*.
 gzip, zlib, raw deflate, bzip2, xz, lzma, zstd and LZ4 streams are found
 and checked by test decompression.
 
-- *Decompress* (`Cmd+D`) opens the stream at the cursor as a new document.
-  It works in a document opened this way too, so a stream inside a stream
-  is followed down a level at a time. *Back out*, or `Cmd+[` (*Edit › Back to
-  parent document*), climbs out; `Cmd+D` where no stream is at the cursor
-  does the same.
+- *Decompress* (`Cmd+D`) opens the stream at the cursor as a new
+  [worksheet](worksheets.md). It works in a sheet opened this way too, so a
+  stream inside a stream is followed down a level at a time. *Back out*, or
+  `Cmd+[` (*Edit › Back to parent document*), shows the sheet it came from
+  again; `Cmd+D` where no stream is at the cursor does the same. The
+  decompressed sheet stays open, in the worksheet strip under the toolbar,
+  so you can go back to it as you left it; `Cmd+W` closes it.
 - *Edit › Decompress here in place* replaces the stream with what it holds.
 - *Edit › Compress selection as* compresses a selection back (zlib, gzip,
   raw deflate, bzip2 or LZ4), and *Re-pack selection with the last codec* in the palette

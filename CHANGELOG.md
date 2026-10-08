@@ -181,9 +181,57 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - A sheet a `recipes.run` made is named by the run's step and its label,
   `{"$sheet": {"step": 12, "label": "firmware"}}`, and `recipes.run` lists
   the sheets it made under `outputs`, as other sheet-making methods do.
+- **Worksheets in the window.** Every file opened and every sheet made from
+  one (a decompressed stream, an unpacked node, a bit plane, a selection
+  opened on its own) stays open, one shown at a time, each kept where it
+  was left with its cursor, selection, shape and analysis. See the new
+  [Worksheets](docs/guide/worksheets.md) page.
+  - The **worksheet strip** under the toolbar shows the active sheet's
+    ancestry: click one to show it, drop down its children from `▸`, reach
+    the other files after the separator; `*` marks unsaved edits, and `×`
+    or a middle-click closes a sheet with those derived from it.
+  - The **tree of sheets** (*≡ Tree*, `Shift+Cmd+T`, and the top of the
+    Workspace tab) lists every sheet with the step and method that made it
+    and its size, with *Show*, *Compare with active*, *Close* and
+    *Label…*. A label is shown in the strip, listed by the API and used by
+    recipes saved from the history to name the sheet.
+  - `Cmd+W` (*File › Close worksheet*) closes the sheet shown and those
+    derived from it, asking first when one has unsaved edits; *File › Close
+    other worksheets* closes all but it and the sheets it came from.
+    `Ctrl+Tab` and `Ctrl+Shift+Tab` show the next and previous sheet.
+  - The window title names the sheet shown and, for a derived one, the
+    file it came from.
+  - The report, findings, pinned outlines, statistics and the other tools'
+    results are kept with each sheet and shown again with it. Strings, XOR,
+    Crypto and Unpacked go on showing another sheet's results, saying
+    whose (*From payload (doc-4) · Show it*), and act on that sheet.
+  - The packet viewer remembers the sheet its packets were read from: what
+    it writes, selects and opens is that sheet's while another is shown,
+    its outlines and legend layer are drawn only on it, and its note offers
+    *Show it*.
+- **`documents.close`** closes a document and every document derived from
+  it, refusing while one has unsaved edits unless the person at the window
+  discards them.
+- `diff.run` compares a document with another open one, given as `other`,
+  in place of a file's `path`.
 
 ### Changed
 
+- **Back keeps the sheet it leaves.** In the window, Back (`Cmd+[`, the
+  status bar's *Back*, *Back out*, `Cmd+D` where no stream is at the
+  cursor) shows the parent and the child stays open; `documents.open
+  {doc}` and `documents.activate` show a sheet and close nothing. Deriving
+  twice from one sheet gives two siblings rather than nesting the second
+  under the first, and a document can be derived from any open sheet, not
+  only the one shown.
+- **File › Open adds a worksheet** rather than closing the others, as do
+  File › New, `documents.open`, `documents.new` and `documents.open_source`
+  in the window. Opening a file already open shows it again (File › Open
+  reads it from disk again when it has unsaved edits). *File › Close other
+  worksheets* does what opening used to.
+- A parked sheet's folds, shape, bookmarks and selection can be set through
+  the API; it is saved once shown. Each root file's sidecar is saved,
+  whichever sheet is shown.
 - `jobs.status` is no longer journalled: polling a job takes no step
   number, so the step before the next call is the one that started it.
 - Saving a recipe whose anchor cites a step the recipe cannot hold (one
@@ -195,7 +243,6 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   picks from a job's result only on the step that started it.
 - The replay warning that literal offsets may not fit another file is
   given only when the recipe has one, and names it.
-
 - A value marked as an anchor that is not one is refused with what is
   wrong with it: a then anchor without `then`, an operation it does not know
   with those there are, a `part` or needle that does not read.

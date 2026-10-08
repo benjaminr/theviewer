@@ -116,7 +116,8 @@ can be cancelled from a plugin or a client as well as from their tool.
 ## The Workspace tab
 
 The **Workspace** tab (open it from *View › Panels* or the command palette)
-lists what is known, by topic and by whom. Facts
+starts with the open [worksheets](worksheets.md#the-tree-of-sheets), as a
+tree, then lists what is known, by topic and by whom. Facts
 that describe the file before its last edit are dimmed; what an edit did
 not touch moves with it instead. Click a span to select those bytes, and
 *why* to see what led to a fact. Below is a log of recent events, filtered
