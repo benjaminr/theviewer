@@ -234,11 +234,13 @@ pub fn attack(bytes: &[u8], options: &AttackOptions) -> Vec<CipherCandidate> {
     proposals.extend(xor_previous_proposals(sample));
     proposals.extend(substitution_proposals(sample));
     proposals.extend(repeating_add_proposals(sample));
-    proposals.extend(repeating_xor_proposals(sample));
     proposals.extend(magic_crib_proposals(sample));
     if let Some(crib) = options.crib.as_deref().filter(|crib| !crib.is_empty()) {
         proposals.extend(crib_proposals(sample, crib, MAX_CRIB_OFFSETS));
     }
+    // After the cribs, so a key a crib pins too keeps the crib as its
+    // reason when the two decode alike.
+    proposals.extend(repeating_xor_proposals(sample));
 
     let mut candidates: Vec<(CipherCandidate, Vec<u8>)> = proposals
         .into_iter()
@@ -856,6 +858,9 @@ Operator: remember to rotate the XOR key for the next job.\nProof of access: FLA
         assert_recovered(&cipher, plain.as_bytes(), &options());
         let best = attack(&cipher, &options()).remove(0);
         assert_eq!(best.transform, Transform::RepeatingXor { key: key.to_vec() }, "{}", best.reason);
+        let with_crib = attack(&cipher, &AttackOptions { crib: Some(b"FLAG{".to_vec()), max_results: 10 });
+        let xor = with_crib.iter().find(|candidate| candidate.transform == Transform::RepeatingXor { key: key.to_vec() }).expect("the key");
+        assert!(xor.reason.starts_with("crib"), "the crib that pins the key is the reason given: {}", xor.reason);
     }
 
     #[test]
