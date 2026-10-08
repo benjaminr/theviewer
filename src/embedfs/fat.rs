@@ -224,8 +224,8 @@ pub(super) fn read(image: &[u8], base: usize, allowance: &mut Allowance) -> Resu
         volume_label: None,
         problems,
     };
-    let root = walker.root_directory();
-    walker.walk_directory(&root, "", 0, allowance);
+    let (root, pieces) = walker.root_directory();
+    walker.walk_directory(&root, &pieces, "", 0, allowance);
     let label = walker.volume_label.clone().unwrap_or_default();
     let serial = geometry.serial.map(|serial| format!(", serial {:04X}-{:04X}", serial >> 16, serial & 0xFFFF)).unwrap_or_default();
     let deleted = walker.entries.iter().filter(|entry| entry.record.deleted).count();
@@ -263,19 +263,66 @@ struct DirectoryEntry {
     size: usize,
     created: Option<String>,
     modified: Option<String>,
+    /// Offset of the short entry in its directory's listing.
+    slot: usize,
+    /// Offset of the short entry in the scanned data, once known.
+    entry_offset: Option<usize>,
+}
+
+impl DirectoryEntry {
+    /// What the entry records, with where its content lies.
+    fn record(&self, ranges: Vec<(usize, usize)>, clusters_free: Option<bool>) -> EntryRecord {
+        EntryRecord {
+            deleted: self.deleted,
+            created: self.created.clone(),
+            modified: self.modified.clone(),
+            first_cluster: (self.first_cluster != 0).then_some(self.first_cluster),
+            entry_offset: self.entry_offset,
+            ranges,
+            clusters_free,
+        }
+    }
+}
+
+/// Where the bytes read from a chain or region lie in the volume: the
+/// offset in the bytes and in the volume of each contiguous piece.
+type Pieces = Vec<(usize, usize)>;
+
+/// The volume offset of byte `at` of bytes read as `pieces`.
+fn volume_offset(pieces: &Pieces, at: usize) -> Option<usize> {
+    let &(start, volume) = pieces.iter().rev().find(|&&(start, _)| start <= at)?;
+    Some(volume + at - start)
+}
+
+/// `pieces` of `len` bytes as (offset, length) runs in the scanned data,
+/// neighbouring pieces joined.
+fn ranges_of(pieces: &Pieces, len: usize, base: usize) -> Vec<(usize, usize)> {
+    let mut ranges: Vec<(usize, usize)> = Vec::new();
+    for (index, &(start, volume)) in pieces.iter().enumerate() {
+        let end = pieces.get(index + 1).map_or(len, |&(next, _)| next).min(len);
+        if end <= start {
+            continue;
+        }
+        match ranges.last_mut() {
+            Some((at, length)) if *at + *length == base + volume => *length += end - start,
+            _ => ranges.push((base + volume, end - start)),
+        }
+    }
+    ranges
 }
 
 impl Walker<'_> {
     /// The root directory's bytes: a fixed region on FAT12 and FAT16, a
     /// cluster chain on FAT32.
-    fn root_directory(&mut self) -> Vec<u8> {
+    fn root_directory(&mut self) -> (Vec<u8>, Pieces) {
         if self.geometry.fat_type == FatType::Fat32 {
             let root = self.geometry.root_cluster;
             self.visited.insert(root);
-            return self.chain_bytes(root, usize::MAX).0;
+            let (bytes, pieces, _) = self.chain_bytes(root, usize::MAX);
+            return (bytes, pieces);
         }
         let end = (self.geometry.root_offset + self.geometry.root_len).min(self.image.len());
-        self.image.get(self.geometry.root_offset..end).unwrap_or_default().to_vec()
+        (self.image.get(self.geometry.root_offset..end).unwrap_or_default().to_vec(), vec![(0, self.geometry.root_offset)])
     }
 
     /// The table's value for `cluster`.
@@ -315,27 +362,34 @@ impl Walker<'_> {
         (clusters, None)
     }
 
-    /// The bytes of the chain starting at `first`, at most `limit` of them.
-    fn chain_bytes(&self, first: u32, limit: usize) -> (Vec<u8>, Option<String>) {
+    /// The bytes of the chain starting at `first`, at most `limit` of
+    /// them, and where they lie in the volume.
+    fn chain_bytes(&self, first: u32, limit: usize) -> (Vec<u8>, Pieces, Option<String>) {
         let cluster_bytes = self.geometry.cluster_bytes();
         let most_clusters = limit.div_ceil(cluster_bytes).min(self.geometry.clusters as usize);
         let (clusters, problem) = self.chain(first, most_clusters);
         let mut bytes = Vec::new();
+        let mut pieces = Vec::new();
         for cluster in clusters {
             let wanted = cluster_bytes.min(limit - bytes.len());
-            match slice_at(self.image, self.geometry.cluster_offset(cluster), wanted) {
-                Some(data) => bytes.extend_from_slice(data),
-                None => return (bytes, Some(format!("cluster {cluster} lies past the end of the volume"))),
+            let offset = self.geometry.cluster_offset(cluster);
+            match slice_at(self.image, offset, wanted) {
+                Some(data) => {
+                    pieces.push((bytes.len(), offset));
+                    bytes.extend_from_slice(data);
+                }
+                None => return (bytes, pieces, Some(format!("cluster {cluster} lies past the end of the volume"))),
             }
         }
-        (bytes, problem)
+        (bytes, pieces, problem)
     }
 
-    fn walk_directory(&mut self, listing: &[u8], path: &str, depth: usize, allowance: &mut Allowance) {
+    fn walk_directory(&mut self, listing: &[u8], pieces: &Pieces, path: &str, depth: usize, allowance: &mut Allowance) {
         if depth > MAX_DIRECTORY_DEPTH {
             return;
         }
-        for entry in parse_directory(listing, self.geometry.fat_type) {
+        for mut entry in parse_directory(listing, self.geometry.fat_type) {
+            entry.entry_offset = volume_offset(pieces, entry.slot).map(|offset| self.base + offset);
             if self.entries.len() >= self.max_entries {
                 self.problems.push(format!("stopped after {} entries", self.max_entries));
                 return;
@@ -361,7 +415,7 @@ impl Walker<'_> {
     }
 
     fn visit_directory(&mut self, entry: DirectoryEntry, path: String, depth: usize, allowance: &mut Allowance) {
-        let record = EntryRecord { deleted: entry.deleted, created: entry.created.clone(), modified: entry.modified.clone() };
+        let record = entry.record(Vec::new(), None);
         let mut listed = Entry::directory(path.clone(), self.base + self.geometry.cluster_offset(entry.first_cluster));
         listed.record = record;
         if entry.deleted {
@@ -373,24 +427,28 @@ impl Walker<'_> {
         if !self.visited.insert(entry.first_cluster) {
             return;
         }
-        let (listing, problem) = self.chain_bytes(entry.first_cluster, usize::MAX);
+        let (listing, pieces, problem) = self.chain_bytes(entry.first_cluster, usize::MAX);
         if let Some(problem) = problem {
             self.problems.push(format!("{path}: {problem}"));
         }
-        self.walk_directory(&listing, &path, depth + 1, allowance);
+        self.walk_directory(&listing, &pieces, &path, depth + 1, allowance);
     }
 
     fn read_file(&self, entry: &DirectoryEntry, path: String, allowance: &mut Allowance) -> Entry {
         let cap = allowance.cap().unwrap_or(0);
         let wanted = entry.size.min(cap);
-        let (content, problem) = if entry.size == 0 {
-            (Vec::new(), None)
+        let (content, problem, ranges, clusters_free) = if entry.size == 0 {
+            (Vec::new(), None, Vec::new(), None)
         } else if entry.deleted {
-            self.recover(entry, wanted)
+            let (bytes, problem, clusters_free) = self.recover(entry, wanted);
+            let start = self.geometry.cluster_offset(entry.first_cluster);
+            let ranges = if bytes.is_empty() { Vec::new() } else { vec![(self.base + start, bytes.len())] };
+            (bytes, problem, ranges, clusters_free)
         } else {
-            let (bytes, problem) = self.chain_bytes(entry.first_cluster, wanted);
+            let (bytes, pieces, problem) = self.chain_bytes(entry.first_cluster, wanted);
             let short = bytes.len() < wanted;
-            (bytes, problem.or_else(|| short.then(|| "the cluster chain is shorter than the file".to_string())))
+            let ranges = ranges_of(&pieces, bytes.len(), self.base);
+            (bytes, problem.or_else(|| short.then(|| "the cluster chain is shorter than the file".to_string())), ranges, None)
         };
         let (data, limit_note) = take_content(content, entry.size as u64, allowance);
         let note = match (entry.deleted, problem.or(limit_note)) {
@@ -408,16 +466,16 @@ impl Walker<'_> {
             source_len: entry.size,
             method: None,
             note,
-            record: EntryRecord { deleted: entry.deleted, created: entry.created.clone(), modified: entry.modified.clone() },
+            record: entry.record(ranges, clusters_free),
         }
     }
 
     /// A deleted file's bytes, read on from its first cluster as though its
     /// clusters were contiguous; with a problem when some of them now belong
-    /// to other files.
-    fn recover(&self, entry: &DirectoryEntry, wanted: usize) -> (Vec<u8>, Option<String>) {
+    /// to other files, and whether they are all still free.
+    fn recover(&self, entry: &DirectoryEntry, wanted: usize) -> (Vec<u8>, Option<String>, Option<bool>) {
         if !self.geometry.is_data_cluster(entry.first_cluster) {
-            return (Vec::new(), Some(format!("its first cluster {} is not a data cluster, so nothing was recovered", entry.first_cluster)));
+            return (Vec::new(), Some(format!("its first cluster {} is not a data cluster, so nothing was recovered", entry.first_cluster)), None);
         }
         let start = self.geometry.cluster_offset(entry.first_cluster);
         let end = (start + wanted).min(self.image.len());
@@ -427,7 +485,7 @@ impl Walker<'_> {
             .filter(|&cluster| self.next_cluster(cluster).is_some_and(|value| value != 0))
             .count();
         let problem = (reused > 0).then(|| format!("recovered, contiguous assumption, but {reused} of its {clusters} clusters are in use by other files"));
-        (bytes, problem)
+        (bytes, problem, Some(reused == 0))
     }
 }
 
@@ -437,7 +495,7 @@ impl Walker<'_> {
 fn parse_directory(listing: &[u8], fat_type: FatType) -> Vec<DirectoryEntry> {
     let mut entries = Vec::new();
     let mut long_parts: Vec<&[u8]> = Vec::new();
-    for raw in listing.as_chunks::<DIRECTORY_ENTRY_LEN>().0 {
+    for (index, raw) in listing.as_chunks::<DIRECTORY_ENTRY_LEN>().0.iter().enumerate() {
         if raw[0] == 0 {
             break; // No entries follow.
         }
@@ -465,6 +523,8 @@ fn parse_directory(listing: &[u8], fat_type: FatType) -> Vec<DirectoryEntry> {
             size: le_u32(raw, 28).unwrap_or(0) as usize,
             created: dos_date_time(le_u16(raw, 16).unwrap_or(0), le_u16(raw, 14).unwrap_or(0)),
             modified: dos_date_time(le_u16(raw, 24).unwrap_or(0), le_u16(raw, 22).unwrap_or(0)),
+            slot: index * DIRECTORY_ENTRY_LEN,
+            entry_offset: None,
         });
     }
     entries
@@ -756,6 +816,30 @@ pub(super) mod tests {
     }
 
     #[test]
+    fn an_entry_says_where_its_directory_entry_and_its_clusters_lie_in_the_image() {
+        const BASE: usize = 1_048_576;
+        let (volume, photo) = sample(16384);
+        let mut left = usize::MAX;
+        let filesystem = read(&volume, BASE, &mut Allowance::new(&Limits::default(), &mut left)).unwrap();
+        let find = |path: &str| filesystem.entries.iter().find(|entry| entry.path == path).unwrap();
+        let in_image = |offset: usize, len: usize| &volume[offset - BASE..offset - BASE + len];
+        for (path, short) in [("NOTES.TXT", b"NOTES   TXT"), ("SYSTEM~1/IndexerVolumeGuid", b"INDEXE~1   "), ("SYSTEM~1", b"SYSTEM~1   ")] {
+            let at = find(path).record.entry_offset.unwrap_or_else(|| panic!("{path} has no entry offset"));
+            assert_eq!(in_image(at, 11), short, "{path}'s directory entry");
+        }
+        let zip = find("backup_0912.zip");
+        let geometry = geometry(&volume).unwrap();
+        assert_eq!(zip.record.first_cluster, Some(((zip.source_offset - BASE - geometry.data_offset) / geometry.cluster_bytes()) as u32 + 2));
+        assert_eq!(zip.record.ranges.iter().map(|&(_, len)| len).sum::<usize>(), 3000);
+        let read_back: Vec<u8> = zip.record.ranges.iter().flat_map(|&(at, len)| in_image(at, len).to_vec()).collect();
+        assert_eq!(read_back, zip.data.as_slice());
+        assert_eq!(zip.record.clusters_free, None, "a live file's clusters are its own");
+        let deleted = find("IMG_20260912_0814.jpg");
+        assert_eq!(deleted.record.clusters_free, Some(true), "the photo's clusters are still free");
+        assert_eq!(in_image(deleted.record.ranges[0].0, deleted.record.ranges[0].1), photo.as_slice());
+    }
+
+    #[test]
     fn the_type_follows_the_cluster_count_not_the_label_in_the_boot_sector() {
         let (small, _) = sample(4096);
         assert_eq!(geometry(&small).unwrap().fat_type, FatType::Fat12, "about 2000 clusters, though labelled FAT16");
@@ -779,6 +863,7 @@ pub(super) mod tests {
         let filesystem = read_volume(&volume);
         let photo = filesystem.entries.iter().find(|entry| entry.path == "IMG_20260912_0814.jpg").unwrap();
         assert!(photo.note.as_deref().unwrap().contains("1 of its 5 clusters are in use"), "{:?}", photo.note);
+        assert_eq!(photo.record.clusters_free, Some(false));
     }
 
     #[test]

@@ -85,6 +85,17 @@ pub struct EntryRecord {
     /// Local wall-clock times, such as "2026-09-12 08:14:54" (FAT keeps no zone).
     pub created: Option<String>,
     pub modified: Option<String>,
+    /// The first cluster the directory entry names.
+    pub first_cluster: Option<u32>,
+    /// Offset in the scanned data of the entry's 32-byte directory entry.
+    pub entry_offset: Option<usize>,
+    /// Where a file's content lies in the scanned data: (offset, length) of
+    /// each run of contiguous clusters, the last cut to the file's size; a
+    /// deleted file's are its size read on from its first cluster.
+    pub ranges: Vec<(usize, usize)>,
+    /// For a deleted file: whether the clusters it was recovered from are
+    /// all still free, as the contiguous assumption needs.
+    pub clusters_free: Option<bool>,
 }
 
 /// One directory, file, link or volume inside a filesystem image.

@@ -94,6 +94,27 @@ pub struct FilesystemEntry {
     pub created: Option<String>,
     #[serde(default)]
     pub modified: Option<String>,
+    /// The first cluster its FAT directory entry names.
+    #[serde(default)]
+    pub first_cluster: Option<u32>,
+    /// Document offset of its 32-byte FAT directory entry.
+    #[serde(default)]
+    pub entry_offset: Option<u64>,
+    /// Where its content lies in the document: each run of contiguous
+    /// clusters (a deleted file's: its size read on from its first cluster).
+    #[serde(default)]
+    pub ranges: Vec<DataRange>,
+    /// For a deleted file: whether the clusters it was recovered from are
+    /// all still free, as reading them as contiguous assumes.
+    #[serde(default)]
+    pub clusters_free: Option<bool>,
+}
+
+/// Bytes of the document an entry's content lies in.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct DataRange {
+    pub offset: u64,
+    pub len: u64,
 }
 
 /// A filesystem image found.
@@ -148,6 +169,10 @@ impl FilesystemsFound {
                             deleted: entry.record.deleted,
                             created: entry.record.created.clone(),
                             modified: entry.record.modified.clone(),
+                            first_cluster: entry.record.first_cluster,
+                            entry_offset: entry.record.entry_offset.map(|offset| offset as u64),
+                            ranges: entry.record.ranges.iter().map(|&(offset, len)| DataRange { offset: offset as u64, len: len as u64 }).collect(),
+                            clusters_free: entry.record.clusters_free,
                         })
                         .collect(),
                 })
@@ -303,6 +328,13 @@ mod tests {
         assert_eq!(deleted["path"], "IMG_20260912_0814.jpg");
         assert_eq!(deleted["note"], crate::embedfs::fat::NOTE_RECOVERED);
         assert_eq!(deleted["modified"], "2026-09-12 08:14:54");
+        assert_eq!(deleted["clusters_free"], true, "{deleted}");
+        let range = &deleted["ranges"][0];
+        let (at, len) = (range["offset"].as_u64().unwrap() as usize, range["len"].as_u64().unwrap() as usize);
+        assert_eq!(&disk[at..at + len], photo.as_slice(), "the range is where the photo lies on the disk");
+        let entry_at = deleted["entry_offset"].as_u64().unwrap() as usize;
+        assert_eq!(disk[entry_at], 0xE5, "the directory entry starts with the deleted mark");
+        assert!(deleted["first_cluster"].as_u64().is_some_and(|cluster| cluster >= 2), "{deleted}");
         let opened = call(&mut workspace, "forensics.open_entry", json!({"filesystem": 63 * 512, "path": "IMG_20260912_0814.jpg"})).unwrap();
         assert_eq!(opened["len"].as_u64(), Some(photo.len() as u64));
         let read = call(&mut workspace, "bytes.read", json!({"doc": opened["id"], "start": 0, "len": 16})).unwrap();
