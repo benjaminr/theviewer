@@ -251,10 +251,10 @@ A recipe step that starts a job waits for it (up to 10 minutes), and later steps
 | [`templates.apply`](#templatesapply) | analysis | core | Apply a binary template, by name or as source text, at an offset and return its field tree and records; with pin, also show it as the template tool does. |
 | [`templates.infer`](#templatesinfer) | analysis |  | Propose a template struct from several example records, from what varies between them; with pin, also apply it at the first record and show it as the template tool does. |
 | [`templates.clear`](#templatesclear) | view |  | Withdraw the template pinned over a document: its records are no longer outlined, and it leaves template.applied. |
-| [`codecs.list`](#codecslist) | read |  | The codecs available for decoding, built in and from plugins. |
+| [`codecs.list`](#codecslist) | read |  | The codecs available for decoding, built in and from plugins: the decompressors, and the text encodings base32, base64, base64url, hex (hex text), sixbit (DEC SIXBIT) and ais6 (AIS 6-bit ASCII). |
 | [`codecs.detect`](#codecsdetect) | read |  | The codecs whose header starts at an offset. |
-| [`codecs.decode`](#codecsdecode) | read |  | Decode (decompress) a span with any codec codecs.list lists, plugins' included, or the first built-in decompressor that decodes there: return the output by default, or, as output says, open it as a new sheet or put it in place of the bytes it decoded. |
-| [`codecs.probe`](#codecsprobe) | read | core | Try every built-in decompressor at the start of a span, headerless ones included, and list those that decode. |
+| [`codecs.decode`](#codecsdecode) | read |  | Decode (decompress) a span with any codec codecs.list lists, plugins' included, or the first codec that decodes there (a built-in decompressor, then a text encoding a run of whose characters starts there, then a plugin's codec that detects it): return the output by default, or, as output says, open it as a new sheet or put it in place of the bytes it decoded. |
+| [`codecs.probe`](#codecsprobe) | read | core | Try every codec at the start of a span and list those that decode: the built-in decompressors (headerless ones included), the text encodings a run of whose characters starts there, then the plugins' codecs. |
 | [`codecs.open_decoded`](#codecsopen_decoded) | view |  | Decompress the stream starting at an offset, with the first codec that decodes there or the one named (any codecs.list lists), and open what it holds as a document derived from this one; in the window, Back (or opening the parent by id) returns. A shorthand for codecs.decode with output "new". |
 | [`packets.dissect_bytes`](#packetsdissect_bytes) | read | core | Dissect one packet, from a span or from hex bytes, into protocol layers and fields, a summary and its flow. |
 | [`packets.detect_frames`](#packetsdetect_frames) | read |  | Find the protocol a set of frames of unknown format is, by trying every frame decoder on them. |
@@ -267,7 +267,7 @@ A recipe step that starts a job waits for it (up to 10 minutes), and later steps
 | [`packets.export_pcap`](#packetsexport_pcap) | analysis |  | A set's packets (those a filter keeps) as a pcap file, returned or written to a path given (which needs leave to edit). |
 | [`packets.conversations`](#packetsconversations) | read |  | The conversations in a set (the packets a filter keeps): each pair of endpoints with its transport, packets and bytes each way, its first packet's index in the set, and a filter for it; in order of first packet, or sorted by packets, bytes or address. |
 | [`packets.follow_stream`](#packetsfollow_stream) | read |  | The payloads of a packet's conversation in order, each with its direction, and the stream as text; or, with output "new", the stream's bytes (one direction's, with direction) opened as a sheet derived from the set's document. |
-| [`packets.http_bodies`](#packetshttp_bodies) | analysis |  | The HTTP/1 requests and responses in a packet's TCP stream, each with its head and its body as meant: put together across segments, de-chunked, and decompressed by its Content-Encoding (gzip or deflate); the bodies are returned, or opened as documents of their own with open. |
+| [`packets.http_bodies`](#packetshttp_bodies) | analysis |  | The HTTP/1 requests and responses in a packet's TCP stream, each with its head and its body as meant: put together across segments, de-chunked, and decompressed by its Content-Encoding (gzip or deflate); the bodies are returned, or opened as documents of their own with open or output "new" ({"new": {"label": "body"}} labels them body, body 1, body 2…). |
 | [`packets.find_captures`](#packetsfind_captures) | read |  | The captures inside a span of a document (pcap, pcapng, snoop, Network Monitor or ERF, or one of these compressed with gzip), each with its offset, format, link type and packets, for packets.sets.create. |
 | [`packets.sets.add_packets`](#packetssetsadd_packets) | view |  | Add ranges of the document to a set as packets of their own, so packets can be gathered one at a time; the set then keeps its packets where they are. |
 | [`packets.sets.refresh`](#packetssetsrefresh) | view |  | Find a set's packets again, the way they were found, in another document (the current one by default), which the set then belongs to. |
@@ -312,7 +312,7 @@ A recipe step that starts a job waits for it (up to 10 minutes), and later steps
 | [`crypto.repeated_blocks`](#cryptorepeated_blocks) | job |  | Start a search of a span (at most 16 MiB) for random-looking 8- and 16-byte blocks that repeat, the mark of ECB-mode encryption, as a job: the verdict, the best block size and alignment, the most repeated blocks and the repeats along the span are job.finished's result, and in the window they fill the Crypto panel. |
 | [`crypto.find_keys`](#cryptofind_keys) | job |  | Start a search of a span (the whole document by default, at most 64 MiB) for PEM blocks, DER certificates and keys, OpenSSH keys and random-looking runs that could be raw symmetric keys, as a job: what was found is job.finished's result, and in the window it fills the Crypto panel. |
 | [`crypto.attack`](#cryptoattack) | job |  | Start attacks on simple ciphers over a span (at most 1 MiB): rolling XOR, XOR with the previous byte, ADD/SUB with a constant or repeating key, bit rotation, XOR combined with ADD and, with a crib, crib dragging, as a job: the decodes that look most like text or structured data, each with the operation that transform.apply or documents.derive takes to apply it, and with a crib the key bytes it reveals, are job.finished's result, and in the window they fill the Crypto panel. |
-| [`crypto.decrypt`](#cryptodecrypt) | read |  | Decrypt a span with AES-128, AES-192 or AES-256 in ECB, CBC or CTR mode, with a key (and IV) given as hex, removing PKCS#7 padding, and return the plaintext; or, as output says, open it as a new sheet, put it in place of the ciphertext, or write it to a file (which needs leave to edit). |
+| [`crypto.decrypt`](#cryptodecrypt) | read |  | Decrypt a span with AES-128, AES-192 or AES-256 in ECB, CBC or CTR mode, with a key (and IV) given as hex, or with the first of several keys whose PKCS#7 padding comes out valid, removing the padding, and return the plaintext; or, as output says, open it as a new sheet, put it in place of the ciphertext, or write it to a file (which needs leave to edit). |
 | [`crypto.open_decrypted`](#cryptoopen_decrypted) | view |  | Decrypt a span as crypto.decrypt does and open the plaintext as a document derived from this one; in the window, Back (or opening the parent by id) returns. A shorthand for crypto.decrypt with output "new". |
 | [`crypto.apply`](#cryptoapply) | view |  | Undo a simple cipher over a span: a candidate crypto.attack proposed (by its job and index, over the span it attacked), or an operation such as {"op": "rolling_xor", "start": 81, "step": 5}; open what it makes as a new sheet by default, or, as output says, put it in place, return it or write it to a file (which needs leave to edit). |
 | [`compare.variation`](#comparevariation) | job |  | Start comparing a document with other files byte position by byte position, each from its own start offset, as a job: the regions that are constant, vary (and how many values) or move one way through the files like a counter are job.finished's result, and in the window they fill Compare. |
@@ -328,9 +328,9 @@ A recipe step that starts a job waits for it (up to 10 minutes), and later steps
 | [`forensics.open_entry`](#forensicsopen_entry) | view |  | Open one file (or volume) of the filesystem image at an offset of the document as a derived document, by its path in the image; a deleted FAT file opens as recovered from its first cluster on. With output, return its bytes or write them to a file (which needs leave to edit) instead. |
 | [`forensics.classify_blocks`](#forensicsclassify_blocks) | job |  | Start labelling every block of the document (its first 256 MiB) as padding, text, markup, machine code, compressed, random, raw image, PCM audio or table data as a job: the runs of one class, with the reason for each, are job.finished's result, and in the window they fill Forensics. |
 | [`unpack.run`](#unpackrun) | job |  | Start extracting the archives and compressed streams in the document (its first 256 MiB) recursively, like binwalk -e, as a job: the tree of what was found, each node with its kind, size and where its bytes came from, is job.finished's result, and in the window it fills the Unpacked tab and the Size map. |
-| [`unpack.open`](#unpackopen) | view |  | Open one node of the unpacked tree (by its path of child indices, as unpack.run gave it) as a derived document; or, as output says, return its bytes or write them to a file (which needs leave to edit). |
-| [`unpack.read`](#unpackread) | read |  | Read the bytes of one node of the unpacked tree, by its path of child indices, as hex by default, or as base64 or text: a shorthand for unpack.open with output "return", which can also read part of the node. |
-| [`unpack.save`](#unpacksave) | edit |  | Write the bytes of one node of the unpacked tree (by its path of child indices, as node) to a file; the document is left as it is. A shorthand for unpack.open with output {"file": path}. |
+| [`unpack.open`](#unpackopen) | view |  | Open one node of the unpacked tree (by its path of child indices, as unpack.run gave it, or of names, such as "bin/novacamd") as a derived document; or, as output says, return its bytes or write them to a file (which needs leave to edit). |
+| [`unpack.read`](#unpackread) | read |  | Read the bytes of one node of the unpacked tree, by its path of child indices or of names, as hex by default, or as base64 or text: a shorthand for unpack.open with output "return", which can also read part of the node. |
+| [`unpack.save`](#unpacksave) | edit |  | Write the bytes of one node of the unpacked tree (by its path of child indices or of names, as node) to a file; the document is left as it is. A shorthand for unpack.open with output {"file": path}. |
 | [`characterise.profile_selection`](#characteriseprofile_selection) | job |  | Start compressing a sample of a span with deflate, bzip2, LZ4, zstd and an order-1 entropy coder as a job: the ratios and the verdict they give (encrypted or random, already compressed, lossy media or structured) are job.finished's result, and in the window they fill Characterise (analysis.compressibility is the quick read). |
 | [`characterise.profile_file`](#characteriseprofile_file) | job |  | Start profiling the compressibility of the whole document as a job, overall and for up to 64 segments sampled along it: the verdicts are job.finished's result, and in the window they fill Characterise with a strip of verdicts. |
 | [`characterise.streams`](#characterisestreams) | job |  | Start a search of the document (its first 256 MiB) for raw MP3/MP2 and AAC frames, H.264 and H.265 Annex B video and 16-bit PCM audio without a container as a job: the runs found are job.finished's result, and in the window they fill Characterise. |
@@ -1812,7 +1812,7 @@ Withdraw the template pinned over a document: its records are no longer outlined
 
 ### codecs.list
 
-The codecs available for decoding, built in and from plugins.
+The codecs available for decoding, built in and from plugins: the decompressors, and the text encodings base32, base64, base64url, hex (hex text), sixbit (DEC SIXBIT) and ais6 (AIS 6-bit ASCII).
 
 **Effect:** `read` · **MCP tool:** `codecs_list`, through `api_call`, or with `--all-tools`
 
@@ -1843,7 +1843,7 @@ The codecs whose header starts at an offset.
 
 ### codecs.decode
 
-Decode (decompress) a span with any codec codecs.list lists, plugins' included, or the first built-in decompressor that decodes there: return the output by default, or, as output says, open it as a new sheet or put it in place of the bytes it decoded.
+Decode (decompress) a span with any codec codecs.list lists, plugins' included, or the first codec that decodes there (a built-in decompressor, then a text encoding a run of whose characters starts there, then a plugin's codec that detects it): return the output by default, or, as output says, open it as a new sheet or put it in place of the bytes it decoded.
 
 **Effect:** `read` · **MCP tool:** `codecs_decode`, through `api_call`, or with `--all-tools`
 
@@ -1875,7 +1875,7 @@ Decode (decompress) a span with any codec codecs.list lists, plugins' included, 
 
 ### codecs.probe
 
-Try every built-in decompressor at the start of a span, headerless ones included, and list those that decode.
+Try every codec at the start of a span and list those that decode: the built-in decompressors (headerless ones included), the text encodings a run of whose characters starts there, then the plugins' codecs.
 
 **Effect:** `read` · **MCP tool:** `codecs_probe`, listed by default
 
@@ -1890,7 +1890,7 @@ Try every built-in decompressor at the start of a span, headerless ones included
 
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `streams` | array of ProbedStream | yes | Decoders that read the data, headed ones first. |
+| `streams` | array of ProbedStream | yes | Decoders that read the data: decompressors with a header first, then headerless ones, text encodings, and plugins' codecs. |
 
 ### codecs.open_decoded
 
@@ -2048,7 +2048,7 @@ A set's packets the display filter keeps, a page at a time, in capture order or 
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `dedupe` | string | no | Keep only the first packet (in the order listed) of each value of this field, named as for `sort`: a chunk sent twice is listed once. |
+| `dedupe` | string | no | Keep only the first packet (in the order listed) of each value of this field, named as for `sort`: a chunk sent twice is listed once. Values are compared as the whole text, so `info` keeps each distinct summary; packets without the field are all kept. |
 | `descending` | boolean | no | With `sort`, highest first. |
 | `filter` | string | no | A display filter, as the Packets panel takes: protocol names, addresses, ports, `len > 60`, Wireshark field names such as `dns.qry.type==16` or `tcp.port==80`, template fields as `template.type==60`, joined with and, or, not and brackets. |
 | `limit` | integer | no | Most packets to return (100 by default). |
@@ -2152,6 +2152,7 @@ The conversations in a set (the packets a filter keeps): each pair of endpoints 
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
+| `descending` | boolean | no | Highest first (true) or lowest first (false). By default packets and bytes are highest first, and addresses and first packets lowest first. |
 | `filter` | string | no | Only the packets this display filter keeps. |
 | `set` | string | yes |  |
 | `sort` | `"packets"` \| `"bytes"` \| `"address"` \| `"first"` | no | The order: conversations come in order of their first packet and endpoints busiest first (by bytes) when omitted. |
@@ -2188,7 +2189,7 @@ The payloads of a packet's conversation in order, each with its direction, and t
 
 ### packets.http_bodies
 
-The HTTP/1 requests and responses in a packet's TCP stream, each with its head and its body as meant: put together across segments, de-chunked, and decompressed by its Content-Encoding (gzip or deflate); the bodies are returned, or opened as documents of their own with open.
+The HTTP/1 requests and responses in a packet's TCP stream, each with its head and its body as meant: put together across segments, de-chunked, and decompressed by its Content-Encoding (gzip or deflate); the bodies are returned, or opened as documents of their own with open or output "new" ({"new": {"label": "body"}} labels them body, body 1, body 2…).
 
 **Effect:** `analysis` · **MCP tool:** `packets_http_bodies`, through `api_call`, or with `--all-tools`
 
@@ -2198,7 +2199,8 @@ The HTTP/1 requests and responses in a packet's TCP stream, each with its head a
 | --- | --- | --- | --- |
 | `encoding` | `"hex"` \| `"base64"` \| `"text"` | no | How returned bodies are written: base64 (the default), hex or text. |
 | `index` | integer | yes | Any packet of the TCP conversation. |
-| `open` | boolean | no | Open each body that is not empty as a document of its own, derived from the set's, rather than returning it. |
+| `open` | boolean | no | Open each body that is not empty as a document of its own, derived from the set's, rather than returning it; as output "new". |
+| `output` | Output | no | Where the bodies go: "return" (the default) or "new", each body that is not empty opened as a sheet; {"new": {"label": "body"}} labels the first "body" and the rest "body 1", "body 2" and so on, so a recipe can name each by its label. |
 | `set` | string | yes |  |
 
 | Result field | Type | Required | Description |
@@ -2319,6 +2321,7 @@ The addresses in a set (the packets a filter keeps), busiest first or sorted by 
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
+| `descending` | boolean | no | Highest first (true) or lowest first (false). By default packets and bytes are highest first, and addresses and first packets lowest first. |
 | `filter` | string | no | Only the packets this display filter keeps. |
 | `set` | string | yes |  |
 | `sort` | `"packets"` \| `"bytes"` \| `"address"` \| `"first"` | no | The order: conversations come in order of their first packet and endpoints busiest first (by bytes) when omitted. |
@@ -2347,6 +2350,7 @@ Some of a set's packets' bytes one after another, in the order given: whole, the
 | `filter` | string | no | Without indices: a display filter, as packets.list takes. |
 | `indices` | array of integer | no | The packets, by their index in the set, in the order wanted; when omitted, those packets.list lists with `filter`, `sort` and `dedupe`, in its order, which finds them again in another capture. |
 | `label` | integer | no | With `field_name`, only this label (from 0) of a DNS name, without its length byte: label 1 of `0001.MFRGG.t.example.com` is `MFRGG`. |
+| `limit` | integer | no | At most this many packets: the first ones in the order chosen, after any repeats are left out (the newest frame, say, with a sort descending and a limit of 1). |
 | `output` | Output | no | Where the bytes go: "return" (the default), "new" (a sheet derived from the set's document; {"new": {"label": …}} labels it) or {"file": path}, which needs leave to edit. |
 | `path` | string | no | Write the bytes here instead of returning them; needs leave to edit, as writing a file does. The same as output {"file": path}. |
 | `set` | string | yes |  |
@@ -3182,7 +3186,7 @@ Start attacks on simple ciphers over a span (at most 1 MiB): rolling XOR, XOR wi
 
 ### crypto.decrypt
 
-Decrypt a span with AES-128, AES-192 or AES-256 in ECB, CBC or CTR mode, with a key (and IV) given as hex, removing PKCS#7 padding, and return the plaintext; or, as output says, open it as a new sheet, put it in place of the ciphertext, or write it to a file (which needs leave to edit).
+Decrypt a span with AES-128, AES-192 or AES-256 in ECB, CBC or CTR mode, with a key (and IV) given as hex, or with the first of several keys whose PKCS#7 padding comes out valid, removing the padding, and return the plaintext; or, as output says, open it as a new sheet, put it in place of the ciphertext, or write it to a file (which needs leave to edit).
 
 **Effect:** `read` · **MCP tool:** `crypto_decrypt`, through `api_call`, or with `--all-tools`
 
@@ -3196,7 +3200,8 @@ Decrypt a span with AES-128, AES-192 or AES-256 in ECB, CBC or CTR mode, with a 
 | `doc` | string | no | Document id, path or "current" (the default). |
 | `encoding` | `"hex"` \| `"base64"` \| `"text"` | no | How to write the plaintext returned: hex (the default), base64 or text. |
 | `iv` | string | no | The IV as hex, 16 bytes, for CBC; for CTR, the initial counter block (nonce and counter), counted up big-endian. |
-| `key` | string | yes | The key, as hex: 16, 24 or 32 bytes. |
+| `key` | string | no | The key, as hex: 16, 24 or 32 bytes. Give this or `keys`. |
+| `keys` | array of string | no | Keys to try in turn, as hex, instead of `key`: the first whose PKCS#7 padding comes out valid decrypts (`key_index` says which), as when crypto.find_keys offers a key at two alignments. Needs PKCS#7 padding; a wrong key passes by chance about once in 256. |
 | `len` | integer | no | Bytes of ciphertext, at most 16 MiB, whole 16-byte blocks for ECB and CBC; to the end of the document when omitted. |
 | `mode` | `"ecb"` \| `"cbc"` \| `"ctr"` | yes | "ecb", "cbc" or "ctr". |
 | `output` | Output | no | Where the plaintext goes: "return" (the default), "new" (a sheet derived from this document; {"new": {"label": …, "name": …}} names it), "in_place" (over the ciphertext) or {"file": path}. |
@@ -3209,6 +3214,8 @@ Decrypt a span with AES-128, AES-192 or AES-256 in ECB, CBC or CTR mode, with a 
 | `data` | string | no | The plaintext, written as `encoding` says, when it was returned. |
 | `encoding` | `"hex"` \| `"base64"` \| `"text"` | yes | How bytes are written in JSON. |
 | `entropy` | number | yes | Bits per byte of the plaintext: a right key brings it well under 8. |
+| `key` | string | yes | The key that decrypted, as hex. |
+| `key_index` | integer | no | Which of `keys` decrypted, from 0, when several were given. |
 | `len` | integer | yes |  |
 | `mode` | `"ecb"` \| `"cbc"` \| `"ctr"` | yes | How the blocks are chained. |
 | `output` | Delivered | yes | Where the plaintext went: {len, encoding} returned (the bytes are `data`), {doc, label, len} for a new sheet, {version, len, ranges} in place, {path, len} to a file. |
@@ -3245,6 +3252,8 @@ Decrypt a span as crypto.decrypt does and open the plaintext as a document deriv
 | `alg` | `"aes-128"` \| `"aes-192"` \| `"aes-256"` | yes | Which AES, named by its key size. |
 | `document` | DocumentInfo | yes | The document the plaintext was opened as. |
 | `entropy` | number | yes | Bits per byte of the plaintext: a right key brings it well under 8. |
+| `key` | string | yes | The key that decrypted, as hex. |
+| `key_index` | integer | no | Which of `keys` decrypted, from 0, when several were given. |
 | `len` | integer | yes |  |
 | `mode` | `"ecb"` \| `"cbc"` \| `"ctr"` | yes | How the blocks are chained. |
 | `output` | SheetOutput | yes | The sheet made, in the form every method that makes one gives. |
@@ -3552,7 +3561,7 @@ Start extracting the archives and compressed streams in the document (its first 
 
 ### unpack.open
 
-Open one node of the unpacked tree (by its path of child indices, as unpack.run gave it) as a derived document; or, as output says, return its bytes or write them to a file (which needs leave to edit).
+Open one node of the unpacked tree (by its path of child indices, as unpack.run gave it, or of names, such as "bin/novacamd") as a derived document; or, as output says, return its bytes or write them to a file (which needs leave to edit).
 
 **Effect:** `view` · **MCP tool:** `unpack_open`, through `api_call`, or with `--all-tools`
 
@@ -3565,7 +3574,7 @@ Open one node of the unpacked tree (by its path of child indices, as unpack.run 
 | `doc` | string | no | Document id, path or "current": the document unpacked, as `tree_doc`, which it defaults to. |
 | `output` | Output | no | Where the node's bytes go: "new" (the default; {"new": {"label": …}} labels the sheet), "return", or {"file": path}, which needs leave to edit. |
 | `password` | string | no | The password unpack.run was given, when the tree was unpacked with one. |
-| `path` | array of integer | yes | Child indices from the root, such as [0, 2]; [] is the document itself. |
+| `path` | NodePath | yes | Child indices from the root, such as [0, 2] ([] is the document itself), or the names down to the node, such as "bin/novacamd". |
 | `tree_doc` | string | no | The document unpacked, whose tree the node is in; by default the one unpack.run last ran on, else `doc`. |
 
 | Result field | Type | Required | Description |
@@ -3585,7 +3594,7 @@ Open one node of the unpacked tree (by its path of child indices, as unpack.run 
 
 ### unpack.read
 
-Read the bytes of one node of the unpacked tree, by its path of child indices, as hex by default, or as base64 or text: a shorthand for unpack.open with output "return", which can also read part of the node.
+Read the bytes of one node of the unpacked tree, by its path of child indices or of names, as hex by default, or as base64 or text: a shorthand for unpack.open with output "return", which can also read part of the node.
 
 **Effect:** `read` · **MCP tool:** `unpack_read`, through `api_call`, or with `--all-tools`
 
@@ -3597,7 +3606,7 @@ Read the bytes of one node of the unpacked tree, by its path of child indices, a
 | `encoding` | `"hex"` \| `"base64"` \| `"text"` | no | hex (the default), base64 or text. |
 | `len` | integer | no | Bytes read, at most 16 MiB; to the end of the node when omitted. |
 | `password` | string | no | The password unpack.run was given, when the tree was unpacked with one. |
-| `path` | array of integer | yes | Child indices from the root, such as [0, 2]. |
+| `path` | NodePath | yes | Child indices from the root, such as [0, 2], or the names down to the node, such as "etc/motd". |
 | `start` | integer | no | First offset in the node's bytes (0 by default). |
 | `tree_doc` | string | no | The document unpacked, whose tree the node is in; by default the one unpack.run last ran on, else `doc`. |
 
@@ -3610,7 +3619,7 @@ Read the bytes of one node of the unpacked tree, by its path of child indices, a
 
 ### unpack.save
 
-Write the bytes of one node of the unpacked tree (by its path of child indices, as node) to a file; the document is left as it is. A shorthand for unpack.open with output {"file": path}.
+Write the bytes of one node of the unpacked tree (by its path of child indices or of names, as node) to a file; the document is left as it is. A shorthand for unpack.open with output {"file": path}.
 
 **Effect:** `edit` · **MCP tool:** `unpack_save`, through `api_call`, or with `--all-tools`
 
@@ -3619,7 +3628,7 @@ Write the bytes of one node of the unpacked tree (by its path of child indices, 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `doc` | string | no | Document id, path or "current": the document unpacked, as `tree_doc`, which it defaults to. |
-| `node` | array of integer | yes | The node's child indices from the root, such as [0, 2]. |
+| `node` | NodePath | yes | The node's child indices from the root, such as [0, 2], or the names down to it, such as "etc/config.enc". |
 | `password` | string | no | The password unpack.run was given, when the tree was unpacked with one. |
 | `path` | string | yes | The file to write. |
 | `tree_doc` | string | no | The document unpacked, whose tree the node is in; by default the one unpack.run last ran on, else `doc`. |
