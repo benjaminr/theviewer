@@ -246,6 +246,32 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   in place of a file's `path`; both may be sheet anchors, so two sheets
   compare without one being written.
 
+- **`checksums.verify`** checks the checksum stored in each record, a
+  packet set's packets (with a `filter`) or fixed-length `records`,
+  against a `model`, and lists the records whose value is wrong.
+  **`checksums.compute`** computes one over a span, with its bytes as
+  stored. A model is an algorithm by name (`sum8`, `CRC-32`, a catalogue
+  CRC such as `CRC-16/XMODEM`) or a CRC's parameters; a `solve_crc`
+  solution can be passed as it is.
+- `checksums.solve_crc` takes a packet `set` and `filter`: frames of
+  different lengths, which also pin down init and xorout.
+- Templates read a field only when a condition holds, `time: u32 if type ==
+  0x81`, and expressions compare with `==` and `!=` (1 or 0).
+- `bits.detect_linecode` gives each decode the stretches it reads without
+  an error (`clean`, in document bytes), and when codes tie with the best
+  names them in `tied` with a `note` on telling them apart by a checksum.
+- `columns.profile` names each field (`field_7`) by where it starts, the
+  same name its template uses, whatever the field is guessed to be.
+- The JSON parser gives a document's members as fields (a string's span
+  without its quotes), so `{"structure": "serial.json", "field":
+  "payload_b64"}` works.
+- `forensics.find_filesystems` gives each FAT entry its `first_cluster`,
+  the `entry_offset` of its directory entry, the `ranges` its content lies
+  in and, for a deleted file, whether its clusters are still free
+  (`clusters_free`).
+- `checksums.digests` gives `sum8_value`, `sum16_value` and `xor8_value`
+  as numbers beside the hex.
+
 ### Changed
 
 - **Back keeps the sheet it leaves.** In the window, Back (`Cmd+[`, the
@@ -324,6 +350,18 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   puts every other message into the type it is most like, rather than
   looking at only the first 256; the result's notes say so.
 
+- `protocol.analyse`'s template reads a field only some message types
+  carry (a telemetry timestamp) only in those types, keeps the bytes the
+  length field leaves out as a `trailer` rather than in the payload, and
+  says where the first message is rather than "the first gap is at 0x0".
+- `analysis.overview` headlines a file that starts with a partition table
+  as a disk image ("Disk image: MBR partition table, FAT16 boot sector,
+  holding …"), and a raw dump of framed messages as such, not as machine
+  code.
+- `templates.infer` reads a timestamp the detectors find in the records as
+  one time field, and a span that ends inside a record (a finding's) as
+  that record whole.
+
 ### Fixed
 
 - `xor.recover_keys` returned a score its own order contradicted, so a pick
@@ -332,6 +370,21 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `packets.list {dedupe: "info"}` kept one packet when every summary began
   with the same number; packets are now de-duplicated by the whole text.
 - `X contains Y` in a packet filter read as three words and matched nothing.
+- `columns.profile` kept a counter whole when records repeat it (steps of
+  0 or 1) or list it backwards with a constant high byte, finds a Unix time
+  at an odd offset, and no longer guesses a float or text across a
+  constant field from three records.
+- `checksums.find_stored` finds a one-byte sum followed by padding or
+  ending at a boundary given, not only as the very last byte.
+- `bits.scan_periods` no longer reports the idle between bursts as the sync
+  word.
+- Float arrays are no longer found in bit-packed radio samples (a run of a
+  dozen byte values or fewer), nor icons, TrueType fonts and Targa images
+  at any zero run their few-byte magic matches.
+- A timestamp finding's title said its byte order twice ("u32 LE LE").
+- `findings.publish` takes a finding without `fields`.
+- A split's description said "1 frames" and "1 times".
+
 - A note citing a read made the read a step of every recipe saved from the
   history, and once a sheet the read looked at was undone, the recipe
   could not be saved at all. A read kept only because a note cites it is
