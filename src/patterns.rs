@@ -683,6 +683,9 @@ fn plausible_f64(bits: u64) -> bool {
     value == 0.0 || (value.is_finite() && (1e-9..=1e12).contains(&value.abs()))
 }
 
+/// Distinct byte values at or below which a run is not taken for floats.
+const FEW_BYTE_VALUES: usize = 12;
+
 fn scan_float_arrays(window: &[u8], base: usize, element: Element, stride: usize) -> Vec<Pattern> {
     let size = element.size;
     let plausible = move |bits: u64| if size == 4 { plausible_f32(bits as u32) } else { plausible_f64(bits) };
@@ -704,6 +707,14 @@ fn scan_float_arrays(window: &[u8], base: usize, element: Element, stride: usize
         },
         |run, (seen, nonzero)| {
             if nonzero * 2 < seen || run.first == run.last {
+                return None;
+            }
+            // Bit-packed samples and other data of a few byte values line
+            // up as plausible floats; real ones vary in every mantissa byte.
+            let span = &window[run.start..run.start + (run.count - 1) * run.stride + size];
+            let mut alphabet = [false; 256];
+            span.iter().for_each(|&byte| alphabet[byte as usize] = true);
+            if alphabet.iter().filter(|&&seen| seen).count() <= FEW_BYTE_VALUES {
                 return None;
             }
             let (first, last) = if size == 4 {
@@ -1311,6 +1322,32 @@ mod tests {
         assert_eq!(stamp.start, 16);
         assert_eq!(stamp.count, 10);
         assert!(stamp.description.contains("2023-11-14"), "{}", stamp.description);
+    }
+
+    /// On-off keyed radio samples, one bit per sample: Manchester-coded
+    /// frames whose every half-bit is six samples long, between stretches of
+    /// silence, packed eight samples to a byte.
+    fn on_off_samples() -> Vec<u8> {
+        let mut state = 0x0BAD_5EEDu32;
+        let mut samples: Vec<bool> = Vec::new();
+        for _ in 0..20 {
+            samples.extend([false; 96]);
+            for _ in 0..72 {
+                let bit = xorshift(&mut state) & 1 == 1;
+                for half in [bit, !bit] {
+                    samples.extend([half; 6]);
+                }
+            }
+        }
+        samples.chunks(8).map(|byte| byte.iter().fold(0u8, |packed, &on| (packed << 1) | u8::from(on))).collect()
+    }
+
+    #[test]
+    fn on_off_radio_samples_are_not_float_arrays() {
+        let data = on_off_samples();
+        let patterns = scan(&data, &context(data.len()));
+        let floats = of_kind(&patterns, PatternKind::FloatArray);
+        assert!(floats.is_empty(), "{floats:?}");
     }
 
     #[test]
