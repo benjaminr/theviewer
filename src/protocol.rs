@@ -1008,7 +1008,8 @@ fn guard_type_specific_fields(bytes: &[u8], messages: &[Message], fields: &mut V
             continue;
         }
         let carried_by = |group: &[Message]| {
-            let long_enough = group.iter().all(|m| m.len >= field.start + field.len + trailer_len);
+            // A frame or two cut short on the wire does not take a field from its type.
+            let long_enough = holds(group.iter().filter(|m| m.len >= field.start + field.len + trailer_len).count(), group.len());
             long_enough
                 && if field.kind.starts_with("timestamp") {
                     timestamp_field(bytes, group, field.start).is_some()
@@ -1481,7 +1482,10 @@ mod tests {
     fn a_template_for_mixed_messages_reads_a_types_own_fields_only_in_that_type_and_keeps_the_crc_out_of_the_payload() {
         let stream = kiln_bus_with_times(800);
         let framing = Framing::SyncLength { bytes: vec![0xA5, 0x5A], offset: 2, width: 1, big_endian: true, adjustment: 5 };
-        let messages = split(&stream, &framing, 10_000);
+        let mut messages = split(&stream, &framing, 10_000);
+        // One telemetry frame is cut short by a collision on the bus.
+        let cut = messages.iter().rposition(|message| stream[message.offset + 6] == 0x81).unwrap();
+        messages[cut].len = 11;
         let fields = analyse_fields(&stream, &messages, 32);
         let report = ProtocolReport { framing: None, messages, fields, length_min: 9, length_max: 25, length_mean: 15.0, type_counts: Vec::new() };
         let kinds: Vec<(usize, &str, &[String])> = report.fields.iter().map(|f| (f.start, f.kind.as_str(), f.types.as_slice())).collect();
