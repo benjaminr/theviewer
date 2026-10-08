@@ -281,9 +281,10 @@ pub struct PacketsState {
     /// The document version the latest dissection was started for.
     requested_version: Option<u64>,
     change_noticed: Option<Instant>,
-    /// Set when the document was replaced by another one (opening a packet
-    /// as a document, say); the packets then describe a document not shown.
-    pub(crate) foreign_document: bool,
+    /// The sheet the packets were read from: their offsets are its, so
+    /// what the viewer does to bytes is done there, and they are outlined
+    /// only while it is shown.
+    pub(crate) source_sheet: Option<String>,
     pub(crate) bytes: Arc<PacketBytes>,
     pending: Option<Receiver<DissectionJob>>,
     /// The dissection running, to tell a cancelled one from a failure.
@@ -388,7 +389,6 @@ impl PacketsState {
         self.field_edit = None;
         self.stream = None;
         self.stream_http.clear();
-        self.foreign_document = false;
         self.raw.guesses.clear();
         self.suggested_template = None;
         // A choice of protocol belongs to the set it was made for; a
@@ -468,11 +468,16 @@ impl PacketsState {
         self.filter_text = text.to_string();
     }
 
-    /// The document was swapped for another; the packets no longer describe it.
-    pub fn document_replaced(&mut self) {
-        if self.set.is_some() || self.incoming.is_some() {
-            self.foreign_document = true;
-        }
+    /// Whether the packets were read from another sheet than `active`, the
+    /// one shown: their offsets then mean nothing in it.
+    pub fn from_other_sheet(&self, active: &str) -> bool {
+        self.source_sheet.as_deref().is_some_and(|source| source != active)
+    }
+
+    /// The sheet the packets were read from, to name in what the viewer
+    /// does to bytes, when it is not `active`, the one shown.
+    pub(crate) fn other_source(&self, active: &str) -> Option<String> {
+        self.source_sheet.clone().filter(|source| source != active)
     }
 
     pub(crate) fn show_note(&mut self, text: impl Into<String>, is_error: bool) {
@@ -575,11 +580,11 @@ pub fn show_api_set(app: &mut ViewerApp, id: &str) {
     let lengths = split::frame_lengths(&set).map(|lengths| lengths.to_string()).unwrap_or_default();
     if again {
         state.incoming = Some(set);
-        state.foreign_document = false;
     } else {
         state.load(set);
         state.api_set = Some(id.to_string());
     }
+    state.source_sheet = Some(info.doc.clone());
     state.link_choice = link_choice_of(info.link);
     state.frame_choice = match (info.decode_as, info.detect) {
         (Some(protocol), _) => FrameChoice::Protocol(protocol),
@@ -1132,7 +1137,7 @@ fn install(state: &mut PacketsState, job: DissectionJob) {
 /// and dissect the packets again.
 fn follow_document(state: &mut PacketsState, app: &mut ViewerApp, ctx: &egui::Context) {
     let Some(built) = state.built else { return };
-    if state.foreign_document {
+    if state.from_other_sheet(&app.document_id()) {
         return;
     }
     if Some(app.document.version()) == state.requested_version {
@@ -1191,7 +1196,7 @@ fn refresh_detail(state: &mut PacketsState, app: &mut ViewerApp) {
             && detail.raw_generation == state.raw_generation
             && detail.tshark_generation == state.tshark.generation
     });
-    if current || state.foreign_document {
+    if current || state.from_other_sheet(&app.document_id()) {
         return;
     }
     let bytes = app.document.read_range(packet.offset, packet.len.min(PACKET_READ_LIMIT));
@@ -1263,7 +1268,7 @@ fn follow_main_selection(state: &mut PacketsState, app: &ViewerApp) {
 /// offsets: from the detail when it is current, else dissected afresh. When
 /// no packet is focused, what was said is withdrawn.
 pub(crate) fn publish_focused_fields(state: &mut PacketsState, app: &mut ViewerApp) {
-    if state.foreign_document {
+    if state.from_other_sheet(&app.document_id()) {
         return;
     }
     let focused = state.focus.and_then(|index| Some((index, state.set.as_ref()?.packets.get(index)?.clone())));
@@ -1377,6 +1382,9 @@ pub(crate) fn claim_main_selection(app: &mut ViewerApp) {
 /// through `selection.set`, remembering the selection made so the viewer
 /// does not follow it back. Whether it was made.
 pub(crate) fn select_ranges_in_document(state: &mut PacketsState, app: &mut ViewerApp, ranges: Vec<(usize, usize)>) -> bool {
+    if let Some(source) = state.other_source(&app.document_id()) {
+        return select_ranges_in_source(app, &source, ranges);
+    }
     let len = app.document.len();
     let ranges = crate::selection::normalise_ranges(ranges.into_iter().filter(|&(start, _)| start < len).map(|(start, range_len)| (start, range_len.min(len - start))).collect());
     let selection = match ranges.as_slice() {
@@ -1389,6 +1397,19 @@ pub(crate) fn select_ranges_in_document(state: &mut PacketsState, app: &mut View
     }
     state.own_selection = Some((app.cursor, app.current_selection()));
     true
+}
+
+/// Select `ranges` in the parked sheet `source` the packets were read
+/// from, as `selection.set` naming it: they are selected when it is shown.
+fn select_ranges_in_source(app: &mut ViewerApp, source: &str, ranges: Vec<(usize, usize)>) -> bool {
+    let Some(len) = crate::api::Workspace::document_mut(app, source).map(|document| document.len()) else { return false };
+    let ranges = crate::selection::normalise_ranges(ranges.into_iter().filter(|&(start, _)| start < len).map(|(start, range_len)| (start, range_len.min(len - start))).collect());
+    let selection = match ranges.as_slice() {
+        [] => return false,
+        [(start, len)] => Selection::Range(*start, *len),
+        _ => Selection::Ranges(ranges),
+    };
+    app.perform("selection.set", serde_json::json!({ "doc": source, "selection": selection })).is_ok()
 }
 
 /// Select document bytes in the main view, as `selection.set`, and bring
@@ -1830,9 +1851,13 @@ fn show_status(state: &mut PacketsState, app: &mut ViewerApp, ui: &mut Ui) {
             ui.label(RichText::new(what).color(theme::TEXT_DIM));
         });
     }
-    if state.foreign_document {
+    if let Some(source) = state.other_source(&app.document_id()) {
         ui.horizontal_wrapped(|ui| {
-            ui.label(RichText::new("These packets were read from another document.").color(theme::DANGER));
+            let from = app.sheet_title(&source).map_or_else(|| "another document, since closed".to_string(), |title| format!("{title} ({source})"));
+            ui.label(RichText::new(format!("These packets were read from another document: {from}.")).color(theme::DANGER));
+            if app.is_open_sheet(&source) && ui.small_button("Show it").on_hover_text("Show the sheet the packets were read from").clicked() {
+                app.perform_later("documents.activate", serde_json::json!({ "doc": source }));
+            }
             if ui.small_button("Find them in this document").on_hover_text("Find the packets again in the document now shown, the same way").clicked() {
                 find_again_here(state, app);
             }
@@ -2026,7 +2051,7 @@ mod tests {
         assert_eq!(app.document.len(), snoop.len(), "the decompressed capture is the document now");
         assert_eq!(state.rows().len(), 1);
         assert_eq!(state.rows()[0].summary.destination, "10.0.0.1");
-        assert!(!state.foreign_document);
+        assert!(!state.from_other_sheet(&app.document_id()));
     }
 
     #[test]
@@ -2767,14 +2792,15 @@ mod tests {
     fn packets_read_from_another_document_are_found_again_in_the_one_shown() {
         let mut app = app_with(vec![7u8; 32]);
         crate::api::call(&mut app, &crate::api::Caller::Panel, "packets.sets.create", serde_json::json!({ "from": "split_fixed", "record_len": 8 })).unwrap();
+        let outer = app.document_id();
         app.perform("documents.derive", serde_json::json!({ "start": 0, "len": 16 })).unwrap();
-        app.bench.panels.packets.foreign_document = true;
+        app.bench.panels.packets.source_sheet = Some(outer);
         crate::actions::take_performed();
         with_state(&mut app, find_again_here);
         let derived = app.document_id();
         assert_eq!(performed_after_drawing(&mut app), [("packets.sets.refresh".to_string(), serde_json::json!({ "set": "set-1", "doc": derived }))]);
         let state = &app.bench.panels.packets;
-        assert!(!state.foreign_document);
+        assert_eq!(state.source_sheet, Some(derived), "they are read from the sheet shown now");
         assert_eq!(state.incoming.as_ref().map(|set| set.len()), Some(2), "16 bytes of 8-byte records");
     }
 

@@ -1111,6 +1111,9 @@ impl ViewerApp {
         let ranges = self.selection_ranges();
         let primary_range = self.selection();
         let state = &mut self.bench.panels.packets;
+        if state.from_other_sheet(&self.document_id) {
+            return;
+        }
         let Some(set) = &state.set else { return };
         let index_of = |&(start, len): &(usize, usize)| set.packets.iter().position(|packet| packet.offset == start && packet.len == len);
         let Some(indices) = ranges.iter().map(index_of).collect::<Option<Vec<usize>>>() else { return };

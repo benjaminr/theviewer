@@ -388,8 +388,10 @@ pub fn delete_selected_packets(state: &mut PacketsState, app: &mut ViewerApp) {
     if on_set::<PacketEditResult>(state, app, "packets.delete", serde_json::json!({ "indices": chosen })).is_none() {
         return;
     }
-    app.set_cursor(start.min(app.document.len()), false);
-    panel::claim_main_selection(app);
+    if !state.from_other_sheet(&app.document_id()) {
+        app.set_cursor(start.min(app.document.len()), false);
+        panel::claim_main_selection(app);
+    }
     if set.recipe == packets::sources::Recipe::Fixed
         && let Some(shown) = &mut state.set
     {
@@ -449,13 +451,16 @@ fn chosen_field(state: &PacketsState) -> Option<FieldSpan> {
     if state.operation_on_field { state.selected_field.map(|(offset, len)| FieldSpan { offset, len }) } else { None }
 }
 
-/// Open bytes as a document derived from the one shown, through
-/// `documents.derive` with `params`; the packets then describe a document
-/// not shown.
-fn open_as_document(state: &mut PacketsState, app: &mut ViewerApp, params: serde_json::Value) {
-    if app.perform("documents.derive", params).is_ok() {
-        state.foreign_document = true;
-    } else {
+/// Open bytes as a sheet derived from the one the packets were read from,
+/// through `documents.derive` with `params` (naming that sheet when it is
+/// not the one shown); the packets then describe a sheet not shown.
+fn open_as_document(state: &mut PacketsState, app: &mut ViewerApp, mut params: serde_json::Value) {
+    let active = app.document_id();
+    if let Some(source) = state.other_source(&active) {
+        params["doc"] = serde_json::json!(source);
+    }
+    state.source_sheet.get_or_insert(active);
+    if app.perform("documents.derive", params).is_err() {
         state.note = Some(panel::Note { text: app.status.clone(), is_error: true });
     }
 }
@@ -809,17 +814,26 @@ fn handle_hex_keys(state: &mut PacketsState, app: &mut ViewerApp, ui: &Ui, bytes
 fn type_hex_digit(state: &mut PacketsState, app: &mut ViewerApp, bytes: &[u8], packet_offset: usize, digit: u8) {
     let position = state.hex.position.min(bytes.len() - 1);
     let at = packet_offset + position;
-    let current = app.document.byte_at(at).unwrap_or(0);
-    if state.hex.pending_low_nibble {
-        let data = crate::ops::to_compact_hex(&[(current & 0xF0) | digit]);
-        if app.perform("bytes.write", serde_json::json!({ "start": at, "data": data, "coalesce": true })).is_ok() {
-            state.hex.pending_low_nibble = false;
+    // The bytes are the source sheet's, shown or not.
+    let source = state.other_source(&app.document_id());
+    let current = match &source {
+        Some(source) => crate::api::Workspace::document_mut(app, source).and_then(|document| document.byte_at(at)),
+        None => app.document.byte_at(at),
+    };
+    let current = current.unwrap_or(0);
+    let low_nibble = state.hex.pending_low_nibble;
+    let data = crate::ops::to_compact_hex(&[if low_nibble { (current & 0xF0) | digit } else { (digit << 4) | (current & 0x0F) }]);
+    let mut params = serde_json::json!({ "start": at, "data": data });
+    if low_nibble {
+        params["coalesce"] = serde_json::json!(true);
+    }
+    if let Some(source) = source {
+        params["doc"] = serde_json::json!(source);
+    }
+    if app.perform("bytes.write", params).is_ok() {
+        state.hex.pending_low_nibble = !low_nibble;
+        if low_nibble {
             state.hex.position = (position + 1).min(bytes.len() - 1);
-        }
-    } else {
-        let data = crate::ops::to_compact_hex(&[(digit << 4) | (current & 0x0F)]);
-        if app.perform("bytes.write", serde_json::json!({ "start": at, "data": data })).is_ok() {
-            state.hex.pending_low_nibble = true;
         }
     }
 }
@@ -1106,7 +1120,35 @@ mod tests {
         extract_selected(&mut state, &mut app, true);
         assert_eq!(crate::actions::take_performed(), [("documents.derive".to_string(), serde_json::json!({ "ranges": [[at, packet.len()]], "name": "packet 1" }))]);
         assert_eq!(app.document.read_range(0, packet.len()), packet);
-        assert!(state.foreign_document, "the packets describe the document left behind");
+        assert!(state.from_other_sheet(&app.document_id()), "the packets describe the document left behind");
+    }
+
+    #[test]
+    fn the_viewer_edits_the_sheet_its_packets_were_read_from_while_another_is_shown_and_outlines_them_only_there() {
+        let (mut state, mut app, at, packet) = one_packet();
+        let source = app.document_id();
+        state.source_sheet = Some(source.clone());
+        state.selected = BTreeSet::from([0]);
+        app.open_derived(b"another sheet".to_vec(), "other".to_string());
+        state.hex.position = 9;
+        crate::actions::take_performed();
+        type_hex_digit(&mut state, &mut app, &packet, at, 0x0);
+        type_hex_digit(&mut state, &mut app, &packet, at, 0x6);
+        assert_eq!(
+            crate::actions::take_performed(),
+            [
+                ("bytes.write".to_string(), serde_json::json!({ "doc": source, "start": at + 9, "data": "01" })),
+                ("bytes.write".to_string(), serde_json::json!({ "doc": source, "start": at + 9, "data": "06", "coalesce": true })),
+            ],
+            "the writes name the sheet the packets were read from"
+        );
+        assert_eq!(app.document.read_range(0, 13), b"another sheet", "the sheet shown is left as it was");
+        let edited = crate::api::Workspace::document_mut(&mut app, &source).unwrap().byte_at(at + 9);
+        assert_eq!(edited, Some(6));
+        app.bench.panels.packets = state;
+        assert!(app.packet_selection_ranges().is_empty(), "nothing is outlined on another sheet");
+        app.back_to_parent();
+        assert_eq!(app.packet_selection_ranges(), [(at, packet.len())], "the packets are outlined on their own sheet");
     }
 
     #[test]

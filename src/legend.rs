@@ -294,11 +294,11 @@ impl ViewerApp {
     }
 
     /// The document ranges of the packets selected in the packet viewer;
-    /// none when its packets were read from another document, whose
-    /// offsets mean nothing in this one.
+    /// none when its packets were read from another sheet than the one
+    /// shown, whose offsets mean nothing in this one.
     pub fn packet_selection_ranges(&self) -> Vec<(usize, usize)> {
         let state = &self.bench.panels.packets;
-        if state.foreign_document {
+        if state.from_other_sheet(&self.document_id) {
             return Vec::new();
         }
         let Some(set) = state.packet_set() else { return Vec::new() };

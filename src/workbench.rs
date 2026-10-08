@@ -251,7 +251,6 @@ impl Workbench {
         self.unpacked.closed(sheet);
         self.analysis.document_changed();
         self.tools.document_changed(sheet);
-        self.panels.packets.document_replaced();
         self.panels.crypto.sheet_closed(sheet);
         self.freshness.forget_all();
         self.pending.retain(|pending| pending.sheet().is_none_or(|of| of != sheet));
@@ -284,7 +283,6 @@ impl Workbench {
         self.unpacked.switched(to);
         self.tools.stats.sheet_switched(to);
         self.panels.crypto.sheet_switched(to);
-        self.panels.packets.document_replaced();
     }
 
     /// Sheet `id` closed: what was worked out about it goes.
