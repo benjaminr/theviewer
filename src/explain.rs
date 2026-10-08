@@ -438,14 +438,15 @@ fn disk_headline(confident: &[&Region]) -> Option<String> {
     Some(format!("Disk image: {}{holding}", listed(&structure, HEADLINE_LABELS)))
 }
 
-/// A capture of framed messages' headline, when a sync word or length
-/// field frames nearly all of the file's start: a raw bus or serial dump,
-/// whose bytes look like code or data to the statistics.
+/// A capture of framed messages' headline, when frames that start with a
+/// sync word cover nearly all of the file's start: a raw bus or serial
+/// dump, whose bytes look like code or data to the statistics. A chain of
+/// lengths alone is not enough, as other data chains by chance.
 fn framed_headline(bytes: &[u8]) -> Option<String> {
     use crate::protocol::Framing;
     let sample = &bytes[..bytes.len().min(FRAMING_SAMPLE)];
     let best = crate::protocol::detect_framing(sample, 1).into_iter().next()?;
-    let framed = matches!(best.framing, Framing::SyncWord { .. } | Framing::SyncLength { .. } | Framing::LengthPrefixed { .. });
+    let framed = matches!(best.framing, Framing::SyncWord { .. } | Framing::SyncLength { .. });
     (framed && best.coverage >= FRAMED_COVERAGE && best.messages >= FRAMED_MESSAGES)
         .then(|| format!("Framed messages: {}", best.framing.describe()))
 }
@@ -695,6 +696,24 @@ mod tests {
         }
         bytes.clear();
         stream
+    }
+
+    #[test]
+    fn a_chain_of_lengths_without_a_sync_word_is_not_headlined_as_framed_messages() {
+        // Bit-packed radio samples chain as lengths now and then, as other
+        // bytes may: only a sync word heading the frames is evidence enough.
+        let mut pool = noise(60_000).into_iter();
+        let mut stream = Vec::new();
+        while stream.len() < 20_000 {
+            let payload_len = 3 + usize::from(pool.next().unwrap()) % 60;
+            stream.extend(((payload_len + 2) as u16).to_be_bytes());
+            stream.extend(pool.by_ref().take(payload_len));
+        }
+        let framing = crate::protocol::detect_framing(&stream, 1).into_iter().next().expect("the lengths chain");
+        assert!(matches!(framing.framing, crate::protocol::Framing::LengthPrefixed { .. }) && framing.coverage > 0.9, "{framing:?}");
+        let regions = vec![heuristic_region(0, stream.len(), RegionKind::Code, &stream)];
+        let report = explain(&stream, "samples.bin", &regions);
+        assert!(!report.headline.starts_with("Framed"), "{}", report.headline);
     }
 
     #[test]
