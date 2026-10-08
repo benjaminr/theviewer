@@ -216,6 +216,7 @@ pub struct Finding {
     pub confidence: f32,
     pub sequence: Option<Sequence>,
     /// Parsed structure, if the plugin understands the format.
+    #[serde(default)]
     pub fields: Vec<Field>,
 }
 
@@ -565,5 +566,13 @@ mod tests {
         assert_eq!(finding.description(), "ASCII text: 12 chars");
         assert!(!finding.weak());
         assert!(Finding::new("x", "t", Category::Text, 0, 1).confidence(0.2).weak());
+    }
+
+    #[test]
+    fn a_finding_published_without_fields_is_taken_as_having_none() {
+        let mut workspace = crate::api::test_support::workspace_with("a.bin", &[0u8; 64]);
+        let finding = serde_json::json!({"id": "sync", "source": "sync_word", "category": "protocol", "start": 8, "len": 2, "title": "Sync word", "detail": "", "confidence": 0.9});
+        let published = crate::api::test_support::call(&mut workspace, "findings.publish", serde_json::json!({"findings": [finding]}));
+        assert_eq!(published.unwrap()["findings"], 1);
     }
 }
