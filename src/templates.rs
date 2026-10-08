@@ -151,6 +151,9 @@ enum Operator {
     Multiply,
     Divide,
     Remainder,
+    /// `==` and `!=`: 1 when the comparison holds, else 0.
+    Equal,
+    NotEqual,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -200,6 +203,8 @@ struct FieldDef {
     at: Option<Expr>,
     labels: Vec<(i128, String)>,
     hex: bool,
+    /// Read the field only when this is not zero: `if type == 3`.
+    condition: Option<Expr>,
     line: usize,
 }
 
@@ -235,7 +240,7 @@ struct Located {
     line: usize,
 }
 
-const SYMBOLS: &str = "{}[]():=@+-*/%,.;";
+const SYMBOLS: &str = "{}[]():=@+-*/%,.;!";
 
 fn tokenise(source: &str) -> Result<Vec<Located>, TemplateError> {
     let mut tokens = Vec::new();
@@ -439,7 +444,7 @@ impl Parser {
         let name = self.expect_ident("a field name")?;
         self.expect_symbol(':', &format!("after field name '{name}'"))?;
         let ty = self.parse_type()?;
-        let mut field = FieldDef { name, ty, expected: None, at: None, labels: Vec::new(), hex: false, line };
+        let mut field = FieldDef { name, ty, expected: None, at: None, labels: Vec::new(), hex: false, condition: None, line };
         loop {
             match self.peek() {
                 Some(Token::Symbol('=')) => {
@@ -449,6 +454,10 @@ impl Parser {
                 Some(Token::Symbol('@')) => {
                     self.advance();
                     field.at = Some(self.parse_expr()?);
+                }
+                Some(Token::Ident(word)) if word == "if" && !self.next_is_colon() => {
+                    self.advance();
+                    field.condition = Some(self.parse_expr()?);
                 }
                 Some(Token::Ident(word)) if word == "enum" && self.peek_at(1) == Some(&Token::Symbol('{')) => {
                     field.labels = self.parse_enum()?;
@@ -538,7 +547,20 @@ impl Parser {
         }
     }
 
+    /// An expression, at most one comparison of two sums: `type == 3`.
     fn parse_expr(&mut self) -> Result<Expr, TemplateError> {
+        let left = self.parse_sum()?;
+        let operator = match (self.peek(), self.peek_at(1)) {
+            (Some(Token::Symbol('=')), Some(Token::Symbol('='))) => Operator::Equal,
+            (Some(Token::Symbol('!')), Some(Token::Symbol('='))) => Operator::NotEqual,
+            _ => return Ok(left),
+        };
+        self.position += 2;
+        let right = self.parse_sum()?;
+        Ok(Expr::Binary(operator, Box::new(left), Box::new(right)))
+    }
+
+    fn parse_sum(&mut self) -> Result<Expr, TemplateError> {
         let mut left = self.parse_term()?;
         loop {
             let operator = if self.eat_symbol('+') {
@@ -899,6 +921,8 @@ impl<'a> Evaluator<'a> {
                     Operator::Divide | Operator::Remainder if right == 0 => return Err("division by zero".to_string()),
                     Operator::Divide => left.checked_div(right),
                     Operator::Remainder => left.checked_rem(right),
+                    Operator::Equal => Some(i128::from(left == right)),
+                    Operator::NotEqual => Some(i128::from(left != right)),
                 };
                 result.ok_or_else(|| "arithmetic overflow".to_string())
             }
@@ -1015,6 +1039,17 @@ impl<'a> Evaluator<'a> {
         let mut children = Vec::new();
         let mut stop = None;
         for (index, field_def) in def.fields.iter().enumerate() {
+            if let Some(condition) = &field_def.condition {
+                match self.eval_expr(condition) {
+                    Ok(0) => continue,
+                    Ok(_) => {}
+                    Err(message) => {
+                        self.warn(field_def.line, format!("'{}': {message}", field_def.name));
+                        stop = Some(Stop::Invalid);
+                        break;
+                    }
+                }
+            }
             let (mut cursor, moves) = match &field_def.at {
                 None => (*position, true),
                 Some(at) => match self.eval_expr(at) {
@@ -1782,6 +1817,24 @@ mod tests {
         assert!(template.apply(&[3], 0).warnings[0].contains("division by zero"));
         let template = Template::parse("struct T { data: bytes[missing] }").unwrap();
         assert!(template.apply(&[3], 0).warnings[0].contains("unknown field 'missing'"));
+    }
+
+    #[test]
+    fn a_field_only_some_message_types_carry_is_read_only_in_those() {
+        let source = "struct Message { kind: u8\n len: u8\n time: u32le if kind == 0x81\n payload: bytes[len - 4 * (kind == 0x81)]\n check: u8 }\nroot Message[until_end]";
+        let template = Template::parse(source).unwrap();
+        let mut bytes = vec![0x01, 0, 0xEE];
+        bytes.extend([0x81, 6, 0x00, 0x2F, 0xE9, 0x68, 0xAA, 0xBB, 0xEE]);
+        let applied = template.apply(&bytes, 0);
+        assert!(applied.warnings.is_empty(), "{:?}", applied.warnings);
+        assert_eq!(applied.records.len(), 2);
+        assert_eq!(applied.records[0].value("time"), None, "a poll has no time");
+        assert_eq!(applied.records[0].value("check"), Some("238"));
+        assert_eq!(applied.records[1].value("time"), Some("1760112384"));
+        assert_eq!(applied.records[1].value("check"), Some("238"));
+        let not_equal = Template::parse("struct T { kind: u8\n extra: u8 if kind != 1 }").unwrap();
+        assert_eq!(not_equal.apply(&[1, 9], 0).finding.fields[0].children.len(), 1);
+        assert_eq!(not_equal.apply(&[2, 9], 0).finding.fields[0].children.len(), 2);
     }
 
     #[test]

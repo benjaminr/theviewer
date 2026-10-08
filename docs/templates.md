@@ -56,7 +56,7 @@ between fields are allowed but not needed. Several `root` lines may be
 given; the last wins.
 
 `endian` is a setting that carries on through the rest of the source,
-across struct boundaries; the default is little. `endian`, `display`,
+across struct boundaries; the default is little. `endian`, `display`, `if`,
 `enum` and `until_end` are keywords only where they make sense, so they
 can also be field names.
 
@@ -120,6 +120,8 @@ Lengths, counts and offsets are integer expressions:
 - dotted names into nested structs: `header.size`, `info.image_size`
 - `+ - * / %` with the usual precedence, unary minus and parentheses:
   `bytes[(count + 1) * 2]`, `pad: bytes[len % 2]`
+- one comparison, `==` or `!=`, below the arithmetic: 1 when it holds,
+  else 0. `bytes[len - 4 * (kind == 0x81)]` takes 4 off only for type 0x81.
 
 A field must be read before it is used ("unknown field 'x' (fields must
 come before they are used)"). A float used as a number is cut to an integer;
@@ -137,6 +139,7 @@ Attributes follow the type, in any order:
 | `= "RIFF"`, `= "\x89PNG\r\n\x1a\n"` | Expected bytes for `char`, `bytes`, `cstring` and `utf16` fields. Escapes: `\xNN \n \r \t \0 \\ \"`. A `char` or `bytes` field is compared byte for byte, trailing NULs included; a `utf16` field by its text. |
 | `@ expr` | Read the field at an absolute offset, counted from where the template was applied. The field does not move the read position, so the fields after it continue where they were. |
 | `enum { 1 = "Data", 2 = "Code" }` | Labels for values: the field shows `2 (Code)`. |
+| `if expr` | Read the field only when `expr` is not 0, such as `if kind == 0x81` for a field only one message type carries. A field left out takes no bytes, shows nowhere, and cannot be named by the fields after it. |
 | `display hex` | Show an integer as decimal and hex: `26 (0x1A)` (negative values stay decimal). `display decimal` is the default. |
 
 Example using `@`, from the BMP template:
