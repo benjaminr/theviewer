@@ -2,7 +2,8 @@
 //! binwalk -e, as a tree; opening, reading or saving one of its nodes.
 //!
 //! A node is named by its path in the tree of the document unpacked, its
-//! `tree_doc`. Opening a node makes a sheet, which may become the caller's
+//! `tree_doc`: the child indices from the root, or the names along it
+//! (`"bin/novacamd"`), which find the node again in another file's tree. Opening a node makes a sheet, which may become the caller's
 //! focus, so `tree_doc` defaults to the document `unpack.run` last ran on
 //! rather than the focus: the next node opened is still found in the tree.
 
@@ -23,9 +24,9 @@ use crate::unpack::{Limits, Node};
 /// their namespace. A new method is added here, and only here.
 pub(super) const METHODS: &[crate::api::Method] = &[
     method!("unpack.run", Job, caller run, UnpackParams, JobStartedResult, "Start extracting the archives and compressed streams in the document (its first 256 MiB) recursively, like binwalk -e, as a job: the tree of what was found, each node with its kind, size and where its bytes came from, is job.finished's result, and in the window it fills the Unpacked tab and the Size map."),
-    method!("unpack.open", View, caller open, NodeParams, Made, "Open one node of the unpacked tree (by its path of child indices, as unpack.run gave it) as a derived document; or, as output says, return its bytes or write them to a file (which needs leave to edit).").outputs(&[OutputKind::New, OutputKind::Return, OutputKind::File], OutputKind::New).doc_defaults_to(tree_unpacked_last),
-    method!("unpack.read", Read, read, ReadNodeParams, NodeBytes, "Read the bytes of one node of the unpacked tree, by its path of child indices, as hex by default, or as base64 or text: a shorthand for unpack.open with output \"return\", which can also read part of the node.").doc_defaults_to(tree_unpacked_last),
-    method!("unpack.save", Edit, caller save, SaveNodeParams, SavedNode, "Write the bytes of one node of the unpacked tree (by its path of child indices, as node) to a file; the document is left as it is. A shorthand for unpack.open with output {\"file\": path}.").writes_file(crate::api::WritesFile::Always).doc_defaults_to(tree_unpacked_last),
+    method!("unpack.open", View, caller open, NodeParams, Made, "Open one node of the unpacked tree (by its path of child indices, as unpack.run gave it, or of names, such as \"bin/novacamd\") as a derived document; or, as output says, return its bytes or write them to a file (which needs leave to edit).").outputs(&[OutputKind::New, OutputKind::Return, OutputKind::File], OutputKind::New).doc_defaults_to(tree_unpacked_last),
+    method!("unpack.read", Read, read, ReadNodeParams, NodeBytes, "Read the bytes of one node of the unpacked tree, by its path of child indices or of names, as hex by default, or as base64 or text: a shorthand for unpack.open with output \"return\", which can also read part of the node.").doc_defaults_to(tree_unpacked_last),
+    method!("unpack.save", Edit, caller save, SaveNodeParams, SavedNode, "Write the bytes of one node of the unpacked tree (by its path of child indices or of names, as node) to a file; the document is left as it is. A shorthand for unpack.open with output {\"file\": path}.").writes_file(crate::api::WritesFile::Always).doc_defaults_to(tree_unpacked_last),
 ];
 
 /// What a call to one of this module's methods would do, in plain words.
@@ -63,6 +64,25 @@ pub struct UnpackParams {
     pub password: Option<String>,
 }
 
+/// Where a node is in the unpacked tree.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged)]
+pub enum NodePath {
+    /// Child indices from the root, such as [0, 2]; [] is the document itself.
+    Indices(Vec<usize>),
+    /// The names of the nodes down to it, joined by "/", such as
+    /// "bin/novacamd": the last names of exactly one node's path from the
+    /// root, so the containers above (the filesystem image, say) need not
+    /// be named.
+    Names(String),
+}
+
+impl Default for NodePath {
+    fn default() -> Self {
+        NodePath::Indices(Vec::new())
+    }
+}
+
 /// Parameters of `unpack.open`.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -75,8 +95,9 @@ pub struct NodeParams {
     /// one unpack.run last ran on, else `doc`.
     #[serde(default)]
     pub tree_doc: Option<String>,
-    /// Child indices from the root, such as [0, 2]; [] is the document itself.
-    pub path: Vec<usize>,
+    /// Child indices from the root, such as [0, 2] ([] is the document
+    /// itself), or the names down to the node, such as "bin/novacamd".
+    pub path: NodePath,
     /// The password unpack.run was given, when the tree was unpacked
     /// with one.
     #[serde(default)]
@@ -99,8 +120,9 @@ pub struct ReadNodeParams {
     /// one unpack.run last ran on, else `doc`.
     #[serde(default)]
     pub tree_doc: Option<String>,
-    /// Child indices from the root, such as [0, 2].
-    pub path: Vec<usize>,
+    /// Child indices from the root, such as [0, 2], or the names down to
+    /// the node, such as "etc/motd".
+    pub path: NodePath,
     /// First offset in the node's bytes (0 by default).
     #[serde(default)]
     pub start: u64,
@@ -128,8 +150,9 @@ pub struct SaveNodeParams {
     /// one unpack.run last ran on, else `doc`.
     #[serde(default)]
     pub tree_doc: Option<String>,
-    /// The node's child indices from the root, such as [0, 2].
-    pub node: Vec<usize>,
+    /// The node's child indices from the root, such as [0, 2], or the
+    /// names down to it, such as "etc/config.enc".
+    pub node: NodePath,
     /// The file to write.
     pub path: String,
     /// The password unpack.run was given, when the tree was unpacked
@@ -278,8 +301,43 @@ fn tree_doc_of(tree_doc: Option<String>, doc: Option<String>) -> Option<String> 
 }
 
 /// The node at `path`, or why there is none.
-fn node_at<'a>(tree: &'a Node, path: &[usize]) -> Result<&'a Node, ApiError> {
-    tree.find(path).ok_or_else(|| ApiError::not_found(format!("the unpacked tree has no node at {path:?}; unpack.run lists them with their paths")))
+fn node_at<'a>(tree: &'a Node, path: &NodePath) -> Result<&'a Node, ApiError> {
+    match path {
+        NodePath::Indices(indices) => tree.find(indices).ok_or_else(|| ApiError::not_found(format!("the unpacked tree has no node at {indices:?}; unpack.run lists them with their paths"))),
+        NodePath::Names(names) => node_named(tree, names),
+    }
+}
+
+/// The one node whose names from the root (the root's own left out) end
+/// with `names`, split at "/".
+fn node_named<'a>(tree: &'a Node, names: &str) -> Result<&'a Node, ApiError> {
+    let wanted: Vec<&str> = names.split('/').filter(|name| !name.is_empty()).collect();
+    if wanted.is_empty() {
+        return Ok(tree);
+    }
+    let mut found = Vec::new();
+    collect_named(tree, &mut Vec::new(), &wanted, &mut found);
+    match found.as_slice() {
+        [(_, node)] => Ok(node),
+        [] => Err(ApiError::not_found(format!("the unpacked tree has no node called {names}; unpack.run lists the names"))),
+        several => {
+            let paths: Vec<String> = several.iter().map(|(path, _)| path.join("/")).collect();
+            Err(ApiError::invalid_params(format!("{} nodes are called {names}: {}; name more of the path", several.len(), paths.join(", "))))
+        }
+    }
+}
+
+/// Every node below `node` whose names from the root end with `wanted`,
+/// with those names.
+fn collect_named<'a>(node: &'a Node, names: &mut Vec<&'a str>, wanted: &[&str], found: &mut Vec<(Vec<&'a str>, &'a Node)>) {
+    for child in &node.children {
+        names.push(child.name.trim_end_matches('/'));
+        if names.ends_with(wanted) {
+            found.push((names.clone(), child));
+        }
+        collect_named(child, names, wanted, found);
+        names.pop();
+    }
 }
 
 pub fn open(workspace: &mut dyn Workspace, caller: &Caller, params: NodeParams) -> Result<Made, ApiError> {
@@ -319,8 +377,10 @@ mod tests {
     use serde_json::json;
 
     use super::super::tool_jobs::test_support::run_job;
+    use super::{NodePath, node_at};
     use crate::api::test_support::{call, example_bytes, workspace_with};
     use crate::api::{ErrorCode, Workspace};
+    use crate::unpack::Node;
 
     #[test]
     fn a_zlib_stream_unpacks_into_a_node_that_can_be_read_and_opened() {
@@ -393,6 +453,35 @@ mod tests {
         let started = crate::api::call(workspace, caller, method, params).unwrap();
         let job = started["job"].as_str().unwrap().to_string();
         serde_json::to_value(crate::journal::replay::wait_for_job(workspace, &job).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn a_daemon_is_opened_by_its_name_in_the_filesystem_whatever_its_place() {
+        let etc = node("etc", b"", vec![node("motd", b"hello", vec![]), node("config.enc", b"sealed", vec![])]);
+        let bin = node("bin", b"", vec![node("novacamd", b"\x7fELF daemon", vec![])]);
+        let nested = node("update.bin", b"", vec![node("CramFS image", b"", vec![etc, bin])]);
+        let found = |names: &str| node_at(&nested, &NodePath::Names(names.into())).map(|node| node.data.to_vec());
+        assert_eq!(found("bin/novacamd").unwrap(), b"\x7fELF daemon");
+        assert_eq!(found("novacamd").unwrap(), b"\x7fELF daemon", "the last name alone, when only one node has it");
+        assert_eq!(found("/CramFS image/etc/motd").unwrap(), b"hello");
+        assert_eq!(found("etc/novacamd").unwrap_err().code, ErrorCode::NotFound);
+        let params: super::NodeParams = serde_json::from_value(json!({"path": "bin/novacamd"})).unwrap();
+        assert_eq!(params.path, NodePath::Names("bin/novacamd".into()));
+        let params: super::NodeParams = serde_json::from_value(json!({"path": [0, 1]})).unwrap();
+        assert_eq!(params.path, NodePath::Indices(vec![0, 1]));
+    }
+
+    #[test]
+    fn a_name_two_nodes_share_is_refused_with_both_paths() {
+        let tree = node("root", b"", vec![node("a", b"", vec![node("x", b"1", vec![])]), node("b", b"", vec![node("x", b"2", vec![])])]);
+        let refused = node_at(&tree, &NodePath::Names("x".into())).unwrap_err();
+        assert!(refused.message.contains("a/x, b/x"), "{}", refused.message);
+        assert_eq!(node_at(&tree, &NodePath::Names("b/x".into())).unwrap().data.as_slice(), b"2");
+    }
+
+    /// A node of an unpacked tree called `name`, holding `data`.
+    fn node(name: &str, data: &[u8], children: Vec<Node>) -> Node {
+        Node { name: name.into(), kind: "file".into(), source_offset: 0, source_len: data.len(), data: std::sync::Arc::new(data.to_vec()), children, note: None, method: None }
     }
 
     #[test]
