@@ -17,7 +17,9 @@ use std::collections::HashMap;
 pub struct XorCandidate {
     pub key: Vec<u8>,
     /// Higher is better: the larger of how text-like and how zero-rich the
-    /// decoded data is (0 to 1).
+    /// decoded data is (0 to 1), except that a key nearly repeating a
+    /// shorter one that scores about as well takes the shorter one's score
+    /// (see `ranking_score`). Candidates come in the order of their scores.
     pub score: f64,
     pub printable_fraction: f64,
     /// First 64 decoded bytes, unprintable ones as '.'.
@@ -217,9 +219,10 @@ pub fn recover_keys(bytes: &[u8], max_key_len: usize, top: usize) -> Vec<XorCand
         })
         .collect();
     let ranking: Vec<f64> = ranked.iter().map(|candidate| ranking_score(candidate, &ranked)).collect();
-    let mut ranked: Vec<(f64, XorCandidate)> = ranking.into_iter().zip(ranked).collect();
-    ranked.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.key.len().cmp(&b.1.key.len())));
-    ranked.into_iter().take(top).map(|(_, candidate)| candidate).collect()
+    let mut ranked: Vec<XorCandidate> = ranking.into_iter().zip(ranked).map(|(score, candidate)| XorCandidate { score, ..candidate }).collect();
+    ranked.sort_by(|a, b| b.score.total_cmp(&a.score).then(a.key.len().cmp(&b.key.len())));
+    ranked.truncate(top);
+    ranked
 }
 
 /// The score `candidate` is ranked by: its own, except that a key which
@@ -391,6 +394,16 @@ Operator: remember to rotate the XOR key for the next job.\nProof of access: FLA
         assert!(apply(&cipher, &found[0].key, 0).ends_with(b"FLAG{owls_midnight_reunited_twice_9d82}\nEnd of report.\n"));
         let longer = found.iter().find(|candidate| candidate.key.len() > key.len());
         assert!(longer.is_none_or(|candidate| candidate.key.len() % key.len() == 0), "the longer key is still offered: {found:?}");
+    }
+
+    #[test]
+    fn sorting_the_keys_by_score_puts_them_in_the_order_they_are_proposed() {
+        let key = [0x65, 0xFF, 0xB3, 0x35];
+        let cipher = apply(SHORT_REPORT.as_bytes(), &key, 0);
+        let found = recover_keys(&cipher, 32, 12);
+        assert!(found.windows(2).all(|pair| pair[0].score >= pair[1].score), "a later key scores higher: {found:?}");
+        let best = found.iter().max_by(|a, b| a.score.total_cmp(&b.score).then(b.key.len().cmp(&a.key.len()))).unwrap();
+        assert_eq!(best.key, key.to_vec(), "{found:?}");
     }
 
     #[test]

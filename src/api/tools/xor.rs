@@ -63,7 +63,9 @@ pub struct RecoverKeysParams {
 pub struct KeyCandidate {
     /// The key, as hex.
     pub key: String,
-    /// How convincing the decode is, 0 to 1: the larger of how text-like and how zero-rich it is.
+    /// Where the key ranks, from 1 for the best; the candidates come in this order.
+    pub rank: usize,
+    /// How convincing the decode is, 0 to 1: the larger of how text-like and how zero-rich it is, except that a key nearly repeating a shorter candidate that decodes about as well takes the shorter key's score. Sorting by score descending gives the order of `rank`.
     pub score: f64,
     /// Fraction of the decode that is printable.
     pub printable_fraction: f64,
@@ -120,8 +122,10 @@ pub fn recover_keys(workspace: &mut dyn Workspace, params: RecoverKeysParams) ->
     let bytes = tool_jobs::read(workspace, &span)?;
     let candidates = crate::xor::recover_keys(&bytes, max_key, KEYS_PROPOSED)
         .into_iter()
-        .map(|candidate| KeyCandidate {
+        .enumerate()
+        .map(|(index, candidate)| KeyCandidate {
             key: values::encode_bytes(&candidate.key, ByteEncoding::Hex),
+            rank: index + 1,
             score: candidate.score,
             printable_fraction: candidate.printable_fraction,
             preview: candidate.preview,
@@ -148,6 +152,8 @@ mod tests {
         assert_eq!(found["len"].as_u64(), Some(hidden.len() as u64));
         let keys: Vec<&str> = found["candidates"].as_array().unwrap().iter().filter_map(|candidate| candidate["key"].as_str()).collect();
         assert!(keys.contains(&"4b3379"), "{keys:?}");
+        let ranks: Vec<u64> = found["candidates"].as_array().unwrap().iter().filter_map(|candidate| candidate["rank"].as_u64()).collect();
+        assert_eq!(ranks, (1..=keys.len() as u64).collect::<Vec<_>>(), "{found}");
         assert!(found["key_lengths"].as_array().unwrap().iter().any(|length| length["length"] == 3), "{found}");
     }
 
