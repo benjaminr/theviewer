@@ -12,8 +12,11 @@
 //! | `port:53` | use port 53 at either end |
 //! | `ip:10.0.0.2` | come from or go to that address |
 //! | `len>100` (also `<`, `>=`, `<=`, `==`, `!=`) | have that many bytes |
-//! | `hex:DEADBEEF` | contain those bytes |
-//! | `ip.ttl==64` (also `!=`, `<`, `<=`, `>`, `>=`, `~` for "contains") | have a field, by its Wireshark name, with that value |
+//! | `hex:DEADBEEF`, or `frame contains de:ad:be:ef` | contain those bytes |
+//! | `frame matches "\x5a\x01"` | have bytes a regular expression matches (`\xNN` is a byte) |
+//! | `ip.ttl==64` (also `!=`, `<`, `<=`, `>`, `>=`) | have a field, by its Wireshark name, with that value |
+//! | `template.payload contains 9b:5c` (or `~`) | have a field whose bytes hold those bytes, or whose value holds that text |
+//! | `dns.qry.name matches "^www\."` | have a field whose value a regular expression matches, ignoring case |
 //! | `template.type==60`, or `type==60` | have a field of the set's template with that value |
 //! | `dns.qry.name` | have that field at all |
 //! | `"standard query"`, or any other word | mention the text in their summary (ignoring case) |
@@ -24,6 +27,10 @@
 //! other fields, as Wireshark has them: `tcp.port`, `udp.port` and
 //! `ip.addr` (either end), the bits of `dns.flags`, the parts of an HTTP
 //! request or status line, and `http.` followed by any header's name.
+//!
+//! A value after `contains` is bytes when it reads as hex (`00`, `0x9b5c`,
+//! `9b:5c`): a field contains it when the field's own bytes hold those bytes
+//! in order, which reaches past the 16 bytes a long field's value shows.
 //!
 //! A value matches a field's when the two are the same text, the field's
 //! first word, the name or number in its brackets ("TXT (16)" is both `TXT`
@@ -112,6 +119,8 @@ pub enum FieldTest {
     Greater,
     GreaterOrEqual,
     Contains,
+    /// A regular expression, ignoring case.
+    Matches,
 }
 
 impl FieldTest {
@@ -133,6 +142,43 @@ const COMPARISONS: [(&str, FieldTest); 8] = [
     ("=", FieldTest::Equal),
 ];
 
+/// Comparisons written as words, as Wireshark has them: `frame contains
+/// a5:5a`, `dns.qry.name matches "^www"`. Elsewhere the words are text.
+const WORD_COMPARISONS: [(&str, FieldTest); 2] = [("contains", FieldTest::Contains), ("matches", FieldTest::Matches)];
+
+/// What [`FieldValues`] is asked for to have where a field's bytes are,
+/// rather than its values: this prefix, then the field's name. Each answer
+/// is `offset+len` from the packet's first byte; [`wireshark_values`] gives
+/// them.
+pub const SPANS_OF: &str = "spans-of:";
+
+/// A regular expression in a filter, compared by its text.
+#[derive(Clone, Debug)]
+pub struct Pattern(regex_lite::Regex);
+
+impl Pattern {
+    /// `text` as a regular expression that ignores case, or why it is not one.
+    fn new(text: &str) -> Result<Pattern, String> {
+        regex_lite::RegexBuilder::new(text).case_insensitive(true).build().map(Pattern).map_err(|error| format!("'{text}' is not a regular expression: {error}"))
+    }
+
+    fn is_match(&self, text: &str) -> bool {
+        self.0.is_match(text)
+    }
+
+    fn as_str(&self) -> &str {
+        self.0.as_str()
+    }
+}
+
+impl PartialEq for Pattern {
+    fn eq(&self, other: &Pattern) -> bool {
+        self.as_str() == other.as_str()
+    }
+}
+
+impl Eq for Pattern {}
+
 /// One term of a filter.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Term {
@@ -143,10 +189,15 @@ pub enum Term {
     Address(IpAddr),
     Length(Comparison, usize),
     Bytes(Vec<u8>),
+    /// A regular expression the packet's bytes must match, each byte read as
+    /// the character of that number.
+    BytesMatch(Pattern),
     /// A field by its Wireshark display-filter name, such as `ip.ttl`, or
     /// a template field as `template.<name>`, and the test its value must
     /// pass (none: the field need only be there).
     Field { name: String, test: Option<(FieldTest, String)> },
+    /// A field, and a regular expression one of its values must match.
+    FieldMatch { name: String, pattern: Pattern },
     /// Lower-case text looked for in the summary.
     Text(String),
 }
@@ -180,10 +231,18 @@ impl Expression {
         }
     }
 
-    /// The same expression with every field term passed through `resolve`.
-    fn map_fields(self, resolve: &mut impl FnMut(String, Option<(FieldTest, String)>) -> Result<Term, FilterError>) -> Result<Expression, FilterError> {
+    /// The same expression with every field's name passed through
+    /// `resolve`, with the term as written.
+    fn map_fields(self, resolve: &mut impl FnMut(&str, &str) -> Result<String, FilterError>) -> Result<Expression, FilterError> {
         Ok(match self {
-            Expression::Term(Term::Field { name, test }) => Expression::Term(resolve(name, test)?),
+            Expression::Term(Term::Field { name, test }) => {
+                let shown = shown_term(&name, test.as_ref());
+                Expression::Term(Term::Field { name: resolve(&shown, &name)?, test })
+            }
+            Expression::Term(Term::FieldMatch { name, pattern }) => {
+                let shown = format!("{name} matches \"{}\"", pattern.as_str());
+                Expression::Term(Term::FieldMatch { name: resolve(&shown, &name)?, pattern })
+            }
             Expression::Term(term) => Expression::Term(term),
             Expression::Not(inner) => Expression::Not(Box::new(inner.map_fields(resolve)?)),
             Expression::All(parts) => Expression::All(parts.into_iter().map(|part| part.map_fields(resolve)).collect::<Result<_, _>>()?),
@@ -255,7 +314,7 @@ impl Filter {
     /// Whether some term asks for a field, so packets must be dissected
     /// with their fields to be filtered.
     pub fn asks_for_fields(&self) -> bool {
-        self.terms().iter().any(|term| matches!(term, Term::Field { .. }))
+        self.terms().iter().any(|term| matches!(term, Term::Field { .. } | Term::FieldMatch { .. }))
     }
 
     /// Check every field name against `known`: a bare name (`type==60`)
@@ -263,23 +322,24 @@ impl Filter {
     /// is an error that lists the close names it does have.
     pub fn resolve(self, known: &KnownFields) -> Result<Filter, FilterError> {
         let Some(expression) = self.expression else { return Ok(self) };
-        let expression = expression.map_fields(&mut |name, test| {
-            let shown = shown_term(&name, test.as_ref());
-            let name = known.field_name(&name).map_err(|reason| error(&shown, reason))?;
-            Ok(Term::Field { name, test })
-        })?;
+        let expression = expression.map_fields(&mut |shown, name| known.field_name(name).map_err(|reason| error(shown, reason)))?;
         Ok(Filter { expression: Some(expression) })
     }
+}
+
+/// How `test` is written between a field and its value.
+fn symbol_of(test: FieldTest) -> &'static str {
+    COMPARISONS.iter().chain(&WORD_COMPARISONS).find(|(_, candidate)| *candidate == test).map_or("==", |(symbol, _)| symbol)
 }
 
 /// A field term as it was written, for errors.
 fn shown_term(name: &str, test: Option<&(FieldTest, String)>) -> String {
     match test {
         None => name.to_string(),
-        Some((test, value)) => {
-            let symbol = COMPARISONS.iter().find(|(_, candidate)| candidate == test).map_or("==", |(symbol, _)| symbol);
-            format!("{name}{symbol}{value}")
-        }
+        Some((test, value)) => match WORD_COMPARISONS.iter().find(|(_, candidate)| candidate == test) {
+            Some((word, _)) => format!("{name} {word} {value}"),
+            None => format!("{name}{}{value}", symbol_of(*test)),
+        },
     }
 }
 
@@ -294,15 +354,18 @@ fn term_matches(term: &Term, subject: &FilterSubject<'_>) -> bool {
             in_flow || subject.summary.source == text || subject.summary.destination == text
         }
         Term::Length(comparison, limit) => comparison.holds(subject.len, *limit),
-        Term::Bytes(needle) => !needle.is_empty() && subject.bytes.windows(needle.len()).any(|window| window == needle.as_slice()),
+        Term::Bytes(needle) => holds_bytes(subject.bytes, needle),
+        Term::BytesMatch(pattern) => pattern.is_match(&subject.bytes.iter().map(|&byte| char::from(byte)).collect::<String>()),
         Term::Field { name, test } => {
             let values = subject.fields.map(|values_of| values_of(name)).unwrap_or_default();
             match test {
                 None => !values.is_empty(),
                 Some((FieldTest::NotEqual, wanted)) => !values.is_empty() && !values.iter().any(|value| value_equals(value, wanted)),
+                Some((FieldTest::Contains, wanted)) => values.iter().any(|value| value_passes(value, FieldTest::Contains, wanted)) || field_bytes_hold(subject, name, wanted),
                 Some((test, wanted)) => values.iter().any(|value| value_passes(value, *test, wanted)),
             }
         }
+        Term::FieldMatch { name, pattern } => subject.fields.map(|values_of| values_of(name)).unwrap_or_default().iter().any(|value| pattern.is_match(value)),
         Term::Text(text) => {
             let summary = subject.summary;
             [&summary.info, &summary.protocol, &summary.source, &summary.destination].iter().any(|field| field.to_lowercase().contains(text))
@@ -310,11 +373,38 @@ fn term_matches(term: &Term, subject: &FilterSubject<'_>) -> bool {
     }
 }
 
+fn holds_bytes(haystack: &[u8], needle: &[u8]) -> bool {
+    !needle.is_empty() && haystack.windows(needle.len()).any(|window| window == needle)
+}
+
+/// Whether some value of the field `name` has bytes of its own that hold
+/// `wanted`, when `wanted` reads as bytes ([`byte_string`]).
+fn field_bytes_hold(subject: &FilterSubject<'_>, name: &str, wanted: &str) -> bool {
+    let (Some(values_of), Some(needle)) = (subject.fields, byte_string(wanted)) else { return false };
+    values_of(&format!("{SPANS_OF}{name}")).iter().filter_map(|span| span.split_once('+')).any(|(offset, len)| {
+        let (Ok(offset), Ok(len)) = (offset.parse::<usize>(), len.parse::<usize>()) else { return false };
+        subject.bytes.get(offset..offset.saturating_add(len).min(subject.bytes.len())).is_some_and(|bytes| holds_bytes(bytes, &needle))
+    })
+}
+
+/// `text` as bytes written in hex, as Wireshark writes them: `00`,
+/// `0x9b5c`, `9b5c`, or bytes between `:`, `-`, `.` or spaces (`9b:5c`).
+fn byte_string(text: &str) -> Option<Vec<u8>> {
+    let text = text.trim();
+    let text = text.strip_prefix("0x").or_else(|| text.strip_prefix("0X")).unwrap_or(text);
+    let parts: Vec<&str> = text.split([':', '-', '.', ' ']).collect();
+    if parts.len() > 1 {
+        return parts.iter().map(|part| if matches!(part.len(), 1 | 2) { u8::from_str_radix(part, 16).ok() } else { None }).collect();
+    }
+    super::parse_hex(text).ok()
+}
+
 fn value_passes(value: &str, test: FieldTest, wanted: &str) -> bool {
     match test {
         FieldTest::Equal => value_equals(value, wanted),
         FieldTest::NotEqual => !value_equals(value, wanted),
         FieldTest::Contains => value.to_lowercase().contains(&wanted.to_lowercase()),
+        FieldTest::Matches => Pattern::new(wanted).is_ok_and(|pattern| pattern.is_match(value)),
         ordering => match (value_number(value), leading_number(wanted)) {
             (Some(value), Some(wanted)) => match ordering {
                 FieldTest::Less => value < wanted,
@@ -399,7 +489,13 @@ pub struct FieldMatch {
 /// tshark's layers by the names tshark gave them, from ours by the names
 /// the reference notes give our fields, from the template's fields for
 /// `template.<name>`, and otherwise worked out from other fields.
+///
+/// Asked for [`SPANS_OF`] and a name, it gives where that field's values'
+/// bytes are instead, as `offset+len`.
 pub fn wireshark_values(dissection: &Dissection, name: &str) -> Vec<String> {
+    if let Some(name) = name.strip_prefix(SPANS_OF) {
+        return field_matches(dissection, name).into_iter().filter_map(|found| found.span).map(|(offset, len)| format!("{offset}+{len}")).collect();
+    }
     field_matches(dissection, name).into_iter().map(|found| found.value).collect()
 }
 
@@ -760,11 +856,16 @@ fn tokenise(text: &str) -> Result<Vec<(Token, usize, usize)>, FilterError> {
         } else {
             let len = word_len(rest);
             let word = &rest[..len];
-            let token = match word.to_ascii_lowercase().as_str() {
+            let after_word = matches!(tokens.last(), Some((Token::Word(_), _, _)));
+            let lower = word.to_ascii_lowercase();
+            let token = match lower.as_str() {
                 "and" => Token::And,
                 "or" => Token::Or,
                 "not" => Token::Not,
-                _ => Token::Word(word.to_string()),
+                _ => match WORD_COMPARISONS.iter().find(|(name, _)| *name == lower) {
+                    Some((_, test)) if after_word => Token::Compare(*test),
+                    _ => Token::Word(word.to_string()),
+                },
             };
             (token, len)
         };
@@ -790,13 +891,18 @@ fn word_len(text: &str) -> usize {
 }
 
 /// The text inside the quotes at the start of `text` (with `\"` and `\\`
-/// for a quote and a backslash), and how many bytes the quoted text took.
+/// for a quote and a backslash; any other backslash is kept, so a regular
+/// expression's `\x5a` or `\.` reads as written), and how many bytes the
+/// quoted text took.
 fn read_quoted(text: &str) -> Option<(String, usize)> {
     let mut out = String::new();
     let mut escaped = false;
     for (at, c) in text.char_indices().skip(1) {
         match c {
             _ if escaped => {
+                if !matches!(c, '"' | '\\') {
+                    out.push('\\');
+                }
                 out.push(c);
                 escaped = false;
             }
@@ -951,7 +1057,14 @@ fn comparison(shown: &str, name: &str, test: FieldTest, value: &str) -> Result<E
             FieldTest::GreaterOrEqual => length(Comparison::GreaterOrEqual),
             FieldTest::Greater => length(Comparison::Greater),
             FieldTest::NotEqual => Ok(Expression::Not(Box::new(Expression::Term(Term::Length(Comparison::Equal, limit))))),
-            FieldTest::Contains => Err(error(shown, "compare the length with ==, !=, >, <, >= or <=, such as len>100")),
+            FieldTest::Contains | FieldTest::Matches => Err(error(shown, "compare the length with ==, !=, >, <, >= or <=, such as len>100")),
+        };
+    }
+    if lower == "frame" {
+        return match test {
+            FieldTest::Contains => Ok(Expression::Term(Term::Bytes(byte_string(value).unwrap_or_else(|| value.as_bytes().to_vec())))),
+            FieldTest::Matches => Pattern::new(value).map(|pattern| Expression::Term(Term::BytesMatch(pattern))).map_err(|reason| error(shown, reason)),
+            _ => Err(error(shown, "the frame is its bytes: ask whether it contains some, such as frame contains a5:5a, or matches a regular expression")),
         };
     }
     let looks_like_name = lower.starts_with(|c: char| c.is_ascii_alphabetic())
@@ -964,8 +1077,11 @@ fn comparison(shown: &str, name: &str, test: FieldTest, value: &str) -> Result<E
         return Err(error(shown, format!("'{name}' is a protocol, not a field; name one of its fields, such as {lower}.len")));
     }
     if test.is_ordering() && leading_number(value).is_none() {
-        let symbol = COMPARISONS.iter().find(|(_, candidate)| *candidate == test).map_or("", |(symbol, _)| symbol);
-        return Err(error(shown, format!("{symbol} compares numbers; '{value}' is not one")));
+        return Err(error(shown, format!("{} compares numbers; '{value}' is not one", symbol_of(test))));
+    }
+    if test == FieldTest::Matches {
+        let pattern = Pattern::new(value).map_err(|reason| error(shown, reason))?;
+        return Ok(Expression::Term(Term::FieldMatch { name: lower, pattern }));
     }
     Ok(Expression::Term(Term::Field { name: lower, test: Some((test, value.to_string())) }))
 }
@@ -1279,6 +1395,57 @@ mod tests {
         assert!(value_passes("1500 bytes", FieldTest::Greater, "1000"));
         assert!(value_passes("TXT (16)", FieldTest::Less, "17"));
         assert!(value_passes("Standard query", FieldTest::Contains, "QUERY"));
+    }
+
+    /// Whether `filter` keeps a packet of `bytes` dissected as `dissection`.
+    fn keeps_bytes(filter: &str, dissection: &Dissection, bytes: &[u8]) -> bool {
+        let known = KnownFields::of([dissection]);
+        let filter = parse_filter_for(filter, &known).unwrap_or_else(|error| panic!("{filter}: {error}"));
+        let values = |name: &str| wireshark_values(dissection, name);
+        let no_tshark: [String; 0] = [];
+        let subject = FilterSubject {
+            protocols: &dissection.protocols,
+            tshark_protocols: &no_tshark,
+            flow: dissection.flow.as_ref(),
+            summary: &dissection.summary,
+            bytes,
+            len: bytes.len(),
+            fields: Some(&values),
+        };
+        filter.matches(&subject)
+    }
+
+    #[test]
+    fn contains_finds_the_unlock_frames_by_a_byte_of_their_payload() {
+        let template = crate::templates::Template::parse("struct Frame { sync: bytes[2]  kind: u8 display hex  payload: bytes[20] }").unwrap();
+        let raw = crate::packets::RawFrames { template: Some(template), ..crate::packets::RawFrames::default() };
+        let frame = |kind: u8, last: u8| [vec![0xA5, 0x5A, kind, 0x9B, 0x5C], vec![0x11; 17], vec![last]].concat();
+        let unlock = frame(0x3C, 0x00);
+        let poll = frame(0x01, 0x22);
+        let keeps_which = |filter: &str| {
+            let unlock_kept = keeps_bytes(filter, &crate::packets::dissect_with(&unlock, crate::packets::LinkKind::Unknown, &raw), &unlock);
+            let poll_kept = keeps_bytes(filter, &crate::packets::dissect_with(&poll, crate::packets::LinkKind::Unknown, &raw), &poll);
+            (unlock_kept, poll_kept)
+        };
+        assert_eq!(keeps_which("template.payload contains 00"), (true, false), "the 00 is past the 16 bytes the value shows");
+        assert_eq!(keeps_which("template.payload contains 9b:5c"), (true, true));
+        assert_eq!(keeps_which("template.payload contains 0x9b5c"), (true, true));
+        assert_eq!(keeps_which("template.payload contains 5c:9b"), (false, false), "bytes are compared in order");
+        assert_eq!(keeps_which("template.payload CONTAINS 22 and kind==1"), (false, true));
+        assert_eq!(keeps_which("frame contains a5:5a:3c"), (true, false));
+        assert_eq!(keeps_which("not frame contains a5:5a:3c"), (false, true));
+        assert_eq!(keeps_which("template.kind matches \"3c\""), (true, false), "a regular expression on the value");
+        assert_eq!(keeps_which("frame matches \"\\x5a\\x01\""), (false, true), "a regular expression on the bytes");
+        assert_eq!(keeps_which("contains"), (false, false), "a word on its own is still text");
+    }
+
+    #[test]
+    fn contains_and_matches_need_a_field_and_a_value_that_reads() {
+        let reason = |filter: &str| parse_filter(filter).unwrap_err().to_string();
+        assert!(reason("ip.ttl matches \"(\"").contains("regular expression"), "{}", reason("ip.ttl matches \"(\""));
+        assert!(reason("len contains 3").contains("compare the length"), "{}", reason("len contains 3"));
+        assert!(reason("frame==3").contains("frame"), "{}", reason("frame==3"));
+        assert!(reason("ip.ttl contains").contains("give a value"), "{}", reason("ip.ttl contains"));
     }
 
     #[test]
