@@ -520,9 +520,17 @@ impl Run<'_> {
 
     /// Keep the sheets `step` made, as its result names them, under its
     /// number and the label its `makes` gives, which the workspace notes
-    /// as the sheet's label too.
+    /// as the sheet's label too. The labels its result gives the sheets
+    /// after the first (`packets.http_bodies`' "body 1", "body 2"…) name
+    /// them too.
     fn keep_sheets_made(&mut self, workspace: &mut dyn Workspace, step: &RecipeStep, result: &Value) {
-        let made: Vec<String> = super::sheets_made(result).into_iter().map(|sheet| sheet.doc).collect();
+        let outputs = super::sheets_made(result);
+        for output in outputs.iter().skip(1) {
+            if let Some(label) = &output.label {
+                self.sheets.labels.entry(label.clone()).or_insert_with(|| output.doc.clone());
+            }
+        }
+        let made: Vec<String> = outputs.into_iter().map(|sheet| sheet.doc).collect();
         if let (Some(label), Some(first)) = (&step.makes, made.first()) {
             self.sheets.labels.insert(label.clone(), first.clone());
             // A step inside a call (a recipes.run's) is not journalled, so

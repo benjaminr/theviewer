@@ -2425,4 +2425,26 @@ mod tests {
         let refused = call(&mut workspace, "packets.http_bodies", json!({"set": "set-1", "index": 0, "output": "in_place"})).unwrap_err();
         assert_eq!(refused.code, ErrorCode::InvalidParams);
     }
+
+    #[test]
+    fn a_recipe_names_each_uploaded_body_by_its_label() {
+        use crate::journal::recipe::RecipeStep;
+        use crate::journal::replay::{ReplayOptions, run};
+        let post = |body: &str| format!("POST /telemetry HTTP/1.1\r\nContent-Length: {}\r\n\r\n{body}", body.len());
+        let stream = format!("{}{}", post("first half of the loot"), post("second half of the loot"));
+        let mut workspace = workspace_with("exfil.pcap", &tcp_capture(stream.as_bytes()));
+        let steps = [
+            RecipeStep::new(1, "packets.sets.create", json!({"from": "capture"})),
+            RecipeStep {
+                makes: Some("body".into()),
+                ..RecipeStep::new(2, "packets.http_bodies", json!({"set": {"$anchor": {"step": 1, "path": "result.set"}}, "index": 0, "output": {"new": {"label": "body"}}}))
+            },
+            RecipeStep::new(3, "bytes.read", json!({"doc": {"$anchor": {"sheet": "body 1"}}, "start": 0, "len": 6, "encoding": "text"})),
+        ];
+        let report = run(&mut workspace, &steps, &ReplayOptions::new(crate::api::Caller::Recipe("exfil".into())));
+        assert!(report.stopped.is_none(), "{:?}", report.stopped);
+        assert_eq!(report.steps[2].result.as_ref().unwrap()["data"], "second");
+        let labels: Vec<Option<&str>> = report.sheets.iter().map(|sheet| sheet.label.as_deref()).collect();
+        assert_eq!(labels, [Some("body"), Some("body 1")], "the run's sheets, as --save-sheets names their files");
+    }
 }
