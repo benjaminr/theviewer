@@ -246,6 +246,11 @@ pub fn read_leb128(bytes: &[u8]) -> Option<(u64, usize)> {
     None
 }
 
+/// `count` and the noun for it: "1 frame", "3 frames".
+fn counted(count: usize, one: &str, many: &str) -> String {
+    format!("{count} {}", if count == 1 { one } else { many })
+}
+
 /// How a chain of length-prefixed frames came to an end.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ChainEnd {
@@ -455,10 +460,11 @@ pub fn split_by_length_field(bytes: &[u8], base: usize, field: &LengthField, lin
         let lost_bytes: usize = chain.lost.iter().map(|&(_, len)| len).sum();
         let shown: Vec<String> = chain.lost.iter().take(LOST_STRETCHES_SHOWN).map(|&(offset, len)| format!("{len} at {:#x}", base + offset)).collect();
         let more = if chain.lost.len() > LOST_STRETCHES_SHOWN { format!(" and {} more", chain.lost.len() - LOST_STRETCHES_SHOWN) } else { String::new() };
-        description.push_str(&format!(" · lost its place {} times, skipping {lost_bytes} bytes ({}{more})", chain.lost.len(), shown.join(", ")));
+        let times = counted(chain.lost.len(), "time", "times");
+        description.push_str(&format!(" · lost its place {times}, skipping {lost_bytes} bytes ({}{more})", shown.join(", ")));
     }
     if chain.cut_short > 0 {
-        description.push_str(&format!(" · {} frames cut short by the next sync word", chain.cut_short));
+        description.push_str(&format!(" · {} cut short by the next sync word", counted(chain.cut_short, "frame", "frames")));
     }
     match (chain.end, chain.lost.is_empty()) {
         (ChainEnd::DataEnded, false) => description.push_str(" · the frames and the stretches skipped cover every byte"),
@@ -860,7 +866,7 @@ mod tests {
         let set = split_by_length_field(&stream, 0x40, &field, LinkKind::Unknown).expect("frames");
         assert_eq!(set.len(), 10, "{}", set.description);
         assert_eq!((set.packets[0].offset, set.packets[4].len), (0x43, 6));
-        assert!(set.description.contains("3 at 0x40") && set.description.contains("1 frames cut short"), "{}", set.description);
+        assert!(set.description.contains("3 at 0x40") && set.description.contains("1 frame cut short"), "{}", set.description);
     }
 
     #[test]
