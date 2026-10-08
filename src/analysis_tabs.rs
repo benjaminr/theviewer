@@ -92,6 +92,21 @@ impl AnalysisState {
         self.diff = None;
         self.other_texture = None;
     }
+
+    /// Take what was worked out about the sheet shown, to keep while it is
+    /// parked; the person's choices (the architecture, the pointer arrows)
+    /// stay.
+    pub fn take_results(&mut self) -> AnalysisState {
+        let choices = AnalysisState { arch: self.arch, show_pointers: self.show_pointers, ..Default::default() };
+        std::mem::replace(self, choices)
+    }
+
+    /// Show what was kept for the sheet now shown, keeping the person's
+    /// choices.
+    pub fn put_results(&mut self, kept: AnalysisState) {
+        let (arch, show_pointers) = (self.arch, self.show_pointers);
+        *self = AnalysisState { arch, show_pointers, ..kept };
+    }
 }
 
 // ---------------------------------------------------------------------------

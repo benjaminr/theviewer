@@ -2,8 +2,8 @@
 //! certificates, attacks on simple ciphers beyond plain XOR, and AES
 //! decryption with a key found or typed.
 //!
-//! Every search runs on a background thread; results remember which document
-//! they came from and are dropped when another one is shown.
+//! Every search runs on a background thread; results remember which sheet
+//! they came from and are kept for it, shown again when it is.
 
 use std::sync::mpsc::{self, Receiver};
 use std::time::Duration;
@@ -17,6 +17,7 @@ use crate::ciphers::{self, CipherCandidate, KeyFragment};
 use crate::keys::{self, KeyFinding, KeyFormat, KeyKind};
 use crate::plugin::{Category, Finding};
 use crate::selection_ops::Operation;
+use crate::sheets::PerSheet;
 use crate::theme;
 
 /// Largest selection decoded by the cipher attacks.
@@ -30,19 +31,10 @@ const STRIP_HEIGHT: f32 = 18.0;
 /// Widest a key finding's description may be before it is truncated (points).
 const KEY_DETAIL_WIDTH: f32 = 520.0;
 
-/// Which document a result belongs to: its name and length.
-type DocumentKey = (String, usize);
-
-/// A background job and the result it delivers.
+/// A background job, the result it delivers, and the sheet it searches.
 struct Job<T> {
     receiver: Receiver<T>,
-    document: DocumentKey,
-}
-
-/// Results of a search together with the document they describe.
-struct Done<T> {
-    value: T,
-    document: DocumentKey,
+    sheet: String,
 }
 
 /// Cipher candidates for the range `start..start + len`.
@@ -58,11 +50,11 @@ pub(crate) struct DecodeResults {
 #[derive(Default)]
 pub struct CryptoState {
     blocks_job: Option<Job<BlockReport>>,
-    blocks: Option<Done<BlockReport>>,
+    blocks: PerSheet<BlockReport>,
     keys_job: Option<Job<Vec<KeyFinding>>>,
-    keys: Option<Done<Vec<KeyFinding>>>,
+    keys: PerSheet<Vec<KeyFinding>>,
     decode_job: Option<Job<DecodeResults>>,
-    decode: Option<Done<DecodeResults>>,
+    decode: PerSheet<DecodeResults>,
     /// Known plaintext for crib dragging, with `\xHH` escapes.
     crib: String,
     crib_error: Option<String>,
@@ -87,10 +79,27 @@ impl Default for DecryptForm {
     }
 }
 
+impl CryptoState {
+    /// Sheet `to` is shown: its results are shown again.
+    pub fn sheet_switched(&mut self, to: &str) {
+        self.blocks.switched(to);
+        self.keys.switched(to);
+        self.decode.switched(to);
+    }
+
+    /// Sheet `id` closed, or has new bytes: its results go.
+    pub fn sheet_closed(&mut self, id: &str) {
+        self.blocks.closed(id);
+        self.keys.closed(id);
+        self.decode.closed(id);
+    }
+}
+
 /// Draw the crypto panel.
 pub fn show_crypto(state: &mut CryptoState, app: &mut ViewerApp, ui: &mut egui::Ui) {
-    let document = document_key(app);
-    collect_finished(state, &document);
+    let active = app.document_id();
+    collect_finished(state, &active);
+    state.sheet_switched(&active);
     if state.blocks_job.is_some() || state.keys_job.is_some() || state.decode_job.is_some() {
         ui.ctx().request_repaint_after(POLL_INTERVAL);
     }
@@ -102,14 +111,10 @@ pub fn show_crypto(state: &mut CryptoState, app: &mut ViewerApp, ui: &mut egui::
     });
 }
 
-fn document_key(app: &ViewerApp) -> DocumentKey {
-    (app.display_name(), app.document.len())
-}
-
-/// A job of the window's document's, and where its result is to be sent.
+/// A job of the sheet shown, and where its result is to be sent.
 fn awaited<T>(app: &ViewerApp) -> (Job<T>, mpsc::Sender<T>) {
     let (sender, receiver) = mpsc::channel();
-    (Job { receiver, document: document_key(app) }, sender)
+    (Job { receiver, sheet: app.document_id() }, sender)
 }
 
 /// Wait for a search `crypto.repeated_blocks` started; returns where its report is sent.
@@ -133,26 +138,21 @@ pub(crate) fn await_decode(app: &mut ViewerApp) -> mpsc::Sender<DecodeResults> {
     sender
 }
 
-/// Move a finished job's result into `done`; drop results for other documents.
-fn poll<T>(job: &mut Option<Job<T>>, done: &mut Option<Done<T>>, document: &DocumentKey) {
+/// Move a finished job's result into `done`, kept for the sheet it
+/// searched, while `active` is shown.
+fn poll<T>(job: &mut Option<Job<T>>, done: &mut PerSheet<T>, active: &str) {
     if let Some(pending) = job
         && let Ok(value) = pending.receiver.try_recv()
     {
-        let finished = job.take().map(|pending| pending.document);
-        *done = finished.map(|document| Done { value, document });
-    }
-    if job.as_ref().is_some_and(|pending| &pending.document != document) {
+        done.deliver(&pending.sheet, value, active);
         *job = None;
-    }
-    if done.as_ref().is_some_and(|result| &result.document != document) {
-        *done = None;
     }
 }
 
-fn collect_finished(state: &mut CryptoState, document: &DocumentKey) {
-    poll(&mut state.blocks_job, &mut state.blocks, document);
-    poll(&mut state.keys_job, &mut state.keys, document);
-    poll(&mut state.decode_job, &mut state.decode, document);
+fn collect_finished(state: &mut CryptoState, active: &str) {
+    poll(&mut state.blocks_job, &mut state.blocks, active);
+    poll(&mut state.keys_job, &mut state.keys, active);
+    poll(&mut state.decode_job, &mut state.decode, active);
 }
 
 fn dim(text: impl Into<String>) -> RichText {
@@ -182,11 +182,12 @@ fn show_blocks(state: &mut CryptoState, app: &mut ViewerApp, ui: &mut Ui) {
             ui.spinner();
         }
     });
-    let Some(done) = &state.blocks else {
+    let Some((sheet, report)) = state.blocks.shown() else {
         ui.label(dim("Counts 8- and 16-byte blocks that look random yet repeat: the mark of ECB-mode encryption. CBC, CTR, stream ciphers and compression leave no repeats."));
         return;
     };
-    let report = &done.value;
+    let sheet = sheet.to_string();
+    crate::sheets::view::results_of_other_sheet(app, ui, &sheet);
     let verdict_colour = match report.verdict {
         blocks::BlockVerdict::LikelyEcb { .. } => theme::CURSOR,
         _ => theme::ACCENT,
@@ -227,7 +228,7 @@ fn show_blocks(state: &mut CryptoState, app: &mut ViewerApp, ui: &mut Ui) {
         }
     }
     if let Some(offset) = jump {
-        app.jump_found(offset);
+        app.jump_found_in(&sheet, offset);
     }
 }
 
@@ -306,11 +307,12 @@ fn show_keys(state: &mut CryptoState, app: &mut ViewerApp, ui: &mut Ui) {
             ui.spinner();
         }
     });
-    let Some(done) = &state.keys else {
+    let Some((sheet, findings)) = state.keys.shown() else {
         ui.label(dim("PEM blocks, DER certificates and keys (X.509, PKCS#1, PKCS#8, SEC1), OpenSSH keys, and random-looking 16/24/32-byte runs amid structured data that could be raw symmetric keys."));
         return;
     };
-    let findings = &done.value;
+    let sheet = sheet.to_string();
+    crate::sheets::view::results_of_other_sheet(app, ui, &sheet);
     if findings.is_empty() {
         ui.label(dim("Nothing found."));
         return;
@@ -339,17 +341,22 @@ fn show_keys(state: &mut CryptoState, app: &mut ViewerApp, ui: &mut Ui) {
         });
     }
     if let Some(finding) = chosen {
-        app.select_finding(&finding);
+        if sheet == app.document_id() {
+            app.select_finding(&finding);
+        } else {
+            app.select_found_in(&sheet, finding.start, finding.len);
+        }
     }
     if let Some((offset, len)) = key_to_use {
-        use_key(state, app, offset, len);
+        use_key(state, app, &sheet, offset, len);
     }
 }
 
-/// The person takes a raw key candidate as the AES key: its bytes fill
-/// the key under Decrypt.
-fn use_key(state: &mut CryptoState, app: &mut ViewerApp, offset: usize, len: usize) {
-    let key = app.document.read_range(offset, len);
+/// The person takes a raw key candidate found in sheet `sheet` as the AES
+/// key: its bytes fill the key under Decrypt.
+fn use_key(state: &mut CryptoState, app: &mut ViewerApp, sheet: &str, offset: usize, len: usize) {
+    let Some(document) = crate::api::Workspace::document_mut(app, sheet) else { return };
+    let key = document.read_range(offset, len);
     state.decrypt.key = crate::api::values::encode_bytes(&key, Default::default());
     state.decrypt.error = None;
     let algorithm = Algorithm::for_key_len(key.len()).map_or("no AES", Algorithm::label);
@@ -448,11 +455,12 @@ fn show_decode(state: &mut CryptoState, app: &mut ViewerApp, ui: &mut Ui) {
         }
         ui.label(dim("select the suspect bytes first; without a selection, 64 KiB from the cursor"));
     });
-    let Some(done) = &state.decode else {
+    let Some((sheet, results)) = state.decode.shown() else {
         ui.label(dim("Rolling XOR, XOR with the previous byte, ADD/SUB with a constant or repeating key, bit rotation, XOR combined with ADD, and crib dragging, ranked by how much the result looks like text or structured data. Plain XOR is in the XOR tab."));
         return;
     };
-    let results = &done.value;
+    let sheet = sheet.to_string();
+    crate::sheets::view::results_of_other_sheet(app, ui, &sheet);
     show_key_fragments(ui, results);
     if results.candidates.is_empty() {
         ui.label(dim("No convincing decode."));
@@ -477,10 +485,10 @@ fn show_decode(state: &mut CryptoState, app: &mut ViewerApp, ui: &mut Ui) {
     if let Some((index, in_place)) = action {
         let (start, len) = (results.start, results.len);
         let transform = results.candidates[index].transform.clone();
-        apply_decode(app, start, len, &transform, in_place);
+        apply_decode(app, &sheet, start, len, &transform, in_place);
         if in_place {
             // The previews describe the bytes as they were before the edit.
-            state.decode = None;
+            state.decode.closed(&sheet);
         }
     }
 }
@@ -542,19 +550,28 @@ fn start_decode(state: &mut CryptoState, app: &mut ViewerApp, start: usize, len:
 /// (`transform.apply`), or opened as a document of its own
 /// (`documents.derive` with the transform), the operation named either way
 /// so a recipe repeats it.
-fn apply_decode(app: &mut ViewerApp, start: usize, len: usize, transform: &ciphers::Transform, in_place: bool) {
+fn apply_decode(app: &mut ViewerApp, sheet: &str, start: usize, len: usize, transform: &ciphers::Transform, in_place: bool) {
     let operation = Operation::from(transform.clone());
     let description = transform.describe();
+    let shown = sheet == app.document_id();
+    let mut params = if in_place {
+        serde_json::json!({ "selection": { "range": [start, len] }, "operation": operation })
+    } else {
+        let name = format!("{} › decoded@{start:#x}", app.sheet_title(sheet).unwrap_or_else(|| app.display_name()));
+        serde_json::json!({ "start": start, "len": len, "name": name, "transform": operation })
+    };
+    if !shown {
+        params["doc"] = serde_json::json!(sheet);
+    }
     if in_place {
-        if app.perform("transform.apply", serde_json::json!({ "selection": { "range": [start, len] }, "operation": operation })).is_ok() {
-            app.restore_selection(start, len);
+        if app.perform("transform.apply", params).is_ok() {
+            if shown {
+                app.restore_selection(start, len);
+            }
             app.status = format!("{description}: applied to {len} bytes at {start:#x}");
         }
-    } else {
-        let name = format!("{} › decoded@{start:#x}", app.display_name());
-        if app.perform("documents.derive", serde_json::json!({ "start": start, "len": len, "name": name, "transform": operation })).is_ok() {
-            app.status = format!("Opened the decode ({description})");
-        }
+    } else if app.perform("documents.derive", params).is_ok() {
+        app.status = format!("Opened the decode ({description})");
     }
 }
 
@@ -598,7 +615,8 @@ mod tests {
         let ciphertext = crate::ops::parse_hex("3ad77bb40d7a3660a89ecaf32466ef97").unwrap();
         let mut app = app_with(&[vec![0u8; 32], key, vec![0u8; 32], ciphertext].concat());
         let mut state = CryptoState::default();
-        use_key(&mut state, &mut app, 32, 16);
+        let sheet = app.document_id();
+        use_key(&mut state, &mut app, &sheet, 32, 16);
         assert_eq!(state.decrypt.key, "2b7e151628aed2a6abf7158809cf4f3c");
         state.decrypt.padding = Padding::None;
         start_decrypt(&mut state, &mut app, 80, 16);
@@ -633,12 +651,13 @@ mod tests {
     fn a_decode_is_applied_as_a_repeatable_operation_or_opened_as_a_derived_document() {
         let mut app = app_with(&[0x10, 0x20, 0x30, 0x40]);
         let rotate = ciphers::Transform::RotateLeft { bits: 4 };
-        apply_decode(&mut app, 1, 2, &rotate, true);
+        let sheet = app.document_id();
+        apply_decode(&mut app, &sheet, 1, 2, &rotate, true);
         let operation = json!({"op": "rotate_each_byte", "bits": 4});
         assert_eq!(take_performed(), [("transform.apply".to_string(), json!({"selection": {"range": [1, 2]}, "operation": operation}))]);
         assert_eq!(app.document.read_range(0, 4), [0x10, 0x02, 0x03, 0x40]);
         assert_eq!(app.status, format!("{}: applied to 2 bytes at 0x1", rotate.describe()));
-        apply_decode(&mut app, 0, 1, &rotate, false);
+        apply_decode(&mut app, &sheet, 0, 1, &rotate, false);
         assert_eq!(take_performed(), [("documents.derive".to_string(), json!({"start": 0, "len": 1, "name": "test.bin › decoded@0x0", "transform": operation}))]);
         assert_eq!(app.display_name(), "test.bin › decoded@0x0");
     }

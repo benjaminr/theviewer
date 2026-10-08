@@ -62,12 +62,45 @@ impl ToolsState {
         self.protocol_pending.is_some()
     }
 
-    pub fn document_changed(&mut self) {
+    /// Sheet `sheet` has new bytes: what was worked out about it goes.
+    pub fn document_changed(&mut self, sheet: &str) {
         self.columns = None;
         self.protocol = None;
         self.protocol_pending = None;
-        self.stats.document_changed();
+        self.stats.document_changed(sheet);
     }
+
+    /// Take what was worked out about the sheet shown, to keep while it is
+    /// parked; the strings and keys found are kept per sheet already.
+    pub fn take_results(&mut self) -> ToolsResults {
+        ToolsResults {
+            columns: self.columns.take(),
+            columns_records: std::mem::take(&mut self.columns_records),
+            protocol_pending: self.protocol_pending.take(),
+            protocol: self.protocol.take(),
+            statistics: self.stats.take_statistics(),
+        }
+    }
+
+    /// Show what was kept for the sheet now shown.
+    pub fn put_results(&mut self, kept: ToolsResults) {
+        self.columns = kept.columns;
+        self.columns_records = kept.columns_records;
+        self.protocol_pending = kept.protocol_pending;
+        self.protocol = kept.protocol;
+        self.stats.put_statistics(kept.statistics);
+    }
+}
+
+/// What this module's tabs worked out about one sheet, kept while it is
+/// parked.
+#[derive(Default)]
+pub struct ToolsResults {
+    columns: Option<(usize, usize, Vec<ColumnProfile>, Vec<FieldGuess>)>,
+    columns_records: usize,
+    protocol_pending: Option<Receiver<ProtocolView>>,
+    protocol: Option<ProtocolView>,
+    statistics: crate::analysis_stats::StatisticsResults,
 }
 
 /// A protocol analysis result, possibly re-split with a chosen framing.

@@ -198,7 +198,7 @@ fn describe_region(region: &Region) -> String {
 // ---------------------------------------------------------------------------
 
 fn show_unpacked(state: &mut TreemapState, app: &mut ViewerApp, ui: &mut Ui) -> Option<MapAction> {
-    let Some(root) = app.bench.unpacked.as_ref() else {
+    let Some(root) = app.bench.unpacked.of(&app.document_id()) else {
         show_unpack_prompt(state, app, ui);
         return None;
     };
@@ -341,7 +341,7 @@ fn describe_node(node: &Node) -> String {
 /// The person opens the node at `path` as a derived document, as the
 /// Unpacked tab does: `unpack.open`.
 fn open_node(app: &mut ViewerApp, path: &[usize]) {
-    if app.bench.unpacked.as_ref().and_then(|root| root.find(path)).is_some() {
+    if app.bench.unpacked.of(&app.document_id()).and_then(|root| root.find(path)).is_some() {
         let _ = app.perform("unpack.open", serde_json::json!({ "path": path }));
     }
 }
@@ -492,12 +492,13 @@ mod tests {
     #[test]
     fn right_clicking_a_container_zooms_in_and_the_breadcrumb_zooms_back_out() {
         let mut app = app_with_bytes(16);
-        app.bench.unpacked = Some(sample_tree());
+        let sheet = app.document_id();
+        app.bench.unpacked.set(&sheet, sample_tree());
         let mut harness = harness_for(app);
         harness.state_mut().0.source = TreemapSource::Unpacked;
         harness.step();
         let map = harness.state().0.map_rect.expect("the map was drawn");
-        let root = harness.state().1.bench.unpacked.clone().expect("a tree");
+        let root = harness.state().1.bench.unpacked.get().cloned().expect("a tree");
         let tiles = node_tiles(&root, &[], tile_of(map));
         let kernel = tiles.iter().find(|tile| tile.path == [0]).expect("kernel.gz has a tile");
         // Its header strip belongs to the container itself, not a child.
@@ -513,12 +514,13 @@ mod tests {
     #[test]
     fn clicking_an_unpacked_node_opens_it_as_a_document() {
         let mut app = app_with_bytes(16);
-        app.bench.unpacked = Some(sample_tree());
+        let sheet = app.document_id();
+        app.bench.unpacked.set(&sheet, sample_tree());
         let mut harness = harness_for(app);
         harness.state_mut().0.source = TreemapSource::Unpacked;
         harness.step();
         let map = harness.state().0.map_rect.expect("the map was drawn");
-        let root = harness.state().1.bench.unpacked.clone().expect("a tree");
+        let root = harness.state().1.bench.unpacked.get().cloned().expect("a tree");
         let config = node_tiles(&root, &[], tile_of(map)).into_iter().find(|tile| tile.path == [1]).expect("config.txt has a tile");
         click_at(&mut harness, rect_of(config.tile).center(), egui::PointerButton::Primary);
         assert_eq!(harness.state().1.document.len(), 2000);

@@ -5,6 +5,7 @@
 //! Kept out of `app.rs` so the core app stays readable. Everything here goes
 //! through `ViewerApp`'s public surface.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
@@ -25,6 +26,7 @@ use crate::hilbert;
 use crate::plot::{self, PcmFormat};
 use crate::plugin::{Category, Field, Finding};
 use crate::raster::{self, PixelFormat};
+use crate::sheets::PerSheet;
 use crate::sources::{self, FileWatcher, Recording, SerialCapture, SourceSpec};
 use crate::templates::{self, Applied, Template};
 use crate::theme;
@@ -114,11 +116,25 @@ const CURVE_ENTROPY_CELLS: usize = 64;
 /// Height of the strip of controls above a curve layout.
 const CURVE_CONTROLS_HEIGHT: f32 = 26.0;
 
-/// Results that arrive from background work.
+/// Results that arrive from background work, with the sheet they were
+/// worked out for, which may be parked by the time they arrive.
 enum Pending {
-    Report(Receiver<(Vec<Region>, Report)>),
-    Unpack(Receiver<Node>),
+    Report { sheet: String, receiver: Receiver<(Vec<Region>, Report)> },
+    Unpack { sheet: String, receiver: Receiver<Node> },
     Source(Receiver<Result<(String, Vec<u8>), String>>),
+}
+
+/// What the tools worked out about one sheet that is shown only with it:
+/// put away while the sheet is parked and shown again with it.
+#[derive(Default)]
+struct SheetResults {
+    pinned: Vec<Finding>,
+    regions: Vec<Region>,
+    report: Option<Report>,
+    template_result: Option<Applied>,
+    analysis: crate::analysis_tabs::AnalysisState,
+    tools: crate::analysis_tools::ToolsResults,
+    freshness: crate::freshness::Freshness,
 }
 
 pub struct Workbench {
@@ -144,7 +160,8 @@ pub struct Workbench {
     /// The source of the template last applied, for applying it again.
     pub template_applied_source: String,
 
-    pub unpacked: Option<Node>,
+    /// The trees unpacked, kept for each sheet unpacked.
+    pub unpacked: PerSheet<Node>,
     /// The password typed in the Unpacked tab for encrypted zip entries.
     pub unpack_password: String,
 
@@ -175,6 +192,8 @@ pub struct Workbench {
     pub tools: crate::analysis_tools::ToolsState,
     /// The document versions the tools' results describe.
     pub freshness: crate::freshness::Freshness,
+    /// What was worked out about each parked sheet, by id.
+    kept: HashMap<String, SheetResults>,
 }
 
 impl Default for Workbench {
@@ -194,7 +213,7 @@ impl Default for Workbench {
             template_error: None,
             template_records: 8,
             template_applied_source: String::new(),
-            unpacked: None,
+            unpacked: PerSheet::default(),
             unpack_password: String::new(),
             panels: PanelStates::default(),
             serial: None,
@@ -214,42 +233,96 @@ impl Default for Workbench {
             analysis: Default::default(),
             tools: Default::default(),
             freshness: Default::default(),
+            kept: HashMap::new(),
         }
     }
 }
 
 impl Workbench {
-    /// Forget everything that described the previous document's bytes.
-    /// Live sources and recording survive, since they produce the new bytes.
-    pub fn document_changed(&mut self) {
+    /// Sheet `sheet` has new bytes (a live source, or saved and opened
+    /// again): forget everything that described its previous bytes. Live
+    /// sources and recording survive, since they produce the new bytes.
+    pub fn document_changed(&mut self, sheet: &str) {
         self.pinned.clear();
         self.regions.clear();
         self.report = None;
         self.hilbert = None;
         self.template_result = None;
-        self.unpacked = None;
+        self.unpacked.closed(sheet);
         self.analysis.document_changed();
-        self.tools.document_changed();
+        self.tools.document_changed(sheet);
         self.panels.packets.document_replaced();
+        self.panels.crypto.sheet_closed(sheet);
         self.freshness.forget_all();
-        self.pending.retain(|pending| matches!(pending, Pending::Source(_)));
+        self.pending.retain(|pending| pending.sheet().is_none_or(|of| of != sheet));
     }
 
-    /// Sheet `to` is shown in place of `from`.
-    pub fn sheet_switched(&mut self, _from: &str, _to: &str) {
-        self.document_changed();
+    /// Sheet `to` is shown in place of `from`: what was worked out about
+    /// `from` is put away with it, and what was kept for `to` is shown
+    /// again. A tool whose results are kept per sheet goes on showing
+    /// `from`'s until `to` has its own.
+    pub fn sheet_switched(&mut self, from: &str, to: &str) {
+        let outgoing = SheetResults {
+            pinned: std::mem::take(&mut self.pinned),
+            regions: std::mem::take(&mut self.regions),
+            report: self.report.take(),
+            template_result: self.template_result.take(),
+            analysis: self.analysis.take_results(),
+            tools: self.tools.take_results(),
+            freshness: std::mem::take(&mut self.freshness),
+        };
+        self.kept.insert(from.to_string(), outgoing);
+        let incoming = self.kept.remove(to).unwrap_or_default();
+        self.pinned = incoming.pinned;
+        self.regions = incoming.regions;
+        self.report = incoming.report;
+        self.template_result = incoming.template_result;
+        self.analysis.put_results(incoming.analysis);
+        self.tools.put_results(incoming.tools);
+        self.freshness = incoming.freshness;
+        self.hilbert = None;
+        self.unpacked.switched(to);
+        self.tools.stats.sheet_switched(to);
+        self.panels.crypto.sheet_switched(to);
+        self.panels.packets.document_replaced();
     }
 
-    /// Sheet `id` closed.
-    pub fn sheet_closed(&mut self, _id: &str) {}
+    /// Sheet `id` closed: what was worked out about it goes.
+    pub fn sheet_closed(&mut self, id: &str) {
+        self.kept.remove(id);
+        self.unpacked.closed(id);
+        self.tools.stats.sheet_closed(id);
+        self.panels.crypto.sheet_closed(id);
+        self.pending.retain(|pending| pending.sheet().is_none_or(|of| of != id));
+    }
 
     /// Switch to `layout`, or back to rows if it is already showing.
     pub fn toggle_layout(&mut self, layout: Layout) {
         self.layout = if self.layout == layout { Layout::Rows } else { layout };
     }
 
-    fn busy(&self, kind: fn(&Pending) -> bool) -> bool {
+    fn busy(&self, kind: impl Fn(&Pending) -> bool) -> bool {
         self.pending.iter().any(kind)
+    }
+
+    /// Whether a report is being worked out for sheet `sheet`.
+    fn reporting(&self, sheet: &str) -> bool {
+        self.busy(|pending| matches!(pending, Pending::Report { sheet: of, .. } if of == sheet))
+    }
+
+    /// Whether sheet `sheet` is being unpacked.
+    fn unpacking(&self, sheet: &str) -> bool {
+        self.busy(|pending| matches!(pending, Pending::Unpack { sheet: of, .. } if of == sheet))
+    }
+}
+
+impl Pending {
+    /// The sheet the work is for; a source opens a sheet of its own.
+    fn sheet(&self) -> Option<&str> {
+        match self {
+            Pending::Report { sheet, .. } | Pending::Unpack { sheet, .. } => Some(sheet),
+            Pending::Source(_) => None,
+        }
     }
 }
 
@@ -311,21 +384,28 @@ impl ViewerApp {
         let pending = std::mem::take(&mut self.bench.pending);
         for item in pending {
             match item {
-                Pending::Report(receiver) => match receiver.try_recv() {
-                    Ok((regions, report)) => {
+                Pending::Report { sheet, receiver } => match receiver.try_recv() {
+                    Ok((regions, report)) if sheet == self.document_id => {
                         self.bench.regions = regions;
                         self.bench.report = Some(report);
                         self.publish_regions();
                     }
-                    Err(mpsc::TryRecvError::Empty) => self.bench.pending.push(Pending::Report(receiver)),
+                    Ok((regions, report)) => {
+                        // Kept for the sheet it describes, parked since.
+                        if let Some(kept) = self.bench.kept.get_mut(&sheet) {
+                            (kept.regions, kept.report) = (regions, Some(report));
+                        }
+                    }
+                    Err(mpsc::TryRecvError::Empty) => self.bench.pending.push(Pending::Report { sheet, receiver }),
                     Err(mpsc::TryRecvError::Disconnected) => {}
                 },
-                Pending::Unpack(receiver) => match receiver.try_recv() {
+                Pending::Unpack { sheet, receiver } => match receiver.try_recv() {
                     Ok(node) => {
                         self.status = format!("Unpacked {} items", node.count().saturating_sub(1));
-                        self.bench.unpacked = Some(node);
+                        let active = self.document_id();
+                        self.bench.unpacked.deliver(&sheet, node, &active);
                     }
-                    Err(mpsc::TryRecvError::Empty) => self.bench.pending.push(Pending::Unpack(receiver)),
+                    Err(mpsc::TryRecvError::Empty) => self.bench.pending.push(Pending::Unpack { sheet, receiver }),
                     Err(mpsc::TryRecvError::Disconnected) => {}
                 },
                 Pending::Source(receiver) => match receiver.try_recv() {
@@ -460,7 +540,7 @@ impl ViewerApp {
                 let _ = sender.send(found);
             }
         });
-        self.bench.pending.push(Pending::Report(receiver));
+        self.bench.pending.push(Pending::Report { sheet: self.document_id(), receiver });
         self.note_tool_result(DockTab::Report);
         Some(id)
     }
@@ -472,8 +552,9 @@ impl ViewerApp {
         self.bus.publish(self.draft(REPORT_PRODUCER, Payload::RegionsMapped(RegionsMapped { regions })).span(0, end));
     }
 
+    /// Whether a report on the sheet shown is being worked out.
     pub fn report_running(&self) -> bool {
-        self.bench.busy(|p| matches!(p, Pending::Report(_)))
+        self.bench.reporting(&self.document_id)
     }
 
     fn show_report_tab(&mut self, ui: &mut Ui) {
@@ -890,7 +971,7 @@ impl ViewerApp {
     /// The person unpacks everything nested in the document: `unpack.run`,
     /// unless an unpacking is already under way.
     pub fn start_unpack(&mut self) {
-        if self.bench.busy(|p| matches!(p, Pending::Unpack(_))) || self.document.is_empty() {
+        if self.bench.unpacking(&self.document_id) || self.document.is_empty() {
             return;
         }
         let _ = self.perform("unpack.run", serde_json::json!({}));
@@ -914,7 +995,7 @@ impl ViewerApp {
             job.finish_with(summary.ok, summary.outcome, Some(summary.result));
             let _ = sender.send(tree);
         });
-        self.bench.pending.push(Pending::Unpack(receiver));
+        self.bench.pending.push(Pending::Unpack { sheet: self.document_id(), receiver });
         self.note_tool_result(DockTab::Unpacked);
         self.status = "Unpacking nested containers…".to_string();
         id
@@ -922,16 +1003,20 @@ impl ViewerApp {
 
     fn show_unpacked_tab(&mut self, ui: &mut Ui) {
         ui.horizontal(|ui| {
-            if ui.button(if self.bench.unpacked.is_some() { "Unpack again" } else { "Unpack everything" }).clicked() {
+            let unpacked_here = self.bench.unpacked.of(&self.document_id).is_some();
+            if ui.button(if unpacked_here { "Unpack again" } else { "Unpack everything" }).clicked() {
                 self.start_unpack();
             }
-            if self.bench.busy(|p| matches!(p, Pending::Unpack(_))) {
+            if self.bench.unpacking(&self.document_id) {
                 ui.spinner();
             }
             ui.label(RichText::new("Extracts archives and compressed streams recursively, like binwalk -e, as a browsable tree.").small().color(theme::TEXT_DIM));
         });
-        let Some(root) = self.bench.unpacked.clone() else { return };
-        if has_encrypted_entries(&root) {
+        let active = self.document_id();
+        self.bench.unpacked.switched(&active);
+        let Some((sheet, root)) = self.bench.unpacked.shown().map(|(sheet, root)| (sheet.to_string(), root.clone())) else { return };
+        let other_sheet = crate::sheets::view::results_of_other_sheet(self, ui, &sheet);
+        if has_encrypted_entries(&root) && !other_sheet {
             self.show_unpack_password(ui);
         }
         let mut action: Option<NodeAction> = None;
@@ -944,10 +1029,13 @@ impl ViewerApp {
             }
         });
         match action {
+            Some(NodeAction::Open(path)) if other_sheet => {
+                let _ = self.perform("unpack.open", serde_json::json!({ "path": path, "tree_doc": sheet }));
+            }
             Some(NodeAction::Open(path)) => {
                 let _ = self.perform("unpack.open", serde_json::json!({ "path": path }));
             }
-            Some(NodeAction::Jump(offset)) => self.jump_found(offset),
+            Some(NodeAction::Jump(offset)) => self.jump_found_in(&sheet, offset),
             Some(NodeAction::Save(path)) => {
                 if let Some(node) = root.find(&path) {
                     self.save_dialog_then_call("Save unpacked item", &node.name.replace('/', "_"), "unpack.save", serde_json::json!({ "node": path }), "path");
@@ -964,7 +1052,7 @@ impl ViewerApp {
             ui.label(RichText::new("Encrypted entries · password").small().color(theme::TEXT_DIM));
             let field = ui.add(egui::TextEdit::singleline(&mut self.bench.unpack_password).password(true).desired_width(160.0));
             let entered = field.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
-            let can_decrypt = !self.bench.unpack_password.is_empty() && !self.bench.busy(|p| matches!(p, Pending::Unpack(_)));
+            let can_decrypt = !self.bench.unpack_password.is_empty() && !self.bench.unpacking(&self.document_id);
             let clicked = ui.add_enabled(can_decrypt, egui::Button::new("Decrypt")).on_hover_text("Unpack again, decrypting ZipCrypto entries with this password").clicked();
             if can_decrypt && (clicked || entered) {
                 let _ = self.perform("unpack.run", serde_json::json!({ "password": self.bench.unpack_password }));
@@ -1520,11 +1608,11 @@ mod tests {
         assert_eq!(crate::actions::take_performed(), [("unpack.run".to_string(), json!({}))]);
         let ctx = Context::default();
         let begun = std::time::Instant::now();
-        while app.bench.unpacked.is_none() && begun.elapsed() < std::time::Duration::from_secs(60) {
+        while app.bench.unpacked.get().is_none() && begun.elapsed() < std::time::Duration::from_secs(60) {
             app.poll_workbench(&ctx);
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
-        let tree = app.bench.unpacked.clone().expect("the tree fills the tab");
+        let tree = app.bench.unpacked.get().cloned().expect("the tree fills the tab");
         assert_eq!(tree.children[0].data.len(), 300);
         app.run_bus();
         let job = app.bus.jobs().list().into_iter().find(|job| job.title == "Unpack").expect("the unpacking is a job");

@@ -2386,7 +2386,7 @@ impl ViewerApp {
     fn install_document(&mut self, document: Document, derived_name: Option<String>, identity: Identity) {
         let closed = match identity {
             Identity::Same => {
-                self.bench.document_changed();
+                self.bench.document_changed(&self.document_id.clone());
                 vec![(self.document_id.clone(), self.display_name())]
             }
             Identity::Root | Identity::Derived(_) => {

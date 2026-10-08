@@ -6,6 +6,7 @@ use eframe::egui::{self, Color32, Rect, RichText, Sense, TextureHandle, Ui, pos2
 use egui_plot::{Bar, BarChart, Legend, Line, Plot, PlotPoints};
 
 use crate::app::ViewerApp;
+use crate::sheets::PerSheet;
 use crate::stats::{self, ByteStats, Repeat, Verdict};
 use crate::strings::{self, Encoding, FoundString};
 use crate::theme;
@@ -44,14 +45,26 @@ pub struct StatsState {
     pub result: Option<StatsResult>,
     heatmap: Option<TextureHandle>,
 
-    strings_pending: Option<Receiver<FoundStrings>>,
-    pub strings: Option<FoundStrings>,
+    /// A search running, with the sheet it searches.
+    strings_pending: Option<(String, Receiver<FoundStrings>)>,
+    /// The strings found, kept for each sheet searched.
+    pub strings: PerSheet<FoundStrings>,
     pub min_chars: usize,
     pub encodings: [bool; 4],
     pub filter: String,
     pub interesting_only: bool,
 
-    pub xor_candidates: Option<XorResults>,
+    /// The keys recovered, kept for each sheet.
+    pub xor_candidates: PerSheet<XorResults>,
+}
+
+/// What the Statistics tab worked out about one sheet, kept while it is
+/// parked.
+#[derive(Default)]
+pub struct StatisticsResults {
+    pending: Option<Receiver<StatsResult>>,
+    result: Option<StatsResult>,
+    heatmap: Option<TextureHandle>,
 }
 
 impl Default for StatsState {
@@ -61,19 +74,47 @@ impl Default for StatsState {
             result: None,
             heatmap: None,
             strings_pending: None,
-            strings: None,
+            strings: PerSheet::default(),
             min_chars: 6,
             encodings: [true, true, true, false],
             filter: String::new(),
             interesting_only: false,
-            xor_candidates: None,
+            xor_candidates: PerSheet::default(),
         }
     }
 }
 
 impl StatsState {
-    pub fn document_changed(&mut self) {
-        *self = StatsState { min_chars: self.min_chars, encodings: self.encodings, ..Default::default() };
+    /// Sheet `sheet` has new bytes: what was worked out about it goes.
+    pub fn document_changed(&mut self, sheet: &str) {
+        self.put_statistics(StatisticsResults::default());
+        self.strings.closed(sheet);
+        self.xor_candidates.closed(sheet);
+        if self.strings_pending.as_ref().is_some_and(|(searched, _)| searched == sheet) {
+            self.strings_pending = None;
+        }
+    }
+
+    /// Sheet `to` is shown: its strings and keys are shown again.
+    pub fn sheet_switched(&mut self, to: &str) {
+        self.strings.switched(to);
+        self.xor_candidates.switched(to);
+    }
+
+    /// Sheet `id` closed: what was found in it goes.
+    pub fn sheet_closed(&mut self, id: &str) {
+        self.strings.closed(id);
+        self.xor_candidates.closed(id);
+    }
+
+    /// Take the statistics of the sheet shown, to keep while it is parked.
+    pub fn take_statistics(&mut self) -> StatisticsResults {
+        StatisticsResults { pending: self.pending.take(), result: self.result.take(), heatmap: self.heatmap.take() }
+    }
+
+    /// Show the statistics kept for the sheet now shown.
+    pub fn put_statistics(&mut self, kept: StatisticsResults) {
+        (self.pending, self.result, self.heatmap) = (kept.pending, kept.result, kept.heatmap);
     }
 }
 
@@ -98,6 +139,29 @@ impl ViewerApp {
             self.reveal_cursor_in_hex(true);
         }
         selected
+    }
+
+    /// [`ViewerApp::select_found`] for bytes a tool found in sheet `sheet`:
+    /// another sheet is shown first, and the bytes selected in it, once the
+    /// frame is drawn.
+    pub(crate) fn select_found_in(&mut self, sheet: &str, start: usize, len: usize) {
+        if sheet == self.document_id() {
+            self.select_found(start, len);
+            return;
+        }
+        self.perform_later("documents.activate", serde_json::json!({ "doc": sheet }));
+        self.perform_later("selection.set", serde_json::json!({ "doc": sheet, "selection": { "range": [start, len.max(1)] } }));
+    }
+
+    /// [`ViewerApp::jump_found`] to an offset a tool found in sheet
+    /// `sheet`, shown first when another is.
+    pub(crate) fn jump_found_in(&mut self, sheet: &str, offset: usize) {
+        if sheet == self.document_id() {
+            self.jump_found(offset);
+            return;
+        }
+        self.perform_later("documents.activate", serde_json::json!({ "doc": sheet }));
+        self.perform_later("cursor.set", serde_json::json!({ "doc": sheet, "offset": offset }));
     }
 
     /// The person follows a tool to an offset: `cursor.set`, brought into
@@ -302,17 +366,21 @@ pub(crate) fn find_strings(bytes: &[u8], start: usize, min_chars: usize, encodin
 pub(crate) fn await_strings(app: &mut ViewerApp) -> Sender<FoundStrings> {
     app.note_tool_result(crate::dock::DockTab::Strings);
     let (sender, receiver) = mpsc::channel();
-    app.bench.tools.stats.strings_pending = Some(receiver);
+    app.bench.tools.stats.strings_pending = Some((app.document_id(), receiver));
     sender
 }
 
 pub fn show_strings(app: &mut ViewerApp, ui: &mut Ui) {
-    if let Some(receiver) = &app.bench.tools.stats.strings_pending
+    let active = app.document_id();
+    let stats = &mut app.bench.tools.stats;
+    if let Some((sheet, receiver)) = &stats.strings_pending
         && let Ok(found) = receiver.try_recv()
     {
-        app.bench.tools.stats.strings = Some(found);
-        app.bench.tools.stats.strings_pending = None;
+        let sheet = sheet.clone();
+        stats.strings.deliver(&sheet, found, &active);
+        stats.strings_pending = None;
     }
+    stats.strings.switched(&active);
     let (_, len, what) = scope(app, SCAN_LIMIT);
     ui.horizontal_wrapped(|ui| {
         if ui.button(format!("Find strings in {what} ({})", crate::compress::human_bytes(len))).clicked() {
@@ -330,7 +398,9 @@ pub fn show_strings(app: &mut ViewerApp, ui: &mut Ui) {
         ui.add(egui::TextEdit::singleline(&mut app.bench.tools.stats.filter).hint_text("filter…").desired_width(160.0));
         ui.checkbox(&mut app.bench.tools.stats.interesting_only, "Only URLs, paths, keys…");
     });
-    let Some(FoundStrings { strings: found, .. }) = &app.bench.tools.stats.strings else { return };
+    let Some(sheet) = app.bench.tools.stats.strings.sheet().map(str::to_string) else { return };
+    crate::sheets::view::results_of_other_sheet(app, ui, &sheet);
+    let Some(FoundStrings { strings: found, .. }) = app.bench.tools.stats.strings.get() else { return };
     let filter = app.bench.tools.stats.filter.to_lowercase();
     let interesting_only = app.bench.tools.stats.interesting_only;
     let shown: Vec<(&FoundString, Option<&'static str>)> = found
@@ -356,7 +426,7 @@ pub fn show_strings(app: &mut ViewerApp, ui: &mut Ui) {
         }
     });
     if let Some((offset, len)) = chosen {
-        app.select_found(offset, len);
+        app.select_found_in(&sheet, offset, len);
     }
 }
 
@@ -376,14 +446,15 @@ fn find_xor_keys(app: &mut ViewerApp, start: usize, len: usize) {
 /// Show keys recovered in the XOR tab.
 fn show_xor_keys(app: &mut ViewerApp, found: &crate::api::tools::xor::RecoveredKeys) {
     let lengths = found.key_lengths.iter().map(|length| (length.length, length.score)).collect();
-    app.bench.tools.stats.xor_candidates = Some((found.start as usize, found.len as usize, found.xor_candidates(), lengths));
+    let sheet = app.document_id();
+    app.bench.tools.stats.xor_candidates.set(&sheet, (found.start as usize, found.len as usize, found.xor_candidates(), lengths));
     app.note_tool_result(crate::dock::DockTab::Xor);
 }
 
 /// Recover the keys again for the same bytes, after an edit: the app's own
 /// work, not the person's step.
 pub(crate) fn refresh_xor(app: &mut ViewerApp) {
-    let Some((start, len, ..)) = app.bench.tools.stats.xor_candidates.clone() else { return };
+    let Some((start, len, ..)) = app.bench.tools.stats.xor_candidates.of(&app.document_id()).cloned() else { return };
     let params = crate::api::tools::xor::RecoverKeysParams { start: start as u64, len: Some(len.min(app.document.len().saturating_sub(start)) as u64), ..Default::default() };
     match crate::api::tools::xor::recover_keys(app, params) {
         Ok(found) => show_xor_keys(app, &found),
@@ -400,13 +471,16 @@ pub fn show_xor(app: &mut ViewerApp, ui: &mut Ui) {
         }
         ui.label(RichText::new("select the suspect bytes first; without a selection, 64 KiB from the cursor").small().color(theme::TEXT_DIM));
     });
-    let Some((start, len, candidates, lengths)) = app.bench.tools.stats.xor_candidates.clone() else {
+    let active = app.document_id();
+    app.bench.tools.stats.xor_candidates.switched(&active);
+    let Some((sheet, (start, len, candidates, lengths))) = app.bench.tools.stats.xor_candidates.shown().map(|(sheet, found)| (sheet.to_string(), found.clone())) else {
         ui.label(
             RichText::new("Recovers single-byte and repeating-key XOR by letter frequency, index of coincidence and the key showing through zero padding. Preview a decode, or apply it as an undoable edit.")
                 .color(theme::TEXT_DIM),
         );
         return;
     };
+    crate::sheets::view::results_of_other_sheet(app, ui, &sheet);
     if !lengths.is_empty() {
         let text: Vec<String> = lengths.iter().map(|(length, score)| format!("{length} ({score:.3})")).collect();
         ui.label(RichText::new(format!("Likely key lengths: {}", text.join(", "))).small().color(theme::TEXT_DIM));
@@ -437,25 +511,36 @@ pub fn show_xor(app: &mut ViewerApp, ui: &mut Ui) {
         }
     });
     if let Some((key, in_place)) = action {
-        use_xor_key(app, start, len, &key, in_place);
+        use_xor_key(app, &sheet, start, len, &key, in_place);
     }
 }
 
-/// The person applies a key to the bytes it was found for: as an undoable
-/// edit (`transform.apply`), or opened decoded as a document of its own
-/// (`documents.derive`).
-fn use_xor_key(app: &mut ViewerApp, start: usize, len: usize, key: &[u8], in_place: bool) {
+/// The person applies a key to the bytes of sheet `sheet` it was found
+/// for: as an undoable edit (`transform.apply`), or opened decoded as a
+/// document of its own (`documents.derive`). Another sheet than the one
+/// shown is named.
+fn use_xor_key(app: &mut ViewerApp, sheet: &str, start: usize, len: usize, key: &[u8], in_place: bool) {
     let key_hex: String = key.iter().map(|b| format!("{b:02x}")).collect();
     let operation = serde_json::json!({ "op": "xor", "key": key_hex });
+    let shown = sheet == app.document_id();
     if in_place {
-        let params = serde_json::json!({ "selection": { "range": [start, len] }, "operation": operation });
+        let mut params = serde_json::json!({ "selection": { "range": [start, len] }, "operation": operation });
+        if !shown {
+            params["doc"] = serde_json::json!(sheet);
+        }
         if app.perform("transform.apply", params).is_ok() {
-            app.restore_selection(start, len);
+            if shown {
+                app.restore_selection(start, len);
+            }
             app.status = format!("XOR {key_hex} applied to {len} bytes at {start:#x}");
         }
     } else {
-        let name = format!("{} › xor {key_hex}@{start:#x}", app.display_name());
-        let _ = app.perform("documents.derive", serde_json::json!({ "start": start, "len": len, "name": name, "transform": operation }));
+        let name = format!("{} › xor {key_hex}@{start:#x}", app.sheet_title(sheet).unwrap_or_else(|| app.display_name()));
+        let mut params = serde_json::json!({ "start": start, "len": len, "name": name, "transform": operation });
+        if !shown {
+            params["doc"] = serde_json::json!(sheet);
+        }
+        let _ = app.perform("documents.derive", params);
     }
 }
 
@@ -513,7 +598,7 @@ mod tests {
         start_strings(&mut app);
         let expected = json!({"start": 0, "len": notes().len(), "min_chars": 8, "encodings": ["ascii", "utf16be"]});
         assert_eq!(take_performed(), [("strings.find".to_string(), expected)]);
-        let found = wait_for(&app.bench.tools.stats.strings_pending);
+        let found = wait_for(&app.bench.tools.stats.strings_pending.take().map(|(_, receiver)| receiver));
         assert_eq!(found.strings.first().map(|string| string.offset), Some(64));
         assert!(found.strings.iter().all(|string| string.text.chars().count() >= 8));
     }
@@ -524,7 +609,7 @@ mod tests {
         let mut app = app_with(&hidden);
         find_xor_keys(&mut app, 0, hidden.len());
         assert_eq!(take_performed(), [("xor.recover_keys".to_string(), json!({"start": 0, "len": hidden.len(), "max_key": 32}))]);
-        let (start, len, candidates, _) = app.bench.tools.stats.xor_candidates.clone().expect("keys listed");
+        let (start, len, candidates, _) = app.bench.tools.stats.xor_candidates.get().cloned().expect("keys listed");
         assert_eq!((start, len), (0, hidden.len()));
         assert_eq!(candidates.first().map(|candidate| candidate.key.clone()), Some(vec![0x5A]));
     }
@@ -533,12 +618,13 @@ mod tests {
     fn applying_a_xor_key_is_an_undoable_transform_and_previewing_it_opens_a_derived_document() {
         let hidden = crate::xor::apply(b"plain words", &[0x20], 0);
         let mut app = app_with(&hidden);
-        use_xor_key(&mut app, 0, hidden.len(), &[0x20], true);
+        let sheet = app.document_id();
+        use_xor_key(&mut app, &sheet, 0, hidden.len(), &[0x20], true);
         let operation = json!({"op": "xor", "key": "20"});
         assert_eq!(take_performed(), [("transform.apply".to_string(), json!({"selection": {"range": [0, hidden.len()]}, "operation": operation}))]);
         assert_eq!(app.document.read_range(0, hidden.len()), b"plain words");
         assert_eq!(app.status, format!("XOR 20 applied to {} bytes at 0x0", hidden.len()));
-        use_xor_key(&mut app, 0, 5, &[0x20], false);
+        use_xor_key(&mut app, &sheet, 0, 5, &[0x20], false);
         let name = "test.bin › xor 20@0x0";
         assert_eq!(take_performed(), [("documents.derive".to_string(), json!({"start": 0, "len": 5, "name": name, "transform": operation}))]);
         assert_eq!(app.display_name(), name);

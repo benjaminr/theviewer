@@ -249,7 +249,7 @@ pub(crate) fn tree_summary(tree: &Node) -> Summary {
 /// now, with `password` for encrypted zip entries.
 fn tree_of(workspace: &mut dyn Workspace, doc: Option<&str>, password: Option<&str>) -> Result<(String, Node), ApiError> {
     let id = workspace::resolve(workspace, doc)?;
-    if let Some(tree) = tool_jobs::window_showing(workspace, &id).and_then(|app| app.bench.unpacked.clone()) {
+    if let Some(tree) = workspace.window().and_then(|app| app.bench.unpacked.of(&id).cloned()) {
         return Ok((id, tree));
     }
     let (_, name, bytes) = document_bytes(workspace, Some(&id))?;

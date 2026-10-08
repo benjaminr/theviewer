@@ -191,8 +191,8 @@ fn unpacking_finds_nested_streams_and_opens_them() {
     let mut harness = harness_for(path.clone());
 
     harness.state_mut().start_unpack();
-    wait_for(&mut harness, |app| app.bench.unpacked.is_some());
-    let root = harness.state().bench.unpacked.clone().unwrap();
+    wait_for(&mut harness, |app| app.bench.unpacked.get().is_some());
+    let root = harness.state().bench.unpacked.get().cloned().unwrap();
     let first = root.children.first().expect("the outer gzip stream");
     assert_eq!(first.source_offset, outer_at);
     let second = first.children.first().expect("the inner gzip stream");
@@ -497,9 +497,9 @@ fn statistics_strings_and_xor_tabs_diagnose_data() {
     harness.state_mut().dock.tab = DockTab::Strings;
     steps(&mut harness, 2);
     harness.get_by_label_contains("Find strings").click();
-    wait_for(&mut harness, |app| app.bench.tools.stats.strings.is_some());
+    wait_for(&mut harness, |app| app.bench.tools.stats.strings.get().is_some());
     steps(&mut harness, 3);
-    let found = harness.state().bench.tools.stats.strings.as_ref().unwrap().strings.clone();
+    let found = harness.state().bench.tools.stats.strings.get().unwrap().strings.clone();
     assert!(found.iter().any(|s| s.text.contains("http://10.0.0.7/api")), "{} strings", found.len());
 
     // XOR: the encrypted copy's key is recovered and applied as an edit.
@@ -509,7 +509,7 @@ fn statistics_strings_and_xor_tabs_diagnose_data() {
     steps(&mut harness, 2);
     harness.get_by_label_contains("Find XOR keys").click();
     steps(&mut harness, 3);
-    let (_, _, candidates, _) = harness.state().bench.tools.stats.xor_candidates.clone().unwrap();
+    let (_, _, candidates, _) = harness.state().bench.tools.stats.xor_candidates.get().cloned().unwrap();
     assert_eq!(candidates.first().map(|c| c.key.clone()), Some(key.to_vec()), "{:?}", candidates.iter().map(|c| &c.key).collect::<Vec<_>>());
     harness.get_all_by_label("Apply").next().unwrap().click();
     steps(&mut harness, 3);

@@ -15,6 +15,17 @@
 //!   twice from one sheet gives two siblings.
 //! - [`ViewerApp::close_sheet_tree`] closes a sheet with every sheet derived
 //!   from it.
+//!
+//! What the tools worked out about a sheet is kept with it: the report, the
+//! pinned findings and the like are put away with the sheet
+//! ([`crate::workbench::Workbench::sheet_switched`]), and the results of
+//! jobs such as Strings, XOR, Crypto and Unpacked are kept per sheet in a
+//! [`PerSheet`], so a tool may go on showing another sheet's results, saying
+//! whose they are ([`view::results_of_other_sheet`]).
+//!
+//! The worksheet strip and the tree of sheets are drawn in [`view`].
+
+pub mod view;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -182,6 +193,14 @@ impl<T> PerSheet<T> {
     /// The results shown with their sheet.
     pub fn shown(&self) -> Option<(&str, &T)> {
         self.shown.as_ref().map(|(sheet, value)| (sheet.as_str(), value))
+    }
+
+    /// The results of `sheet`, shown or kept.
+    pub fn of(&self, sheet: &str) -> Option<&T> {
+        match &self.shown {
+            Some((shown, value)) if shown == sheet => Some(value),
+            _ => self.others.get(sheet),
+        }
     }
 
     /// Show `value`, results of `sheet`, keeping those shown before for
@@ -540,5 +559,76 @@ mod tests {
     #[test]
     fn sheets_are_listed_in_the_order_they_were_opened() {
         assert!(opening_order("doc-2") < opening_order("doc-10"));
+    }
+
+    mod window {
+        use egui_kittest::kittest::Queryable;
+
+        use crate::analysis_stats::{find_strings, show_strings};
+        use crate::app::{Launch, ViewerApp};
+        use crate::plugin::{Category, Finding};
+        use crate::strings::Encoding;
+
+        fn app_with(bytes: &[u8]) -> ViewerApp {
+            let mut app = ViewerApp::new(Launch::default());
+            app.open_bytes(bytes.to_vec(), "outer.bin".to_string());
+            app.run_bus();
+            crate::actions::take_performed();
+            app
+        }
+
+        /// The strings the Strings tab shows, as `strings.find` delivers them.
+        fn find_strings_in(app: &mut ViewerApp) {
+            let bytes = app.document.read_range(0, app.document.len());
+            let sheet = app.document_id();
+            app.bench.tools.stats.strings.set(&sheet, find_strings(&bytes, 0, 4, &[Encoding::Ascii]));
+        }
+
+        fn strings_shown(app: &ViewerApp) -> Vec<String> {
+            app.bench.tools.stats.strings.get().map(|found| found.strings.iter().map(|string| string.text.clone()).collect()).unwrap_or_default()
+        }
+
+        #[test]
+        fn a_sheet_s_tool_results_survive_switching_and_another_sheet_s_say_whose_they_are() {
+            let mut app = app_with(b"outer words\0\0\0\0more outer text");
+            let outer = app.document_id();
+            find_strings_in(&mut app);
+            app.bench.pinned.push(Finding::new("changed", "live", Category::Custom, 0, 4).title("Changed"));
+            app.open_derived(b"child payload".to_vec(), "payload".to_string());
+            let child = app.document_id();
+            assert_eq!(app.bench.tools.stats.strings.sheet(), Some(outer.as_str()), "the parent's strings are still shown, as the parent's");
+            assert!(app.bench.pinned.is_empty(), "the parent's pinned findings went with it");
+            find_strings_in(&mut app);
+            assert_eq!(strings_shown(&app), ["child payload"]);
+            app.back_to_parent();
+            assert_eq!(strings_shown(&app), ["outer words", "more outer text"], "switching back shows the parent's again");
+            assert_eq!(app.bench.pinned.len(), 1, "and its pinned findings");
+            app.activate_sheet(&child);
+            assert_eq!(strings_shown(&app), ["child payload"]);
+            app.close_sheet_tree(&child);
+            assert!(app.bench.tools.stats.strings.of(&child).is_none(), "a closed sheet's results go");
+        }
+
+        #[test]
+        fn the_strings_tab_says_whose_strings_it_shows_and_shows_that_sheet() {
+            let mut app = app_with(b"outer words\0\0\0\0more outer text");
+            let outer = app.document_id();
+            find_strings_in(&mut app);
+            app.open_derived(b"\x01\x02".to_vec(), "payload".to_string());
+            let mut harness = egui_kittest::Harness::new_ui_state(
+                |ui, app: &mut ViewerApp| {
+                    app.perform_waiting_actions();
+                    show_strings(app, ui);
+                },
+                app,
+            );
+            harness.step();
+            harness.get_by_label(&format!("From outer.bin ({outer})"));
+            harness.get_by_label("Show it").click();
+            harness.step();
+            harness.step();
+            assert_eq!(harness.state().document_id(), outer, "Show it shows the sheet the strings were found in");
+            assert!(harness.query_by_label("Show it").is_none(), "they are the sheet shown's now");
+        }
     }
 }
