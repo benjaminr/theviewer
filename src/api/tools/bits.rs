@@ -290,6 +290,37 @@ pub struct LineCodeDecode {
     pub errors: usize,
     /// Bytes the decode gives.
     pub decoded_len: usize,
+    /// The longest stretches of the span that decode without an error, as
+    /// whole bytes in document offsets, in order: where to decode from.
+    pub clean: Vec<CleanSpan>,
+}
+
+/// Bytes of the document that decode without an error.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct CleanSpan {
+    pub start: u64,
+    pub len: u64,
+}
+
+/// Clean stretches listed for each decode, the longest.
+const CLEAN_SPANS_LISTED: usize = 8;
+
+/// The longest error-free stretches of `decode`, from input bits to the
+/// whole bytes inside them, in document offsets from `start`.
+fn clean_spans(decode: &crate::linecode::DecodeResult, start: usize) -> Vec<CleanSpan> {
+    let mut spans: Vec<CleanSpan> = decode
+        .clean_runs
+        .iter()
+        .filter_map(|&(bit, bits)| {
+            let first = bit.div_ceil(8);
+            let end = (bit + bits) / 8;
+            (end > first).then(|| CleanSpan { start: (start + first) as u64, len: (end - first) as u64 })
+        })
+        .collect();
+    spans.sort_by_key(|span| std::cmp::Reverse(span.len));
+    spans.truncate(CLEAN_SPANS_LISTED);
+    spans.sort_by_key(|span| span.start);
+    spans
 }
 
 /// A packed BCD timestamp.
@@ -308,11 +339,24 @@ pub struct LineCodes {
     pub order: BitOrder,
     /// The decodes, lowest error rate first.
     pub decodes: Vec<LineCodeDecode>,
+    /// The codes that decode with as few errors as the first, when more
+    /// than one does: the error count cannot choose between them.
+    pub tied: Vec<LineCodeName>,
+    /// What to do about a tie, when there is one.
+    pub note: Option<String>,
     pub timestamps: Vec<BcdTimestampFound>,
 }
 
 impl LineCodes {
     fn of(result: &LineCodeResult) -> Self {
+        let tied = tied_codes(&result.decodes);
+        let note = (tied.len() > 1).then(|| {
+            let names: Vec<&str> = tied.iter().map(|name| name.code().label()).collect();
+            format!(
+                "{} decode with as few errors as each other, so the errors cannot choose the convention: decode each and keep the one whose checksum holds (checksums.find_stored or checksums.verify).",
+                names.join(", ")
+            )
+        });
         LineCodes {
             start: result.start as u64,
             len: result.len as u64,
@@ -320,11 +364,36 @@ impl LineCodes {
             decodes: result
                 .decodes
                 .iter()
-                .map(|decode| LineCodeDecode { code: LineCodeName::of(decode.code), bit_offset: decode.bit_offset, symbols: decode.symbols, errors: decode.errors, decoded_len: decode.bytes.len() })
+                .map(|decode| LineCodeDecode {
+                    code: LineCodeName::of(decode.code),
+                    bit_offset: decode.bit_offset,
+                    symbols: decode.symbols,
+                    errors: decode.errors,
+                    decoded_len: decode.bytes.len(),
+                    clean: clean_spans(decode, result.start),
+                })
                 .collect(),
+            tied,
+            note,
             timestamps: result.timestamps.iter().map(|stamp| BcdTimestampFound { offset: (result.start + stamp.offset) as u64, text: stamp.text.clone() }).collect(),
         }
     }
+}
+
+/// The codes whose best decode has the first decode's error rate, when
+/// they are several: Manchester's two conventions are each other's
+/// inverse and differential Manchester reads the same transitions, so a
+/// clean Manchester signal decodes cleanly all three ways.
+fn tied_codes(decodes: &[crate::linecode::DecodeResult]) -> Vec<LineCodeName> {
+    let Some(best) = decodes.first() else { return Vec::new() };
+    let mut tied: Vec<LineCodeName> = Vec::new();
+    for decode in decodes.iter().filter(|decode| decode.errors * best.symbols == best.errors * decode.symbols) {
+        let name = LineCodeName::of(decode.code);
+        if !tied.contains(&name) {
+            tied.push(name);
+        }
+    }
+    if tied.len() > 1 { tied } else { Vec::new() }
 }
 
 /// Parameters of `bits.decode_linecode`.
@@ -615,6 +684,33 @@ mod tests {
         let mut workspace = workspace_with("a.bin", &[0u8; 256]);
         let refused = call(&mut workspace, "bits.rank_field", json!({"origin": 0, "stride": 16, "offset": usize::MAX - 6, "width": 8})).unwrap_err();
         assert_eq!(refused.code, ErrorCode::InvalidParams);
+    }
+
+    #[test]
+    fn a_clean_manchester_signal_says_its_conventions_tie() {
+        let payload: Vec<u8> = (0..40u8).map(|byte| byte.wrapping_mul(37)).collect();
+        let line: Vec<u8> = payload.iter().flat_map(|&byte| {
+            let cells: u16 = (0..8).fold(0, |cells, bit| (cells << 2) | if byte >> (7 - bit) & 1 == 1 { 0b01 } else { 0b10 });
+            cells.to_be_bytes()
+        }).collect();
+        let mut workspace = workspace_with("line.bin", &line);
+        let status = run_job(&mut workspace, "bits.detect_linecode", json!({}));
+        let result = &status["result"];
+        assert_eq!(result["decodes"][0]["errors"], 0, "{status}");
+        let tied: Vec<&str> = result["tied"].as_array().unwrap().iter().map(|name| name.as_str().unwrap()).collect();
+        assert!(tied.contains(&"manchester_ieee") && tied.contains(&"manchester_thomas"), "{result}");
+        assert!(result["note"].as_str().unwrap().contains("checksum"), "{result}");
+        assert_eq!(result["decodes"][0]["clean"], json!([{"start": 0, "len": 80}]), "{result}");
+    }
+
+    #[test]
+    fn a_decode_lists_the_bytes_it_reads_without_errors() {
+        let payload = [0x03, 0x56, 0x79, 0x69, 0x15, 0x9B, 0x5C, 0xAE, 0x86, 0x39, 0x4D, 0xAE, 0xC6, 0x38];
+        let mut workspace = workspace_with("payload.bin", &payload);
+        let status = run_job(&mut workspace, "bits.detect_linecode", json!({}));
+        let decodes = status["result"]["decodes"].as_array().unwrap();
+        let bcd = decodes.iter().find(|decode| decode["code"] == "packed_bcd" && decode["bit_offset"] == 0).unwrap_or_else(|| panic!("{status}"));
+        assert_eq!(bcd["clean"][0], json!({"start": 0, "len": 5}), "{bcd}");
     }
 
     /// Frames of 37 bits, each starting with the sync word 1011001.

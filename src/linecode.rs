@@ -115,11 +115,28 @@ pub struct DecodeResult {
     pub commas: Vec<usize>,
     /// 8b/10b only: control (K) symbols seen, which are left out of `bytes`.
     pub control_symbols: usize,
+    /// Stretches that decode without an error, as the input bit (from the
+    /// start of the data) each starts at and its length in bits.
+    pub clean_runs: Vec<(usize, usize)>,
+    /// Input bit the stretch being read without an error started at.
+    clean_from: usize,
 }
 
 impl DecodeResult {
     fn new(code: LineCode, order: BitOrder, bit_offset: usize) -> Self {
-        DecodeResult { code, order, bit_offset, bytes: Vec::new(), symbols: 0, errors: 0, error_positions: Vec::new(), commas: Vec::new(), control_symbols: 0 }
+        DecodeResult {
+            code,
+            order,
+            bit_offset,
+            bytes: Vec::new(),
+            symbols: 0,
+            errors: 0,
+            error_positions: Vec::new(),
+            commas: Vec::new(),
+            control_symbols: 0,
+            clean_runs: Vec::new(),
+            clean_from: bit_offset,
+        }
     }
 
     /// Fraction of symbols that were invalid (0 for codes that cannot tell).
@@ -132,10 +149,21 @@ impl DecodeResult {
         self.error_rate() + self.code.complexity() as f64 * COMPLEXITY_PENALTY
     }
 
+    /// An invalid symbol at input bit `position`; it spoils the whole
+    /// symbol (for packed BCD, the byte) it is in.
     fn record_error(&mut self, position: usize) {
         self.errors += 1;
         if self.error_positions.len() < MAX_REPORTED_POSITIONS {
             self.error_positions.push(position);
+        }
+        self.end_clean_run(position);
+        self.clean_from = self.clean_from.max(position + self.code.symbol_bits());
+    }
+
+    /// Close the stretch read without an error at input bit `end`.
+    fn end_clean_run(&mut self, end: usize) {
+        if end > self.clean_from && self.clean_runs.len() < MAX_REPORTED_POSITIONS {
+            self.clean_runs.push((self.clean_from, end - self.clean_from));
         }
     }
 }
@@ -166,6 +194,9 @@ pub fn decode(bytes: &[u8], order: BitOrder, bit_offset: usize, code: LineCode) 
         LineCode::GrayWord => decode_gray_words(&pack_bits(&bits), &mut result),
         LineCode::PackedBcd => decode_packed_bcd(&pack_bits(&bits), &mut result),
     }
+    // A packed BCD symbol is a nibble; every other code's is its symbol_bits.
+    let symbol_input_bits = if code == LineCode::PackedBcd { 4 } else { code.symbol_bits() };
+    result.end_clean_run(bit_offset + result.symbols * symbol_input_bits);
     result
 }
 
@@ -542,6 +573,17 @@ mod tests {
         assert_eq!(decoded.errors, 0);
         let thomas = decode(&manchester_ieee(&payload), BitOrder::MsbFirst, 0, LineCode::ManchesterThomas);
         assert_eq!(thomas.bytes, payload.iter().map(|byte| !byte).collect::<Vec<u8>>(), "the other convention inverts every bit");
+    }
+
+    #[test]
+    fn a_decode_says_where_it_holds_without_errors() {
+        // An access level, a BCD PIN, then a technician id packed as six-bit text.
+        let payload = [0x03, 0x56, 0x79, 0x69, 0x15, 0x9B, 0x5C, 0xAE, 0x86, 0x39, 0x4D, 0xAE, 0xC6, 0x38];
+        let decoded = decode(&payload, BitOrder::MsbFirst, 0, LineCode::PackedBcd);
+        assert_eq!(decoded.errors, 8);
+        assert_eq!(decoded.clean_runs, vec![(0, 40), (64, 16), (104, 8)]);
+        let manchester = decode(&manchester_ieee(b"pin"), BitOrder::MsbFirst, 0, LineCode::ManchesterIeee);
+        assert_eq!(manchester.clean_runs, vec![(0, 48)], "an error-free decode is one stretch");
     }
 
     #[test]
