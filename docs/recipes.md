@@ -114,7 +114,8 @@ Steps that make a document from another make **sheets**:
 `documents.derive`, `codecs.open_decoded`, `bits.open_plane`,
 `bits.decode_linecode`, `unpack.open`, `forensics.open_entry`,
 `crypto.open_decrypted`, `crypto.apply`, and `packets.sets.create` with
-`gunzip` or `packets.http_bodies` with `open`; and any call whose `output`
+`gunzip` or `packets.http_bodies` with `open` or `output` `"new"` (whose
+`{"new": {"label": "body"}}` labels the bodies `body`, `body 1`…); and any call whose `output`
 is `"new"` (`transform.apply`, `codecs.decode`, `crypto.decrypt`,
 `packets.extract`, `packets.follow_stream`…; see
 [Outputs](api.md#conventions)). A recipe repeats them, and later steps

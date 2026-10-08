@@ -192,7 +192,14 @@ and checked by test decompression.
   raw deflate, bzip2 or LZ4), and *Re-pack selection with the last codec* in the palette
   repeats the last one.
 - *Probe for compression at cursor* says which codecs decode at the
-  cursor, and how much.
+  cursor, and how much: the decompressors, and base32, base64, base64url
+  or hex text where a run of 16 or more of their characters starts.
+
+Text encodings are codecs too: base32 (either case, padding optional, as
+DNS tunnels send it), base64, base64url, hex text, DEC SIXBIT (`sixbit`)
+and AIS 6-bit ASCII (`ais6`). `codecs.decode` takes any of them by id,
+`transform.apply` with `{"op": "decompress", "codec": "base32"}` decodes
+with one in place, and `{"op": "compress", "codec": "base64"}` encodes.
 
 Images (PNG, JPEG, GIF including animation, BMP, WebP, TIFF, ICO), audio
 (WAV, MP3, FLAC, Ogg Vorbis, Ogg Opus, AAC, M4A, AIFF, CAF) and video

@@ -8,6 +8,36 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Text encodings are built-in codecs.** base32 (either case, with or
+  without padding), base64, base64url, hex text, DEC SIXBIT (`sixbit`) and
+  AIS 6-bit ASCII (`ais6`) decode by id with `codecs.decode`, open with
+  `codecs.open_decoded`, decode in place with `transform.apply`
+  `{"op": "decompress", "codec": …}` and encode with `{"op": "compress",
+  "codec": …}`, without a plugin. `codecs.detect` offers base32, base64,
+  base64url and hex where a run of 32 of their characters starts.
+- **Probe tries the text encodings and the plugins' codecs.** The window's
+  *Probe* and `codecs.probe` list base32, base64, base64url and hex text
+  after the decompressors where a run of 16 of their characters starts,
+  and `codecs.probe` then tries every plugin codec; its streams give each
+  codec's id, name and kind. `codecs.decode` without a codec falls back to
+  them too, and its description names the codec that will decode.
+- **`contains` and `matches` in packet filters**, as Wireshark writes them:
+  `template.payload contains 00` compares a hex value with the field's own
+  bytes, `frame contains a5:5a` looks in the whole packet, and
+  `dns.qry.name matches "^www"` is a regular expression, ignoring case.
+- **`crypto.attack` proposes repeating XOR keys without a crib**, those
+  `xor.recover_keys` finds.
+- **`crypto.decrypt` takes several keys** as `keys`, and keeps the first
+  whose PKCS#7 padding comes out valid; every decryption says its `key`,
+  and `key_index` which of several decrypted.
+- **`unpack.open`, `unpack.read` and `unpack.save` name a node by names**:
+  `"path": "bin/novacamd"`, the last names of one node's path, as well as
+  by child indices.
+- **`packets.http_bodies` labels the sheets it opens**: `output`
+  `{"new": {"label": "body"}}` labels them `body`, `body 1`, `body 2`…
+- `packets.conversations` and `packets.endpoints` take `descending`, and
+  `packets.extract` takes `limit`.
+- `xor.recover_keys` gives each candidate a `rank`.
 - **Then anchors work on text and with other anchors.** New operations:
   `match` (a regex's first group, or a group named by number), `after`,
   `before`, `split` (a piece by index, or every piece), `format` (the value
@@ -213,7 +243,8 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   it, refusing while one has unsaved edits unless the person at the window
   discards them.
 - `diff.run` compares a document with another open one, given as `other`,
-  in place of a file's `path`.
+  in place of a file's `path`; both may be sheet anchors, so two sheets
+  compare without one being written.
 
 ### Changed
 
@@ -295,6 +326,12 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- `xor.recover_keys` returned a score its own order contradicted, so a pick
+  sorting by score descending bound an over-fitted key; `score` is now the
+  score the candidates are ranked by.
+- `packets.list {dedupe: "info"}` kept one packet when every summary began
+  with the same number; packets are now de-duplicated by the whole text.
+- `X contains Y` in a packet filter read as three words and matched nothing.
 - A note citing a read made the read a step of every recipe saved from the
   history, and once a sheet the read looked at was undone, the recipe
   could not be saved at all. A read kept only because a note cites it is

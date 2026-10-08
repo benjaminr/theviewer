@@ -132,9 +132,12 @@ brackets: `dns and not (ip.src==10.0.0.1 or len>200)`.
 | `port:53` | use that port at either end |
 | `ip:10.0.0.2` | come from or go to that address |
 | `len>60` (also `<`, `>=`, `<=`, `==`, `!=`) | have that many bytes |
-| `hex:DEADBEEF` | contain those bytes |
+| `hex:DEADBEEF`, or `frame contains de:ad:be:ef` | contain those bytes |
+| `frame matches "\x5a\x01"` | have bytes a regular expression matches (`\xNN` is a byte) |
 | `ip.ttl==64` (also `!=`, `<`, `<=`, `>`, `>=`) | have a field, by its Wireshark name, with that value |
-| `dns.qry.name~example` | have a field that contains that text (`~` means contains) |
+| `dns.qry.name contains example` (or `~`) | have a field that contains that text |
+| `template.payload contains 00` | have a field whose own bytes hold those bytes (`00`, `0x9b5c`, `9b:5c`) |
+| `dns.qry.name matches "^www\."` | have a field a regular expression matches, ignoring case |
 | `template.type==60`, or just `type==60` | have a field of the template decoding them with that value |
 | `ip.ttl` | have that field at all |
 | `"standard query"`, or any other word | mention it in their summary, ignoring case |
@@ -153,6 +156,10 @@ A value matches when it is the field's whole text, its first word, what
 it has in brackets, or the same number: a DNS query of type `TXT (16)`
 matches both `dns.qry.type==TXT` and `dns.qry.type==16`, and a template
 field shown as `0x3c (unlock)` matches `60`, `0x3c` and `unlock`.
+
+`contains` with a value written as hex compares bytes with the field's own
+bytes, so it finds a byte past the first 16 that a long field's value
+shows, and `9b:5c` matches only those two bytes in that order.
 
 A field name the packets cannot have is not quietly matched against
 nothing: the line under the filter says so, with the names it was close
@@ -207,7 +214,8 @@ dissected again a moment after any edit, wherever it was made.
 
 *Conversations* lists each pair of endpoints with its packets and bytes;
 *Follow* shows only that conversation's packets. *Endpoints* lists every
-address. Both can be sorted by packets, bytes or address. *Follow stream*
+address. Both can be sorted by packets, bytes or address, either way round
+(`descending` in the API). *Follow stream*
 shows the payloads of both directions in order, as text or hex; *Copy as
 text* copies them and *Open as document* opens them as a document of their
 own.

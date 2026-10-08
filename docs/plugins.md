@@ -197,7 +197,10 @@ theviewer.register_codec{
 
 - `detect` gets the first 4096 bytes at the offset and says whether this
   codec applies. Codecs whose `detect` returns `false` are still tried by
-  *Probe* and `codecs.probe`, which try every codec at the cursor.
+  `codecs.probe`, which tries every codec at the offset, after the
+  built-in ones. A plugin codec with the id of a built-in one (base32,
+  base64, base64url, hex, sixbit, ais6 and the decompressors) is listed,
+  but the built-in one decodes by that id.
 - `decode` gets the bytes from the offset and the most it may return,
   `max_out`. It returns the decoded string, or `nil` when it cannot decode
   them, and optionally how many input bytes it `consumed`. Output past
