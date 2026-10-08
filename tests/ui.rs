@@ -625,14 +625,17 @@ fn compressed_blocks_are_found_decompressed_and_recompressed() {
     assert_eq!(harness.state().document.len(), text.len(), "status: {}", harness.state().status);
     assert_eq!(harness.state_mut().document.read_range(0, 40), text[..40]);
     assert!(harness.state().display_name().contains("zlib@0x200"), "{}", harness.state().display_name());
-    assert_eq!(harness.state().parents.len(), 1);
+    assert!(harness.state().active_parent().is_some(), "the file is parked as its parent");
+    let decompressed = harness.state().document_id();
 
-    // Back restores the parent with the cursor where it was.
+    // Back shows the parent with the cursor where it was, and the
+    // decompressed sheet stays open beside it.
     harness.key_press_modifiers(Modifiers::COMMAND, Key::OpenBracket);
     steps(&mut harness, 3);
     assert_eq!(harness.state().document.len(), file_len);
     assert_eq!(harness.state().cursor, stream_at + 100);
-    assert!(harness.state().parents.is_empty());
+    assert!(harness.state().active_parent().is_none());
+    assert!(harness.state().is_open_sheet(&decompressed), "Back keeps the child open");
 
     // In place replaces the exact extent, undo restores it.
     harness.get_by_label("In place").click();
@@ -696,6 +699,7 @@ fn flipping_extracting_and_repacking_a_stream() {
     steps(&mut harness, 3);
     assert_eq!(harness.state().document.len(), file.len());
     assert_eq!(harness.state().cursor, stream_at + 10);
+    assert_eq!(harness.state().sheets().len(), 2, "backing out keeps the stream's sheet open");
 
     // Select stream picks exactly the compressed bytes; extraction writes them out.
     harness.get_by_label("Select stream").click();

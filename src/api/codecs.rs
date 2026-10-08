@@ -524,7 +524,7 @@ mod tests {
             assert_eq!(app.document.read_range(0, 19), b"hello, hello, hello");
             assert!(app.status.starts_with("zlib at 0x4: "), "{}", app.status);
             app.toggle_compressed_view();
-            assert_eq!(take_performed(), [("documents.open".to_string(), json!({"doc": outer, "discard_unsaved": true}))]);
+            assert_eq!(take_performed(), [("documents.activate".to_string(), json!({"doc": outer}))]);
             assert_eq!(app.document_id(), outer);
         }
 

@@ -62,14 +62,16 @@ pub const ZOOM_LEVELS: [f32; 14] = [
 ];
 
 /// Results sent back from background analysis threads.
+/// Each names the sheet it was worked out for, which may have been parked
+/// since: its result is kept with it.
 pub enum AnalysisMessage {
-    Periods(PeriodScan),
-    Entropy { document_version: u64, map: Vec<f32> },
-    Patterns { key: PatternKey, patterns: Vec<Finding> },
+    Periods { sheet: String, scan: PeriodScan },
+    Entropy { sheet: String, map: Vec<f32> },
+    Patterns { sheet: String, key: PatternKey, patterns: Vec<Finding> },
     /// A period scan was cancelled.
     PeriodsCancelled,
     /// A pattern scan was cancelled: the region is left as it was found before.
-    PatternsCancelled { key: PatternKey },
+    PatternsCancelled { sheet: String, key: PatternKey },
 }
 
 /// Identifies the region and document state a pattern scan was made for.
@@ -81,37 +83,17 @@ pub struct PatternKey {
     pub row_stride: usize,
 }
 
-/// A document we descended from by decompressing a block, kept so the user
-/// can go back to it with their place intact.
-pub struct ParentDocument {
-    /// The id the API and the bus know it by, kept while it waits.
-    pub id: String,
-    pub document: Document,
-    /// The version `document.edited` has been published up to, so edits
-    /// made to it through the API while it waits are published.
-    pub(crate) published_version: u64,
-    pub shape: Shape,
-    pub cursor: usize,
-    pub top_row: usize,
-    pub name: String,
-    /// Analysis results, kept so Back does not have to rescan.
-    patterns: Vec<Finding>,
-    pattern_key: Option<PatternKey>,
-    period_scan: Option<PeriodScan>,
-    entropy_map: Option<Vec<f32>>,
-}
-
-/// What a document shown in place of another is to the API and the bus.
+/// What a document installed in the window is to the API and the bus.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Identity {
-    /// A new top-level document: the one shown and its parents are closed.
-    New,
-    /// Derived from the one shown, which waits on the parent stack.
-    Derived,
-    /// The parent with this id, come back to; the one shown is closed.
-    Back(String),
-    /// The same document with new bytes (a live source, or saved and
-    /// opened again): its id stays, and what was known about it goes.
+    /// A new root, opened from a file, a source or new: the active sheet is
+    /// parked beside it, or replaced when it is the blank one a window
+    /// starts with.
+    Root,
+    /// Derived from the open sheet with this id; the active sheet is parked.
+    Derived(String),
+    /// The same sheet with new bytes (a live source, or saved and opened
+    /// again): its id stays, and what was known about it goes.
     Same,
 }
 
@@ -241,9 +223,11 @@ pub struct ViewerApp {
     analysis_tx: Sender<AnalysisMessage>,
     analysis_rx: Receiver<AnalysisMessage>,
 
-    /// Recognised structures in and around the visible region.
-    /// Documents above the current one, outermost first.
-    pub parents: Vec<ParentDocument>,
+    /// Every open sheet but the one shown, with its place and analysis (see
+    /// [`crate::sheets`]); their order means nothing.
+    pub parked: Vec<crate::sheets::ParkedSheet>,
+    /// Where the sheet shown came from: its parent and the step that made it.
+    pub active_lineage: crate::api::workspace::Lineage,
     /// Name shown for a derived (decompressed) document, which has no path.
     pub derived_name: Option<String>,
     /// Codec used by "Compress selection".
@@ -310,7 +294,7 @@ pub struct ViewerApp {
     /// Thumbnail of the image under the cursor, keyed by start and version.
     pub image_preview: Option<(usize, u64, TextureHandle)>,
     pub patterns: Vec<Finding>,
-    pattern_key: Option<PatternKey>,
+    pub(crate) pattern_key: Option<PatternKey>,
     pattern_pending: Option<PatternKey>,
     /// Colour detected patterns in the view and hex dump (they are found
     /// either way).
@@ -415,9 +399,6 @@ pub struct ViewerApp {
     /// The session's journal: every call made through the API that changed
     /// something, for the History tab, undo across steps and recipes.
     pub journal: crate::journal::Journal,
-    /// Where each document derived through the API came from, by id: its
-    /// parent and the step that made it.
-    pub lineages: std::collections::HashMap<String, crate::api::workspace::Lineage>,
     /// Where each client calling the API works: the document an omitted
     /// `doc` means for it. The person's is the document shown.
     pub foci: crate::api::workspace::Foci,
@@ -593,7 +574,8 @@ impl ViewerApp {
             entropy_map: None,
             analysis_tx,
             analysis_rx,
-            parents: Vec::new(),
+            parked: Vec::new(),
+            active_lineage: Default::default(),
             derived_name: None,
             compress_codec: Codec::Zlib,
             inplace_codec: None,
@@ -684,7 +666,6 @@ impl ViewerApp {
             confirmations: Default::default(),
             recipe_window: Default::default(),
             journal: crate::journal::Journal::new(),
-            lineages: std::collections::HashMap::new(),
             foci: Default::default(),
         };
         if launch.restore_layout {
@@ -817,38 +798,25 @@ impl ViewerApp {
         }
     }
 
+    /// Open the file at `path` as a new root sheet, beside the sheets open;
+    /// a file already open is shown again as it was left.
     pub fn load_path(&mut self, path: &Path) {
-        self.load_path_as(path, Identity::New);
+        let open = self.sheets().into_iter().find(|sheet| sheet.path.as_deref() == Some(path));
+        match open {
+            Some(sheet) => {
+                self.activate_sheet(&sheet.id);
+            }
+            None => self.load_path_as(path, Identity::Root),
+        }
     }
 
-    /// Open the file at `path` in place of the document shown, as `identity`
-    /// says: a new document, or the same one saved and opened again.
+    /// Open the file at `path` as `identity` says: a new root, or the
+    /// active sheet saved (or changed on disk) and opened again.
     fn load_path_as(&mut self, path: &Path, identity: Identity) {
         match Document::open(path) {
             Ok(document) => {
                 self.stop_live_sources();
-                let closed = self.closed_by(&identity);
-                self.document = document;
-                self.bench.document_changed();
-                self.mapped_regions = Arc::default();
-                self.derived_name = None;
-                self.cursor = 0;
-                self.anchor = None;
-                self.clear_secondary_selection();
-                self.folds.clear();
-                self.top_row = 0;
-                self.pan_x = 0.0;
-                self.shape.byte_offset = 0;
-                self.shape.bit_offset = 0;
-                self.raster_key = None;
-                self.period_scan = None;
-                self.patterns.clear();
-                self.pattern_key = None;
-                self.cursor_structure = None;
-                self.cursor_structure_key = None;
-                self.start_entropy_map();
-                self.take_identity(identity);
-                self.publish_document_replaced(closed);
+                self.install_document(document, None, identity);
                 let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
                 self.status = format!("Loaded {name}");
                 let remembered_shape = self.load_sidecar(path);
@@ -895,28 +863,33 @@ impl ViewerApp {
         }
     }
 
-    /// Persist bookmarks and the current shape next to the file.
+    /// Persist each root file's bookmarks and shape next to it: the sheet
+    /// shown's and every parked one's (a sheet without a file has none).
     pub fn save_sidecar(&mut self) {
-        let Some(path) = self.document.path().map(Path::to_path_buf) else { return };
-        if !self.parents.is_empty() {
-            return;
+        if self.document.path().is_some() {
+            self.bookmarks.shape = Some(shape_memo(&self.shape, self.zoom));
         }
-        self.bookmarks.shape = Some(bookmarks::ShapeMemo {
-            format: self.shape.format.short_name().to_string(),
-            palette: self.shape.palette.label().to_string(),
-            width: self.shape.width,
-            byte_offset: self.shape.byte_offset,
-            bit_offset: self.shape.bit_offset,
-            row_padding: self.shape.row_padding,
-            zoom: self.zoom,
-        });
-        if let Err(message) = bookmarks::save(&bookmarks::sidecar_path(&path), &self.bookmarks) {
+        let mut failed = None;
+        let shown = std::iter::once((&self.document, &self.shape, &self.bookmarks));
+        let parked = self.parked.iter().map(|sheet| (&sheet.document, &sheet.shape, &sheet.bookmarks));
+        for (document, shape, bookmarks) in shown.chain(parked) {
+            if let Err(message) = write_sidecar(document, shape, self.zoom, bookmarks) {
+                failed = Some(message);
+            }
+        }
+        if let Some(message) = failed {
             self.status = format!("Could not save bookmarks: {message}");
         }
     }
 
-    /// Ask for a file and open it in place of what is shown, as
-    /// `documents.open`.
+    /// Save one sheet's bookmarks and shape beside its file, as it closes.
+    pub(crate) fn save_sheet_sidecar(&mut self, document: &Document, shape: &Shape, bookmarks: &Sidecar) {
+        if let Err(message) = write_sidecar(document, shape, self.zoom, bookmarks) {
+            self.status = format!("Could not save bookmarks: {message}");
+        }
+    }
+
+    /// Ask for a file and open it as a new root sheet, as `documents.open`.
     pub fn open_dialog(&mut self) {
         self.open_dialog_then_call("Open file", "documents.open", serde_json::json!({ "discard_unsaved": true }), "path");
     }
@@ -1005,10 +978,16 @@ impl ViewerApp {
         }
     }
 
+    /// Read the active sheet's file from disk again, losing its unsaved
+    /// edits, as File › Open of a file already open does.
+    pub(crate) fn reload_from_disk(&mut self, path: &Path) {
+        self.load_path_as(path, Identity::Same);
+    }
+
+    /// Open a new, empty root sheet beside the sheets open.
     pub fn new_document(&mut self) {
         self.stop_live_sources();
-        self.bookmarks = Sidecar::default();
-        self.install_document(Document::default(), None, Identity::New);
+        self.install_document(Document::default(), None, Identity::Root);
         self.entropy_map = None;
         self.status = "New empty document".to_string();
     }
@@ -2343,8 +2322,8 @@ impl ViewerApp {
         )
     }
 
-    /// Replace the whole view with the decompressed bytes, keeping the current
-    /// document on a stack so Back returns to it.
+    /// Show the decompressed bytes as a sheet of their own, the sheet they
+    /// came from parked beside it so Back shows it again.
     /// As `codecs.open_decoded`.
     pub fn decompress_to_new_document(&mut self) {
         let start = self.decompress_start();
@@ -2353,36 +2332,24 @@ impl ViewerApp {
         }
     }
 
-    /// Open `bytes` as a child of the current document: the current one goes
-    /// on the parent stack with its place and analysis, and Back returns to it.
+    /// Open `bytes` as a sheet derived from the one shown, which is parked
+    /// with its place and analysis; Back shows it again.
     pub fn open_derived(&mut self, bytes: Vec<u8>, name: String) {
-        // Edits so far are said about the parent before it is put away.
-        self.publish_edits_as(crate::api::workspace::DOCUMENT_PRODUCER);
-        // Named before its document is taken, which would leave it "untitled".
-        let parent_name = self.display_name();
-        let parent = ParentDocument {
-            id: self.document_id.clone(),
-            published_version: self.document.version(),
-            document: std::mem::take(&mut self.document),
-            shape: self.shape,
-            cursor: self.cursor,
-            top_row: self.top_row,
-            name: parent_name,
-            patterns: std::mem::take(&mut self.patterns),
-            pattern_key: self.pattern_key.take(),
-            period_scan: self.period_scan.take(),
-            entropy_map: self.entropy_map.take(),
-        };
-        self.parents.push(parent);
-        self.install_document(Document::from_bytes(bytes), Some(name.clone()), Identity::Derived);
+        let parent = self.document_id.clone();
+        self.open_derived_from(&parent, bytes, name);
+    }
+
+    /// Open `bytes` as a sheet derived from the open sheet `parent`, shown
+    /// in place of the active sheet, which is parked beside it.
+    pub fn open_derived_from(&mut self, parent: &str, bytes: Vec<u8>, name: String) {
+        self.install_document(Document::from_bytes(bytes), Some(name.clone()), Identity::Derived(parent.to_string()));
         self.status = format!("Opened {name}");
     }
 
-    /// Open `bytes` as a new top-level document (from a URL, device or capture).
+    /// Open `bytes` as a new root sheet (from a URL, device or capture).
     pub fn open_bytes(&mut self, bytes: Vec<u8>, name: String) {
         self.stop_live_sources();
-        self.bookmarks = Sidecar::default();
-        self.install_document(Document::from_bytes(bytes), Some(name.clone()), Identity::New);
+        self.install_document(Document::from_bytes(bytes), Some(name.clone()), Identity::Root);
         self.status = format!("Opened {name}");
     }
 
@@ -2407,45 +2374,51 @@ impl ViewerApp {
         self.reveal_cursor_in_hex(true);
     }
 
-    /// The documents `identity` closes, as (id, name): the one shown unless
-    /// it becomes a parent, and for a new document every parent too.
-    fn closed_by(&mut self, identity: &Identity) -> Vec<(String, String)> {
-        let mut closed = Vec::new();
-        if *identity != Identity::Derived {
-            closed.push((self.document_id.clone(), self.display_name()));
-        }
-        if *identity == Identity::New {
-            closed.extend(self.parents.drain(..).map(|parent| (parent.id, parent.name)));
-        }
-        closed
+    /// The id the next sheet opened in the window is known by.
+    pub(crate) fn next_sheet_id(&mut self) -> String {
+        self.documents_opened += 1;
+        format!("doc-{}", self.documents_opened)
     }
 
-    /// Give the document now shown its id, as `identity` says.
-    fn take_identity(&mut self, identity: Identity) {
-        self.document_id = match identity {
-            Identity::New | Identity::Derived => {
-                self.documents_opened += 1;
-                format!("doc-{}", self.documents_opened)
-            }
-            Identity::Back(id) => id,
-            Identity::Same => self.document_id.clone(),
-        };
-    }
-
-    /// Swap the document being viewed and reset everything derived from it.
+    /// Show `document` as `identity` says, starting afresh on it: a new
+    /// root or derived sheet parks the one shown (a blank one is replaced),
+    /// and the same sheet with new bytes forgets what was known about it.
     fn install_document(&mut self, document: Document, derived_name: Option<String>, identity: Identity) {
-        let closed = self.closed_by(&identity);
+        let closed = match identity {
+            Identity::Same => {
+                self.bench.document_changed();
+                vec![(self.document_id.clone(), self.display_name())]
+            }
+            Identity::Root | Identity::Derived(_) => {
+                let next = self.next_sheet_id();
+                let closed = if identity == Identity::Root && self.active_is_blank() {
+                    let blank = self.document_id.clone();
+                    self.bench.sheet_closed(&blank);
+                    self.bench.sheet_switched(&blank, &next);
+                    vec![(blank, self.display_name())]
+                } else {
+                    self.park_active_for(&next);
+                    Vec::new()
+                };
+                self.active_lineage = match identity {
+                    Identity::Derived(parent) => crate::api::workspace::Lineage::derived_from(&parent),
+                    _ => Default::default(),
+                };
+                self.document_id = next;
+                self.bookmarks = Sidecar::default();
+                closed
+            }
+        };
         self.document = document;
-        self.bench.document_changed();
-        self.mapped_regions = Arc::default();
         self.derived_name = derived_name;
-        let announce = !matches!(identity, Identity::Back(_));
-        self.take_identity(identity);
-        if announce {
-            self.publish_document_replaced(closed);
-        } else {
-            self.publish_documents_closed(closed);
-        }
+        self.reset_sheet_fields();
+        self.publish_document_replaced(closed);
+    }
+
+    /// Start afresh on the bytes now shown: the place, the shape's origin
+    /// and what was worked out about them.
+    pub(crate) fn reset_sheet_fields(&mut self) {
+        self.mapped_regions = Arc::default();
         self.cursor = 0;
         self.anchor = None;
         self.clear_secondary_selection();
@@ -2454,38 +2427,44 @@ impl ViewerApp {
         self.pan_x = 0.0;
         self.shape.byte_offset = 0;
         self.shape.bit_offset = 0;
-        self.raster_key = None;
         self.period_scan = None;
         self.patterns.clear();
         self.pattern_key = None;
         self.hex_top_row = 0;
+        self.forget_view_caches();
         self.start_entropy_map();
     }
 
+    /// Forget what the views worked out for the sheet shown before: the
+    /// texture, the structure at the cursor, the Find box's matches and the
+    /// scans waited for.
+    pub(crate) fn forget_view_caches(&mut self) {
+        self.raster_key = None;
+        self.cursor_structure = None;
+        self.cursor_structure_key = None;
+        self.search_highlight = None;
+        self.counted_match = None;
+        self.media_hint = None;
+        self.image_preview = None;
+        self.pattern_pending = None;
+        self.scan_pending = false;
+    }
+
+    /// Say again what the window knows of the sheet just shown, which the
+    /// views and tools follow: its record width and its findings.
+    pub(crate) fn republish_sheet_analysis(&mut self) {
+        self.publish_record_width();
+        self.publish_pattern_findings();
+    }
+
+    /// Show the active sheet's parent; the active sheet stays open.
     pub fn back_to_parent(&mut self) {
-        let Some(parent) = self.parents.pop() else {
+        let Some(parent) = self.active_parent() else {
             self.status = "Already at the top-level document".to_string();
             return;
         };
-        let name = (!self.parents.is_empty()).then_some(parent.name.clone());
-        self.install_document(parent.document, name, Identity::Back(parent.id.clone()));
-        // Edits made to it through the API while it waited are said now.
-        self.bus_watch.version = parent.published_version;
-        self.shape = parent.shape;
-        self.cursor = parent.cursor.min(self.document.len());
-        self.top_row = parent.top_row;
-        self.patterns = parent.patterns;
-        self.pattern_key = parent.pattern_key;
-        self.period_scan = parent.period_scan;
-        if parent.entropy_map.is_some() {
-            self.entropy_map = parent.entropy_map;
-        }
-        // What was known about the parent was forgotten when it was put away.
-        self.publish_record_width();
-        self.publish_pattern_findings();
-        self.clamp_top_row();
-        self.reveal_cursor_in_hex(true);
-        self.status = format!("Back to {}", parent.name);
+        self.activate_sheet(&parent);
+        self.status = format!("Back to {}", self.display_name());
     }
 
     /// Replace the compressed bytes with their decompressed form, as one
@@ -2536,7 +2515,7 @@ impl ViewerApp {
     /// followed down; where no stream is at the cursor in a derived
     /// document, go back to its parent.
     pub fn toggle_compressed_view(&mut self) {
-        if self.parents.is_empty() || self.compressed_stream_at_cursor().is_some() {
+        if self.active_parent().is_none() || self.compressed_stream_at_cursor().is_some() {
             self.decompress_to_new_document();
         } else {
             self.go_back_to_parent();
@@ -2703,8 +2682,9 @@ impl ViewerApp {
         let sender = self.analysis_tx.clone();
         let job = self.bus.start_job("period-scan", "Period scan", producer, Some((self.document_id(), self.document.version())));
         let id = job.id().to_string();
+        let sheet = self.document_id();
         thread::spawn(move || match crate::api::analysis::run_period_scan(&window, start, max_period, &job) {
-            Some(scan) => drop(sender.send(AnalysisMessage::Periods(scan))),
+            Some(scan) => drop(sender.send(AnalysisMessage::Periods { sheet, scan })),
             None => drop(sender.send(AnalysisMessage::PeriodsCancelled)),
         });
         self.scan_pending = true;
@@ -2721,7 +2701,7 @@ impl ViewerApp {
 
     fn start_entropy_map(&mut self) {
         let backing = self.document.original();
-        let version = self.document.version();
+        let sheet = self.document_id();
         let sender = self.analysis_tx.clone();
         let job = self.start_job("entropy", "Entropy strip");
         thread::spawn(move || {
@@ -2730,14 +2710,30 @@ impl ViewerApp {
                 return job.finish_cancelled();
             }
             job.finish(true, format!("{} blocks", map.len()));
-            let _ = sender.send(AnalysisMessage::Entropy { document_version: version, map });
+            let _ = sender.send(AnalysisMessage::Entropy { sheet, map });
         });
     }
 
     fn poll_analysis(&mut self, ctx: &Context) {
         while let Ok(message) = self.analysis_rx.try_recv() {
             match message {
-                AnalysisMessage::Periods(scan) => {
+                AnalysisMessage::Periods { sheet, scan } if sheet != self.document_id => {
+                    if let Some(parked) = self.parked_sheet_mut(&sheet) {
+                        parked.period_scan = Some(scan);
+                    }
+                }
+                AnalysisMessage::Entropy { sheet, map } if sheet != self.document_id => {
+                    if let Some(parked) = self.parked_sheet_mut(&sheet) {
+                        parked.entropy_map = Some(map);
+                    }
+                }
+                AnalysisMessage::Patterns { sheet, key, patterns } if sheet != self.document_id => {
+                    if let Some(parked) = self.parked_sheet_mut(&sheet) {
+                        (parked.patterns, parked.pattern_key) = (patterns, Some(key));
+                    }
+                }
+                AnalysisMessage::PatternsCancelled { sheet, .. } if sheet != self.document_id => {}
+                AnalysisMessage::Periods { scan, .. } => {
                     self.status = match scan.candidates.first() {
                         Some(best) => format!("Best period {} bytes", best.period),
                         None => "No repeating period found".to_string(),
@@ -2751,14 +2747,14 @@ impl ViewerApp {
                     self.scan_pending = false;
                     self.status = "Period scan cancelled".to_string();
                 }
-                AnalysisMessage::PatternsCancelled { key } => {
+                AnalysisMessage::PatternsCancelled { key, .. } => {
                     if self.pattern_pending == Some(key) {
                         self.pattern_pending = None;
                     }
                     // Not scanned again until the view moves elsewhere.
                     self.pattern_key = Some(key);
                 }
-                AnalysisMessage::Patterns { key, patterns } => {
+                AnalysisMessage::Patterns { key, patterns, .. } => {
                     if self.pattern_pending == Some(key) {
                         self.pattern_pending = None;
                     }
@@ -2809,23 +2805,24 @@ impl ViewerApp {
         let sender = self.analysis_tx.clone();
         let registry = Arc::clone(&self.registry);
         let job = self.start_job("pattern-scan", "Pattern scan");
+        let sheet = self.document_id();
         thread::spawn(move || {
             let mut patterns = registry.scan(&window, &context);
             if job.is_cancelled() {
                 job.finish_cancelled();
-                let _ = sender.send(AnalysisMessage::PatternsCancelled { key });
+                let _ = sender.send(AnalysisMessage::PatternsCancelled { sheet, key });
                 return;
             }
             patterns::resolve_overlaps(&mut patterns);
             job.finish(true, format!("{} findings", patterns.len()));
-            let _ = sender.send(AnalysisMessage::Patterns { key, patterns });
+            let _ = sender.send(AnalysisMessage::Patterns { sheet, key, patterns });
         });
         self.pattern_pending = Some(key);
     }
 
     /// Publish the period scan's best record width, or withdraw the last
     /// one when the scan found none.
-    fn publish_record_width(&mut self) {
+    pub(crate) fn publish_record_width(&mut self) {
         const PRODUCER: &str = "tool:period-scan";
         let Some(scan) = &self.period_scan else { return };
         let estimate = scan.candidates.first().map(|best| RecordWidthEstimated {
@@ -2841,7 +2838,7 @@ impl ViewerApp {
     }
 
     /// Publish what the scan of the region around the view found.
-    fn publish_pattern_findings(&mut self) {
+    pub(crate) fn publish_pattern_findings(&mut self) {
         let Some(key) = self.pattern_key else { return };
         let findings = FindingsPublished { findings: self.patterns.clone() };
         self.bus.publish(Draft::new("tool:pattern-scan", Payload::FindingsPublished(findings)).about(self.document_id(), key.version).span(key.start, key.len));
@@ -3308,7 +3305,7 @@ impl ViewerApp {
                         if ui.button(codec.label()).clicked() { self.compress_selection(codec); ui.close(); }
                     }
                 });
-                if ui.add_enabled(!self.parents.is_empty(), egui::Button::new("Back to parent document   Cmd+[")).clicked() { self.go_back_to_parent(); ui.close(); }
+                if ui.add_enabled(self.active_parent().is_some(), egui::Button::new("Back to parent document   Cmd+[")).clicked() { self.go_back_to_parent(); ui.close(); }
             });
             ui.menu_button("Go", |ui| {
                 if ui.button("Command palette   Cmd+K").clicked() { self.palette.toggle(); ui.close(); }
@@ -3788,8 +3785,8 @@ impl ViewerApp {
                     self.decompress_to_new_document();
                 }
             });
-            if let Some(parent) = self.parents.last() {
-                let hint = format!("Return to {} (Cmd+D where no stream is at the cursor)", parent.name);
+            if let Some(parent) = self.active_parent().and_then(|parent| self.sheet_title(&parent)) {
+                let hint = format!("Show {parent} again, keeping this sheet open (Cmd+D where no stream is at the cursor)");
                 if ui.button("Back out").on_hover_text(hint).clicked() {
                     self.go_back_to_parent();
                 }
@@ -3850,8 +3847,8 @@ impl ViewerApp {
             if self.document.is_modified() {
                 ui.label(RichText::new("●").color(theme::CURSOR)).on_hover_text("Unsaved changes");
             }
-            if !self.parents.is_empty()
-                && ui.button("Back").on_hover_text("Return to the document this was decompressed from (Cmd+[)").clicked()
+            if self.active_parent().is_some()
+                && ui.button("Back").on_hover_text("Show the sheet this was derived from, keeping this one open (Cmd+[)").clicked()
             {
                 self.go_back_to_parent();
             }
@@ -4021,6 +4018,28 @@ impl ViewerApp {
             self.last_title = title;
         }
     }
+}
+
+/// The shape a sidecar remembers, with the zoom.
+fn shape_memo(shape: &Shape, zoom: f32) -> bookmarks::ShapeMemo {
+    bookmarks::ShapeMemo {
+        format: shape.format.short_name().to_string(),
+        palette: shape.palette.label().to_string(),
+        width: shape.width,
+        byte_offset: shape.byte_offset,
+        bit_offset: shape.bit_offset,
+        row_padding: shape.row_padding,
+        zoom,
+    }
+}
+
+/// Write a sheet's bookmarks and shape beside its file; a sheet with no
+/// file (a derived one, a source, a new one) has nowhere to keep them.
+fn write_sidecar(document: &Document, shape: &Shape, zoom: f32, bookmarks: &Sidecar) -> Result<(), String> {
+    let Some(path) = document.path() else { return Ok(()) };
+    let mut sidecar = bookmarks.clone();
+    sidecar.shape = Some(shape_memo(shape, zoom));
+    bookmarks::save(&bookmarks::sidecar_path(path), &sidecar)
 }
 
 impl eframe::App for ViewerApp {
@@ -4208,10 +4227,11 @@ mod tests {
         // As the background scan finds it.
         app.patterns = vec![Finding::new("compressed-streams", "builtin", Category::Compressed, 0, stream_len).title("zlib stream")];
         app.toggle_compressed_view();
-        assert_eq!(app.parents.len(), 2, "the stream at the cursor is opened, one level deeper: {}", app.status);
+        assert_eq!(app.active_ancestry().len(), 3, "the stream at the cursor is opened, one level deeper: {}", app.status);
         assert_eq!(app.document.read_range(0, 6), b"hello ");
         app.toggle_compressed_view();
-        assert_eq!(app.parents.len(), 1, "no stream at the cursor, so back up a level");
+        assert_eq!(app.active_ancestry().len(), 2, "no stream at the cursor, so back up a level");
+        assert_eq!(app.sheets().len(), 3, "the stream's sheet stays open");
     }
 
     #[test]
@@ -4222,7 +4242,7 @@ mod tests {
         app.open_file(&path);
         app.open_derived(b"inner".to_vec(), "zlib@0x0".to_string());
         let file_name = path.file_name().unwrap().to_string_lossy().into_owned();
-        assert_eq!(app.parents.last().map(|parent| parent.name.as_str()), Some(file_name.as_str()));
+        assert_eq!(app.active_parent().and_then(|parent| app.sheet_title(&parent)), Some(file_name.clone()));
         app.go_back_to_parent();
         assert_eq!(app.status, format!("Back to {file_name}"));
         std::fs::remove_file(&path).ok();

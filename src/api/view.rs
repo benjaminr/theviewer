@@ -337,7 +337,7 @@ pub fn unfold(workspace: &mut dyn Workspace, params: UnfoldParams) -> Result<Fol
 
 /// The bookmarks of document `id`, refused when it has none to show.
 fn bookmarks_of(workspace: &dyn Workspace, id: &str) -> Result<Vec<Bookmark>, ApiError> {
-    workspace.bookmarks(id).ok_or_else(|| ApiError::invalid_params(format!("{id} has no bookmarks here: the window keeps them for the document shown; go back to it (documents.open with its id) first")))
+    workspace.bookmarks(id).ok_or_else(|| ApiError::invalid_params(format!("{id} has no bookmarks here: it is not open")))
 }
 
 fn bookmarks_result(id: String, bookmarks: &[Bookmark]) -> BookmarksResult {

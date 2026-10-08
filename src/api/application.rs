@@ -126,7 +126,7 @@ pub fn reload_plugins(workspace: &mut dyn Workspace, _params: NoParams) -> Resul
 pub fn watch(workspace: &mut dyn Workspace, params: SwitchParams) -> Result<SourcesResult, ApiError> {
     let id = workspace::resolve(workspace, params.doc.as_deref())?;
     match workspace.window() {
-        Some(app) if id != app.document_id() => return Err(ApiError::invalid_params(format!("{id} waits behind the document shown; the window watches the file it shows"))),
+        Some(app) if id != app.document_id() => return Err(ApiError::invalid_params(format!("{id} is open but not shown; the window watches the file it shows, so show it first (documents.activate)"))),
         Some(app) => app.watch_file(params.enabled).map_err(|message| ApiError::new(ErrorCode::Unavailable, message))?,
         None if params.enabled => return Err(ApiError::new(ErrorCode::Unavailable, "files are watched only in the window; theviewer api and mcp read a file once")),
         None => {}
@@ -240,7 +240,7 @@ mod tests {
             app.set_watch(true);
             assert!(app.bench.watch_enabled);
             app.open_new_document();
-            assert_eq!(take_performed(), [("sources.watch".to_string(), json!({"enabled": true})), ("documents.new".to_string(), json!({"discard_unsaved": true}))], "stopping by itself is not the person's step");
+            assert_eq!(take_performed(), [("sources.watch".to_string(), json!({"enabled": true})), ("documents.new".to_string(), json!({}))], "stopping by itself is not the person's step");
             assert!(!app.bench.watch_enabled);
             std::fs::remove_file(path).ok();
         }
@@ -252,7 +252,7 @@ mod tests {
             let opened = call(&mut app, &Caller::Panel, "sources.view_version", json!({"index": 0})).unwrap();
             assert_eq!(opened["name"], "test.bin @ version 1");
             assert_eq!(app.document.read_range(0, 11), b"version one");
-            assert!(!app.parents.is_empty(), "Back returns to the file");
+            assert!(app.active_parent().is_some(), "Back returns to the file");
         }
 
         #[test]

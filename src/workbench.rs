@@ -153,6 +153,9 @@ pub struct Workbench {
 
     serial: Option<SerialCapture>,
     serial_seen: usize,
+    /// The sheet a live source (a watched file, a serial capture) feeds,
+    /// polled only while it is shown.
+    pub live_sheet: Option<String>,
     watcher: Option<FileWatcher>,
     pub watch_enabled: bool,
     last_live_poll: Instant,
@@ -196,6 +199,7 @@ impl Default for Workbench {
             panels: PanelStates::default(),
             serial: None,
             serial_seen: 0,
+            live_sheet: None,
             watcher: None,
             watch_enabled: false,
             last_live_poll: Instant::now(),
@@ -230,6 +234,14 @@ impl Workbench {
         self.freshness.forget_all();
         self.pending.retain(|pending| matches!(pending, Pending::Source(_)));
     }
+
+    /// Sheet `to` is shown in place of `from`.
+    pub fn sheet_switched(&mut self, _from: &str, _to: &str) {
+        self.document_changed();
+    }
+
+    /// Sheet `id` closed.
+    pub fn sheet_closed(&mut self, _id: &str) {}
 
     /// Switch to `layout`, or back to rows if it is already showing.
     pub fn toggle_layout(&mut self, layout: Layout) {
@@ -345,9 +357,9 @@ impl ViewerApp {
             self.open_plot();
         }
 
-        // Live sources feed the top-level document, so they wait while a
-        // derived document (an unpacked block, say) is open on top of it.
-        let showing_live_document = self.parents.is_empty();
+        // Live sources feed their own sheet, so they wait while another
+        // (an unpacked block, say) is shown.
+        let showing_live_document = self.bench.live_sheet.as_deref() == Some(self.document_id.as_str());
         if (self.bench.serial.is_some() || self.bench.watch_enabled)
             && showing_live_document
             && self.bench.last_live_poll.elapsed() >= LIVE_POLL_INTERVAL
@@ -1108,6 +1120,7 @@ impl ViewerApp {
                 // Opening the capture's document stops any previous source.
                 self.open_bytes(Vec::new(), name);
                 self.bench.serial = Some(capture);
+                self.bench.live_sheet = Some(self.document_id());
                 self.bench.serial_seen = 0;
                 self.bench.recording.get_or_insert_with(|| Recording::new(sources::DEFAULT_RECORDING_BUDGET));
             }
@@ -1182,6 +1195,7 @@ impl ViewerApp {
         let watcher = FileWatcher::new(&path)?;
         self.bench.watcher = Some(watcher);
         self.bench.watch_enabled = true;
+        self.bench.live_sheet = Some(self.document_id());
         let bytes = self.document.read_range(0, RECORDING_FILE_LIMIT);
         self.record_snapshot(&bytes);
         Ok(())
@@ -1258,7 +1272,7 @@ impl ViewerApp {
             ui.label(RichText::new(error).color(theme::DANGER));
         }
         ui.horizontal(|ui| {
-            let can_watch = self.document.path().is_some() && self.parents.is_empty();
+            let can_watch = self.document.path().is_some() && self.active_lineage.parent.is_none();
             let mut watching = self.bench.watch_enabled;
             if ui.add_enabled(can_watch, egui::Checkbox::new(&mut watching, "Watch the file for changes")).changed() {
                 self.set_watch(watching);

@@ -181,7 +181,7 @@ A recipe step that starts a job waits for it (up to 10 minutes), and later steps
 
 ## Methods
 
-180 methods in 46 namespaces. The MCP column says which are listed as tools of their own by `theviewer mcp` (every one is with `--all-tools`; the rest are reached with `api_call`).
+181 methods in 46 namespaces. The MCP column says which are listed as tools of their own by `theviewer mcp` (every one is with `--all-tools`; the rest are reached with `api_call`).
 
 | Method | Effect | MCP | Summary |
 | --- | --- | --- | --- |
@@ -189,11 +189,12 @@ A recipe step that starts a job waits for it (up to 10 minutes), and later steps
 | [`api.describe`](#apidescribe) | read |  | Every method with its summary, effect, stability and the JSON schemas of its parameters and result. |
 | [`documents.list`](#documentslist) | read | core | The open documents, with their ids, names, paths, lengths and versions, and which is your focus: what an omitted doc means for you. |
 | [`documents.info`](#documentsinfo) | read |  | One document's id, name, path, length, version and whether it has unsaved edits. |
-| [`documents.open`](#documentsopen) | view | core | Open a file by path, or an open document by id, and make it current; a file already open is made current again. In the window, a parent of the document shown is gone back to, closing what was derived from it; that, or opening another file, is refused while what it closes has unsaved edits, unless the person at the window discards them. |
-| [`documents.activate`](#documentsactivate) | view |  | Make an open document your focus, which an omitted doc means from then on; for the person at the window, show it (a parent of the document shown is gone back to, as documents.open does). |
-| [`documents.new`](#documentsnew) | view |  | Open a new, empty document and make it current; the window refuses while its document has unsaved edits, unless the person at the window discards them. |
+| [`documents.open`](#documentsopen) | view | core | Open a file by path, or an open document by id, and make it current; a file already open is made current again. The window opens a file as a new worksheet beside those open and shows an open one again, closing nothing; with discard_unsaved (the person at the window only), a file already open with unsaved edits is read from disk again. |
+| [`documents.activate`](#documentsactivate) | view |  | Make an open document your focus, which an omitted doc means from then on; for the person at the window, show it, closing nothing. |
+| [`documents.new`](#documentsnew) | view |  | Open a new, empty document and make it current; the window opens it as a new worksheet beside those open. |
+| [`documents.close`](#documentsclose) | view |  | Close an open document and every document derived from it, at any depth. Refused while one of them has unsaved edits, unless the person at the window discards them; when the current document closes, its parent (else another) becomes current. |
 | [`documents.save`](#documentssave) | edit | core | Save a document over its file, or to a path, with every edit made so far. |
-| [`documents.derive`](#documentsderive) | view |  | Open bytes of a document (a span, several ranges one after another, bytes given, or ranges of several sheets joined with sources), or what a transform such as decompress or XOR makes of them, as a document of their own derived from it, and make it current; in the window, Back goes back to the parent. Returns the new document, and output; with output {"file": path} the bytes are written to a file instead, which needs leave to edit. |
+| [`documents.derive`](#documentsderive) | view |  | Open bytes of a document (a span, several ranges one after another, bytes given, or ranges of several sheets joined with sources), or what a transform such as decompress or XOR makes of them, as a document of their own derived from it, and make it current; in the window, Back shows the parent again, keeping the new sheet open. Returns the new document, and output; with output {"file": path} the bytes are written to a file instead, which needs leave to edit. |
 | [`documents.export`](#documentsexport) | edit |  | Write a span of a document (or several ranges one after another) to a file, or what decompresses at a span's start; the document is left as it is. A shorthand for documents.derive with output {"file": path}. |
 | [`documents.open_source`](#documentsopen_source) | view |  | Open a file, URL, block device, serial port (serial:PORT@BAUD) or a process's memory region (pid:PID@ADDRESS) as a new document. The window reads a URL, device or region in the background and opens it when it arrives, and pid:PID lists a process's regions in the Live tab; headless, the bytes are read before the call returns. |
 | [`bytes.read`](#bytesread) | read | core | Read a span of bytes, as hex by default, or as base64 or text; a span running past the end of the document is read to the end, and len says how many bytes came back. |
@@ -440,7 +441,7 @@ One document's id, name, path, length, version and whether it has unsaved edits.
 
 ### documents.open
 
-Open a file by path, or an open document by id, and make it current; a file already open is made current again. In the window, a parent of the document shown is gone back to, closing what was derived from it; that, or opening another file, is refused while what it closes has unsaved edits, unless the person at the window discards them.
+Open a file by path, or an open document by id, and make it current; a file already open is made current again. The window opens a file as a new worksheet beside those open and shows an open one again, closing nothing; with discard_unsaved (the person at the window only), a file already open with unsaved edits is read from disk again.
 
 **Effect:** `view` · **MCP tool:** `documents_open`, listed by default
 
@@ -448,8 +449,8 @@ Open a file by path, or an open document by id, and make it current; a file alre
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `discard_unsaved` | boolean | no | In the window, close documents with unsaved edits, losing them, as File › Open and Back do; only the person at the window may. |
-| `doc` | string | no | Id of an open document to make current, such as a parent the window derived the document shown from. |
+| `discard_unsaved` | boolean | no | In the window, read a file already open from disk again when it has unsaved edits, losing them, as File › Open does; only the person at the window may. |
+| `doc` | string | no | Id of an open document to make current, such as the parent the window derived the document shown from. |
 | `path` | string | no | Path of the file to open. |
 
 | Result field | Type | Required | Description |
@@ -468,7 +469,7 @@ Open a file by path, or an open document by id, and make it current; a file alre
 
 ### documents.activate
 
-Make an open document your focus, which an omitted doc means from then on; for the person at the window, show it (a parent of the document shown is gone back to, as documents.open does).
+Make an open document your focus, which an omitted doc means from then on; for the person at the window, show it, closing nothing.
 
 **Effect:** `view` · **MCP tool:** `documents_activate`, through `api_call`, or with `--all-tools`
 
@@ -494,7 +495,7 @@ Make an open document your focus, which an omitted doc means from then on; for t
 
 ### documents.new
 
-Open a new, empty document and make it current; the window refuses while its document has unsaved edits, unless the person at the window discards them.
+Open a new, empty document and make it current; the window opens it as a new worksheet beside those open.
 
 **Effect:** `view` · **MCP tool:** `documents_new`, through `api_call`, or with `--all-tools`
 
@@ -502,7 +503,7 @@ Open a new, empty document and make it current; the window refuses while its doc
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `discard_unsaved` | boolean | no | In the window, close documents with unsaved edits, losing them, as File › New does; only the person at the window may. |
+| `discard_unsaved` | boolean | no | Accepted for clients written when a new document closed the others; nothing is closed now. Only the person at the window may pass it. |
 | `name` | string | no | What to call the document ("untitled" by default). |
 
 | Result field | Type | Required | Description |
@@ -518,6 +519,24 @@ Open a new, empty document and make it current; the window refuses while its doc
 | `parent` | string | no | The document it was derived from, for a sheet made from another; none for one opened from a file, a source or new. |
 | `path` | string | no | Path on disk, for documents opened from a file. |
 | `version` | integer | yes | Incremented on every edit. |
+
+### documents.close
+
+Close an open document and every document derived from it, at any depth. Refused while one of them has unsaved edits, unless the person at the window discards them; when the current document closes, its parent (else another) becomes current.
+
+**Effect:** `view` · **MCP tool:** `documents_close`, through `api_call`, or with `--all-tools`
+
+**History:** Journalled as a step; nothing to undo: a document closed stays closed; open it again instead; never repeated.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `discard_unsaved` | boolean | no | Close them even when one has unsaved edits, losing them; only the person at the window may. |
+| `doc` | string | yes | Id or path of the open document to close, with every document derived from it. |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `closed` | array of string | yes | The documents closed, the one named first. |
+| `current` | string | no | The current document now, if one is open. |
 
 ### documents.save
 
@@ -548,7 +567,7 @@ Save a document over its file, or to a path, with every edit made so far.
 
 ### documents.derive
 
-Open bytes of a document (a span, several ranges one after another, bytes given, or ranges of several sheets joined with sources), or what a transform such as decompress or XOR makes of them, as a document of their own derived from it, and make it current; in the window, Back goes back to the parent. Returns the new document, and output; with output {"file": path} the bytes are written to a file instead, which needs leave to edit.
+Open bytes of a document (a span, several ranges one after another, bytes given, or ranges of several sheets joined with sources), or what a transform such as decompress or XOR makes of them, as a document of their own derived from it, and make it current; in the window, Back shows the parent again, keeping the new sheet open. Returns the new document, and output; with output {"file": path} the bytes are written to a file instead, which needs leave to edit.
 
 **Effect:** `view` · **MCP tool:** `documents_derive`, through `api_call`, or with `--all-tools`
 

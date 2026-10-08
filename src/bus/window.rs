@@ -242,12 +242,28 @@ impl ViewerApp {
     /// Say that `closed` (ids and names) closed, back on a document already
     /// known, and start watching the one shown afresh.
     pub(crate) fn publish_documents_closed(&mut self, closed: Vec<(String, String)>) {
+        self.publish_sheets_closed(closed);
+        self.bus_watch.version = self.document.version();
+        self.bus_watch.pinned.clear();
+    }
+
+    /// Say that the sheets `closed` (ids and names) closed, leaving what is
+    /// watched of the sheet shown as it is.
+    pub(crate) fn publish_sheets_closed(&mut self, closed: Vec<(String, String)>) {
         for (id, name) in closed {
             let mut draft = self.draft(APP, Payload::DocumentClosed(DocumentClosed { name }));
             draft.document = Some(id);
             self.bus.publish(draft);
         }
-        self.bus_watch.version = self.document.version();
+    }
+
+    /// Another open sheet is shown: its edits are published on from
+    /// `published`, the version they were said up to while it was parked,
+    /// its selection is taken as said, and its pinned findings are said
+    /// again.
+    pub(crate) fn bus_watch_sheet_switched(&mut self, published: u64) {
+        self.bus_watch.version = published;
+        self.bus_watch.selection = Some((self.cursor, self.current_selection()));
         self.bus_watch.pinned.clear();
     }
 
@@ -412,17 +428,23 @@ mod tests {
     }
 
     #[test]
-    fn opening_a_document_says_the_last_one_closed_and_forgets_what_was_known_about_it() {
+    fn opening_a_document_keeps_the_last_one_and_closing_it_forgets_what_was_known_about_it() {
         let mut app = app_with(b"first document");
+        let first = app.document_id();
         app.bus.publish(app.draft("tool:test", Payload::RecordWidthEstimated(RecordWidthEstimated { width: 4, score: 1.0, alternatives: Vec::new() })));
         app.run_bus();
         assert_eq!(app.bus.facts().count(), 1);
         let cursor = app.bus.cursor();
         app.open_bytes(b"second".to_vec(), "second.bin".to_string());
         app.run_bus();
-        assert_eq!(&topics_since(&app, cursor)[..2], [Topic::DocumentClosed, Topic::DocumentOpened]);
+        assert!(!topics_since(&app, cursor).contains(&Topic::DocumentClosed), "the first document stays open");
         let opened = app.bus.recent().rev().find_map(|message| message.payload_as::<DocumentOpened>()).unwrap();
         assert_eq!((opened.name.as_str(), opened.len), ("second.bin", 6));
+        assert_eq!(app.bus.facts().count(), 1, "what is known about the first document is kept while it is parked");
+        let cursor = app.bus.cursor();
+        app.close_sheet_tree(&first);
+        app.run_bus();
+        assert_eq!(topics_since(&app, cursor), [Topic::DocumentClosed]);
         assert_eq!(app.bus.facts().count(), 0, "facts about the first document are gone");
     }
 

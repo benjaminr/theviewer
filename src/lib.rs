@@ -109,6 +109,7 @@ pub mod selection_drag;
 pub mod selection_menu;
 pub mod selection_ops;
 pub mod settings;
+pub mod sheets;
 pub mod similar;
 pub mod sources;
 pub mod stats;
