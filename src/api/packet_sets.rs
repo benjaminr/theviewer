@@ -436,6 +436,8 @@ pub struct ListParams {
     pub descending: bool,
     /// Keep only the first packet (in the order listed) of each value of
     /// this field, named as for `sort`: a chunk sent twice is listed once.
+    /// Values are compared as the whole text, so `info` keeps each
+    /// distinct summary; packets without the field are all kept.
     #[serde(default)]
     pub dedupe: Option<String>,
 }
@@ -1335,6 +1337,27 @@ fn order_key(stored: &StoredSet, decoded: &Decoded, index: usize, name: &OrderBy
     }
 }
 
+/// The value of `name` in packet `index` to de-duplicate by: the whole of
+/// a column's text or of a field's values, so two infos that start with the
+/// same number are still two; `None` when the packet has no such field.
+fn dedupe_key(stored: &StoredSet, decoded: &Decoded, index: usize, name: &OrderBy) -> Option<String> {
+    let packet = &stored.packets.packets[index];
+    let summary = &decoded.dissections[index].summary;
+    match name {
+        OrderBy::Length => Some(packet.len.to_string()),
+        OrderBy::Offset => Some(packet.offset.to_string()),
+        OrderBy::Time => packet.timestamp.map(|time| time.to_string()),
+        OrderBy::Source => Some(summary.source.clone()),
+        OrderBy::Destination => Some(summary.destination.clone()),
+        OrderBy::Protocol => Some(summary.protocol.clone()),
+        OrderBy::Info => Some(summary.info.clone()),
+        OrderBy::Field(field) => {
+            let values = packets::filter::wireshark_values(&decoded.dissections[index], field);
+            (!values.is_empty()).then(|| values.join("\u{1f}"))
+        }
+    }
+}
+
 /// What packets are put in order of, or de-duplicated by.
 enum OrderBy {
     Length,
@@ -1375,10 +1398,7 @@ fn ordered(stored: &StoredSet, decoded: &Decoded, mut kept: Vec<usize>, sort: Op
     if let Some(name) = dedupe {
         let by = order_by(decoded, name, "de-duplicate")?;
         let mut seen = std::collections::HashSet::new();
-        kept.retain(|&index| match order_key(stored, decoded, index, &by) {
-            packets::filter::SortKey::Missing => true,
-            key => seen.insert(key),
-        });
+        kept.retain(|&index| dedupe_key(stored, decoded, index, &by).is_none_or(|key| seen.insert(key)));
     }
     Ok(kept)
 }
@@ -2222,6 +2242,27 @@ mod tests {
         assert_eq!(indices(&mut workspace, json!({"set": "set-1", "sort": "offset", "descending": true, "filter": "seq<3"})), vec![4, 3, 2, 1]);
         let refused = call(&mut workspace, "packets.list", json!({"set": "set-1", "sort": "sqe"})).unwrap_err();
         assert!(refused.message.contains("seq"), "{}", refused.message);
+    }
+
+    #[test]
+    fn remote_frames_that_differ_only_after_their_first_bytes_are_each_listed_once_by_info() {
+        let press = |button: u8| vec![0x55, 0x96, 0x69, 0x95, 0x59, 0x66, 0x99, 0x65, 0x56, 0x69, 0x95, button, 0x52, 0x93];
+        let frames: Vec<u8> = [1u8, 1, 2, 1, 3, 3].iter().flat_map(|&button| press(button)).collect();
+        let mut workspace = workspace_with("remote.bin", &frames);
+        call(&mut workspace, "packets.sets.create", json!({"from": "split_fixed", "record_len": 14, "detect": false})).unwrap();
+        let infos = |workspace: &mut crate::api::HeadlessWorkspace, params: serde_json::Value| -> Vec<String> {
+            let listed = call(workspace, "packets.list", params).unwrap();
+            listed["packets"].as_array().unwrap().iter().map(|packet| packet["summary"]["info"].as_str().unwrap().to_string()).collect()
+        };
+        let all = infos(&mut workspace, json!({"set": "set-1"}));
+        let distinct: Vec<String> = all.iter().fold(Vec::new(), |mut kept, info| {
+            if !kept.contains(info) {
+                kept.push(info.clone());
+            }
+            kept
+        });
+        assert_eq!(distinct.len(), 3, "the buttons show in the info: {all:?}");
+        assert_eq!(infos(&mut workspace, json!({"set": "set-1", "dedupe": "info"})), distinct);
     }
 
     #[test]
