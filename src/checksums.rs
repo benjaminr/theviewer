@@ -151,11 +151,12 @@ struct RangeTest {
 /// Find checksum fields in `bytes` (document offset `base`).
 ///
 /// `candidates` are local offsets of suspected fields; when empty, every
-/// 4-aligned offset in the first and last 64 bytes and right after each
-/// boundary is tried. `boundaries` are local offsets of region edges, which
-/// also bound covered ranges.
+/// 4-aligned offset in the first and last 64 bytes, at and either side of
+/// each boundary and before any padding at the end is tried. `boundaries`
+/// are local offsets of region edges, which also bound covered ranges.
 pub fn find_checksums(bytes: &[u8], base: usize, candidates: &[usize], boundaries: &[usize]) -> Vec<ChecksumMatch> {
-    let fields = candidate_fields(bytes.len(), candidates, boundaries);
+    let content_end = content_end(bytes);
+    let fields = candidate_fields(bytes.len(), content_end, candidates, boundaries);
     let mut jobs: Vec<(usize, Algorithm, RangeTest)> = Vec::new();
     'outer: for &field in &fields {
         for algorithm in ALGORITHMS.iter().copied().chain(std::iter::once(XOR8)) {
@@ -163,12 +164,14 @@ pub fn find_checksums(bytes: &[u8], base: usize, candidates: &[usize], boundarie
                 continue;
             }
             // One-byte checksums match random data one time in 256, so they
-            // are only believed as a final byte covering everything before it.
-            if algorithm.width == 1 && field + 1 != bytes.len() {
+            // are only believed as the last byte of the data (before any
+            // padding) or of a region, over the bytes before it.
+            let ends_something = [bytes.len(), content_end].contains(&(field + 1)) || boundaries.iter().any(|&b| b == field || b == field + 1);
+            if algorithm.width == 1 && !ends_something {
                 continue;
             }
             for range in covered_ranges(bytes.len(), field, algorithm.width, boundaries) {
-                if algorithm.width == 1 && (range.start != 0 || range.end != field) {
+                if algorithm.width == 1 && range.end != field {
                     continue;
                 }
                 if jobs.len() >= MAX_RANGE_TESTS {
@@ -188,15 +191,29 @@ pub fn find_checksums(bytes: &[u8], base: usize, candidates: &[usize], boundarie
     matches
 }
 
-fn candidate_fields(len: usize, candidates: &[usize], boundaries: &[usize]) -> Vec<usize> {
+/// Where the data ends before a run of padding (zero or 0xFF bytes) at
+/// its end; the whole length when there is none, or nothing but padding.
+fn content_end(bytes: &[u8]) -> usize {
+    let Some(&last) = bytes.last().filter(|&&last| last == 0x00 || last == 0xFF) else { return bytes.len() };
+    match bytes.iter().rposition(|&byte| byte != last) {
+        Some(position) => position + 1,
+        None => bytes.len(),
+    }
+}
+
+fn candidate_fields(len: usize, content_end: usize, candidates: &[usize], boundaries: &[usize]) -> Vec<usize> {
     let mut fields: Vec<usize> = if candidates.is_empty() {
         let mut fields: Vec<usize> = (0..EDGE.min(len)).step_by(4).collect();
         let tail_start = len.saturating_sub(EDGE) & !3;
         fields.extend((tail_start..len).step_by(4));
-        // Single-byte and 2-byte trailers are often unaligned at the very end.
-        fields.extend([len.saturating_sub(1), len.saturating_sub(2), len.saturating_sub(4)]);
+        // Single-byte and 2-byte trailers are often unaligned at the very
+        // end, or at the end before padding.
+        for end in [len, content_end] {
+            fields.extend([end.saturating_sub(1), end.saturating_sub(2), end.saturating_sub(4)]);
+        }
+        // A value may start at a boundary or end at one.
         for &boundary in boundaries {
-            fields.extend([boundary, boundary + 4]);
+            fields.extend([boundary.saturating_sub(1), boundary, boundary + 4]);
         }
         fields
     } else {
@@ -332,6 +349,27 @@ mod tests {
         file[4..8].copy_from_slice(&value.to_le_bytes());
         let found = find_checksums(&file, 0, &[4], &[]);
         assert!(found.iter().any(|m| m.algorithm == "CRC-32" && m.value_offset == 4 && m.covered_start == 0 && m.covered_len == file.len()), "{found:?}");
+    }
+
+    /// A remote's frame: sync, serial, button, counter and the sum of them.
+    const FRAME: [u8; 9] = [0xAA, 0x2D, 0x74, 0xB5, 0x27, 0x01, 0x19, 0x52, 0x93];
+
+    #[test]
+    fn a_sum_byte_followed_by_padding_is_found() {
+        let mut data = FRAME.to_vec();
+        data.extend([0, 0, 0, 0]);
+        let found = find_checksums(&data, 0, &[], &[]);
+        assert!(found.iter().any(|m| m.algorithm == "sum8" && m.value_offset == 8 && m.covered_start == 0 && m.covered_len == 8), "{found:?}");
+    }
+
+    #[test]
+    fn a_sum_byte_ending_at_a_boundary_is_found_whatever_follows() {
+        let mut data = FRAME.to_vec();
+        data.extend([0xFF, 0xEE]);
+        for boundaries in [[8], [9]] {
+            let found = find_checksums(&data, 0, &[], &boundaries);
+            assert!(found.iter().any(|m| m.algorithm == "sum8" && m.value_offset == 8 && m.covered_len == 8), "{boundaries:?}: {found:?}");
+        }
     }
 
     #[test]
