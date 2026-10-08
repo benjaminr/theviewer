@@ -139,6 +139,16 @@ const ALGORITHMS: [Algorithm; 7] = [
 
 const XOR8: Algorithm = Algorithm { name: "xor8", width: 1, compute: |b| b.iter().fold(0u8, |acc, x| acc ^ x) as u64 };
 
+/// One of the checksums `find_checksums` tries, by its name ("CRC-32",
+/// "sum8", …, in any case): its name, width in bytes and computation.
+pub fn named_algorithm(name: &str) -> Option<(&'static str, usize, fn(&[u8]) -> u64)> {
+    ALGORITHMS
+        .iter()
+        .chain(std::iter::once(&XOR8))
+        .find(|algorithm| algorithm.name.eq_ignore_ascii_case(name.trim()))
+        .map(|algorithm| (algorithm.name, algorithm.width, algorithm.compute))
+}
+
 /// A covered range to test, in local offsets; `zeroed` blanks the value field
 /// first (headers often checksum themselves with the field zeroed).
 #[derive(Clone, Copy, PartialEq, Eq)]

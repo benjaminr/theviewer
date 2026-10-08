@@ -181,7 +181,7 @@ A recipe step that starts a job waits for it (up to 10 minutes), and later steps
 
 ## Methods
 
-181 methods in 46 namespaces. The MCP column says which are listed as tools of their own by `theviewer mcp` (every one is with `--all-tools`; the rest are reached with `api_call`).
+183 methods in 46 namespaces. The MCP column says which are listed as tools of their own by `theviewer mcp` (every one is with `--all-tools`; the rest are reached with `api_call`).
 
 | Method | Effect | MCP | Summary |
 | --- | --- | --- | --- |
@@ -305,7 +305,9 @@ A recipe step that starts a job waits for it (up to 10 minutes), and later steps
 | [`xor.recover_keys`](#xorrecover_keys) | read |  | Recover single-byte and repeating XOR keys for a span (at most 1 MiB) by letter frequency, index of coincidence and the key showing through zero padding, best first, with a preview of each decode and the likely key lengths; transform.apply with {"op": "xor"} applies one. |
 | [`checksums.digests`](#checksumsdigests) | read |  | The digests of a span (at most 64 MiB): CRC-32, Adler-32, MD5, SHA-1, SHA-256, the 8- and 16-bit sums and the XOR of every byte. |
 | [`checksums.find_stored`](#checksumsfind_stored) | read |  | Find a CRC, Adler or sum stored in a span (at most 64 MiB) that covers part of it, testing header and trailer fields, and the fields at the boundaries given, against the bytes before, after and around them. |
-| [`checksums.solve_crc`](#checksumssolve_crc) | job |  | Start the CRC solver on records of equal length that each carry a stored CRC, as a job: every polynomial, init, xorout and reflection that reproduces all the stored values (like reveng), with the closest catalogue algorithm, is job.finished's result, and in the window it fills the CRC solver. |
+| [`checksums.solve_crc`](#checksumssolve_crc) | job |  | Start the CRC solver on records that each carry a stored CRC (fixed-length records, or a packet set's packets of any lengths), as a job: every polynomial, init, xorout and reflection that reproduces all the stored values (like reveng), with the closest catalogue algorithm, is job.finished's result, and in the window it fills the CRC solver. |
+| [`checksums.verify`](#checksumsverify) | read |  | Check the checksum stored in each record (a packet set's packets, filtered, or fixed-length records) against a model (an algorithm by name, or a CRC's parameters as solve_crc gives them) and list the records whose value is wrong. |
+| [`checksums.compute`](#checksumscompute) | read |  | Compute a checksum of a span with a model (an algorithm by name, or a CRC's parameters as solve_crc gives them): its value, and its bytes as they would be stored. |
 | [`diff.run`](#diffrun) | job |  | Start a comparison of a document with another file (path) or another open document (other) as a job: the regions replaced, only in the document and only in the other file (inserted, deleted and changed, not just flipped bytes), with the bytes equal and changed, are job.finished's result, and in the window they fill the Diff tab and are outlined on the views. |
 | [`disasm.set_arch`](#disasmset_arch) | view |  | Choose the architecture the Disassembly tab decodes as, or auto (the executable header's, else a guess from the bytes); headless there is no listing to change, and the choice is only returned. |
 | [`crypto.scan_constants`](#cryptoscan_constants) | job |  | Start a scan of the whole document (an edited one's first 256 MiB) for well-known constants of crypto and compression code (AES S-boxes, hash initial values, CRC tables, deflate tables, Blowfish, DES, ChaCha, TEA, curve primes, Base64 alphabets) as a job: the matches are job.finished's result, and in the window they fill Crypto constants. |
@@ -3025,8 +3027,11 @@ The digests of a span (at most 64 MiB): CRC-32, Adler-32, MD5, SHA-1, SHA-256, t
 | `sha256` | string | yes |  |
 | `start` | integer | yes |  |
 | `sum16` | string | yes |  |
+| `sum16_value` | integer | yes | The 16-bit sum as a number. |
 | `sum8` | string | yes |  |
+| `sum8_value` | integer | yes | The one-byte sum as a number, for an anchor to do sums with. |
 | `xor8` | string | yes |  |
+| `xor8_value` | integer | yes | The XOR of every byte as a number. |
 
 ### checksums.find_stored
 
@@ -3051,7 +3056,7 @@ Find a CRC, Adler or sum stored in a span (at most 64 MiB) that covers part of i
 
 ### checksums.solve_crc
 
-Start the CRC solver on records of equal length that each carry a stored CRC, as a job: every polynomial, init, xorout and reflection that reproduces all the stored values (like reveng), with the closest catalogue algorithm, is job.finished's result, and in the window it fills the CRC solver.
+Start the CRC solver on records that each carry a stored CRC (fixed-length records, or a packet set's packets of any lengths), as a job: every polynomial, init, xorout and reflection that reproduces all the stored values (like reveng), with the closest catalogue algorithm, is job.finished's result, and in the window it fills the CRC solver.
 
 **Effect:** `job` · **MCP tool:** `checksums_solve_crc`, through `api_call`, or with `--all-tools`
 
@@ -3059,12 +3064,14 @@ Start the CRC solver on records of equal length that each carry a stored CRC, as
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `count` | integer | yes | Records, at least 2; the first 256 are solved. |
+| `count` | integer | no | Records, at least 2; the first 256 are solved. |
 | `doc` | string | no | Document id, path or "current" (the default). |
+| `filter` | string | no | With `set`, a display filter choosing its packets. |
 | `offset` | integer | no | Offset of the CRC within each record, covering the bytes before it; the last bytes of each record when omitted. |
 | `order` | `"big"` \| `"little"` \| `"either"` | no | Byte order of the stored CRC (either, by default). |
-| `record_len` | integer | yes | Bytes in each record, CRC included. |
-| `start` | integer | yes | Document offset of the first record. |
+| `record_len` | integer | no | Bytes in each record, CRC included. |
+| `set` | string | no | A packet set whose packets are the records, of any lengths, in place of `start`, `record_len` and `count`. |
+| `start` | integer | no | Document offset of the first record. |
 | `try_skips` | boolean | no | Also try leaving up to 4 leading bytes of each record out of the CRC. |
 | `width` | integer | no | Bits in the CRC: 8, 16 (the default) or 32. |
 
@@ -3072,6 +3079,54 @@ Start the CRC solver on records of equal length that each carry a stored CRC, as
 | --- | --- | --- | --- |
 | `job` | string | yes | Follow it with jobs.status, or on job.progress and job.finished. |
 | `step` | integer | no | The journal step that started it, which an anchor on the job's result cites (`{"step": N, "path": "job.…"}`); none for a call inside another, such as a recipe's step. |
+
+### checksums.verify
+
+Check the checksum stored in each record (a packet set's packets, filtered, or fixed-length records) against a model (an algorithm by name, or a CRC's parameters as solve_crc gives them) and list the records whose value is wrong.
+
+**Effect:** `read` · **MCP tool:** `checksums_verify`, through `api_call`, or with `--all-tools`
+
+**History:** Kept among the recent reads, which a later step can cite.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `doc` | string | no | With `records`, the document id, path or "current" (the default). |
+| `filter` | string | no | With `set`, a display filter choosing its packets. |
+| `model` | ChecksumModel | yes | A checksum to compute or check: one of `checksums.find_stored`'s algorithms or a catalogue CRC by name, or a CRC's parameters as `checksums.solve_crc` gives them (one of its solutions can be passed as it is), and where each record stores its value. |
+| `records` | FixedRecords | no | Fixed-length records of the document, in place of `set`. |
+| `set` | string | no | A packet set whose packets are the records. |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `bad` | array of BadRecord | yes | The records whose stored value is wrong, in order. |
+| `checked` | integer | yes | Records checked. |
+| `good` | integer | yes | Records whose stored value is right. |
+| `model` | string | yes | The model in words. |
+| `short` | integer | yes | Records too short to hold a value where the model looks. |
+
+### checksums.compute
+
+Compute a checksum of a span with a model (an algorithm by name, or a CRC's parameters as solve_crc gives them): its value, and its bytes as they would be stored.
+
+**Effect:** `read` · **MCP tool:** `checksums_compute`, through `api_call`, or with `--all-tools`
+
+**History:** Kept among the recent reads, which a later step can cite.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `doc` | string | no | Document id, path or "current" (the default). |
+| `len` | integer | no | Bytes covered; to the end of the document (or 64 MiB) when omitted. |
+| `model` | ChecksumModel | yes | The checksum; its `skip` and `offset` are not used. |
+| `start` | integer | no | First offset covered (0 by default). |
+
+| Result field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `hex` | string | yes | The value as a hex number. |
+| `len` | integer | yes |  |
+| `model` | string | yes | The model in words. |
+| `start` | integer | yes |  |
+| `stored` | string | yes | The value's bytes as stored, in the model's byte order, as hex. |
+| `value` | integer | yes |  |
 
 ### diff.run
 
