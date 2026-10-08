@@ -266,6 +266,11 @@ pub struct ExtractParams {
     /// Without indices: keep the first packet of each value of this field, as packets.list does.
     #[serde(default)]
     pub dedupe: Option<String>,
+    /// At most this many packets: the first ones in the order chosen, after
+    /// any repeats are left out (the newest frame, say, with a sort
+    /// descending and a limit of 1).
+    #[serde(default)]
+    pub limit: Option<usize>,
     /// Only this field of each packet (a transfer's data blocks without
     /// their headers, say), cut short where a packet ends; packets that end
     /// before it starts give nothing.
@@ -660,7 +665,7 @@ pub fn extract(workspace: &mut dyn Workspace, caller: &Caller, params: ExtractPa
         return Err(ApiError::invalid_params("give the packets one way: indices, or a filter, sort and dedupe as packets.list takes them"));
     }
     let (doc, count, bytes) = with_set(workspace, &params.set, |stored, document| {
-        let chosen = match &params.indices {
+        let mut chosen = match &params.indices {
             Some(indices) => packet_indices(stored, indices)?,
             None => {
                 decode(stored, document);
@@ -669,6 +674,9 @@ pub fn extract(workspace: &mut dyn Workspace, caller: &Caller, params: ExtractPa
                 ordered(stored, decoded, kept, params.sort.as_deref(), params.descending, params.dedupe.as_deref())?
             }
         };
+        if let Some(limit) = params.limit {
+            chosen.truncate(limit);
+        }
         let field_name = match &params.field_name {
             Some(name) => {
                 super::decode(stored, document);

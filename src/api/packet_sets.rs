@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
 
 use super::packets::DissectionResult;
 use super::values::{self, ByteEncoding, NoParams};
-use super::output::{self, Delivered, Output, Produced};
+use super::output::{self, Delivered, NewSheet, Output, Produced};
 use super::workspace::{self, Workspace};
 use super::{ApiError, Caller, ErrorCode, OutputKind};
 use crate::bus::topics::{FieldsGuessed, FramesDefined};
@@ -46,7 +46,7 @@ pub(super) const METHODS: &[super::Method] = &[
     method!("packets.export_pcap", Analysis, export_pcap, ExportParams, ExportResult, "A set's packets (those a filter keeps) as a pcap file, returned or written to a path given (which needs leave to edit).").writes_file(crate::api::WritesFile::WhenGiven("path")),
     method!("packets.conversations", Read, conversations, ConversationsParams, ConversationList, "The conversations in a set (the packets a filter keeps): each pair of endpoints with its transport, packets and bytes each way, its first packet's index in the set, and a filter for it; in order of first packet, or sorted by packets, bytes or address."),
     method!("packets.follow_stream", Read, caller follow_stream, FollowStreamParams, StreamResult, "The payloads of a packet's conversation in order, each with its direction, and the stream as text; or, with output \"new\", the stream's bytes (one direction's, with direction) opened as a sheet derived from the set's document.").outputs(&[OutputKind::Return, OutputKind::New], OutputKind::Return),
-    method!("packets.http_bodies", Analysis, http_bodies, HttpBodiesParams, HttpBodies, "The HTTP/1 requests and responses in a packet's TCP stream, each with its head and its body as meant: put together across segments, de-chunked, and decompressed by its Content-Encoding (gzip or deflate); the bodies are returned, or opened as documents of their own with open."),
+    method!("packets.http_bodies", Analysis, http_bodies, HttpBodiesParams, HttpBodies, "The HTTP/1 requests and responses in a packet's TCP stream, each with its head and its body as meant: put together across segments, de-chunked, and decompressed by its Content-Encoding (gzip or deflate); the bodies are returned, or opened as documents of their own with open or output \"new\" ({\"new\": {\"label\": \"body\"}} labels them body, body 1, body 2…)."),
     method!("packets.find_captures", Read, find_captures, FindCapturesParams, CaptureList, "The captures inside a span of a document (pcap, pcapng, snoop, Network Monitor or ERF, or one of these compressed with gzip), each with its offset, format, link type and packets, for packets.sets.create."),
     method!("packets.sets.add_packets", View, caller add_packets, AddPacketsParams, SetInfo, "Add ranges of the document to a set as packets of their own, so packets can be gathered one at a time; the set then keeps its packets where they are."),
     method!("packets.sets.refresh", View, caller refresh, RefreshParams, SetInfo, "Find a set's packets again, the way they were found, in another document (the current one by default), which the set then belongs to."),
@@ -578,19 +578,39 @@ pub struct ConversationsParams {
     /// endpoints busiest first (by bytes) when omitted.
     #[serde(default)]
     pub sort: Option<TrafficOrder>,
+    /// Highest first (true) or lowest first (false). By default packets and
+    /// bytes are highest first, and addresses and first packets lowest first.
+    #[serde(default)]
+    pub descending: Option<bool>,
+}
+
+impl TrafficOrder {
+    /// Whether this order puts the highest first unless `descending` says.
+    fn highest_first(self) -> bool {
+        matches!(self, TrafficOrder::Packets | TrafficOrder::Bytes)
+    }
+}
+
+/// `found`, already in `order`'s own direction, turned round when
+/// `descending` asks for the other one.
+fn in_direction<T>(mut found: Vec<T>, order: TrafficOrder, descending: Option<bool>) -> Vec<T> {
+    if descending.is_some_and(|descending| descending != order.highest_first()) {
+        found.reverse();
+    }
+    found
 }
 
 /// How conversations or endpoints are put in order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum TrafficOrder {
-    /// Most packets first.
+    /// Most packets first (fewest first with descending false).
     Packets,
-    /// Most bytes first.
+    /// Most bytes first (fewest first with descending false).
     Bytes,
-    /// By address (and port), lowest first.
+    /// By address (and port), lowest first (highest first with descending).
     Address,
-    /// Conversations by their first packet; for endpoints, by address.
+    /// Conversations by their first packet, earliest first; for endpoints, by address.
     First,
 }
 
@@ -690,12 +710,18 @@ pub struct HttpBodiesParams {
     /// Any packet of the TCP conversation.
     pub index: u64,
     /// Open each body that is not empty as a document of its own, derived
-    /// from the set's, rather than returning it.
+    /// from the set's, rather than returning it; as output "new".
     #[serde(default)]
     pub open: bool,
     /// How returned bodies are written: base64 (the default), hex or text.
     #[serde(default = "base64_by_default")]
     pub encoding: ByteEncoding,
+    /// Where the bodies go: "return" (the default) or "new", each body that
+    /// is not empty opened as a sheet; {"new": {"label": "body"}} labels
+    /// the first "body" and the rest "body 1", "body 2" and so on, so a
+    /// recipe can name each by its label.
+    #[serde(default)]
+    pub output: Option<Output>,
 }
 
 /// One HTTP request or response, with its body.
@@ -1600,13 +1626,14 @@ pub fn conversations(workspace: &mut dyn Workspace, params: ConversationsParams)
         let decoded = stored.decoded.as_ref().expect("decoded");
         let kept = filtered(stored, decoded, params.filter.as_deref())?;
         let mut found = packets::flows::conversations_of(kept.iter().map(|&index| (index, decoded.dissections[index].flow.as_ref(), stored.packets.packets[index].len)));
-        match params.sort.unwrap_or(TrafficOrder::First) {
+        let order = params.sort.unwrap_or(TrafficOrder::First);
+        match order {
             TrafficOrder::Packets => found.sort_by_key(|conversation| (std::cmp::Reverse(conversation.packets), conversation.first_packet)),
             TrafficOrder::Bytes => found.sort_by_key(|conversation| (std::cmp::Reverse(conversation.bytes), conversation.first_packet)),
             TrafficOrder::Address => found.sort_by_key(|conversation| (conversation.key.a, conversation.key.b, conversation.key.transport)),
             TrafficOrder::First => found.sort_by_key(|conversation| conversation.first_packet),
         }
-        Ok(ConversationList { conversations: found.iter().map(conversation_entry).collect() })
+        Ok(ConversationList { conversations: in_direction(found, order, params.descending).iter().map(conversation_entry).collect() })
     })
 }
 
@@ -1634,19 +1661,33 @@ pub fn http_bodies(workspace: &mut dyn Workspace, params: HttpBodiesParams) -> R
         return Ok(HttpBodies { messages: Vec::new(), note: Some(format!("packet {} is not part of a TCP conversation", params.index)), outputs: Vec::new() });
     };
     let note = messages.is_empty().then(|| "no HTTP/1 request or response starts in the stream".to_string());
-    if !params.open {
+    let sheets = match params.output {
+        None if params.open => Some(NewSheet::default()),
+        None | Some(Output::Return { .. }) => None,
+        Some(Output::New(sheet)) => Some(sheet),
+        Some(_) => return Err(ApiError::invalid_params("packets.http_bodies returns the bodies or opens them as new sheets: give output \"return\" or \"new\" ({\"new\": {\"label\": …}})")),
+    };
+    if sheets.is_none() {
         values::check_call_size(messages.iter().map(|message| message.body.len()).sum())?;
     }
     let mut bodies = Vec::new();
+    let mut outputs = Vec::new();
     for message in messages {
-        let opened = match params.open && !message.body.is_empty() {
-            true => Some(workspace.open_derived(&doc, message.body.clone(), &format!("{} body", message.start_line))?),
-            false => None,
+        let opened = match &sheets {
+            Some(sheet) if !message.body.is_empty() => {
+                let nth = outputs.len();
+                let name = sheet.name.as_deref().map_or_else(|| format!("{} body", message.start_line), |name| numbered(name, nth));
+                let doc = workspace.open_derived(&doc, message.body.clone(), &name)?;
+                let label = sheet.label.as_deref().map(|label| numbered(label, nth));
+                outputs.push(workspace::SheetOutput { doc: doc.clone(), label, len: message.body.len() as u64 });
+                Some(doc)
+            }
+            _ => None,
         };
         bodies.push(HttpBody {
             packet: message.packet as u64,
             a_to_b: message.a_to_b,
-            data: (!params.open).then(|| values::encode_bytes(&message.body, params.encoding)),
+            data: sheets.is_none().then(|| values::encode_bytes(&message.body, params.encoding)),
             body_len: message.body.len() as u64,
             body_on_wire: message.body_on_wire as u64,
             start_line: message.start_line,
@@ -1658,8 +1699,13 @@ pub fn http_bodies(workspace: &mut dyn Workspace, params: HttpBodiesParams) -> R
             notes: message.notes,
         });
     }
-    let outputs = bodies.iter().filter_map(|body| body.doc.as_deref()).map(|doc| workspace::SheetOutput::of(workspace, doc)).collect::<Result<_, _>>()?;
     Ok(HttpBodies { messages: bodies, note, outputs })
+}
+
+/// The `nth` of several sheets' label or name, from 0: "body", then
+/// "body 1", "body 2"…
+fn numbered(label: &str, nth: usize) -> String {
+    if nth == 0 { label.to_string() } else { format!("{label} {nth}") }
 }
 
 pub fn follow_stream(workspace: &mut dyn Workspace, caller: &Caller, params: FollowStreamParams) -> Result<StreamResult, ApiError> {
@@ -1715,13 +1761,14 @@ pub fn endpoints(workspace: &mut dyn Workspace, params: ConversationsParams) -> 
         let decoded = stored.decoded.as_ref().expect("decoded");
         let kept = filtered(stored, decoded, params.filter.as_deref())?;
         let mut found = packets::endpoints(kept.iter().map(|&index| (decoded.dissections[index].flow.as_ref(), stored.packets.packets[index].len)));
-        match params.sort.unwrap_or(TrafficOrder::Bytes) {
+        let order = params.sort.unwrap_or(TrafficOrder::Bytes);
+        match order {
             TrafficOrder::Packets => found.sort_by_key(|endpoint| (std::cmp::Reverse(endpoint.packets_sent + endpoint.packets_received), endpoint.address)),
             // packets::endpoints gives the busiest by bytes first already.
             TrafficOrder::Bytes => {}
             TrafficOrder::Address | TrafficOrder::First => found.sort_by_key(|endpoint| endpoint.address),
         }
-        let endpoints = found
+        let endpoints = in_direction(found, order, params.descending)
             .into_iter()
             .map(|endpoint| EndpointEntry {
                 address: endpoint.address.to_string(),
@@ -2165,6 +2212,17 @@ mod tests {
     }
 
     #[test]
+    fn the_newest_frame_alone_is_extracted_with_a_limit_of_one() {
+        let mut workspace = workspace_with("traffic.bin", &dns_capture(3));
+        call(&mut workspace, "packets.sets.create", json!({"from": "capture"})).unwrap();
+        let newest = call(&mut workspace, "packets.extract", json!({"set": "set-1", "sort": "udp.srcport", "descending": true, "limit": 1, "encoding": "hex"})).unwrap();
+        let by_index = call(&mut workspace, "packets.extract", json!({"set": "set-1", "indices": [2], "encoding": "hex"})).unwrap();
+        assert_eq!((newest["count"].as_u64(), &newest["data"]), (Some(1), &by_index["data"]), "{newest}");
+        let first_two = call(&mut workspace, "packets.extract", json!({"set": "set-1", "indices": [2, 0, 1], "limit": 2})).unwrap();
+        assert_eq!(first_two["count"], 2);
+    }
+
+    #[test]
     fn packets_extracted_to_a_file_need_the_path_once() {
         let mut workspace = workspace_with("traffic.bin", &dns_capture(2));
         call(&mut workspace, "packets.sets.create", json!({"from": "capture"})).unwrap();
@@ -2204,6 +2262,26 @@ mod tests {
         assert_eq!(in_order["conversations"][0]["first_packet"], 0);
         let endpoints = call(&mut workspace, "packets.endpoints", json!({"set": "set-1", "sort": "address"})).unwrap();
         assert_eq!(endpoints["endpoints"][0]["address"], "10.0.0.1");
+    }
+
+    #[test]
+    fn the_busiest_conversation_comes_first_or_last_as_descending_says() {
+        let mut bytes = dns_capture(3);
+        let extra = dns_capture(3);
+        let record = &extra[24..];
+        bytes.extend(&record[record.len() / 3 * 2..]);
+        let mut workspace = workspace_with("traffic.bin", &bytes);
+        call(&mut workspace, "packets.sets.create", json!({"from": "capture"})).unwrap();
+        let packets_of = |workspace: &mut crate::api::HeadlessWorkspace, params: serde_json::Value| -> Vec<u64> {
+            call(workspace, "packets.conversations", params).unwrap()["conversations"].as_array().unwrap().iter().map(|conversation| conversation["packets"].as_u64().unwrap()).collect()
+        };
+        let busiest_first = packets_of(&mut workspace, json!({"set": "set-1", "sort": "packets", "descending": true}));
+        assert_eq!(busiest_first, packets_of(&mut workspace, json!({"set": "set-1", "sort": "packets"})), "packets sort highest first already");
+        assert_eq!(busiest_first.first(), Some(&2));
+        let quietest_first = packets_of(&mut workspace, json!({"set": "set-1", "sort": "packets", "descending": false}));
+        assert_eq!(quietest_first.last(), Some(&2), "{quietest_first:?}");
+        let latest_first = call(&mut workspace, "packets.conversations", json!({"set": "set-1", "descending": true})).unwrap();
+        assert_eq!(latest_first["conversations"][0]["first_packet"], 2);
     }
 
     #[test]
@@ -2305,5 +2383,46 @@ mod tests {
         let doc = opened["messages"][0]["doc"].as_str().expect("opened").to_string();
         let read = call(&mut workspace, "bytes.read", json!({"doc": doc, "start": 0, "len": 10, "encoding": "text"})).unwrap();
         assert_eq!(read["data"], "the second");
+    }
+
+    /// A pcap of one TCP stream from 10.0.0.2 to 10.0.0.1:80 carrying `payload`.
+    fn tcp_capture(payload: &[u8]) -> Vec<u8> {
+        let mut capture = Vec::new();
+        capture.extend(0xA1B2_C3D4u32.to_le_bytes());
+        capture.extend(2u16.to_le_bytes());
+        capture.extend(4u16.to_le_bytes());
+        capture.extend([0; 8]);
+        capture.extend(65_535u32.to_le_bytes());
+        capture.extend(1u32.to_le_bytes());
+        let mut sequence = 1000;
+        for part in payload.chunks(60) {
+            let builder = etherparse::PacketBuilder::ethernet2([2, 0, 0, 0, 0, 1], [2, 0, 0, 0, 0, 2]).ipv4([10, 0, 0, 2], [10, 0, 0, 1], 64).tcp(40000, 80, sequence, 64000);
+            let mut frame = Vec::new();
+            builder.write(&mut frame, part).unwrap();
+            sequence += part.len() as u32;
+            capture.extend([0u8; 8]);
+            capture.extend((frame.len() as u32).to_le_bytes());
+            capture.extend((frame.len() as u32).to_le_bytes());
+            capture.extend(frame);
+        }
+        capture
+    }
+
+    #[test]
+    fn each_uploaded_body_opens_as_a_sheet_labelled_in_turn() {
+        let post = |body: &str| format!("POST /telemetry HTTP/1.1\r\nContent-Length: {}\r\n\r\n{body}", body.len());
+        let stream = format!("{}{}", post("first half of the loot"), post("second half of the loot"));
+        let mut workspace = workspace_with("exfil.pcap", &tcp_capture(stream.as_bytes()));
+        call(&mut workspace, "packets.sets.create", json!({"from": "capture"})).unwrap();
+        let opened = call(&mut workspace, "packets.http_bodies", json!({"set": "set-1", "index": 0, "output": {"new": {"label": "body"}}})).unwrap();
+        let labels: Vec<&str> = opened["outputs"].as_array().unwrap().iter().filter_map(|output| output["label"].as_str()).collect();
+        assert_eq!(labels, ["body", "body 1"], "{opened}");
+        assert!(opened["messages"][0]["data"].is_null(), "opened, not returned");
+        let second = opened["outputs"][1]["doc"].as_str().unwrap().to_string();
+        assert_eq!(call(&mut workspace, "documents.info", json!({"doc": second})).unwrap()["label"], "body 1");
+        let read = call(&mut workspace, "bytes.read", json!({"doc": {"$sheet": "body 1"}, "start": 0, "len": 6, "encoding": "text"})).unwrap();
+        assert_eq!(read["data"], "second", "a later call names the sheet by its label");
+        let refused = call(&mut workspace, "packets.http_bodies", json!({"set": "set-1", "index": 0, "output": "in_place"})).unwrap_err();
+        assert_eq!(refused.code, ErrorCode::InvalidParams);
     }
 }
