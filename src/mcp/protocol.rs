@@ -181,7 +181,8 @@ Documents are named by id (doc-1) or by path; \"current\" is whichever was opene
 structure_parse and templates_apply for detail; bytes_read and bytes_hexdump show bytes. {other_methods} Edits ({edits}) are \
 each one undoable step: history_undo reverses them, and documents_save writes them to disk, which nothing else does. \
 As you work, record your reasoning with history_note: what you are doing and why, in the session's history where you are, citing the \
-steps it is about as #12; the person sees it beside those steps in the History tab. \
+steps it is about as #12; the person sees it beside those steps in the History tab. A result's _meta.step is the step its call became; \
+a job's start returns {{job, step}}, and job.… anchors cite that step, not a jobs_status poll, which takes no step. \
 An omitted doc means your focus: the document you last opened or activated with documents_open or {activate} \
 (documents_list marks it); a derive or a node opened makes a new document without moving it, and naming a doc in one call does not \
 move it either. Name a document a step made as {{\"$sheet\": 7}} (step 7's) rather than its id. \

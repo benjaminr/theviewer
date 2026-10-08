@@ -329,6 +329,7 @@ pub fn call(workspace: &mut dyn Workspace, context: &RequestContext, params: &Ma
         Some(_) => return Err(RpcError::invalid_params("a tool's arguments are an object")),
     };
     let caller = Caller::Mcp(context.client.clone());
+    let before = workspace.journal().last_step();
     let answer = match (tools, tool) {
         (ToolSet::Core, API_SEARCH) => search(workspace, &arguments, tools),
         (ToolSet::Core, API_DESCRIBE) => describe_one(workspace, &arguments),
@@ -338,10 +339,24 @@ pub fn call(workspace: &mut dyn Workspace, context: &RequestContext, params: &Ma
             api::call(workspace, &caller, method.name(), arguments)
         }
     };
+    // The step the call was recorded as, or the number of the read it was
+    // kept as, for a note or an anchor to cite without asking history.list.
+    let recorded = workspace.journal().last_step().filter(|_| workspace.journal().last_step() != before);
     Ok(match answer {
-        Ok(value) => success(value, context.version),
+        Ok(value) => with_step(success(value, context.version), recorded),
         Err(error) => failure(&error.to_json()),
     })
+}
+
+/// A successful tool result saying in `_meta.step` the journal step its
+/// call was recorded as, when it was.
+fn with_step(mut result: Value, step: Option<u64>) -> Value {
+    if let Some(step) = step
+        && result["isError"] == false
+    {
+        result["_meta"] = json!({ "step": step });
+    }
+    result
 }
 
 /// A successful tool result.
@@ -468,13 +483,25 @@ mod tests {
     }
 
     #[test]
+    fn a_result_says_which_journal_step_its_call_became_for_notes_and_anchors_to_cite() {
+        let mut workspace = workspace_with("a.bin", b"abcabc");
+        let found = call(&mut workspace, &context(MODERN_VERSION), &arguments(json!({ "name": "search_find", "arguments": { "query": "bc", "mode": "text" } })), ToolSet::All).unwrap();
+        let read = found["_meta"]["step"].as_u64().expect("a read is numbered for a later step to cite");
+        let written = call(&mut workspace, &context(MODERN_VERSION), &arguments(json!({ "name": "bytes_write", "arguments": { "start": {"$anchor": {"step": read, "path": "result.at"}}, "data": "5a" } })), ToolSet::All).unwrap();
+        assert_eq!(written["_meta"]["step"].as_u64(), Some(read + 1), "{written}");
+        assert_eq!(workspace.journal().entry(read + 1).unwrap().method, "bytes.write");
+        let listed = call(&mut workspace, &context(MODERN_VERSION), &arguments(json!({ "name": "history_list", "arguments": {} })), ToolSet::All).unwrap();
+        assert!(listed.get("_meta").is_none(), "reading the journal is not journalled, so names no step");
+    }
+
+    #[test]
     fn api_call_calls_any_method_as_the_client_with_the_same_result() {
         let mut workspace = workspace_with("a.bin", b"abc");
         let inserted = call(&mut workspace, &context(MODERN_VERSION), &arguments(json!({ "name": "api_call", "arguments": { "method": "bytes.insert", "params": { "at": 0, "data": "7a" } } })), ToolSet::Core).unwrap();
         assert_eq!(structured(&inserted)["version"], 1);
         let read = call(&mut workspace, &context(MODERN_VERSION), &arguments(json!({ "name": "api_call", "arguments": { "method": "bytes_read", "params": { "start": 0, "len": 2 } } })), ToolSet::Core).unwrap();
         let direct = call(&mut workspace, &context(MODERN_VERSION), &arguments(json!({ "name": "bytes_read", "arguments": { "start": 0, "len": 2 } })), ToolSet::Core).unwrap();
-        assert_eq!(read, direct, "the same shape as calling the tool itself");
+        assert_eq!((&read["content"], &read["structuredContent"]), (&direct["content"], &direct["structuredContent"]), "the same shape as calling the tool itself");
         assert!(workspace.bus().changed_since(0).messages.iter().any(|message| message.producer() == "mcp:test-client"), "the edit is the client's");
         let unknown = call(&mut workspace, &context(MODERN_VERSION), &arguments(json!({ "name": "api_call", "arguments": { "method": "bytes.melt" } })), ToolSet::Core).unwrap();
         assert_eq!(error_code(&unknown), "not_found");
