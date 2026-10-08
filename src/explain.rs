@@ -400,7 +400,58 @@ fn sampled_entropy(bytes: &[u8]) -> f32 {
     shannon_entropy(&sample)
 }
 
-fn headline(regions: &[Region], total: usize) -> String {
+/// Labels shown in a headline listing several things, then "and N more".
+const HEADLINE_LABELS: usize = 4;
+/// Share of a file framed messages must cover to name it a capture of them.
+const FRAMED_COVERAGE: f64 = 0.9;
+/// Messages a framing must find before a file is named a capture of them.
+const FRAMED_MESSAGES: usize = 20;
+/// Bytes from the start a framing is looked for in.
+const FRAMING_SAMPLE: usize = 1024 * 1024;
+
+/// `labels` as a list of at most `shown`, then "and N more".
+fn listed(labels: &[String], shown: usize) -> String {
+    let more = if labels.len() > shown { format!(" and {} more", labels.len() - shown) } else { String::new() };
+    format!("{}{more}", labels.iter().take(shown).cloned().collect::<Vec<_>>().join(", "))
+}
+
+/// Each distinct label of `regions`, in order.
+fn distinct_labels<'a>(regions: impl Iterator<Item = &'a Region>) -> Vec<String> {
+    let mut labels: Vec<String> = Vec::new();
+    for region in regions {
+        if !labels.contains(&region.label) {
+            labels.push(region.label.clone());
+        }
+    }
+    labels
+}
+
+/// A disk image's headline, when the file starts with a partition table:
+/// the table and the filesystems, then what they hold.
+fn disk_headline(confident: &[&Region]) -> Option<String> {
+    let table = confident.first().filter(|first| first.start == 0 && first.label.contains("partition table"))?;
+    let (volumes, contents): (Vec<&Region>, Vec<&Region>) = confident.iter().skip(1).partition(|region| region.kind == RegionKind::Filesystem);
+    let mut structure = vec![table.label.clone()];
+    structure.extend(distinct_labels(volumes.into_iter()));
+    let contents = distinct_labels(contents.into_iter());
+    let holding = if contents.is_empty() { String::new() } else { format!(", holding {}", listed(&contents, HEADLINE_LABELS - 1)) };
+    Some(format!("Disk image: {}{holding}", listed(&structure, HEADLINE_LABELS)))
+}
+
+/// A capture of framed messages' headline, when a sync word or length
+/// field frames nearly all of the file's start: a raw bus or serial dump,
+/// whose bytes look like code or data to the statistics.
+fn framed_headline(bytes: &[u8]) -> Option<String> {
+    use crate::protocol::Framing;
+    let sample = &bytes[..bytes.len().min(FRAMING_SAMPLE)];
+    let best = crate::protocol::detect_framing(sample, 1).into_iter().next()?;
+    let framed = matches!(best.framing, Framing::SyncWord { .. } | Framing::SyncLength { .. } | Framing::LengthPrefixed { .. });
+    (framed && best.coverage >= FRAMED_COVERAGE && best.messages >= FRAMED_MESSAGES)
+        .then(|| format!("Framed messages: {}", best.framing.describe()))
+}
+
+fn headline(regions: &[Region], bytes: &[u8]) -> String {
+    let total = bytes.len();
     let confident: Vec<&Region> = regions.iter().filter(|r| r.confident).collect();
     if let Some(first) = confident.first()
         && first.start == 0
@@ -408,21 +459,21 @@ fn headline(regions: &[Region], total: usize) -> String {
     {
         return capitalise(&first.label);
     }
-    let mut labels: Vec<String> = Vec::new();
-    for region in &confident {
-        if !labels.contains(&region.label) {
-            labels.push(region.label.clone());
-        }
+    if let Some(disk) = disk_headline(&confident) {
+        return disk;
     }
+    let labels = distinct_labels(confident.iter().copied());
     if labels.len() >= 2 {
-        let shown: Vec<String> = labels.iter().take(4).cloned().collect();
-        let more = if labels.len() > 4 { format!(" and {} more", labels.len() - 4) } else { String::new() };
-        return format!("Composite, firmware-like image: {}{more}", shown.join(", "));
+        return format!("Composite, firmware-like image: {}", listed(&labels, HEADLINE_LABELS));
     }
     if let Some(only) = confident.first() {
         return if only.len * 2 >= total { capitalise(&only.label) } else { format!("File containing {} {}", article(&only.label), only.label) };
     }
-    if coverage(regions, RegionKind::Text, total) >= 0.7 {
+    let mostly_text = coverage(regions, RegionKind::Text, total) >= 0.7;
+    if !mostly_text && let Some(framed) = framed_headline(bytes) {
+        return framed;
+    }
+    if mostly_text {
         "Text".to_string()
     } else if coverage(regions, RegionKind::Encrypted, total) >= 0.7 {
         "Compressed or encrypted data".to_string()
@@ -448,6 +499,8 @@ fn likely_nature(headline: &str) -> String {
     let lower = headline.to_lowercase();
     if lower.starts_with("composite") {
         "looks like a composite or firmware-like image".to_string()
+    } else if lower.starts_with("disk image") || lower.starts_with("framed messages") {
+        format!("looks like {}", lower.replacen("disk image", "a disk image", 1).replacen("framed messages", "a capture of framed messages", 1))
     } else if lower.starts_with("looks like") {
         lower
     } else {
@@ -469,7 +522,7 @@ fn sentence_for(region: &Region) -> String {
 /// Describe the file in plain English from its regions.
 pub fn explain(bytes: &[u8], name: &str, regions: &[Region]) -> Report {
     let total = bytes.len();
-    let headline = headline(regions, total);
+    let headline = headline(regions, bytes);
     let entropy = sampled_entropy(bytes);
     let mut sentences = vec![Sentence {
         text: format!(
@@ -606,5 +659,50 @@ mod tests {
         assert_covers(&regions, 2);
         let _ = explain(&tiny, "tiny", &regions);
         let _ = explain(&[], "empty", &[]);
+    }
+
+    fn confident(start: usize, len: usize, kind: RegionKind, label: &str) -> Region {
+        Region { start, len, kind, label: label.to_string(), detail: String::new(), confident: true }
+    }
+
+    #[test]
+    fn a_partitioned_disk_image_is_headlined_by_its_partition_table_and_filesystem() {
+        let total = 9 * 1024 * 1024;
+        let regions = vec![
+            confident(0, 512, RegionKind::Filesystem, "MBR partition table"),
+            heuristic_region(512, 1_048_064, RegionKind::Padding, &vec![0; total]),
+            confident(1_048_576, 512, RegionKind::Filesystem, "FAT16 boot sector"),
+            confident(1_102_848, 46_697, RegionKind::Image, "JPEG image"),
+            confident(1_149_952, 6_019, RegionKind::Archive, "ZIP archive"),
+        ];
+        let report = explain(&vec![0; total], "usb_stick.dd", &regions);
+        assert!(report.headline.starts_with("Disk image: MBR partition table, FAT16 boot sector"), "{}", report.headline);
+        assert!(report.headline.contains("JPEG image"), "{}", report.headline);
+        assert!(report.sentences[0].text.contains("looks like a disk image"), "{}", report.sentences[0].text);
+    }
+
+    /// A bus capture: frames of a sync word, a length, addresses, a
+    /// sequence number, a type, a payload and a CRC, back to back.
+    fn bus_capture() -> Vec<u8> {
+        let mut bytes = noise(60_000);
+        let mut stream = Vec::new();
+        let mut taken = 0;
+        for index in 0..2000usize {
+            let payload_len = [0, 16, 4][index % 3];
+            stream.extend([0xA5, 0x5A, (payload_len + 4) as u8, 0x01, 0x10 + (index % 3) as u8, index as u8, [0x01, 0x81, 0x10][index % 3]]);
+            stream.extend(&bytes[taken..taken + payload_len + 2]);
+            taken += payload_len + 2;
+        }
+        bytes.clear();
+        stream
+    }
+
+    #[test]
+    fn a_capture_of_framed_messages_is_not_called_machine_code() {
+        let capture = bus_capture();
+        let regions = vec![heuristic_region(0, capture.len(), RegionKind::Code, &capture)];
+        let report = explain(&capture, "rs485_dump.bin", &regions);
+        assert!(report.headline.starts_with("Framed messages"), "{}", report.headline);
+        assert!(report.headline.contains("A5 5A"), "{}", report.headline);
     }
 }
