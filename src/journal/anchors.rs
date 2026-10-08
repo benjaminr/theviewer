@@ -157,6 +157,9 @@ pub enum Anchor {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(untagged)]
 pub enum SheetRef {
+    /// The sheet labelled `label` among those an earlier step made: one of
+    /// the sheets a `recipes.run` step's recipe made, say.
+    Labelled { step: u64, label: String },
     /// The sheet an earlier step made: its `nth` (from 0) when it made
     /// several.
     Step {
@@ -185,6 +188,7 @@ impl SheetRef {
             SheetRef::Step { step, nth } => format!("the {} sheet step {step} made", ordinal(*nth)),
             SheetRef::Named(name) if name == INPUT => "the run's input".to_string(),
             SheetRef::Named(label) => format!("the sheet labelled {label}"),
+            SheetRef::Labelled { step, label } => format!("the sheet labelled {label} that step {step} made"),
         }
     }
 }
@@ -223,7 +227,7 @@ impl RunSheets {
     /// its later steps may make.
     pub fn is_waiting_for(&self, sheet: &SheetRef) -> bool {
         match sheet {
-            SheetRef::Step { step, .. } => !self.made.contains_key(step),
+            SheetRef::Step { step, .. } | SheetRef::Labelled { step, .. } => !self.made.contains_key(step),
             SheetRef::Named(name) => name != INPUT && !self.labels.contains_key(name),
         }
     }
@@ -282,7 +286,8 @@ pub fn marked(anchor: &Anchor) -> Value {
 }
 
 /// The anchor `value` marks, when it is `{"$anchor": …}` and nothing else,
-/// or one of the shorthands `{"$var": name}` and `{"$sheet": step or label}`.
+/// or one of the shorthands `{"$var": name}` and `{"$sheet": step, label or
+/// {"step", "label"}}`.
 pub fn as_anchor(value: &Value) -> Option<Anchor> {
     let object = value.as_object().filter(|object| object.len() == 1)?;
     let (key, marked) = object.iter().next()?;
@@ -292,6 +297,7 @@ pub fn as_anchor(value: &Value) -> Option<Anchor> {
         SHEET_KEY => match marked {
             Value::Number(step) => Some(Anchor::Sheet { sheet: SheetRef::Step { step: step.as_u64()?, nth: 0 } }),
             Value::String(label) => Some(Anchor::Sheet { sheet: SheetRef::Named(label.clone()) }),
+            Value::Object(_) => Some(Anchor::Sheet { sheet: serde_json::from_value(marked.clone()).ok()? }),
             _ => None,
         },
         _ => None,
@@ -467,7 +473,7 @@ impl Anchor {
             Anchor::Finding { finding, part } => resolve_finding(finding, *part, context),
             Anchor::Selection { part, .. } => resolve_selection(*part, context),
             Anchor::Param { param } => resolve_param(param, context),
-            Anchor::Sheet { sheet } => resolve_sheet(sheet, context.sheets),
+            Anchor::Sheet { sheet } => resolve_sheet(sheet, context.sheets, &*context.workspace),
             Anchor::Pick { pick } => pick.resolve(context),
             Anchor::Then { of, then } => of.resolve(context).and_then(|value| then.iter().try_fold(value, |value, operation| operation.apply(value))),
             Anchor::Var { var } => resolve_var(var, &*context.workspace),
@@ -525,6 +531,7 @@ impl Anchor {
         Some(match self {
             Anchor::Step { step, path } => Anchor::Step { step: renumber(*step)?, path: path.clone() },
             Anchor::Sheet { sheet: SheetRef::Step { step, nth } } => Anchor::Sheet { sheet: SheetRef::Step { step: renumber(*step)?, nth: *nth } },
+            Anchor::Sheet { sheet: SheetRef::Labelled { step, label } } => Anchor::Sheet { sheet: SheetRef::Labelled { step: renumber(*step)?, label: label.clone() } },
             Anchor::Pick { pick } => {
                 let mut pick = pick.clone();
                 if let StepRef::Number(step) = pick.step {
@@ -841,8 +848,17 @@ fn resolve_selection(part: Option<Part>, context: &mut ResolveContext<'_>) -> Re
     })
 }
 
-fn resolve_sheet(sheet: &SheetRef, sheets: &RunSheets) -> Result<Value, ApiError> {
+fn resolve_sheet(sheet: &SheetRef, sheets: &RunSheets, workspace: &dyn Workspace) -> Result<Value, ApiError> {
     let found = match sheet {
+        SheetRef::Labelled { step, label } => {
+            let made = sheets.made.get(step).ok_or_else(|| ApiError::not_found(format!("step {step} has not made a sheet earlier in this run")))?;
+            let label_of = |doc: &str| crate::api::workspace::info(workspace, doc).ok().and_then(|info| info.label);
+            made.iter().find(|doc| label_of(doc).as_deref() == Some(label.as_str())).cloned().ok_or_else(|| {
+                let known: Vec<String> = made.iter().filter_map(|doc| label_of(doc)).collect();
+                let known = if known.is_empty() { "none of them is labelled".to_string() } else { format!("those labelled are {}", known.join(", ")) };
+                ApiError::not_found(format!("step {step} made no sheet labelled {label} ({known})"))
+            })?
+        }
         SheetRef::Named(name) if name == INPUT => sheets.input.clone().ok_or_else(|| ApiError::not_found("the run has no input document"))?,
         SheetRef::Named(label) => sheets.labels.get(label).cloned().ok_or_else(|| {
             let known: Vec<&str> = sheets.labels.keys().map(String::as_str).collect();

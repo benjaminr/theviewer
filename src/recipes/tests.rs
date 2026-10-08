@@ -188,3 +188,23 @@ fn the_window_previews_then_runs_the_chosen_recipe_without_asking_about_each_ste
     assert_eq!(app.document.undo_label(), Some("Recipe steps by recipe:Telemetry: frames"));
     assert!(app.status.starts_with("Telemetry: frames: 2 steps ran"), "{}", app.status);
 }
+
+#[test]
+fn sheets_saved_from_two_inputs_of_the_same_name_keep_both() {
+    let dir = temp_dir("same-name");
+    std::fs::create_dir_all(dir.join("variant")).unwrap();
+    let original = capture(&dir, "fw.upd", b"HEADoriginal");
+    let variant = capture(&dir.join("variant"), "fw.upd", b"HEADvariant");
+    let peel = recipe(json!({
+        "recipe": 2, "api_version": "1.x", "name": "Peel",
+        "steps": [{"step": 1, "method": "documents.derive", "makes": "payload", "params": {"start": 4}}]
+    }));
+    let mut settings = ReplaySettings::new(BTreeMap::new(), ReplayOutput::Report);
+    settings.save_sheets = Some(dir.join("sheets"));
+    let runs = replay_files(&peel, &[variant, original], &settings, workspace);
+    let saved: Vec<&String> = runs.iter().flat_map(|run| &run.sheets_saved).collect();
+    let sheets = dir.join("sheets");
+    assert_eq!(saved, [&sheets.join("fw.upd.1.step1.payload.bin").display().to_string(), &sheets.join("fw.upd.2.step1.payload.bin").display().to_string()]);
+    assert_eq!(std::fs::read(sheets.join("fw.upd.1.step1.payload.bin")).unwrap(), b"variant", "the first file's sheet is not overwritten");
+    assert_eq!(std::fs::read(sheets.join("fw.upd.2.step1.payload.bin")).unwrap(), b"original");
+}

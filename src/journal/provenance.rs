@@ -630,7 +630,9 @@ impl Recipe {
                 }
                 let _ = anchors::replace_at(&mut step.params, path, anchors::marked(&anchor));
             }
-            step.makes = entry.made.iter().find_map(|doc| lineage.made.get(doc).and_then(|maker| maker.label.clone()));
+            if !made_by_a_recipe(&entry.method) {
+                step.makes = entry.made.iter().find_map(|doc| lineage.made.get(doc).and_then(|maker| maker.label.clone()));
+            }
             name_documents(step, entry, root.as_deref(), lineage, &numbers, &mut problems);
             name_jobs(step, entry, &entries, &numbers);
         }
@@ -738,6 +740,12 @@ fn name_jobs(step: &mut super::recipe::RecipeStep, entry: &JournalEntry, entries
     }
 }
 
+/// Whether a step of `method` runs a recipe, whose sheets carry the labels
+/// that recipe gave them.
+fn made_by_a_recipe(method: &str) -> bool {
+    method == "recipes.run"
+}
+
 /// The sheet anchor that names `doc`, a sheet an earlier step of the recipe
 /// made, in `entry`'s step; or why there is none.
 fn sheet_anchor(doc: &str, entry: &JournalEntry, lineage: &SheetLineage, numbers: &BTreeMap<u64, u64>) -> Result<Anchor, String> {
@@ -755,6 +763,9 @@ fn sheet_anchor(doc: &str, entry: &JournalEntry, lineage: &SheetLineage, numbers
         return Err(format!("it was made by step {} ({}), which the recipe does not hold: it was undone, failed or is not among the steps saved", maker.step, maker.method));
     };
     let sheet = match &maker.label {
+        // A recipe's labels are its own: they name its sheets only beside
+        // the recipes.run step that ran it.
+        Some(label) if made_by_a_recipe(&maker.method) => SheetRef::Labelled { step: *number, label: label.clone() },
         Some(label) => SheetRef::Named(label.clone()),
         None => SheetRef::Step { step: *number, nth: maker.nth },
     };
@@ -789,7 +800,7 @@ fn with_cited_steps_and_sheets<'a>(journal: &'a Journal, steps: &[u64], lineage:
                 _ => None,
             };
             for anchor in std::iter::once(anchor).chain(default.as_ref()) {
-                if let Anchor::Sheet { sheet: SheetRef::Step { step: maker, .. } } = anchor {
+                if let Anchor::Sheet { sheet: SheetRef::Step { step: maker, .. } | SheetRef::Labelled { step: maker, .. } } = anchor {
                     pending.push(*maker);
                 }
                 pending.extend(anchor.cited_steps(&sheets));

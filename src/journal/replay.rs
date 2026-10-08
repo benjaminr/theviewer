@@ -180,6 +180,11 @@ pub struct RunReport {
     /// The sheets the run made, in the order made.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sheets: Vec<RunSheet>,
+    /// The same sheets as every call that makes sheets names them, so the
+    /// `recipes.run` step that made them is their maker in the session's
+    /// journal: `{"$sheet": {"step": N, "label": "firmware"}}` names one.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub outputs: Vec<workspace::SheetOutput>,
 }
 
 /// A sheet a run made.
@@ -257,6 +262,7 @@ pub fn run(workspace: &mut dyn Workspace, steps: &[RecipeStep], options: &Replay
         run.close_undo_groups(workspace);
     }
     report.sheets = run.sheets_made(workspace);
+    report.outputs = report.sheets.iter().map(|sheet| workspace::SheetOutput { doc: sheet.doc.clone(), label: sheet.label.clone(), len: sheet.len }).collect();
     report
 }
 
@@ -475,10 +481,13 @@ impl Run<'_> {
         let made: Vec<String> = super::sheets_made(result).into_iter().map(|sheet| sheet.doc).collect();
         if let (Some(label), Some(first)) = (&step.makes, made.first()) {
             self.sheets.labels.insert(label.clone(), first.clone());
-            if let Some(mut made_by) = workspace.lineage(first).and_then(|lineage| lineage.made_by) {
-                made_by.label = Some(label.clone());
-                workspace.note_made_by(first, made_by);
-            }
+            // A step inside a call (a recipes.run's) is not journalled, so
+            // nothing has said what made the sheet yet: the run says so,
+            // and the sheet is listed and named by its label.
+            let made_by = workspace.lineage(first).and_then(|lineage| lineage.made_by);
+            let mut made_by = made_by.unwrap_or_else(|| workspace::MadeBy { step: None, method: step.method.clone(), params: step.params.clone(), span: None, label: None });
+            made_by.label = Some(label.clone());
+            workspace.note_made_by(first, made_by);
         }
         self.sheets.made.insert(step.step, made);
     }

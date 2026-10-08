@@ -285,7 +285,7 @@ impl Recipe {
                     Anchor::Param { param } if !self.parameters.contains_key(&param) => {
                         mistakes.push(format!("step {} ({}) uses the parameter '{param}', which the recipe does not declare", step.step, step.method));
                     }
-                    Anchor::Sheet { sheet: SheetRef::Step { step: named, .. } } if !earlier.contains(&named) => {
+                    Anchor::Sheet { sheet: SheetRef::Step { step: named, .. } | SheetRef::Labelled { step: named, .. } } if !earlier.contains(&named) => {
                         mistakes.push(format!("step {} ({}) takes {path} from the sheet step {named} made, which does not come before it", step.step, step.method));
                     }
                     Anchor::Sheet { sheet: SheetRef::Named(label) } if label != INPUT && !labels.contains(&label) => {

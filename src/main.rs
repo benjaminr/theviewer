@@ -364,14 +364,7 @@ fn run_replay(args: &[String]) -> i32 {
     };
     let host = plugin_host(args.plugin_dirs.as_deref());
     let registry = Arc::new(app::build_registry_with(Some(&host)));
-    let runs: Vec<theviewer::recipes::FileRun> = args
-        .files
-        .iter()
-        .map(|file| {
-            let mut workspace = headless_workspace(&host, Arc::clone(&registry));
-            theviewer::recipes::replay_file(&mut workspace, &recipe, file, &args.settings)
-        })
-        .collect();
+    let runs = theviewer::recipes::replay_files(&recipe, &args.files, &args.settings, || headless_workspace(&host, Arc::clone(&registry)));
     if args.json {
         let written = serde_json::json!({ "recipe": recipe.name, "files": runs });
         print_out(&format!("{}\n", serde_json::to_string_pretty(&written).unwrap_or_default()));

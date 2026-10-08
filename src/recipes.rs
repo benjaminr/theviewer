@@ -250,6 +250,30 @@ impl FileRun {
     }
 }
 
+/// Run `recipe` on each of `files`, each in a fresh workspace from
+/// `workspace_for`, as [`replay_file`] does. When two of the files share a
+/// name, the sheets saved from each are told apart by the file's place
+/// among them (`fw.bin.2.step3.config.bin`), so neither overwrites the
+/// other's.
+pub fn replay_files(recipe: &Recipe, files: &[PathBuf], settings: &ReplaySettings, mut workspace_for: impl FnMut() -> HeadlessWorkspace) -> Vec<FileRun> {
+    files
+        .iter()
+        .enumerate()
+        .map(|(index, file)| {
+            let name = sheet_name_stem(file);
+            let shared = files.iter().filter(|other| sheet_name_stem(other) == name).count() > 1;
+            let stem = if shared { format!("{name}.{}", index + 1) } else { name };
+            replay_file_as(&mut workspace_for(), recipe, file, &stem, settings)
+        })
+        .collect()
+}
+
+/// What the sheets saved from a run on `file` are named after: its file
+/// name.
+fn sheet_name_stem(file: &Path) -> String {
+    file.file_name().map_or_else(|| "input".to_string(), |name| name.to_string_lossy().into_owned())
+}
+
 /// Run `recipe` on `file` in `workspace` (fresh, one per file) as
 /// `settings` say, as the command line does: its steps are the recipe's,
 /// allowed as the command line's are, but for writing files, which needs
@@ -257,6 +281,11 @@ impl FileRun {
 /// it completed. A run that completed is saved as `settings.output` says;
 /// one that stopped is not saved.
 pub fn replay_file(workspace: &mut HeadlessWorkspace, recipe: &Recipe, file: &Path, settings: &ReplaySettings) -> FileRun {
+    replay_file_as(workspace, recipe, file, &sheet_name_stem(file), settings)
+}
+
+/// [`replay_file`], the sheets saved named after `stem`.
+fn replay_file_as(workspace: &mut HeadlessWorkspace, recipe: &Recipe, file: &Path, stem: &str, settings: &ReplaySettings) -> FileRun {
     let mut run = FileRun { file: file.display().to_string(), report: None, saved: None, error: None, sheets_saved: Vec::new() };
     let doc = match workspace.open_path(file) {
         Ok(doc) => doc,
@@ -275,7 +304,7 @@ pub fn replay_file(workspace: &mut HeadlessWorkspace, recipe: &Recipe, file: &Pa
     let report = replay::run_recipe(workspace, recipe, &options);
     let completed = report.completed();
     if let Some(dir) = &settings.save_sheets {
-        match save_sheets(workspace, &report, file, dir) {
+        match save_sheets(workspace, &report, stem, dir) {
             Ok(saved) => run.sheets_saved = saved,
             Err(error) => run.error = Some(error),
         }
@@ -309,16 +338,15 @@ pub fn replay_file(workspace: &mut HeadlessWorkspace, recipe: &Recipe, file: &Pa
     run
 }
 
-/// Save each sheet `report`'s run on `file` made into `dir` (made if need
-/// be), as `FILE.stepN.LABEL.bin`, LABEL being the sheet's label or its id;
-/// returns where each went.
-fn save_sheets(workspace: &mut HeadlessWorkspace, report: &RunReport, file: &Path, dir: &Path) -> Result<Vec<String>, ApiError> {
+/// Save each sheet `report`'s run made into `dir` (made if need be), as
+/// `STEM.stepN.LABEL.bin`, STEM naming the file it ran on and LABEL being
+/// the sheet's label or its id; returns where each went.
+fn save_sheets(workspace: &mut HeadlessWorkspace, report: &RunReport, stem: &str, dir: &Path) -> Result<Vec<String>, ApiError> {
     if report.sheets.is_empty() {
         return Ok(Vec::new());
     }
     let unavailable = |message: String| ApiError::new(ErrorCode::Unavailable, message);
     std::fs::create_dir_all(dir).map_err(|error| unavailable(format!("the folder {} could not be made: {error}", dir.display())))?;
-    let stem = file.file_name().map_or_else(|| "input".to_string(), |name| name.to_string_lossy().into_owned());
     let mut saved = Vec::new();
     for sheet in &report.sheets {
         let Some(document) = workspace.document_mut(&sheet.doc) else { continue };
