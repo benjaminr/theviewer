@@ -780,7 +780,7 @@ mod tests {
                 bytes.extend(time.to_le_bytes());
                 bytes.extend((200 + (xorshift(&mut state) % 50) as u16).to_le_bytes());
                 bytes.extend((1013 + (xorshift(&mut state) % 7) as u16).to_le_bytes());
-                bytes.extend([xorshift(&mut state) % 4, 0x80 | xorshift(&mut state) % 2]);
+                bytes.extend([xorshift(&mut state) % 4, 0x80 | (xorshift(&mut state) % 2)]);
                 bytes.extend([xorshift(&mut state), 0x05, 0, 0, 0, 0, xorshift(&mut state), xorshift(&mut state)]);
             }
             time += [1, 1, 1, 2][cycle as usize % 4];

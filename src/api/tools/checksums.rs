@@ -415,13 +415,16 @@ pub struct ChecksumModel {
     pub offset: Option<usize>,
 }
 
+/// A model's computation over the bytes a value covers.
+type Computation = Box<dyn Fn(&[u8]) -> u64>;
+
 /// A model made ready to compute with.
 struct Checker {
     /// The model in words.
     name: String,
     /// Bytes of the stored value.
     width: usize,
-    compute: Box<dyn Fn(&[u8]) -> u64>,
+    compute: Computation,
     skip: usize,
     big_endian: bool,
     offset: Option<usize>,
@@ -429,7 +432,7 @@ struct Checker {
 
 impl ChecksumModel {
     fn checker(&self) -> Result<Checker, ApiError> {
-        let (name, width, compute): (String, usize, Box<dyn Fn(&[u8]) -> u64>) = match (&self.algorithm, self.width, self.poly) {
+        let (name, width, compute): (String, usize, Computation) = match (&self.algorithm, self.width, self.poly) {
             (Some(name), _, _) => {
                 if let Some((name, width, compute)) = crate::checksums::named_algorithm(name) {
                     (name.to_string(), width, Box::new(compute))

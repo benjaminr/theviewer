@@ -124,8 +124,11 @@ const MIN_COVERED: usize = 8;
 struct Algorithm {
     name: &'static str,
     width: usize,
-    compute: fn(&[u8]) -> u64,
+    compute: Compute,
 }
+
+/// How a checksum is computed over some bytes.
+pub type Compute = fn(&[u8]) -> u64;
 
 const ALGORITHMS: [Algorithm; 7] = [
     Algorithm { name: "CRC-32", width: 4, compute: |b| crc32(b) as u64 },
@@ -141,7 +144,7 @@ const XOR8: Algorithm = Algorithm { name: "xor8", width: 1, compute: |b| b.iter(
 
 /// One of the checksums `find_checksums` tries, by its name ("CRC-32",
 /// "sum8", …, in any case): its name, width in bytes and computation.
-pub fn named_algorithm(name: &str) -> Option<(&'static str, usize, fn(&[u8]) -> u64)> {
+pub fn named_algorithm(name: &str) -> Option<(&'static str, usize, Compute)> {
     ALGORITHMS
         .iter()
         .chain(std::iter::once(&XOR8))
