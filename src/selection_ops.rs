@@ -73,10 +73,13 @@ pub enum Operation {
     Counter { start: u64, step: u64, little_endian: bool },
     /// Follow each range with a copy of itself.
     Duplicate,
-    /// Replace each range with its compressed form.
+    /// Replace each range with its compressed form, or its text encoding.
     Compress(Codec),
     /// Replace each range with its decompressed contents.
     Decompress,
+    /// Replace each range with what it decodes to with this codec, a
+    /// decompressor or a text encoding (base32, base64, sixbit…).
+    DecodeAs(Codec),
 }
 
 impl Operation {
@@ -103,8 +106,10 @@ impl Operation {
             Operation::SwapByteOrder(width) => format!("Swapped the byte order of {width}-byte values in"),
             Operation::Counter { .. } => "Numbered".to_string(),
             Operation::Duplicate => "Duplicated".to_string(),
+            Operation::Compress(codec) if codec.text_encoding().is_some() => format!("Encoded as {}", codec.label()),
             Operation::Compress(codec) => format!("Compressed with {}", codec.label()),
             Operation::Decompress => "Decompressed".to_string(),
+            Operation::DecodeAs(codec) => format!("Decoded {}", codec.label()),
         }
     }
 
@@ -134,6 +139,7 @@ impl Operation {
             Operation::Duplicate => "Duplicate",
             Operation::Compress(_) => "Compress",
             Operation::Decompress => "Decompress",
+            Operation::DecodeAs(_) => "Decode",
         }
     }
 
@@ -172,8 +178,10 @@ impl Operation {
                 format!("Number {target} from {start} in steps of {step}, {order}")
             }
             Operation::Duplicate => format!("Duplicate {target}"),
+            Operation::Compress(codec) if codec.text_encoding().is_some() => format!("Encode {target} as {}", codec.label()),
             Operation::Compress(codec) => format!("Compress {target} with {}", codec.label()),
             Operation::Decompress => format!("Decompress {target}"),
+            Operation::DecodeAs(codec) => format!("Decode {target} as {}", codec.label()),
         }
     }
 
@@ -187,6 +195,7 @@ impl Operation {
                 | Operation::Duplicate
                 | Operation::Compress(_)
                 | Operation::Decompress
+                | Operation::DecodeAs(_)
         )
     }
 }
@@ -263,10 +272,16 @@ enum OperationJson {
     Counter { start: u64, step: u64, little_endian: bool },
     /// Follow each range with a copy of itself.
     Duplicate,
-    /// Replace each range with its compressed form.
+    /// Replace each range with its compressed form; a text encoding's
+    /// codec (base32, base64, base64url, hex, sixbit, ais6) encodes it.
     Compress { codec: Codec },
-    /// Replace each range with its decompressed contents.
-    Decompress,
+    /// Replace each range with its decompressed contents: with the codec
+    /// named (a decompressor or a text encoding, as codecs.list gives
+    /// them), or else the first decompressor or text encoding that decodes it.
+    Decompress {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        codec: Option<Codec>,
+    },
 }
 
 impl From<Operation> for OperationJson {
@@ -294,7 +309,8 @@ impl From<Operation> for OperationJson {
             Operation::Counter { start, step, little_endian } => OperationJson::Counter { start, step, little_endian },
             Operation::Duplicate => OperationJson::Duplicate,
             Operation::Compress(codec) => OperationJson::Compress { codec },
-            Operation::Decompress => OperationJson::Decompress,
+            Operation::Decompress => OperationJson::Decompress { codec: None },
+            Operation::DecodeAs(codec) => OperationJson::Decompress { codec: Some(codec) },
         }
     }
 }
@@ -324,7 +340,8 @@ impl From<OperationJson> for Operation {
             OperationJson::Counter { start, step, little_endian } => Operation::Counter { start, step, little_endian },
             OperationJson::Duplicate => Operation::Duplicate,
             OperationJson::Compress { codec } => Operation::Compress(codec),
-            OperationJson::Decompress => Operation::Decompress,
+            OperationJson::Decompress { codec: None } => Operation::Decompress,
+            OperationJson::Decompress { codec: Some(codec) } => Operation::DecodeAs(codec),
         }
     }
 }
@@ -407,6 +424,9 @@ pub fn transform_range(operation: &Operation, bytes: &[u8], index: usize) -> Res
         Operation::Decompress => {
             let decoded = compress::probe(bytes, DECOMPRESS_OUTPUT_LIMIT).into_iter().next();
             out = decoded.ok_or_else(|| "The selected bytes do not decompress with any known codec".to_string())?.data;
+        }
+        Operation::DecodeAs(codec) => {
+            out = compress::decompress(*codec, bytes, DECOMPRESS_OUTPUT_LIMIT).map_err(|reason| format!("The selected bytes do not decode as {}: {reason}", codec.label()))?.data;
         }
     }
     Ok(out)
@@ -590,6 +610,7 @@ mod tests {
             Operation::Counter { start: 1, step: 2, little_endian: true },
             Operation::SwapByteOrder(4),
             Operation::Decompress,
+            Operation::DecodeAs(Codec::Base32),
         ] {
             let json = serde_json::to_value(&operation).unwrap();
             assert_eq!(serde_json::from_value::<Operation>(json).unwrap(), operation);
@@ -713,6 +734,20 @@ mod tests {
         assert!(packed.len() < text.len());
         assert_eq!(apply(Operation::Decompress, &packed), text);
         assert!(transform_range(&Operation::Decompress, b"not compressed at all", 0).is_err());
+    }
+
+    #[test]
+    fn a_transform_decodes_base32_and_six_bit_text_by_codec_id() {
+        let decode: Operation = serde_json::from_value(serde_json::json!({"op": "decompress", "codec": "base32"})).unwrap();
+        assert_eq!(decode, Operation::DecodeAs(Codec::Base32));
+        assert_eq!(apply(decode, b"mzxw6ytboi"), b"foobar");
+        assert_eq!(serde_json::to_value(Operation::Decompress).unwrap(), serde_json::json!({"op": "decompress"}), "unchanged without a codec");
+        let encode: Operation = serde_json::from_value(serde_json::json!({"op": "compress", "codec": "sixbit"})).unwrap();
+        let packed = apply(encode.clone(), b"JB22");
+        assert_eq!(packed.len(), 3);
+        assert_eq!(apply(Operation::DecodeAs(Codec::Sixbit), &packed), b"JB22");
+        assert_eq!(encode.describe("4 selected bytes"), "Encode 4 selected bytes as DEC SIXBIT");
+        assert!(transform_range(&Operation::DecodeAs(Codec::Base64), b"!!!!", 0).unwrap_err().contains("base64"));
     }
 
     #[test]

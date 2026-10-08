@@ -1,4 +1,5 @@
-//! Compression detection and (de)compression of byte ranges.
+//! Compression detection and (de)compression of byte ranges, and the text
+//! encodings (base32, base64, hex text, 6-bit text) beside them.
 //!
 //! Streams are recognised by their headers and then *verified* by trial
 //! decompression, so a highlight only says "zlib stream" when the bytes really
@@ -8,6 +9,10 @@ use std::io::{BufRead, Read, Write};
 use std::sync::Arc;
 
 use crate::plugin::{CodecKind, CodecPlugin, Decoded};
+
+mod encodings;
+
+pub use encodings::TextEncoding;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -20,7 +25,18 @@ pub enum Codec {
     Lzma,
     Zstd,
     Lz4,
+    Base32,
+    Base64,
+    #[serde(rename = "base64url")]
+    Base64Url,
+    Hex,
+    Sixbit,
+    Ais6,
 }
+
+/// Characters of a text encoding [`probe`] wants before it offers one: a
+/// shorter run of letters is more likely a word.
+const PROBE_RUN: usize = 16;
 
 impl Codec {
     /// Codecs with a recognisable header, in the order they are tested.
@@ -29,6 +45,62 @@ impl Codec {
     pub const HEADERLESS: [Codec; 2] = [Codec::Deflate, Codec::Lzma];
     /// Codecs this module can also encode.
     pub const COMPRESSIBLE: [Codec; 5] = [Codec::Zlib, Codec::Gzip, Codec::Deflate, Codec::Bzip2, Codec::Lz4];
+    /// Text encodings, which [`compress`] encodes too.
+    pub const ENCODINGS: [Codec; 6] = [Codec::Base32, Codec::Base64, Codec::Base64Url, Codec::Hex, Codec::Sixbit, Codec::Ais6];
+    /// Every codec, compression first.
+    pub const ALL: [Codec; 14] = [
+        Codec::Zlib,
+        Codec::Gzip,
+        Codec::Deflate,
+        Codec::Bzip2,
+        Codec::Xz,
+        Codec::Lzma,
+        Codec::Zstd,
+        Codec::Lz4,
+        Codec::Base32,
+        Codec::Base64,
+        Codec::Base64Url,
+        Codec::Hex,
+        Codec::Sixbit,
+        Codec::Ais6,
+    ];
+
+    /// The text encoding this codec is, if it is one.
+    pub fn text_encoding(self) -> Option<TextEncoding> {
+        match self {
+            Codec::Base32 => Some(TextEncoding::Base32),
+            Codec::Base64 => Some(TextEncoding::Base64),
+            Codec::Base64Url => Some(TextEncoding::Base64Url),
+            Codec::Hex => Some(TextEncoding::Hex),
+            Codec::Sixbit => Some(TextEncoding::Sixbit),
+            Codec::Ais6 => Some(TextEncoding::Ais6),
+            _ => None,
+        }
+    }
+
+    pub fn kind(self) -> CodecKind {
+        if self.text_encoding().is_some() { CodecKind::Encoding } else { CodecKind::Compression }
+    }
+
+    /// The id codecs.list gives it: "zlib", "base64url".
+    pub fn id(self) -> &'static str {
+        match self {
+            Codec::Zlib => "zlib",
+            Codec::Gzip => "gzip",
+            Codec::Deflate => "deflate",
+            Codec::Bzip2 => "bzip2",
+            Codec::Xz => "xz",
+            Codec::Lzma => "lzma",
+            Codec::Zstd => "zstd",
+            Codec::Lz4 => "lz4",
+            Codec::Base32 => "base32",
+            Codec::Base64 => "base64",
+            Codec::Base64Url => "base64url",
+            Codec::Hex => "hex",
+            Codec::Sixbit => "sixbit",
+            Codec::Ais6 => "ais6",
+        }
+    }
 
     pub fn label(self) -> &'static str {
         match self {
@@ -40,14 +112,13 @@ impl Codec {
             Codec::Lzma => "lzma",
             Codec::Zstd => "zstd",
             Codec::Lz4 => "LZ4 frame",
+            encoding => encoding.text_encoding().map_or("", TextEncoding::label),
         }
     }
 
     pub fn from_name(name: &str) -> Option<Codec> {
         let name = name.to_ascii_lowercase();
-        [Codec::Zlib, Codec::Gzip, Codec::Deflate, Codec::Bzip2, Codec::Xz, Codec::Lzma, Codec::Zstd, Codec::Lz4]
-            .into_iter()
-            .find(|codec| codec.label().to_ascii_lowercase().starts_with(&name))
+        Codec::ALL.into_iter().find(|codec| codec.id() == name).or_else(|| Codec::ALL.into_iter().find(|codec| codec.label().to_ascii_lowercase().starts_with(&name)))
     }
 }
 
@@ -157,6 +228,10 @@ fn read_bounded(mut reader: impl Read, max_out: usize) -> Result<(Vec<u8>, bool,
 
 /// Decompress `input` with `codec`, producing at most `max_out` bytes.
 pub fn decompress(codec: Codec, input: &[u8], max_out: usize) -> Result<Decompressed, String> {
+    if let Some(encoding) = codec.text_encoding() {
+        let found = encoding.decode(input, max_out)?;
+        return Ok(Decompressed { codec, data: found.data, consumed: found.consumed, consumed_exact: true, complete: !found.truncated, truncated: found.truncated });
+    }
     match codec {
         Codec::Zlib => inflate(input, true, max_out).map(|(data, consumed, complete, truncated)| Decompressed {
             codec,
@@ -267,6 +342,7 @@ pub fn decompress(codec: Codec, input: &[u8], max_out: usize) -> Result<Decompre
             let (data, complete, truncated) = read_bounded(decoder, max_out)?;
             Ok(Decompressed { codec, data, consumed: reader.pos, consumed_exact: false, complete, truncated })
         }
+        encoding => Err(format!("{} is a text encoding", encoding.label())),
     }
 }
 
@@ -351,7 +427,10 @@ fn gzip_header_len(bytes: &[u8]) -> Option<usize> {
 
 /// Try every codec at the start of `input` and return the ones that decode.
 /// Header-bearing codecs are tried first, then headerless ones; a headerless
-/// decode must produce a reasonable amount of output to count.
+/// decode must produce a reasonable amount of output to count. Text
+/// encodings come last, each where a run of at least [`PROBE_RUN`] of its
+/// characters starts ([`TextEncoding::starts`]); the 6-bit sets, which read
+/// any bytes, are left to be named.
 pub fn probe(input: &[u8], max_out: usize) -> Vec<Decompressed> {
     const MIN_HEADERLESS_OUTPUT: usize = 64;
     let mut found = Vec::new();
@@ -366,6 +445,13 @@ pub fn probe(input: &[u8], max_out: usize) -> Vec<Decompressed> {
             && (result.complete || result.truncated)
             && result.data.len() >= MIN_HEADERLESS_OUTPUT
             && result.consumed >= 8
+        {
+            found.push(result);
+        }
+    }
+    for codec in Codec::ENCODINGS {
+        if codec.text_encoding().is_some_and(|encoding| encoding.starts(input, PROBE_RUN))
+            && let Ok(result) = decompress(codec, input, max_out)
         {
             found.push(result);
         }
@@ -403,6 +489,7 @@ pub fn compress(codec: Codec, data: &[u8]) -> Result<Vec<u8>, String> {
             encoder.finish().map_err(|e| e.to_string())
         }
         Codec::Xz | Codec::Lzma | Codec::Zstd => Err(format!("{} compression is not supported", codec.label())),
+        encoding => encoding.text_encoding().map(|encoding| encoding.encode(data)).ok_or_else(|| format!("{} cannot encode", encoding.label())),
     }
 }
 
@@ -411,16 +498,7 @@ struct BuiltinCodec(Codec);
 
 impl CodecPlugin for BuiltinCodec {
     fn id(&self) -> &str {
-        match self.0 {
-            Codec::Zlib => "zlib",
-            Codec::Gzip => "gzip",
-            Codec::Deflate => "deflate",
-            Codec::Bzip2 => "bzip2",
-            Codec::Xz => "xz",
-            Codec::Lzma => "lzma",
-            Codec::Zstd => "zstd",
-            Codec::Lz4 => "lz4",
-        }
+        self.0.id()
     }
 
     fn name(&self) -> &str {
@@ -428,11 +506,14 @@ impl CodecPlugin for BuiltinCodec {
     }
 
     fn kind(&self) -> CodecKind {
-        CodecKind::Compression
+        self.0.kind()
     }
 
     fn detect(&self, bytes: &[u8]) -> bool {
-        detect_header(bytes) == Some(self.0)
+        match self.0.text_encoding() {
+            Some(encoding) => encoding.starts(bytes, encodings::DETECT_RUN),
+            None => detect_header(bytes) == Some(self.0),
+        }
     }
 
     fn decode(&self, input: &[u8], max_out: usize) -> Result<Decoded, String> {
@@ -446,7 +527,7 @@ impl CodecPlugin for BuiltinCodec {
     }
 
     fn encode(&self, data: &[u8]) -> Option<Result<Vec<u8>, String>> {
-        Codec::COMPRESSIBLE.contains(&self.0).then(|| compress(self.0, data))
+        (Codec::COMPRESSIBLE.contains(&self.0) || Codec::ENCODINGS.contains(&self.0)).then(|| compress(self.0, data))
     }
 }
 
@@ -454,6 +535,7 @@ impl CodecPlugin for BuiltinCodec {
 pub fn builtin_codecs() -> Vec<Arc<dyn CodecPlugin>> {
     [Codec::Gzip, Codec::Zlib, Codec::Deflate, Codec::Bzip2, Codec::Xz, Codec::Lzma, Codec::Zstd, Codec::Lz4]
         .into_iter()
+        .chain(Codec::ENCODINGS)
         .map(|codec| Arc::new(BuiltinCodec(codec)) as Arc<dyn CodecPlugin>)
         .collect()
 }
@@ -663,6 +745,25 @@ mod tests {
         let found = probe(&raw, usize::MAX);
         assert!(found.iter().any(|d| d.codec == Codec::Deflate && d.data == text), "{:?}", found.iter().map(|d| d.codec).collect::<Vec<_>>());
         assert!(probe(b"definitely not compressed data at all, just text", usize::MAX).is_empty());
+    }
+
+    #[test]
+    fn base64_text_is_probed_after_the_decompressors_and_named_by_id() {
+        let text = sample_text();
+        let encoded = compress(Codec::Base64, &text).unwrap();
+        let found = probe(&encoded, usize::MAX);
+        assert_eq!(found.iter().map(|d| d.codec).collect::<Vec<_>>(), [Codec::Base64], "base32 wants one case, url a - or _");
+        assert_eq!((found[0].data.as_slice(), found[0].consumed), (text.as_slice(), encoded.len()));
+        assert!(probe(b"0123456789", usize::MAX).is_empty(), "ten digits are too few to be hex text");
+        assert_eq!(Codec::from_name("base64url"), Some(Codec::Base64Url));
+        assert_eq!(Codec::from_name("hex"), Some(Codec::Hex));
+        assert_eq!(serde_json::to_value(Codec::Base64Url).unwrap(), "base64url");
+        let codecs = builtin_codecs();
+        let sixbit = codecs.iter().find(|c| c.id() == "sixbit").expect("a built-in sixbit codec");
+        assert_eq!((sixbit.kind(), sixbit.decode(&sixbit.encode(b"PIN").unwrap().unwrap(), 3).unwrap().data), (CodecKind::Encoding, b"PIN".to_vec()));
+        let base32 = codecs.iter().find(|c| c.id() == "base32").unwrap();
+        assert!(base32.detect(&compress(Codec::Base32, &text).unwrap()));
+        assert!(!base32.detect(b"short"));
     }
 
     #[test]

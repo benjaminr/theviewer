@@ -15,10 +15,10 @@ use crate::plugin::{CodecKind, CodecPlugin, Registry};
 /// This module's methods, in the order `api.describe` lists them within
 /// their namespace. A new method is added here, and only here.
 pub(super) const METHODS: &[super::Method] = &[
-    method!("codecs.list", Read, list, super::values::NoParams, CodecList, "The codecs available for decoding, built in and from plugins."),
+    method!("codecs.list", Read, list, super::values::NoParams, CodecList, "The codecs available for decoding, built in and from plugins: the decompressors, and the text encodings base32, base64, base64url, hex (hex text), sixbit (DEC SIXBIT) and ais6 (AIS 6-bit ASCII)."),
     method!("codecs.detect", Read, detect, DetectParams, CodecList, "The codecs whose header starts at an offset."),
-    method!("codecs.decode", Read, caller decode, DecodeParams, DecodeResult, "Decode (decompress) a span with any codec codecs.list lists, plugins' included, or the first built-in decompressor that decodes there: return the output by default, or, as output says, open it as a new sheet or put it in place of the bytes it decoded.").outputs(&[OutputKind::Return, OutputKind::New, OutputKind::InPlace], OutputKind::Return),
-    method!("codecs.probe", Read, probe, ProbeParams, ProbeResult, "Try every built-in decompressor at the start of a span, headerless ones included, and list those that decode."),
+    method!("codecs.decode", Read, caller decode, DecodeParams, DecodeResult, "Decode (decompress) a span with any codec codecs.list lists, plugins' included, or the first codec that decodes there (a built-in decompressor, then a text encoding a run of whose characters starts there, then a plugin's codec that detects it): return the output by default, or, as output says, open it as a new sheet or put it in place of the bytes it decoded.").outputs(&[OutputKind::Return, OutputKind::New, OutputKind::InPlace], OutputKind::Return),
+    method!("codecs.probe", Read, probe, ProbeParams, ProbeResult, "Try every codec at the start of a span and list those that decode: the built-in decompressors (headerless ones included), the text encodings a run of whose characters starts there, then the plugins' codecs."),
     method!("codecs.open_decoded", View, caller open_decoded, OpenDecodedParams, OpenDecodedResult, "Decompress the stream starting at an offset, with the first codec that decodes there or the one named (any codecs.list lists), and open what it holds as a document derived from this one; in the window, Back (or opening the parent by id) returns. A shorthand for codecs.decode with output \"new\".").makes_sheet(),
 ];
 
@@ -41,20 +41,38 @@ pub(super) fn examples() -> Vec<(&'static str, serde_json::Value)> {
 /// What a call to one of this module's methods would do, in plain words,
 /// for the window that asks the person to confirm it; `None` leaves it to
 /// the general "Call method with params".
-pub(super) fn describe_call(_workspace: &mut dyn Workspace, method: &str, params: &serde_json::Value) -> Option<String> {
+pub(super) fn describe_call(workspace: &mut dyn Workspace, method: &str, params: &serde_json::Value) -> Option<String> {
     match method {
         "codecs.open_decoded" => Some(format!("Open what decompresses at {:#x} as a document of its own", params.get("start")?.as_u64()?)),
         "codecs.decode" => {
             let start = params.get("start")?.as_u64()?;
-            let codec = params.get("codec").and_then(serde_json::Value::as_str).unwrap_or("the first codec that decodes there");
-            match params.get("output").and_then(output::kind_of)? {
-                OutputKind::InPlace => Some(format!("Replace what decodes as {codec} at {start:#x} with what it decodes to")),
-                OutputKind::New => Some(format!("Open what decodes as {codec} at {start:#x} as a document of its own")),
-                _ => None,
-            }
+            let kind = params.get("output").and_then(output::kind_of).filter(|kind| matches!(kind, OutputKind::InPlace | OutputKind::New))?;
+            let named = params.get("codec").and_then(serde_json::Value::as_str).map(str::to_string);
+            let codec = named.or_else(|| first_decoding(workspace, params)).unwrap_or_else(|| "the first codec that decodes there".to_string());
+            Some(match kind {
+                OutputKind::InPlace => format!("Replace what decodes as {codec} at {start:#x} with what it decodes to"),
+                _ => format!("Open what decodes as {codec} at {start:#x} as a document of its own"),
+            })
         }
         _ => None,
     }
+}
+
+/// Input read to name the codec a `codecs.decode` without one would use.
+const DESCRIBE_INPUT: usize = 1024 * 1024;
+/// Output each decoder may make while naming it.
+const DESCRIBE_OUTPUT: usize = 64 * 1024;
+
+/// The codec `codecs.decode` with `params` and no codec would decode with,
+/// tried on the first MiB of its span, for its description.
+fn first_decoding(workspace: &mut dyn Workspace, params: &serde_json::Value) -> Option<String> {
+    let registry = workspace.registry();
+    let (_, document) = workspace::document(workspace, params.get("doc").and_then(serde_json::Value::as_str)).ok()?;
+    let start = params.get("start")?.as_u64()?;
+    let len = params.get("len").and_then(serde_json::Value::as_u64);
+    let (start, len) = values::span_within(document.len(), start, len).ok()?;
+    let input = document.read_range(start, len.min(DESCRIBE_INPUT));
+    decode_with(&registry, &input, start, None, DESCRIBE_OUTPUT).ok().map(|decoding| decoding.codec)
 }
 
 /// Bytes read at an offset to check codec headers against.
@@ -156,7 +174,10 @@ pub struct ProbeParams {
 /// One decoder that read the data.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ProbedStream {
-    pub codec: Codec,
+    /// Its id, to pass to codecs.decode: "zlib", "base32" or a plugin's.
+    pub codec: String,
+    pub name: String,
+    pub kind: CodecKind,
     pub consumed: u64,
     pub consumed_exact: bool,
     pub complete: bool,
@@ -167,7 +188,7 @@ pub struct ProbedStream {
 /// The result of `codecs.probe`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ProbeResult {
-    /// Decoders that read the data, headed ones first.
+    /// Decoders that read the data: decompressors with a header first, then headerless ones, text encodings, and plugins' codecs.
     pub streams: Vec<ProbedStream>,
 }
 
@@ -209,7 +230,7 @@ struct Decoding {
 impl Decoding {
     fn of_built_in(found: Decompressed) -> Self {
         Decoding {
-            codec: codec_id(found.codec),
+            codec: found.codec.id().to_string(),
             label: found.codec.label().to_string(),
             data: found.data,
             consumed: found.consumed,
@@ -220,28 +241,39 @@ impl Decoding {
     }
 }
 
-/// A built-in codec's id, as JSON names it: "zlib", "lz4".
-fn codec_id(codec: Codec) -> String {
-    serde_json::to_value(codec).ok().and_then(|value| value.as_str().map(str::to_string)).unwrap_or_default()
-}
-
 /// The built-in codec with id `id`, if it is one.
 fn built_in(id: &str) -> Option<Codec> {
-    serde_json::from_value(serde_json::Value::String(id.to_string())).ok()
+    Codec::ALL.into_iter().find(|codec| codec.id() == id)
+}
+
+/// The registry's codecs that are not built in: the plugins'.
+fn plugin_codecs(registry: &Registry) -> impl Iterator<Item = &std::sync::Arc<dyn CodecPlugin>> {
+    registry.codecs().iter().filter(|codec| built_in(codec.id()).is_none())
+}
+
+/// What `codec` made of `input`, by its id.
+fn decoding_by(codec: &dyn CodecPlugin, decoded: crate::plugin::Decoded) -> Decoding {
+    let label = built_in(codec.id()).map_or_else(|| codec.id().to_string(), |codec| codec.label().to_string());
+    Decoding { codec: codec.id().to_string(), label, data: decoded.data, consumed: decoded.consumed, consumed_exact: decoded.consumed_exact, complete: decoded.complete, truncated: decoded.truncated }
 }
 
 /// Decode `input` (the bytes at `start`) with the codec whose id is
-/// `codec`, any the registry holds, or the first built-in decompressor
-/// that decodes it.
+/// `codec`, any the registry holds, or else the first that decodes it:
+/// a built-in decompressor or text encoding ([`compress::probe`]), then a
+/// plugin's codec that detects it.
 fn decode_with(registry: &Registry, input: &[u8], start: usize, codec: Option<&str>, max_output: usize) -> Result<Decoding, ApiError> {
     let Some(id) = codec else {
-        let found = compress::probe(input, max_output).into_iter().next();
-        return found.map(Decoding::of_built_in).ok_or_else(|| ApiError::invalid_params(format!("nothing decodes at {start:#x} (tried gzip, zlib, bzip2, xz, zstd, LZ4, raw deflate and lzma); name a codec from codecs.list")));
+        if let Some(found) = compress::probe(input, max_output).into_iter().next() {
+            return Ok(Decoding::of_built_in(found));
+        }
+        let detected = plugin_codecs(registry).filter(|codec| codec.detect(input)).find_map(|codec| codec.decode(input, max_output).ok().map(|decoded| decoding_by(codec.as_ref(), decoded)));
+        return detected.ok_or_else(|| {
+            ApiError::invalid_params(format!("nothing decodes at {start:#x} (tried gzip, zlib, bzip2, xz, zstd, LZ4, raw deflate, lzma, base32, base64, base64url, hex text and the plugins' codecs); name a codec from codecs.list"))
+        });
     };
     let codec = registry.codec(id).ok_or_else(|| ApiError::not_found(format!("there is no codec '{id}'; codecs.list lists them")))?;
     let decoded = codec.decode(input, max_output).map_err(|message| ApiError::invalid_params(format!("the bytes at {start:#x} do not decode as {}: {message}", codec.name())))?;
-    let label = built_in(id).map_or_else(|| codec.id().to_string(), |codec| codec.label().to_string());
-    Ok(Decoding { codec: codec.id().to_string(), label, data: decoded.data, consumed: decoded.consumed, consumed_exact: decoded.consumed_exact, complete: decoded.complete, truncated: decoded.truncated })
+    Ok(decoding_by(codec.as_ref(), decoded))
 }
 
 pub fn decode(workspace: &mut dyn Workspace, caller: &Caller, params: DecodeParams) -> Result<DecodeResult, ApiError> {
@@ -282,18 +314,32 @@ pub fn probe(workspace: &mut dyn Workspace, params: ProbeParams) -> Result<Probe
     let (start, len) = values::span_within(document.len(), params.start, params.len)?;
     values::check_call_size(len)?;
     let input = document.read_range(start, len);
-    let streams = compress::probe(&input, max_output)
-        .into_iter()
-        .map(|found| ProbedStream {
-            codec: found.codec,
-            consumed: found.consumed as u64,
-            consumed_exact: found.consumed_exact,
-            complete: found.complete,
-            truncated: found.truncated,
-            output_len: found.data.len() as u64,
-        })
-        .collect();
-    Ok(ProbeResult { streams })
+    let registry = workspace.registry();
+    let built_ins = compress::probe(&input, max_output).into_iter().map(|found| {
+        let stream = probed(found.codec.id(), found.codec.label(), found.codec.kind());
+        stream(found.consumed, found.consumed_exact, found.complete, found.truncated, found.data.len())
+    });
+    let mut seen = std::collections::HashSet::new();
+    let plugins = plugin_codecs(&registry).filter(|codec| seen.insert(codec.id().to_string())).filter_map(|codec| {
+        let decoded = codec.decode(&input, max_output).ok().filter(|decoded| !decoded.data.is_empty())?;
+        let stream = probed(codec.id(), codec.name(), codec.kind());
+        Some(stream(decoded.consumed, decoded.consumed_exact, decoded.complete, decoded.truncated, decoded.data.len()))
+    });
+    Ok(ProbeResult { streams: built_ins.chain(plugins).collect() })
+}
+
+/// A [`ProbedStream`] of the codec with this id, name and kind, given what it read.
+fn probed<'a>(id: &'a str, name: &'a str, kind: CodecKind) -> impl Fn(usize, bool, bool, bool, usize) -> ProbedStream + 'a {
+    move |consumed, consumed_exact, complete, truncated, output_len| ProbedStream {
+        codec: id.to_string(),
+        name: name.to_string(),
+        kind,
+        consumed: consumed as u64,
+        consumed_exact,
+        complete,
+        truncated,
+        output_len: output_len as u64,
+    }
 }
 
 /// Most bytes of a stream `codecs.open_decoded` reads, and most it opens.
@@ -342,12 +388,12 @@ pub fn open_decoded(workspace: &mut dyn Workspace, caller: &Caller, params: Open
     }
     let input = document.read_range(start, available.min(OPEN_DECODED_MAX));
     let decoding = match params.codec.as_deref().map(|id| (id, built_in(id))) {
-        Some((_, Some(codec))) => compress::probe(&input, OPEN_DECODED_MAX)
+        Some((_, Some(codec))) if codec.kind() == CodecKind::Compression => compress::probe(&input, OPEN_DECODED_MAX)
             .into_iter()
             .find(|found| found.codec == codec)
             .map(Decoding::of_built_in)
             .ok_or_else(|| ApiError::invalid_params(format!("nothing decodes as {} at {start:#x}", codec.label())))?,
-        Some((id, None)) => decode_with(&workspace.registry(), &input, start, Some(id), OPEN_DECODED_MAX)?,
+        Some((id, _)) => decode_with(&workspace.registry(), &input, start, Some(id), OPEN_DECODED_MAX)?,
         None => decode_with(&workspace.registry(), &input, start, None, OPEN_DECODED_MAX)?,
     };
     let name = format!("{} › {}@{start:#x}", workspace::info(workspace, &parent)?.name, decoding.label);
@@ -451,6 +497,58 @@ mod tests {
         assert_eq!((step.method.as_str(), step.made.as_slice(), step.effect), ("codecs.decode", ["doc-2".to_string()].as_slice(), crate::api::Effect::View), "a step that made a sheet");
         let opened = call(&mut workspace, "codecs.open_decoded", json!({"doc": "doc-1", "start": 4, "codec": "hex_text"})).unwrap();
         assert_eq!((opened["codec"].as_str(), opened["document"]["name"].as_str()), (Some("hex_text"), Some("notes.txt › hex_text@0x4")), "the shorthand takes it too");
+    }
+
+    #[test]
+    fn dns_tunnel_labels_decode_as_base32_without_a_plugin() {
+        let half = b"PK\x03\x04 the first half of the archive, sent over DNS".repeat(3);
+        let labels = crate::compress::compress(crate::compress::Codec::Base32, &half).unwrap().to_ascii_lowercase();
+        let unpadded: Vec<u8> = labels.iter().copied().filter(|&byte| byte != b'=').collect();
+        let mut workspace = workspace_with("labels.txt", &unpadded);
+        let detected = call(&mut workspace, "codecs.detect", json!({"at": 0})).unwrap();
+        assert!(detected["codecs"].as_array().unwrap().iter().any(|codec| codec["id"] == "base32" && codec["kind"] == "encoding"), "{detected}");
+        let decoded = call(&mut workspace, "codecs.decode", json!({"start": 0, "codec": "base32", "output": {"new": {"label": "half one"}}})).unwrap();
+        assert_eq!((decoded["consumed"].as_u64(), decoded["output"]["len"].as_u64()), (Some(unpadded.len() as u64), Some(half.len() as u64)));
+        assert_eq!(call(&mut workspace, "bytes.read", json!({"doc": "doc-2", "start": 0, "len": 4})).unwrap()["data"], "504b0304");
+        let probed = call(&mut workspace, "codecs.probe", json!({"doc": "doc-1", "start": 0})).unwrap();
+        assert_eq!((probed["streams"][0]["codec"].as_str(), probed["streams"][0]["kind"].as_str()), (Some("base32"), Some("encoding")), "{probed}");
+        let unnamed = call(&mut workspace, "codecs.decode", json!({"doc": "doc-1", "start": 0})).unwrap();
+        assert_eq!(unnamed["codec"], "base32", "the first codec that decodes is an encoding when nothing decompresses");
+    }
+
+    #[test]
+    fn a_base64_stage_and_a_six_bit_id_decode_by_their_ids() {
+        let mut bytes = b"stage=".to_vec();
+        bytes.extend(crate::compress::compress(crate::compress::Codec::Base64, &zlib(b"second stage, second stage")).unwrap());
+        let mut workspace = workspace_with("loader.bin", &bytes);
+        let decoded = call(&mut workspace, "codecs.decode", json!({"start": 6, "codec": "base64", "output": {"new": {"label": "stage.zlib"}}})).unwrap();
+        assert_eq!(decoded["codec"], "base64");
+        let inflated = call(&mut workspace, "codecs.decode", json!({"doc": "doc-2", "start": 0, "encoding": "text"})).unwrap();
+        assert_eq!((inflated["codec"].as_str(), inflated["data"].as_str()), (Some("zlib"), Some("second stage, second stage")));
+        let technician = crate::compress::compress(crate::compress::Codec::Sixbit, b"SERVICE-JB22").unwrap();
+        let mut workspace = workspace_with("payload.bin", &technician);
+        let read = call(&mut workspace, "codecs.decode", json!({"start": 0, "codec": "sixbit", "encoding": "text"})).unwrap();
+        assert_eq!(read["data"], "SERVICE-JB22");
+        let opened = call(&mut workspace, "codecs.open_decoded", json!({"start": 0, "codec": "sixbit"})).unwrap();
+        assert_eq!(opened["document"]["name"], "payload.bin › DEC SIXBIT@0x0");
+    }
+
+    #[test]
+    fn decoding_without_a_codec_is_described_by_the_codec_that_will_decode() {
+        let mut bytes = b"head".to_vec();
+        bytes.extend(zlib(b"hello, hello, hello"));
+        let mut workspace = workspace_with("a.bin", &bytes);
+        let description = crate::api::describe_call(&mut workspace, "codecs.decode", &json!({"start": 4, "output": "new"}));
+        assert_eq!(description, "Open what decodes as zlib at 0x4 as a document of its own");
+    }
+
+    #[test]
+    fn probing_tries_a_plugin_s_codec_after_the_built_in_ones() {
+        let mut workspace = with_plugin_codec(b"68656c6c6f");
+        let probed = call(&mut workspace, "codecs.probe", json!({"start": 0})).unwrap();
+        let codecs: Vec<&str> = probed["streams"].as_array().unwrap().iter().filter_map(|stream| stream["codec"].as_str()).collect();
+        assert_eq!(codecs, ["hex_text"], "ten digits are too few for the built-in hex text to be offered: {probed}");
+        assert_eq!(probed["streams"][0]["output_len"], 5);
     }
 
     #[test]
