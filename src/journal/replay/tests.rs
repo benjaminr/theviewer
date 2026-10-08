@@ -430,7 +430,7 @@ fn a_recorded_session_made_into_a_recipe_runs_on_another_file() {
     assert_eq!(bytes_of(&mut other), b"a longer header\x7e\xa5\xff\xffmore payload", "the length after the sync word is overwritten, here as there");
     let selected = crate::api::test_support::call(&mut other, "selection.get", json!({})).unwrap();
     assert_eq!(selected["ranges"], json!([[15, 2]]), "the selection follows the sync word");
-    assert!(report.warnings.iter().any(|warning| warning.contains("not the file the recipe was recorded on (first.bin")), "{:?}", report.warnings);
+    assert!(!report.warnings.iter().any(|warning| warning.contains("not the file the recipe was recorded on")), "every offset is anchored, so none may not fit: {:?}", report.warnings);
 }
 
 #[test]
@@ -470,4 +470,76 @@ fn a_recipe_warns_about_another_api_and_missing_or_changed_plugins_and_its_own_m
         assert!(warnings.iter().any(|warning| warning.contains(phrase)), "{phrase} in {warnings:?}");
     }
     assert!(recorded_and_anchored().warnings("1.0", &[]).is_empty(), "a recipe that fits warns of nothing");
+}
+
+#[test]
+fn a_recipe_with_a_literal_offset_warns_that_it_may_not_fit_another_file() {
+    let mut recipe = recorded_and_anchored();
+    recipe.steps[1].params["start"] = json!(6);
+    let mut other = workspace_with("second.bin", b"a longer header\x7e\xa5\x00\x20more payload");
+    let report = run_recipe(&mut other, &recipe, &ReplayOptions::new(Caller::Recipe(recipe.name.clone())));
+    let step = recipe.steps[1].step;
+    let warned = report.warnings.iter().find(|warning| warning.contains("literal offsets may not fit")).expect("a warning");
+    assert!(warned.contains(&format!("such as step {step}'s start (6)")), "{warned}");
+}
+
+/// A recipe that searches for a sync word, expecting it to be found (where
+/// `matches` says), then overwrites the first byte.
+fn search_expecting(matches: Option<&str>) -> Vec<RecipeStep> {
+    let expect = crate::journal::recipe::StepExpectation { path: "result.at".into(), matches: matches.map(str::to_string) };
+    vec![RecipeStep { expect: Some(expect), ..step(1, "search.find", json!({"query": "7EA5", "mode": "hex"})) }, step(2, "bytes.write", json!({"start": 0, "data": "00"}))]
+}
+
+#[test]
+fn a_step_that_does_not_give_what_the_recipe_expects_stops_the_run_saying_why() {
+    let mut without = workspace_with("plain.bin", b"no sync word here");
+    let report = run(&mut without, &search_expecting(None), &ReplayOptions::new(recipe_caller()));
+    let stopped = report.stopped.as_ref().expect("the run stops");
+    assert_eq!(stopped.step, 1);
+    assert_eq!(stopped.error.message, "step 1 (search.find) did not give what the recipe expects: there is nothing at result.at");
+    assert_eq!(report.steps.len(), 1, "step 2 never runs");
+    assert_eq!(bytes_of(&mut without), b"no sync word here");
+
+    let mut elsewhere = workspace_with("framed.bin", b"ab\x7e\xa5");
+    let report = run(&mut elsewhere, &search_expecting(Some("^0$")), &ReplayOptions::new(recipe_caller()));
+    assert_eq!(report.stopped.unwrap().error.message, "step 1 (search.find) did not give what the recipe expects: result.at is 2, which does not match /^0$/");
+
+    let mut framed = workspace_with("framed.bin", b"ab\x7e\xa5");
+    let report = run(&mut framed, &search_expecting(Some("^[0-9]+$")), &ReplayOptions::new(recipe_caller()));
+    assert!(report.completed(), "{report:?}");
+    assert_eq!(bytes_of(&mut framed), b"\x00b\x7e\xa5");
+}
+
+#[test]
+fn sheets_a_recipes_run_made_keep_their_labels_and_are_named_by_its_step_and_label() {
+    let mut workspace = workspace_with("container.bin", b"HEADpayloadTAIL");
+    let inner = json!({
+        "recipe": 2, "api_version": "1.x", "name": "Peel",
+        "steps": [
+            {"step": 1, "method": "documents.derive", "makes": "head", "params": {"start": 0, "len": 4}},
+            {"step": 2, "method": "documents.derive", "makes": "payload", "params": {"start": 4, "len": 7}}
+        ]
+    });
+    let call = crate::api::test_support::call;
+    let ran = call(&mut workspace, "recipes.run", json!({"recipe": inner})).unwrap();
+    let run_step = workspace.journal().last_step().unwrap();
+    assert_eq!(ran["outputs"].as_array().map(Vec::len), Some(2), "{ran}");
+    let listed = call(&mut workspace, "documents.list", json!({})).unwrap();
+    let labels: Vec<&str> = listed["documents"].as_array().unwrap().iter().filter_map(|document| document["label"].as_str()).collect();
+    assert_eq!(labels, ["head", "payload"], "the sheets are listed by their labels");
+    let payload = json!({"$sheet": {"step": run_step, "label": "payload"}});
+    let read = call(&mut workspace, "bytes.read", json!({"doc": payload, "start": 0, "encoding": "text"})).unwrap();
+    assert_eq!(read["data"], "payload");
+    let unknown = call(&mut workspace, "bytes.read", json!({"doc": {"$sheet": {"step": run_step, "label": "tail"}}, "start": 0})).unwrap_err();
+    assert!(unknown.message.contains(&format!("step {run_step} made no sheet labelled tail (those labelled are head, payload)")), "{}", unknown.message);
+
+    // Steps after the run, on its sheets, become part of a recipe.
+    call(&mut workspace, "bytes.write", json!({"doc": payload, "start": 0, "data": "50"})).unwrap();
+    let payload_id = read["doc"].as_str().map_or_else(|| ran["outputs"][1]["doc"].clone(), |doc| json!(doc));
+    call(&mut workspace, "bytes.write", json!({"doc": payload_id, "start": 1, "data": "41"})).unwrap();
+    let recipe = crate::journal::provenance::build_recipe(workspace.journal(), "After", crate::journal::provenance::RecipeSteps::InEffect { through: None }).unwrap();
+    let named = json!({"$anchor": {"sheet": {"step": 1, "label": "payload"}}});
+    assert_eq!(recipe.steps[1].params["doc"], named, "the anchor given, renumbered: {recipe:?}");
+    assert_eq!(recipe.steps[2].params["doc"], named, "a literal id, named by the run's step and the label");
+    assert_eq!(recipe.steps[0].makes, None, "the run's labels are its recipe's own");
 }

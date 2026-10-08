@@ -107,7 +107,7 @@ fn replaying_over_two_files_reports_each_and_saves_those_that_completed_into_a_f
     assert_eq!(runs[0].saved.as_deref(), Some(out.join("first.bin").to_str().unwrap()));
     let report = runs[0].report.as_ref().unwrap();
     assert_eq!(report.steps[1].params["start"], 2);
-    assert!(report.warnings.iter().any(|warning| warning.contains("not the file the recipe was recorded on")));
+    assert!(!report.warnings.iter().any(|warning| warning.contains("not the file the recipe was recorded on")), "its offsets are all anchored");
 
     assert!(!runs[1].succeeded());
     assert!(runs[1].saved.is_none() && !out.join("second.bin").exists(), "a run that stopped is not saved");

@@ -35,8 +35,8 @@
 //!    is kept beside the step's params and result, for later step anchors
 //!    (`job.candidates[0].period`).
 //! 5. **The first failure stops the run**: a step whose anchor does not
-//!    resolve or whose call fails, with [`RunReport::stopped`] saying which
-//!    and why.
+//!    resolve, whose call fails, or that does not give what its `expect`
+//!    says, with [`RunReport::stopped`] saying which and why.
 //! 6. **The run's edits undo as one step** of each document it edited, the
 //!    input and each sheet, named "Recipe steps by recipe:NAME", whether it
 //!    completed or stopped, so one Undo of a document takes back everything
@@ -277,8 +277,12 @@ pub fn run_recipe(workspace: &mut dyn Workspace, recipe: &Recipe, options: &Repl
     if let Some(recorded_on) = recipe.input_recorded_on()
         && let Ok(doc) = workspace::resolve(workspace, options.doc.as_deref())
         && !is_same_file(workspace, &doc, recorded_on)
+        && let Some(literal) = literal_offsets(recipe).first()
     {
-        warnings.push(format!("this is not the file the recipe was recorded on ({}, {} bytes); its anchors find their values here, but literal offsets may not fit", recorded_on.name, recorded_on.size));
+        warnings.push(format!(
+            "this is not the file the recipe was recorded on ({}, {} bytes); its anchors find their values here, but literal offsets may not fit, such as {literal}",
+            recorded_on.name, recorded_on.size
+        ));
     }
     let mut report = match recipe.parameter_values(&options.parameters) {
         Ok(values) => {
@@ -294,6 +298,33 @@ pub fn run_recipe(workspace: &mut dyn Workspace, recipe: &Recipe, options: &Repl
     warnings.extend(crate::recipes::unknown_methods(workspace, recipe));
     report.warnings = warnings;
     report
+}
+
+/// The parameters names offsets give, whose literals are offsets into the
+/// file a step runs on: `start`, `offset`, `at`, `end`, `range`, `ranges`.
+const OFFSET_NAMES: &[&str] = &["start", "offset", "at", "end", "range", "ranges"];
+
+/// Each literal offset in `recipe`'s steps, as "step 3's start (64)": a
+/// number (not an anchor) given as an offset into a document, which may
+/// not fit another file. 0, the start of any file, fits every one.
+fn literal_offsets(recipe: &Recipe) -> Vec<String> {
+    let mut found = Vec::new();
+    for step in &recipe.steps {
+        visit_paths(&step.params, "", &mut |path, value| {
+            if super::anchors::as_anchor(value).is_some() {
+                return false;
+            }
+            let name = path.rsplit('.').next().unwrap_or(path);
+            let name = name.split('[').next().unwrap_or(name);
+            if OFFSET_NAMES.contains(&name)
+                && let Some(offset) = value.as_u64().filter(|offset| *offset > 0)
+            {
+                found.push(format!("step {}'s {path} ({offset})", step.step));
+            }
+            true
+        });
+    }
+    found
 }
 
 /// Whether document `doc` is the file `identity` describes: the same size
@@ -388,6 +419,14 @@ impl Run<'_> {
         let mut done = serde_json::json!({ "params": report.params, "result": result });
         if let Some(job) = &report.job {
             done["job"] = job.result.clone().unwrap_or(Value::Null);
+        }
+        if let Some(expect) = &step.expect
+            && let Err(why) = expect.check(&done)
+        {
+            let message = format!("step {} ({}) did not give what the recipe expects: {why}", step.step, step.method);
+            report.outcome = Outcome::Error(ApiError::not_found(message).with_data(serde_json::json!({ "expect": expect })));
+            report.result = Some(result);
+            return report;
         }
         self.done.insert(step.step, done);
         self.keep_sheets_made(workspace, step, &result);

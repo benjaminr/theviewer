@@ -28,8 +28,9 @@
 //! a document of the run as it is; one the run neither runs on nor made
 //! stops it, rather than running the step on the input.
 //!
-//! **Format 2** adds what format 1 cannot say: a step's `makes` label, the
-//! recipe's `inputs`, and the anchors format 1 does not have (sheet, pick,
+//! **Format 2** adds what format 1 cannot say: a step's `makes` label and
+//! its `expect` (what it must give for the run to go on), the recipe's
+//! `inputs`, and the anchors format 1 does not have (sheet, pick,
 //! then and var) or a parameter whose default is an anchor. A recipe is
 //! written as format 1 unless it uses one of them, so older builds still
 //! run what they can; this build reads both.
@@ -152,12 +153,65 @@ pub struct RecipeStep {
     /// anchors name (format 2).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub makes: Option<String>,
+    /// What the step must give for the run to go on, such as a non-empty
+    /// `result.codecs` (format 2): a run on a file where it does not stops
+    /// there, saying so, rather than carrying on with nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expect: Option<StepExpectation>,
 }
 
 impl RecipeStep {
-    /// Step `step`, a call of `method` with `params`, with no note or label.
+    /// Step `step`, a call of `method` with `params`, with no note, label
+    /// or expectation.
     pub fn new(step: u64, method: impl Into<String>, params: Value) -> Self {
-        RecipeStep { step, method: method.into(), params, note: None, makes: None }
+        RecipeStep { step, method: method.into(), params, note: None, makes: None, expect: None }
+    }
+}
+
+/// A check of what a recipe's step gave: the value at `path` must be there
+/// and not empty, and, with `matches`, match it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct StepExpectation {
+    /// Where the value is in the step's `{"params", "result", "job"}`, as a
+    /// step anchor's path is written: `result.codecs`, `job.strings`.
+    pub path: String,
+    /// A regular expression the value must match: text as it is, a number
+    /// or true/false as written, anything else as JSON.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub matches: Option<String>,
+}
+
+impl StepExpectation {
+    /// Whether `done`, a step as `{"params", "result", "job"?}`, gives what
+    /// is expected; if not, why not, as "result.codecs is empty".
+    pub fn check(&self, done: &Value) -> Result<(), String> {
+        let value = super::anchors::value_at(done, &self.path).map_err(|error| error.message)?;
+        let value = match value {
+            None | Some(Value::Null) => return Err(format!("there is nothing at {}", self.path)),
+            Some(value) if is_empty(value) => return Err(format!("{} is empty ({value})", self.path)),
+            Some(value) => value,
+        };
+        let Some(pattern) = &self.matches else { return Ok(()) };
+        let regex = regex_lite::Regex::new(pattern).map_err(|error| format!("its pattern /{pattern}/ is not a regular expression: {error}"))?;
+        let text = match value {
+            Value::String(text) => text.clone(),
+            other => other.to_string(),
+        };
+        if regex.is_match(&text) {
+            return Ok(());
+        }
+        Err(format!("{} is {}, which does not match /{pattern}/", self.path, crate::text::truncate_chars(&value.to_string(), 80)))
+    }
+}
+
+/// Whether `value` is empty text, an empty list or an empty object.
+fn is_empty(value: &Value) -> bool {
+    match value {
+        Value::String(text) => text.is_empty(),
+        Value::Array(items) => items.is_empty(),
+        Value::Object(fields) => fields.is_empty(),
+        _ => false,
     }
 }
 
@@ -198,11 +252,12 @@ impl Recipe {
 
     /// Whether the recipe says anything only format 2 can: a sheet, pick,
     /// then or var anchor, a parameter whose default is an anchor, a step's
-    /// `makes`, or `inputs`.
+    /// `makes` or `expect`, or `inputs`.
     pub fn needs_second_format(&self) -> bool {
         let new_anchor = self.steps.iter().flat_map(|step| anchors_in(&step.params)).any(|(_, anchor)| anchor.needs_second_format());
         let anchored_default = self.parameters.values().any(|parameter| parameter.default_anchor.is_some());
-        new_anchor || anchored_default || !self.inputs.is_empty() || self.steps.iter().any(|step| step.makes.is_some())
+        let new_step_field = self.steps.iter().any(|step| step.makes.is_some() || step.expect.is_some());
+        new_anchor || anchored_default || !self.inputs.is_empty() || new_step_field
     }
 
     /// Write the recipe in the oldest format that says all it holds: format
