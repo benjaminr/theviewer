@@ -634,7 +634,11 @@ impl Catalog {
             }
         }
 
-        let mut findings: Vec<Finding> = hits.into_iter().map(|(start, hit)| self.finding(window, base, start, hit)).collect();
+        let mut findings: Vec<Finding> = hits
+            .into_iter()
+            .filter(|&(start, hit)| plausible_header(&self.defs[self.compiled[hit.signature].def].id, &window[start..]))
+            .map(|(start, hit)| self.finding(window, base, start, hit))
+            .collect();
         findings.sort_by(|a, b| a.start.cmp(&b.start).then(b.confidence.total_cmp(&a.confidence)));
         findings
     }
@@ -797,6 +801,46 @@ impl Catalog {
             .title(def.name.clone())
             .detail(detail_parts.join(" · "))
             .confidence(hit.confidence)
+    }
+}
+
+/// Whether the header at the start of `bytes` is plausible for a format
+/// whose magic is a few bytes, mostly zero, that turn up by chance in any
+/// run of zeros: an icon needs images listed, a font tables, a Targa image
+/// a known image type, size and depth. Other formats pass.
+fn plausible_header(id: &str, bytes: &[u8]) -> bool {
+    let u16le = |at: usize| bytes.get(at..at + 2).map(|pair| u16::from_le_bytes([pair[0], pair[1]]));
+    let u16be = |at: usize| bytes.get(at..at + 2).map(|pair| u16::from_be_bytes([pair[0], pair[1]]));
+    let u32le = |at: usize| bytes.get(at..at + 4).map(|four| u32::from_le_bytes([four[0], four[1], four[2], four[3]]));
+    match id {
+        "image/vnd.microsoft.icon" => {
+            const MOST_IMAGES: u16 = 256;
+            const ENTRY: usize = 16;
+            let Some(count) = u16le(4).filter(|count| (1..=MOST_IMAGES).contains(count)) else { return false };
+            // The first directory entry: a zero reserved byte, at most one
+            // plane, a known depth, some bytes, after the directory.
+            let entry = 6;
+            let reserved_zero = bytes.get(entry + 3) == Some(&0);
+            let planes = u16le(entry + 4).is_some_and(|planes| planes <= 1);
+            let depth = u16le(entry + 6).is_some_and(|depth| [0, 1, 4, 8, 16, 24, 32].contains(&depth));
+            let size = u32le(entry + 8).is_some_and(|size| size > 0);
+            let offset = u32le(entry + 12).is_some_and(|offset| offset as usize >= entry + ENTRY * count as usize);
+            reserved_zero && planes && depth && size && offset
+        }
+        "font/ttf" => {
+            const MOST_TABLES: u16 = 64;
+            let tables = u16be(4).is_some_and(|tables| (1..=MOST_TABLES).contains(&tables));
+            let first_tag = bytes.get(12..16).is_some_and(|tag| tag.iter().all(|byte| (0x20..0x7F).contains(byte)));
+            tables && first_tag
+        }
+        "image/x-tga" => {
+            let colour_map = bytes.get(1).is_some_and(|kind| *kind <= 1);
+            let image_type = bytes.get(2).is_some_and(|kind| [1, 2, 3, 9, 10, 11].contains(kind));
+            let size = u16le(12).is_some_and(|width| width > 0) && u16le(14).is_some_and(|height| height > 0);
+            let depth = bytes.get(16).is_some_and(|depth| [8, 15, 16, 24, 32].contains(depth));
+            colour_map && image_type && size && depth
+        }
+        _ => true,
     }
 }
 
@@ -1218,6 +1262,45 @@ mod tests {
         assert!(at(tar_at).iter().any(|f| f.category == Category::Archive && f.title.to_lowercase().contains("tar")), "{:?}", at(tar_at));
         assert!(at(iso_at).iter().any(|f| f.category == Category::Filesystem), "{:?}", at(iso_at));
         assert!(at(5000).iter().any(|f| f.id.contains("pcap")), "{:?}", at(5000));
+    }
+
+    /// A firmware update's header and the start of the CramFS image after
+    /// it: zero runs in which icon, font and Targa magics turn up by chance.
+    const UPDATE_HEADER: &str = "4e43555044310100 4e6f766143616d20 4e432d3530302032 2e312e3000000000 0006000006000000 0001000000000000 0000000000000000 0000000000000000 453dcd28e0030000 0300000000000000 436f6d7072657373 656420524f4d4653";
+
+    fn hex(text: &str) -> Vec<u8> {
+        let digits: String = text.split_whitespace().collect();
+        (0..digits.len()).step_by(2).map(|at| u8::from_str_radix(&digits[at..at + 2], 16).unwrap()).collect()
+    }
+
+    #[test]
+    fn zeros_in_a_header_are_not_an_icon_a_font_or_a_targa_image() {
+        let findings = Catalog::builtin().scan(&hex(UPDATE_HEADER), 0);
+        let chance: Vec<(usize, &str)> = findings
+            .iter()
+            .filter(|f| ["signature:image/vnd.microsoft.icon", "signature:font/ttf", "signature:image/x-tga"].contains(&f.id.as_str()))
+            .map(|f| (f.start, f.id.as_str()))
+            .collect();
+        assert!(chance.is_empty(), "{chance:?}");
+    }
+
+    #[test]
+    fn a_real_icon_font_and_targa_image_are_still_found() {
+        let mut icon = vec![0, 0, 1, 0, 1, 0, 16, 16, 0, 0, 1, 0, 32, 0];
+        icon.extend(1128u32.to_le_bytes());
+        icon.extend(22u32.to_le_bytes());
+        let mut font = vec![0, 1, 0, 0, 0, 12, 0, 128, 0, 3, 0, 32];
+        font.extend(b"OS/2");
+        let mut targa = vec![0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        targa.extend([64, 0, 32, 0, 24, 0]);
+        let catalog = Catalog::builtin();
+        for (bytes, id) in [(icon, "signature:image/vnd.microsoft.icon"), (font, "signature:font/ttf"), (targa, "signature:image/x-tga")] {
+            let mut data = vec![0x55; 64];
+            data.extend(&bytes);
+            data.extend(vec![0x55; 64]);
+            let findings = catalog.scan(&data, 0);
+            assert!(findings.iter().any(|f| f.start == 64 && f.id == id), "{id}: {findings:?}");
+        }
     }
 
     #[test]
