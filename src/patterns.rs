@@ -628,10 +628,9 @@ fn scan_timestamps(window: &[u8], base: usize, format: TimeFormat, endian: Endia
                 element: element.size,
                 weak: ambiguous_with_float || constant_delta || run.count < CONFIDENT_TIMESTAMP_RUN,
                 description: format!(
-                    "{} ({} {}) every {} B, {} values: {} to {}",
+                    "{} ({}) every {} B, {} values: {} to {}",
                     format.label(),
                     element.label(),
-                    endian.label(),
                     run.stride,
                     run.count,
                     format_unix_seconds(first),
@@ -1312,6 +1311,21 @@ mod tests {
         assert_eq!(stamp.start, 16);
         assert_eq!(stamp.count, 10);
         assert!(stamp.description.contains("2023-11-14"), "{}", stamp.description);
+    }
+
+    #[test]
+    fn a_timestamp_title_names_its_byte_order_once() {
+        let mut data = Vec::new();
+        let mut t = 1_700_000_000u32;
+        for k in 0..10u32 {
+            data.extend_from_slice(&t.to_le_bytes());
+            data.extend_from_slice(&[0xAA; 4]);
+            t += 30 + (k * k * 7) % 100;
+        }
+        let patterns = scan(&data, &context(data.len()));
+        let stamps = of_kind(&patterns, PatternKind::Timestamp);
+        let finding = Finding::from(stamps[0].clone());
+        assert!(finding.title.starts_with("Unix seconds (u32 LE) every 8 B"), "{}", finding.title);
     }
 
     #[test]
