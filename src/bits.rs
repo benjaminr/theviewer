@@ -271,7 +271,9 @@ impl SyncPattern {
 
 /// Find the sync word of frames `period` bits long: the longest run of bit
 /// positions (within the frame, wrapping round) that hold the same value in
-/// nearly every frame. Returns `None` without enough frames or a stable run.
+/// nearly every frame, less any idle (a long stretch of one value, the
+/// silence between bursts) at either end; a run that is all idle is no sync
+/// word. Returns `None` without enough frames or a stable run.
 pub fn find_sync(bytes: &[u8], order: BitOrder, period: usize) -> Option<SyncPattern> {
     if period < 2 {
         return None;
@@ -283,7 +285,10 @@ pub fn find_sync(bytes: &[u8], order: BitOrder, period: usize) -> Option<SyncPat
         return None;
     }
     let stable = stable_positions(&stream, period, frames);
-    let (start, length) = longest_circular_run(&stable)?;
+    let (start, length) = circular_runs(&stable)
+        .into_iter()
+        .filter_map(|(start, length)| without_idle(&stable, start, length))
+        .max_by(|a, b| a.1.cmp(&b.1).then(b.0.cmp(&a.0)))?;
     let length = length.min(MAX_SYNC_BITS);
     let pattern = stream.bits_at(start, length);
     let matching = (0..frames)
@@ -295,37 +300,47 @@ pub fn find_sync(bytes: &[u8], order: BitOrder, period: usize) -> Option<SyncPat
     Some(SyncPattern { bit_offset: start, period, length, pattern, match_fraction: matching as f64 / frames as f64, frames })
 }
 
-/// For each bit position within the frame, whether it holds one value in
-/// at least `SYNC_CONSISTENCY` of the frames.
-fn stable_positions(stream: &BitStream, period: usize, frames: usize) -> Vec<bool> {
+/// For each bit position within the frame, the value it holds in at least
+/// `SYNC_CONSISTENCY` of the frames, if it holds one.
+fn stable_positions(stream: &BitStream, period: usize, frames: usize) -> Vec<Option<bool>> {
     (0..period)
         .map(|phase| {
             let ones = (0..frames).filter(|frame| stream.bit(phase + frame * period)).count();
             let majority = ones.max(frames - ones);
-            majority as f64 >= frames as f64 * SYNC_CONSISTENCY
+            (majority as f64 >= frames as f64 * SYNC_CONSISTENCY).then_some(ones * 2 > frames)
         })
         .collect()
 }
 
-/// The longest run of `true` in a circular slice: (start, length). The whole
-/// slice being stable means the data is constant, which is not a sync word.
-fn longest_circular_run(flags: &[bool]) -> Option<(usize, usize)> {
-    let len = flags.len();
-    if len == 0 || flags.iter().all(|&flag| flag) {
+/// The runs of stable positions in a circular frame: (start, length). The
+/// whole frame being stable means the data is constant, which has no sync word.
+fn circular_runs(stable: &[Option<bool>]) -> Vec<(usize, usize)> {
+    let len = stable.len();
+    if len == 0 || stable.iter().all(Option::is_some) {
+        return Vec::new();
+    }
+    // Start only where a run begins (previous position unstable), then walk round.
+    (0..len)
+        .filter(|&start| stable[start].is_some() && stable[(start + len - 1) % len].is_none())
+        .map(|start| (start, (0..len).take_while(|step| stable[(start + step) % len].is_some()).count()))
+        .collect()
+}
+
+/// The run of stable bits at `start` without the idle at its ends: a
+/// stretch of one value at least `IDLE_BITS` long. `None` when nothing but
+/// one value is left.
+fn without_idle(stable: &[Option<bool>], start: usize, length: usize) -> Option<(usize, usize)> {
+    const IDLE_BITS: usize = 8;
+    let value = |step: usize| stable[(start + step) % stable.len()];
+    let leading = (0..length).take_while(|&step| value(step) == value(0)).count();
+    if leading == length {
         return None;
     }
-    let mut best: Option<(usize, usize)> = None;
-    // Start only where a run begins (previous position unstable), then walk round.
-    for start in 0..len {
-        if !flags[start] || flags[(start + len - 1) % len] {
-            continue;
-        }
-        let run = (0..len).take_while(|step| flags[(start + step) % len]).count();
-        if best.is_none_or(|(_, longest)| run > longest) {
-            best = Some((start, run));
-        }
-    }
-    best
+    let trailing = (0..length).rev().take_while(|&step| value(step) == value(length - 1)).count();
+    let cut_front = if leading >= IDLE_BITS { leading } else { 0 };
+    let cut_back = if trailing >= IDLE_BITS { trailing } else { 0 };
+    let kept = length - cut_front - cut_back;
+    (kept > 1).then_some(((start + cut_front) % stable.len(), kept))
 }
 
 // ---------------------------------------------------------------------------
@@ -503,6 +518,27 @@ mod tests {
         // Random payload bits may extend the run by chance, so check the start.
         assert_eq!(found.pattern >> (found.length - 13), sync);
         assert!(found.match_fraction > 0.9);
+    }
+
+    #[test]
+    fn the_idle_between_bursts_is_not_the_sync_word() {
+        // Each burst: 80 bits of silence, the sync word, then the payload.
+        let sync = 0b1010_1010_1011_0010_1101;
+        let mut random = noise(11);
+        let mut bits = Vec::new();
+        for _ in 0..400 {
+            bits.extend([false; 80]);
+            bits.extend((0..20).rev().map(|shift| (sync >> shift) & 1 == 1));
+            bits.extend((0..40).map(|_| random() & 1 == 1));
+        }
+        let data = pack_msb_first(&bits);
+        let found = find_sync(&data, BitOrder::MsbFirst, 140).expect("sync found");
+        assert_eq!((found.bit_offset, found.pattern >> (found.length - 20)), (80, sync), "{found:?} {}", found.bits_text());
+        for idle in [0u8, 0xFF] {
+            let constant: Vec<u8> = data.iter().map(|byte| if idle == 0 { *byte } else { !byte }).collect();
+            let found = find_sync(&constant, BitOrder::MsbFirst, 140).expect("sync found");
+            assert!(found.bits_text().contains('0') && found.bits_text().contains('1'), "{}", found.bits_text());
+        }
     }
 
     #[test]
