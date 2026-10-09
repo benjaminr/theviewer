@@ -606,6 +606,8 @@ pub struct FieldResponse {
     pub dropped: Option<Carry>,
     /// Whether Enter was pressed in it.
     pub entered: bool,
+    /// The text box, while the field is not bound: to give it the keyboard.
+    pub text_box: Option<egui::Response>,
 }
 
 /// A text field that shows a chip in place of the text box while it is
@@ -639,6 +641,7 @@ pub fn bound_field(ui: &mut Ui, text: &mut String, bound: &mut Option<Bound>, hi
             let response = ui.add(egui::TextEdit::singleline(text).desired_width(width).hint_text(hint).font(egui::TextStyle::Monospace));
             answer.changed = response.changed();
             answer.entered = response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
+            answer.text_box = Some(response.clone());
             response
         }
     };

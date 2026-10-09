@@ -247,6 +247,9 @@ pub struct ViewerApp {
     pub focus_search: bool,
     pub search_mode: SearchMode,
     pub search_text: String,
+    /// Where the Find box's needle came from, when it was sent from another
+    /// tool.
+    pub search_bound: Option<crate::send_to::Bound>,
     pub search_little_endian: bool,
     pub search_count: Option<usize>,
     /// Bookmarks and remembered shape for the current file.
@@ -594,6 +597,7 @@ impl ViewerApp {
             focus_search: false,
             search_mode: SearchMode::Hex,
             search_text: String::new(),
+            search_bound: None,
             search_little_endian: true,
             search_count: None,
             bookmarks: Sidecar::default(),
@@ -3642,15 +3646,21 @@ impl ViewerApp {
                         }
                     }
                 });
-            let field = ui.add(egui::TextEdit::singleline(&mut self.search_text).desired_width(140.0).hint_text("bytes, text or number"));
-            if self.focus_search {
-                field.request_focus();
+            if self.search_bound.is_some() {
                 self.focus_search = false;
             }
-            if field.changed() {
+            let field = crate::send_to::bound_field(ui, &mut self.search_text, &mut self.search_bound, "bytes, text or number", 140.0);
+            if let Some(response) = field.text_box.as_ref().filter(|_| self.focus_search) {
+                response.request_focus();
+                self.focus_search = false;
+            }
+            if field.changed {
                 self.search_count = None;
             }
-            if field.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
+            if let Some(carry) = field.dropped {
+                crate::send_to::send_later(self, crate::send_to::Sending::To(crate::send_to::Target::SearchNeedle), carry);
+            }
+            if field.entered {
                 self.find_next();
             }
             if ui.button("Next").on_hover_text("F3").clicked() {

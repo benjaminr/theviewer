@@ -53,6 +53,8 @@ pub enum SelectionView {
 pub struct OperationInputs {
     /// Key for XOR, add and subtract, as hex.
     pub key_text: String,
+    /// Where that key came from, when it was sent from another tool.
+    pub key_bound: Option<send_to::Bound>,
     pub counter_start: u64,
     pub counter_step: u64,
     pub counter_little_endian: bool,
@@ -62,7 +64,7 @@ pub struct OperationInputs {
 
 impl Default for OperationInputs {
     fn default() -> Self {
-        OperationInputs { key_text: "FF".to_string(), counter_start: 0, counter_step: 1, counter_little_endian: true, move_destination_text: String::new() }
+        OperationInputs { key_text: "FF".to_string(), key_bound: None, counter_start: 0, counter_step: 1, counter_little_endian: true, move_destination_text: String::new() }
     }
 }
 
@@ -87,6 +89,12 @@ impl ViewerApp {
     /// can be repeated; a failure is said on the status bar. Returns
     /// whether it was applied.
     pub fn apply_operation(&mut self, operation: Operation) -> bool {
+        self.apply_operation_derived(operation, DerivedFrom::new())
+    }
+
+    /// [`ViewerApp::apply_operation`] with some of the operation's values
+    /// taken from where `derived_from` says (a key sent from another tool).
+    pub fn apply_operation_derived(&mut self, operation: Operation, derived_from: DerivedFrom) -> bool {
         let ranges = self.operation_ranges();
         if ranges.is_empty() {
             self.status = "Nothing to change: the cursor is at the end of the document".to_string();
@@ -94,7 +102,7 @@ impl ViewerApp {
         }
         let target = self.current_selection().unwrap_or(Selection::Range(self.cursor, 1));
         let params = serde_json::json!({ "selection": target, "operation": operation });
-        if self.perform("transform.apply", params).is_err() {
+        if self.perform_derived("transform.apply", params, derived_from).is_err() {
             return false;
         }
         let bytes: usize = ranges.iter().map(|&(_, len)| len).sum();
@@ -255,6 +263,12 @@ impl ViewerApp {
         serde_json::json!({ "query": self.search_text, "mode": self.search_mode, "little_endian": self.search_little_endian })
     }
 
+    /// Where the Find box's needle came from, when it was sent from another
+    /// tool: the anchor of the searches' `query`.
+    fn search_provenance(&self) -> DerivedFrom {
+        send_to::Bound::at(&self.search_bound, "query")
+    }
+
     /// Where the Find box's query next occurs from `from` (before it when
     /// `backwards`), wrapping round, as `search.find`.
     pub(crate) fn find_in_document(&mut self, from: usize, backwards: bool) -> Result<Option<usize>, ApiError> {
@@ -262,7 +276,8 @@ impl ViewerApp {
         params["from"] = serde_json::json!(from);
         params["backwards"] = serde_json::json!(backwards);
         params["wrap"] = serde_json::json!(true);
-        let found: FindResult = self.perform_typed("search.find", params)?;
+        let found: FindResult = serde_json::from_value(self.perform_derived("search.find", params, self.search_provenance())?)
+            .map_err(|error| ApiError::invalid_params(format!("the result of search.find was not what the window expected: {error}")))?;
         Ok(found.at.map(|at| at as usize))
     }
 
@@ -277,7 +292,8 @@ impl ViewerApp {
             if let Some(next) = &next {
                 params["next"] = serde_json::json!(next);
             }
-            let page: FindAllResult = self.perform_typed("search.find_all", params)?;
+            let page: FindAllResult = serde_json::from_value(self.perform_derived("search.find_all", params, self.search_provenance())?)
+                .map_err(|error| ApiError::invalid_params(format!("the result of search.find_all was not what the window expected: {error}")))?;
             matches.extend(page.matches.into_iter().map(|at| at as usize));
             next = page.next;
             if next.is_none() || matches.len() >= most {
@@ -476,7 +492,8 @@ impl ViewerApp {
     /// Combine every selected range with the key.
     pub fn apply_key(&mut self, make: fn(Vec<u8>) -> Operation) {
         if let Some(key) = self.operation_key() {
-            self.apply_operation(make(key));
+            let derived_from = send_to::Bound::at(&self.inputs.key_bound, "operation.key");
+            self.apply_operation_derived(make(key), derived_from);
         }
     }
 
@@ -647,7 +664,11 @@ fn show_fill_fields(app: &mut ViewerApp, ui: &mut Ui) {
 }
 
 fn show_key_fields(app: &mut ViewerApp, ui: &mut Ui) {
-    hex_field(ui, &mut app.inputs.key_text, "hex key");
+    let inputs = &mut app.inputs;
+    let field = send_to::bound_field(ui, &mut inputs.key_text, &mut inputs.key_bound, "hex key", FIELD_WIDTH);
+    if let Some(carry) = field.dropped {
+        send_to::send_later(app, send_to::Sending::To(Target::TransformKey), carry);
+    }
     ui.label(RichText::new("The key repeats from the start of each range").small().color(theme::TEXT_DIM));
     ui.horizontal(|ui| {
         let actions: [(&str, MakeOperation); 3] = [("XOR", Operation::Xor), ("Add", Operation::Add), ("Subtract", Operation::Subtract)];
@@ -765,6 +786,7 @@ pub fn slots(carry: &Carry) -> Vec<Slot> {
 pub(crate) fn fill_transform_key(app: &mut ViewerApp, carry: &Carry) -> Result<String, String> {
     let filled = carry.as_hex(app).ok_or_else(|| send_to::does_not_fit(carry, "a key"))?;
     app.inputs.key_text = filled.text;
+    app.inputs.key_bound = filled.bound;
     Ok(format!("The Selection menu's key is {}: XOR, add or subtract with it", carry.summary()))
 }
 
@@ -782,6 +804,7 @@ pub(crate) fn fill_search_needle(app: &mut ViewerApp, carry: &Carry) -> Result<S
     };
     app.search_mode = mode;
     app.search_text = filled.text;
+    app.search_bound = filled.bound;
     app.search_count = None;
     Ok(format!("Find looks for {}; press F3", carry.summary()))
 }
@@ -1125,5 +1148,35 @@ mod tests {
         assert_eq!(std::fs::read(&path).unwrap(), b"12678", "the ranges one after another");
         assert_eq!(take_performed(), [("documents.export".to_string(), json!({"ranges": [[1, 2], [6, 3]], "path": path.display().to_string()}))]);
         std::fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn a_key_sent_to_the_selection_menu_is_applied_with_where_it_came_from() {
+        use crate::journal::Anchor;
+        use crate::send_to::{self, Carry, Target};
+        let mut app = app_with(b"abcd");
+        let carry = Carry::variable("k", &json!("AB"), app.document_id());
+        send_to::send(&mut app, Target::TransformKey, &carry).unwrap();
+        assert_eq!(app.inputs.key_text, "4142");
+        app.restore_selection(0, 2);
+        app.apply_key(crate::selection_ops::Operation::Xor);
+        assert_eq!(app.document.read_range(0, 2), [b'a' ^ 0x41, b'b' ^ 0x42]);
+        let entry = app.journal.entries().rev().find(|entry| entry.method == "transform.apply").unwrap();
+        let expected = Anchor::Then { of: Box::new(Anchor::Var { var: "k".into() }), then: vec![crate::journal::anchors::Operation::Encode(crate::journal::anchors::then::Encoding::TextToHex)] };
+        assert_eq!(entry.derived_from.get("operation.key"), Some(&expected));
+    }
+
+    #[test]
+    fn a_needle_sent_to_the_find_box_is_searched_for_with_where_it_came_from() {
+        use crate::journal::Anchor;
+        use crate::send_to::{self, Carry, Target};
+        let mut app = app_with(b"..PK..");
+        let carry = Carry::variable("magic", &json!("PK"), app.document_id());
+        send_to::send(&mut app, Target::SearchNeedle, &carry).unwrap();
+        assert_eq!((app.search_mode, app.search_text.as_str()), (crate::search::SearchMode::Text, "PK"));
+        app.find_next();
+        assert_eq!(app.current_selection(), Some(Selection::Range(2, 2)));
+        let search = app.journal.reads().rev().find(|read| read.method == "search.find").expect("the search is read");
+        assert_eq!(search.derived_from.get("query"), Some(&Anchor::Var { var: "magic".into() }));
     }
 }

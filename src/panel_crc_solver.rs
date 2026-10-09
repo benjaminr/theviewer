@@ -60,6 +60,8 @@ pub struct SolveOutcome {
 pub struct CrcSolverState {
     pub source: RecordSource,
     pub start_text: String,
+    /// Where the start came from, when it was sent from another tool.
+    pub start_bound: Option<send_to::Bound>,
     pub record_len_text: String,
     /// Empty means "as many as fit".
     pub count_text: String,
@@ -106,6 +108,7 @@ pub(crate) fn fill_records(state: &mut CrcSolverState, _app: &mut ViewerApp, car
     }
     state.source = RecordSource::FixedLength;
     state.start_text = format!("{start:#x}");
+    state.start_bound = bytes.derived_from.get("ranges[0][0]").map(|anchor| send_to::Bound { anchor: anchor.clone(), from: bytes.from.clone(), shown: state.start_text.clone() });
     if bytes.ranges.len() > 1 {
         state.record_len_text = len.to_string();
         state.count_text = bytes.ranges.len().to_string();
@@ -119,6 +122,7 @@ pub(crate) fn fill_start(state: &mut CrcSolverState, _app: &mut ViewerApp, carry
     let filled = carry.as_offset().ok_or_else(|| send_to::does_not_fit(carry, "an offset"))?;
     state.source = RecordSource::FixedLength;
     state.start_text = filled.text;
+    state.start_bound = filled.bound;
     state.input_error = None;
     Ok(format!("The CRC solver's records start at {}", carry.summary()))
 }
@@ -167,7 +171,7 @@ fn poll(state: &mut CrcSolverState) {
     }
 }
 
-fn show_record_inputs(state: &mut CrcSolverState, app: &ViewerApp, ui: &mut Ui) {
+fn show_record_inputs(state: &mut CrcSolverState, app: &mut ViewerApp, ui: &mut Ui) {
     ui.horizontal_wrapped(|ui| {
         ui.label(RichText::new("Records").strong());
         ui.radio_value(&mut state.source, RecordSource::SelectionRows, "Selection, one per row");
@@ -186,7 +190,11 @@ fn show_record_inputs(state: &mut CrcSolverState, app: &ViewerApp, ui: &mut Ui) 
         }
         RecordSource::FixedLength => {
             ui.horizontal_wrapped(|ui| {
-                number_field(ui, "Start", &mut state.start_text, "0x0");
+                ui.label("Start");
+                let field = send_to::bound_field(ui, &mut state.start_text, &mut state.start_bound, "0x0", NUMBER_FIELD_WIDTH);
+                if let Some(carry) = field.dropped {
+                    send_to::send_later(app, send_to::Sending::To(Target::CrcRecords), carry);
+                }
                 number_field(ui, "Length", &mut state.record_len_text, "bytes");
                 number_field(ui, "Count", &mut state.count_text, "all");
             });
@@ -236,7 +244,10 @@ fn coverage_checkbox(ui: &mut Ui, coverage: &mut CoverageChoice) {
 fn start_solve(state: &mut CrcSolverState, app: &mut ViewerApp) {
     state.input_error = None;
     match solve_params(state, app) {
-        Ok(params) => app.perform_later("checksums.solve_crc", params),
+        Ok(params) => {
+            let derived_from = if state.source == RecordSource::FixedLength { send_to::Bound::at(&state.start_bound, "start") } else { Default::default() };
+            app.perform_later_derived("checksums.solve_crc", params, derived_from);
+        }
         Err(message) => state.input_error = Some(message),
     }
 }

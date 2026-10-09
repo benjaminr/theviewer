@@ -75,6 +75,8 @@ pub struct StatsState {
     pub xor_candidates: PerSheet<XorResults>,
     /// The key of the XOR tab's Apply row, as hex.
     pub xor_key: String,
+    /// Where that key came from, when it was sent from another tool.
+    pub xor_key_bound: Option<send_to::Bound>,
 }
 
 /// What the Statistics tab worked out about one sheet, kept while it is
@@ -100,6 +102,7 @@ impl Default for StatsState {
             interesting_only: false,
             xor_candidates: PerSheet::default(),
             xor_key: String::new(),
+            xor_key_bound: None,
         }
     }
 }
@@ -620,7 +623,11 @@ fn show_xor_key_row(app: &mut ViewerApp, ui: &mut Ui, start: usize, len: usize) 
     let mut apply = false;
     ui.horizontal(|ui| {
         ui.label("Key");
-        ui.add(egui::TextEdit::singleline(&mut app.bench.tools.stats.xor_key).desired_width(160.0).hint_text("hex, or Send to here").font(egui::TextStyle::Monospace));
+        let stats = &mut app.bench.tools.stats;
+        let field = send_to::bound_field(ui, &mut stats.xor_key, &mut stats.xor_key_bound, "hex, or Send to here", 160.0);
+        if let Some(carry) = field.dropped {
+            send_to::send_later(app, Sending::To(Target::XorKey), carry);
+        }
         let ready = !app.bench.tools.stats.xor_key.trim().is_empty() && len > 0;
         apply = ui.add_enabled(ready, egui::Button::new(format!("Apply to {len} bytes at {start:#x}"))).on_hover_text("XOR the bytes with this key, repeated from their start").clicked();
     });
@@ -638,7 +645,8 @@ pub(crate) fn apply_xor_key_field(app: &mut ViewerApp, start: usize, len: usize)
     };
     let key_hex = crate::ops::to_compact_hex(&key);
     let params = serde_json::json!({ "selection": { "range": [start, len] }, "operation": { "op": "xor", "key": key_hex } });
-    let applied = app.perform("transform.apply", params).is_ok();
+    let derived_from = send_to::Bound::at(&app.bench.tools.stats.xor_key_bound, "operation.key");
+    let applied = app.perform_derived("transform.apply", params, derived_from).is_ok();
     if applied {
         app.status = format!("XOR {key_hex} applied to {len} bytes at {start:#x}");
     }
@@ -654,6 +662,7 @@ pub fn slots(carry: &Carry) -> Vec<Slot> {
 pub(crate) fn fill_xor_key(app: &mut ViewerApp, carry: &Carry) -> Result<String, String> {
     let filled = carry.as_hex(app).ok_or_else(|| send_to::does_not_fit(carry, "an XOR key"))?;
     app.bench.tools.stats.xor_key = filled.text;
+    app.bench.tools.stats.xor_key_bound = filled.bound;
     Ok(format!("The XOR tab's key is {}", carry.summary()))
 }
 
@@ -857,5 +866,55 @@ mod tests {
         harness.run();
         assert_eq!(harness.state().bench.tools.stats.xor_key, "5a");
         assert!(harness.state().status.starts_with("The XOR tab's key is 5a"), "{}", harness.state().status);
+    }
+
+    /// The XOR tab drawn as the window draws it.
+    fn xor_tab(app: ViewerApp) -> egui_kittest::Harness<'static, ViewerApp> {
+        egui_kittest::Harness::new_ui_state(
+            |ui, app: &mut ViewerApp| {
+                app.perform_waiting_actions();
+                show_xor(app, ui);
+            },
+            app,
+        )
+    }
+
+    #[test]
+    fn a_string_sent_to_the_xor_key_shows_as_a_chip_and_the_xor_journals_its_anchor() {
+        use egui_kittest::kittest::Queryable;
+        let mut app = app_with(b"\0\0NC500-2F357657\0\0some config text here\0\0");
+        let found = strings_found(&mut app);
+        let carry = string_carry(&found.strings, found.step, 0, &app.document_id());
+        send_to::send(&mut app, Target::XorKey, &carry).unwrap();
+        app.restore_selection(19, 8);
+        let mut harness = xor_tab(app);
+        harness.run();
+        harness.get_by_label("NC500-2F357657");
+        harness.get_by_label(&format!("· from step {}, string /^NC500-/", found.step.unwrap()));
+        take_performed();
+        harness.get_by_label("Apply to 8 bytes at 0x13").click();
+        harness.run();
+        let app = harness.state();
+        let entry = app.journal.entries().rev().find(|entry| entry.method == "transform.apply").expect("the XOR is a step");
+        assert_eq!(entry.params["operation"]["key"], crate::ops::to_compact_hex(b"NC500-2F357657"));
+        let Some(Anchor::Then { of, then }) = entry.derived_from.get("operation.key") else { panic!("the key keeps where it came from: {:?}", entry.derived_from) };
+        assert!(matches!(of.as_ref(), Anchor::Pick { pick } if pick.step == StepRef::Number(found.step.unwrap()) && pick.list == "job.strings"));
+        assert_eq!(then, &[crate::journal::anchors::Operation::Encode(crate::journal::anchors::then::Encoding::TextToHex)]);
+    }
+
+    #[test]
+    fn unbinding_a_chip_keeps_the_value_as_a_literal() {
+        use egui_kittest::kittest::Queryable;
+        let mut app = app_with(&[0u8; 16]);
+        let carry = Carry::variable("serial", &json!("AB"), app.document_id());
+        send_to::send(&mut app, Target::XorKey, &carry).unwrap();
+        let mut harness = xor_tab(app);
+        harness.run();
+        harness.get_by_label("· $serial");
+        harness.get_by_label("✕").click();
+        harness.run();
+        let stats = &harness.state().bench.tools.stats;
+        assert_eq!((stats.xor_key.as_str(), stats.xor_key_bound.is_none()), ("4142", true));
+        assert!(harness.get_all_by_value("4142").next().is_some(), "the key is a text box again, holding the value");
     }
 }

@@ -73,6 +73,8 @@ pub struct CryptoState {
 struct DecryptForm {
     /// The key as hex, typed or filled from a key found.
     key: String,
+    /// Where the key came from, when it was sent from another tool.
+    key_bound: Option<send_to::Bound>,
     /// The IV (CBC) or initial counter block (CTR) as hex.
     iv: String,
     mode: Mode,
@@ -83,7 +85,7 @@ struct DecryptForm {
 
 impl Default for DecryptForm {
     fn default() -> Self {
-        DecryptForm { key: String::new(), iv: String::new(), mode: Mode::Ecb, padding: Mode::Ecb.usual_padding(), error: None }
+        DecryptForm { key: String::new(), key_bound: None, iv: String::new(), mode: Mode::Ecb, padding: Mode::Ecb.usual_padding(), error: None }
     }
 }
 
@@ -377,6 +379,7 @@ fn use_key(state: &mut CryptoState, app: &mut ViewerApp, sheet: &str, offset: us
     let Some(document) = crate::api::Workspace::document_mut(app, sheet) else { return };
     let key = document.read_range(offset, len);
     state.decrypt.key = crate::api::values::encode_bytes(&key, Default::default());
+    state.decrypt.key_bound = None;
     state.decrypt.error = None;
     let algorithm = Algorithm::for_key_len(key.len()).map_or("no AES", Algorithm::label);
     app.status = format!("The {len} bytes at {offset:#x} are the key under Decrypt ({algorithm})");
@@ -390,8 +393,12 @@ fn show_decrypt(state: &mut CryptoState, app: &mut ViewerApp, ui: &mut Ui) {
     let form = &mut state.decrypt;
     ui.horizontal_wrapped(|ui| {
         ui.label("Key");
-        if ui.add(egui::TextEdit::singleline(&mut form.key).hint_text("hex, 16, 24 or 32 bytes").desired_width(300.0).font(egui::TextStyle::Monospace)).changed() {
+        let field = send_to::bound_field(ui, &mut form.key, &mut form.key_bound, "hex, 16, 24 or 32 bytes", 300.0);
+        if field.changed {
             form.error = None;
+        }
+        if let Some(carry) = field.dropped {
+            send_to::send_later(app, Sending::To(Target::CryptoKey), carry);
         }
         let key_len = crate::ops::parse_hex(&form.key).map_or(0, |key| key.len());
         match Algorithm::for_key_len(key_len) {
@@ -442,7 +449,11 @@ fn start_decrypt(state: &mut CryptoState, app: &mut ViewerApp, start: usize, len
     if form.mode.needs_iv() {
         params["iv"] = serde_json::Value::String(form.iv.trim().to_string());
     }
-    match app.perform_typed::<crate::api::tools::crypto::OpenDecryptedResult>("crypto.open_decrypted", params) {
+    let derived_from = send_to::Bound::at(&form.key_bound, "key");
+    let decrypted = app.perform_derived("crypto.open_decrypted", params, derived_from).and_then(|result| {
+        serde_json::from_value::<crate::api::tools::crypto::OpenDecryptedResult>(result).map_err(|error| crate::api::ApiError::invalid_params(format!("the result of crypto.open_decrypted was not what the window expected: {error}")))
+    });
+    match decrypted {
         Ok(result) => {
             state.decrypt.error = None;
             app.status = crate::api::tools::crypto::describe_decrypted(&result.done);
@@ -544,6 +555,7 @@ pub fn slots(carry: &Carry) -> Vec<Slot> {
 pub(crate) fn fill_key(state: &mut CryptoState, app: &mut ViewerApp, carry: &Carry) -> Result<String, String> {
     let filled = carry.as_hex(app).ok_or_else(|| send_to::does_not_fit(carry, "an AES key"))?;
     state.decrypt.key = filled.text;
+    state.decrypt.key_bound = filled.bound;
     state.decrypt.error = None;
     Ok(format!("The key under Decrypt is {}", carry.summary()))
 }
