@@ -109,6 +109,8 @@ pub struct BitsState {
     /// Code and offset for a manual decode.
     manual_code: Option<LineCode>,
     manual_offset: usize,
+    /// Where the bit offset came from, when it was sent from a result.
+    offset_bound: Option<send_to::Bound>,
 
     /// Field width for the number-type guess (0 means the default).
     pub number_width: usize,
@@ -188,8 +190,13 @@ pub fn slots(carry: &Carry) -> Vec<Slot> {
 /// Decode line codes from the bit offset `carry` holds.
 pub(crate) fn fill_offset(state: &mut BitsState, _app: &mut ViewerApp, carry: &Carry) -> Result<String, String> {
     match carry.as_number() {
-        Some((offset, _)) if offset <= MOST_BIT_OFFSET => {
+        Some((offset, anchor)) if offset <= MOST_BIT_OFFSET => {
             state.manual_offset = offset as usize;
+            let from = match carry {
+                Carry::Value(value) => value.from.clone(),
+                _ => carry.summary(),
+            };
+            state.offset_bound = anchor.map(|anchor| send_to::Bound { anchor, from, shown: offset.to_string() });
             Ok(format!("Line codes are decoded from bit {offset}"))
         }
         _ => Err(send_to::does_not_fit(carry, "a bit offset of 0 to 63")),
@@ -468,9 +475,10 @@ pub(crate) fn detect_linecodes(bytes: &[u8], start: usize, order: BitOrder) -> L
 }
 
 /// The person opens a line-code decode as a document: `bits.decode_linecode`.
-fn open_decoded(app: &mut ViewerApp, (start, len): (usize, usize), order: BitOrder, code: LineCode, bit_offset: usize) {
+fn open_decoded(app: &mut ViewerApp, (start, len): (usize, usize), order: BitOrder, code: LineCode, bit_offset: usize, derived_from: crate::journal::DerivedFrom) {
     let code = crate::api::tools::bits::LineCodeName::of(code);
-    let _ = app.perform("bits.decode_linecode", serde_json::json!({ "start": start, "len": len, "order": order, "code": code, "bit_offset": bit_offset }));
+    let params = serde_json::json!({ "start": start, "len": len, "order": order, "code": code, "bit_offset": bit_offset });
+    let _ = app.perform_derived("bits.decode_linecode", params, derived_from);
 }
 
 fn show_linecodes(state: &mut BitsState, app: &mut ViewerApp, ui: &mut Ui) {
@@ -483,7 +491,7 @@ fn show_linecodes(state: &mut BitsState, app: &mut ViewerApp, ui: &mut Ui) {
             ui.spinner();
         }
     });
-    let mut open: Option<((usize, usize), BitOrder, LineCode, usize)> = None;
+    let mut open: Option<((usize, usize), BitOrder, LineCode, usize, crate::journal::DerivedFrom)> = None;
     ui.horizontal_wrapped(|ui| {
         ui.label("Decode as");
         let selected = state.manual_code.unwrap_or(LineCode::Nrzi);
@@ -495,9 +503,27 @@ fn show_linecodes(state: &mut BitsState, app: &mut ViewerApp, ui: &mut Ui) {
             }
         });
         ui.label("from bit");
-        ui.add(egui::DragValue::new(&mut state.manual_offset).range(0..=63));
+        match &state.offset_bound {
+            Some(bound) => {
+                let mut unbind = false;
+                egui::Frame::new().fill(theme::SURFACE_RAISED).stroke(egui::Stroke::new(1.0, theme::ACCENT)).corner_radius(8.0).inner_margin(egui::Margin::symmetric(6, 1)).show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 4.0;
+                        ui.monospace(&bound.shown).on_hover_text(format!("from {}", bound.anchor.describe()));
+                        ui.label(RichText::new(format!("· {}", bound.from)).small().color(theme::ACCENT));
+                        unbind = ui.add(egui::Button::new(RichText::new("×").color(theme::ACCENT)).frame(false)).on_hover_text("Unbind: keep the bit offset, not where it came from").clicked();
+                    });
+                });
+                if unbind {
+                    state.offset_bound = None;
+                }
+            }
+            None => {
+                ui.add(egui::DragValue::new(&mut state.manual_offset).range(0..=63));
+            }
+        }
         if ui.button("Open decoded").clicked() {
-            open = Some(((start, len), state.order, selected, state.manual_offset));
+            open = Some(((start, len), state.order, selected, state.manual_offset, send_to::Bound::at(&state.offset_bound, "bit_offset")));
         }
     });
     if let Some(result) = &state.linecodes {
@@ -514,7 +540,7 @@ fn show_linecodes(state: &mut BitsState, app: &mut ViewerApp, ui: &mut Ui) {
                 }
                 ui.label(dim(extra));
                 if ui.small_button("Open decoded").clicked() {
-                    open = Some(((result.start, result.len), result.order, decode.code, decode.bit_offset));
+                    open = Some(((result.start, result.len), result.order, decode.code, decode.bit_offset, crate::journal::DerivedFrom::new()));
                 }
                 ui.end_row();
             }
@@ -526,8 +552,8 @@ fn show_linecodes(state: &mut BitsState, app: &mut ViewerApp, ui: &mut Ui) {
     } else {
         ui.label(dim("Tries Manchester (both conventions), differential Manchester, 8b/10b and packed BCD at every bit alignment and ranks them by invalid symbols. NRZI and Gray code cannot be checked, so decode them by hand."));
     }
-    if let Some((span, order, code, bit_offset)) = open {
-        open_decoded(app, span, order, code, bit_offset);
+    if let Some((span, order, code, bit_offset, derived_from)) = open {
+        open_decoded(app, span, order, code, bit_offset, derived_from);
     }
 }
 
@@ -649,6 +675,19 @@ mod tests {
     }
 
     #[test]
+    fn a_bit_offset_sent_from_a_result_is_bound_and_the_decode_journals_where_it_came_from() {
+        let mut app = app_with(&[0x55u8; 64]);
+        let carry = Carry::variable("phase", &json!(3), app.document_id());
+        send_to::send(&mut app, Target::BitsOffset, &carry).unwrap();
+        let state = &app.bench.panels.bits;
+        assert_eq!((state.manual_offset, state.offset_bound.is_some()), (3, true));
+        let derived_from = send_to::Bound::at(&state.offset_bound, "bit_offset");
+        open_decoded(&mut app, (0, 64), BitOrder::MsbFirst, LineCode::Nrzi, 3, derived_from);
+        let entry = app.journal.entries().rev().find(|entry| entry.method == "bits.decode_linecode").expect("the decode is a step");
+        assert_eq!(entry.derived_from.get("bit_offset"), Some(&crate::journal::anchors::Anchor::Var { var: "phase".into() }));
+    }
+
+    #[test]
     fn each_search_is_a_job_with_its_span_and_options_carried_out_once_the_panel_is_drawn() {
         let mut app = app_with(&[0x55u8; 4096]);
         app.restore_selection(16, 1024);
@@ -698,7 +737,7 @@ mod tests {
         assert_eq!(take_performed(), [("bits.open_plane".to_string(), json!({"start": 0, "len": 64, "bit": 7})), ("view.set_shape".to_string(), json!({"width": 8}))]);
         assert_eq!((app.display_name().as_str(), app.document.len(), app.shape.width), ("test.bin › bit plane 7@0x0", 64, 8));
         let mut app = app_with(&[0x81u8; 256]);
-        open_decoded(&mut app, (0, 256), BitOrder::MsbFirst, LineCode::Nrzi, 2);
+        open_decoded(&mut app, (0, 256), BitOrder::MsbFirst, LineCode::Nrzi, 2, crate::journal::DerivedFrom::new());
         assert_eq!(take_performed(), [("bits.decode_linecode".to_string(), json!({"start": 0, "len": 256, "order": "msb", "code": "nrzi", "bit_offset": 2}))]);
         assert_eq!(app.display_name(), format!("test.bin › {}+2@0x0", LineCode::Nrzi.label()));
     }

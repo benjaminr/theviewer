@@ -66,6 +66,8 @@ pub struct CryptoState {
     decode: PerSheet<DecodeResults>,
     /// Known plaintext for crib dragging, with `\xHH` escapes.
     crib: String,
+    /// Where the crib came from, when it was sent from a result.
+    crib_bound: Option<send_to::Bound>,
     crib_error: Option<String>,
     decrypt: DecryptForm,
     /// Where a decode's Apply puts it.
@@ -476,7 +478,7 @@ fn decode_range(app: &ViewerApp) -> (usize, usize) {
 }
 
 fn show_decode(state: &mut CryptoState, app: &mut ViewerApp, ui: &mut Ui) {
-    show_crib_controls(state, ui);
+    show_crib_controls(state, app, ui);
     let (start, len) = decode_range(app);
     ui.horizontal(|ui| {
         let busy = state.decode_job.is_some();
@@ -575,6 +577,9 @@ pub(crate) fn fill_key(state: &mut CryptoState, app: &mut ViewerApp, carry: &Car
 pub(crate) fn fill_crib(state: &mut CryptoState, app: &mut ViewerApp, carry: &Carry) -> Result<String, String> {
     let bytes = carry.bytes_up_to(app, send_to::MOST_CARRIED_BYTES).ok_or_else(|| send_to::does_not_fit(carry, "a crib"))?;
     state.crib = ciphers::crib_text(&bytes);
+    // Bound only when the crib is the text found itself, so the anchor finds
+    // the crib again with nothing to escape.
+    state.crib_bound = carry.as_text().filter(|filled| filled.text == state.crib).and_then(|filled| filled.bound);
     state.crib_error = None;
     Ok(format!("The crib is {}", carry.summary()))
 }
@@ -598,21 +603,26 @@ fn show_key_fragments(app: &mut ViewerApp, ui: &mut Ui, results: &DecodeResults,
     }
 }
 
-fn show_crib_controls(state: &mut CryptoState, ui: &mut Ui) {
+fn show_crib_controls(state: &mut CryptoState, app: &mut ViewerApp, ui: &mut Ui) {
     ui.horizontal_wrapped(|ui| {
         ui.label("Crib");
-        let edit = ui.add(egui::TextEdit::singleline(&mut state.crib).hint_text("known plaintext, e.g. PK\\x03\\x04").desired_width(180.0));
-        if edit.changed() {
+        let field = send_to::bound_field(ui, &mut state.crib, &mut state.crib_bound, "known plaintext, e.g. PK\\x03\\x04", 180.0);
+        if field.changed {
             state.crib_error = None;
+        }
+        if let Some(carry) = field.dropped {
+            send_to::send_later(app, Sending::To(Target::CryptoCrib), carry);
         }
         for (label, bytes) in ciphers::PRESET_CRIBS {
             if ui.small_button(label).clicked() {
                 state.crib = ciphers::crib_text(bytes);
+                state.crib_bound = None;
                 state.crib_error = None;
             }
         }
         if !state.crib.is_empty() && ui.small_button("Clear").clicked() {
             state.crib.clear();
+            state.crib_bound = None;
             state.crib_error = None;
         }
     });
@@ -633,7 +643,7 @@ fn start_decode(state: &mut CryptoState, app: &mut ViewerApp, start: usize, len:
         }
         params["crib"] = serde_json::Value::String(state.crib.clone());
     }
-    app.perform_later("crypto.attack", params);
+    app.perform_later_derived("crypto.attack", params, send_to::Bound::at(&state.crib_bound, "crib"));
 }
 
 /// The person applies a decode where the Output toggle says: over the
@@ -690,6 +700,25 @@ mod tests {
         app.run_bus();
         take_performed();
         app
+    }
+
+    #[test]
+    fn a_crib_sent_from_a_variable_is_bound_and_the_attack_journals_where_it_came_from() {
+        let mut app = app_with(&[0x42u8; 256]);
+        let carry = Carry::variable("magic", &json!("PK"), app.document_id());
+        send_to::send(&mut app, Target::CryptoCrib, &carry).unwrap();
+        let mut state = std::mem::take(&mut app.bench.panels.crypto);
+        assert_eq!(state.crib, "PK");
+        assert!(state.crib_bound.is_some(), "the crib keeps where it came from");
+        start_decode(&mut state, &mut app, 0, 256);
+        app.perform_waiting_actions();
+        let entry = app.journal.entries().rev().find(|entry| entry.method == "crypto.attack").expect("the attack is a step");
+        assert_eq!(entry.derived_from.get("crib"), Some(&crate::journal::anchors::Anchor::Var { var: "magic".into() }));
+        state.crib = "PK\\x03".to_string();
+        let bytes = Carry::value(Carried::Bytes(vec![0x50, 0x4b, 0x03]), None, "", app.document_id());
+        app.bench.panels.crypto = state;
+        send_to::send(&mut app, Target::CryptoCrib, &bytes).unwrap();
+        assert!(app.bench.panels.crypto.crib_bound.is_none(), "bytes with nothing that finds them again stay a literal");
     }
 
     #[test]
