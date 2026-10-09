@@ -6,7 +6,7 @@ use eframe::egui::{self, Align2, Color32, FontId, Rect, RichText, Sense, Stroke,
 use crate::app::ViewerApp;
 use crate::legend::{self, LayerKind};
 use crate::patterns;
-use crate::plugin::{Category, Field};
+use crate::plugin::{Category, Field, Finding};
 use crate::reference::{self, FormatReference};
 use crate::raster::byte_class_colour;
 use crate::theme;
@@ -89,28 +89,30 @@ fn show_inspector(app: &mut ViewerApp, ui: &mut Ui) {
         }
     });
 
-    // Fixed-width monospace rows: predictable width, no grid measuring.
-    let dim = theme::TEXT_DIM;
-    let row = |ui: &mut Ui, pairs: &[(&str, String)]| {
-        let mut line = String::new();
-        for (label, value) in pairs {
-            line.push_str(&format!("{label:<7} {value:<22}"));
-        }
-        ui.label(RichText::new(line.trim_end()).monospace().color(dim));
-    };
+    // Fixed-width monospace rows: predictable width, no grid measuring. Each
+    // value can be sent elsewhere from its right-click menu.
     let has = |n: usize| window.len() >= n;
+    let mut rows: Vec<Vec<Reading>> = Vec::new();
     if has(2) {
         let two = [padded[0], padded[1]];
-        row(ui, &[("u16 LE", u16::from_le_bytes(two).to_string()), ("u16 BE", u16::from_be_bytes(two).to_string())]);
+        rows.push(vec![Reading::number("u16 LE", u16::from_le_bytes(two) as u64, 2), Reading::number("u16 BE", u16::from_be_bytes(two) as u64, 2)]);
     }
     if has(4) {
         let four = [padded[0], padded[1], padded[2], padded[3]];
-        row(ui, &[("u32 LE", u32::from_le_bytes(four).to_string()), ("u32 BE", u32::from_be_bytes(four).to_string())]);
-        row(ui, &[("i32 LE", i32::from_le_bytes(four).to_string()), ("f32 LE", format_float(f32::from_le_bytes(four) as f64))]);
+        rows.push(vec![Reading::number("u32 LE", u32::from_le_bytes(four) as u64, 4), Reading::number("u32 BE", u32::from_be_bytes(four) as u64, 4)]);
+        rows.push(vec![Reading::text("i32 LE", i32::from_le_bytes(four).to_string(), 4), Reading::text("f32 LE", format_float(f32::from_le_bytes(four) as f64), 4)]);
     }
     if has(8) {
-        row(ui, &[("u64 LE", u64::from_le_bytes(padded).to_string())]);
-        row(ui, &[("f64 LE", format_float(f64::from_le_bytes(padded)))]);
+        rows.push(vec![Reading::number("u64 LE", u64::from_le_bytes(padded), 8)]);
+        rows.push(vec![Reading::text("f64 LE", format_float(f64::from_le_bytes(padded)), 8)]);
+    }
+    for row in rows {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 0.0;
+            for reading in row {
+                show_reading(app, ui, &reading, cursor);
+            }
+        });
     }
     for (label, text) in patterns::timestamp_readings(&window) {
         ui.horizontal(|ui| {
@@ -134,6 +136,37 @@ fn show_inspector(app: &mut ViewerApp, ui: &mut Ui) {
         });
     }
     show_structure_tree(app, ui);
+}
+
+/// A value the Inspector reads at the cursor.
+struct Reading {
+    label: &'static str,
+    shown: String,
+    value: crate::send_to::Carried,
+    /// Bytes it was read from.
+    size: usize,
+}
+
+impl Reading {
+    fn number(label: &'static str, number: u64, size: usize) -> Reading {
+        Reading { label, shown: number.to_string(), value: crate::send_to::Carried::Number(number), size }
+    }
+
+    fn text(label: &'static str, shown: String, size: usize) -> Reading {
+        Reading { label, value: crate::send_to::Carried::Text(shown.clone()), shown, size }
+    }
+}
+
+/// One reading, as "label value" in fixed-width columns; a right-click
+/// sends the value elsewhere.
+fn show_reading(app: &mut ViewerApp, ui: &mut Ui, reading: &Reading, cursor: usize) {
+    let text = format!("{:<7} {:<22}", reading.label, reading.shown);
+    let label = ui.add(egui::Label::new(RichText::new(text).monospace().color(theme::TEXT_DIM)).sense(Sense::click()));
+    label.context_menu(|ui| {
+        let from = format!("{} at {cursor:#x}", reading.label);
+        let carry = crate::send_to::Carry::value(reading.value.clone(), None, from, app.document_id()).with_span(cursor, reading.size);
+        crate::send_to::menu(app, ui, &carry);
+    });
 }
 
 const STRUCTURE_HEIGHT: f32 = 180.0;
@@ -178,7 +211,7 @@ fn show_structure_tree(app: &mut ViewerApp, ui: &mut Ui) {
     let mut chosen: Option<(usize, usize)> = None;
     egui::ScrollArea::vertical().id_salt("structure-tree").max_height(STRUCTURE_HEIGHT).show(ui, |ui| {
         for field in &structure.fields {
-            show_field(ui, field, notes, cursor, 0, &mut chosen);
+            show_field(app, ui, &structure, field, notes, cursor, 0, &mut chosen);
         }
     });
     if let Some((start, len)) = chosen {
@@ -192,7 +225,10 @@ fn show_structure_tree(app: &mut ViewerApp, ui: &mut Ui) {
 
 /// One field of the structure tree; hovering it explains the field when the
 /// format's reference notes do.
-fn show_field(ui: &mut Ui, field: &Field, notes: Option<&FormatReference>, cursor: usize, depth: usize, chosen: &mut Option<(usize, usize)>) {
+/// One field of the structure at the cursor, its children folded under it:
+/// a click selects its bytes, a right-click sends its value elsewhere.
+#[allow(clippy::too_many_arguments)]
+fn show_field(app: &mut ViewerApp, ui: &mut Ui, structure: &Finding, field: &Field, notes: Option<&FormatReference>, cursor: usize, depth: usize, chosen: &mut Option<(usize, usize)>) {
     const MAX_DEPTH: usize = 8;
     const MAX_CHILDREN: usize = 300;
     let on_cursor = cursor >= field.offset && cursor < field.end();
@@ -206,12 +242,17 @@ fn show_field(ui: &mut Ui, field: &Field, notes: Option<&FormatReference>, curso
         Some(explanation) => format!("{extent}\n\n{explanation}"),
         None => extent,
     };
-    let row = |ui: &mut Ui, chosen: &mut Option<(usize, usize)>| {
+    let row = |app: &mut ViewerApp, ui: &mut Ui, chosen: &mut Option<(usize, usize)>| {
         ui.horizontal(|ui| {
             ui.add_space(depth as f32 * 12.0);
-            if ui.add(egui::Label::new(name.clone()).sense(Sense::click())).on_hover_text(&hover).clicked() {
+            let label = ui.add(egui::Label::new(name.clone()).sense(Sense::click())).on_hover_text(&hover);
+            if label.clicked() {
                 *chosen = Some((field.offset, field.len));
             }
+            label.context_menu(|ui| {
+                let carry = crate::panel_reference::structure_field_carry(app, structure, field);
+                crate::send_to::menu(app, ui, &carry);
+            });
             ui.monospace(RichText::new(format!("{:#x}", field.offset)).small().color(theme::TEXT_DIM));
             if !field.value.is_empty() {
                 ui.add(egui::Label::new(RichText::new(&field.value).color(theme::TEXT_DIM)).truncate());
@@ -219,16 +260,16 @@ fn show_field(ui: &mut Ui, field: &Field, notes: Option<&FormatReference>, curso
         });
     };
     if field.children.is_empty() || depth >= MAX_DEPTH {
-        row(ui, chosen);
+        row(app, ui, chosen);
         return;
     }
     let id = ui.id().with((field.offset, field.len, &field.name));
     let default_open = on_cursor || depth == 0;
     egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, default_open)
-        .show_header(ui, |ui| row(ui, chosen))
+        .show_header(ui, |ui| row(app, ui, chosen))
         .body(|ui| {
             for child in field.children.iter().take(MAX_CHILDREN) {
-                show_field(ui, child, notes, cursor, depth + 1, chosen);
+                show_field(app, ui, structure, child, notes, cursor, depth + 1, chosen);
             }
             if field.children.len() > MAX_CHILDREN {
                 ui.label(RichText::new(format!("… {} more", field.children.len() - MAX_CHILDREN)).color(theme::TEXT_DIM));
@@ -543,5 +584,40 @@ fn show_hex_dump(app: &mut ViewerApp, ui: &mut Ui) {
 
     if bytes.is_empty() {
         painter.text(pos2(offset_x, body.min.y), Align2::LEFT_TOP, "(empty)", font, dim);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use egui_kittest::Harness;
+    use egui_kittest::kittest::Queryable;
+
+    use super::*;
+    use crate::app::Launch;
+
+    #[test]
+    fn a_value_the_inspector_reads_is_sent_to_a_variable_from_its_right_click_menu() {
+        let mut app = ViewerApp::new(Launch::default());
+        app.open_bytes(vec![0x34, 0x12, 0, 0, 0, 0, 0, 0, 0, 0], "test.bin".to_string());
+        app.run_bus();
+        let mut harness = Harness::new_ui_state(
+            |ui, app: &mut ViewerApp| {
+                app.perform_waiting_actions();
+                show_inspector_pane(app, ui);
+            },
+            app,
+        );
+        harness.run();
+        harness.get_by_label_contains("u16 LE  4660").click_secondary();
+        harness.run();
+        harness.get_by_label("Send to ⏵").click();
+        harness.run();
+        harness.state_mut().bench.send_to.variable_name = "length".to_string();
+        harness.get_by_label_contains("Variable").click();
+        harness.run();
+        harness.get_by_label("Bind").click();
+        harness.run();
+        let bound = harness.state().journal.variable("length").map(|binding| binding.value.clone());
+        assert_eq!(bound, Some(serde_json::json!(0x1234)));
     }
 }

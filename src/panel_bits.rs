@@ -481,6 +481,10 @@ fn open_decoded(app: &mut ViewerApp, (start, len): (usize, usize), order: BitOrd
     let _ = app.perform_derived("bits.decode_linecode", params, derived_from);
 }
 
+/// A line code decode the person asked for: the span, bit order, code, bit
+/// offset and where the offset came from.
+type Decoding = ((usize, usize), BitOrder, LineCode, usize, crate::journal::DerivedFrom);
+
 fn show_linecodes(state: &mut BitsState, app: &mut ViewerApp, ui: &mut Ui) {
     let (start, len, what) = selection_or_cursor(app, LINECODE_BYTES);
     ui.horizontal(|ui| {
@@ -491,7 +495,7 @@ fn show_linecodes(state: &mut BitsState, app: &mut ViewerApp, ui: &mut Ui) {
             ui.spinner();
         }
     });
-    let mut open: Option<((usize, usize), BitOrder, LineCode, usize, crate::journal::DerivedFrom)> = None;
+    let mut open: Option<Decoding> = None;
     ui.horizontal_wrapped(|ui| {
         ui.label("Decode as");
         let selected = state.manual_code.unwrap_or(LineCode::Nrzi);

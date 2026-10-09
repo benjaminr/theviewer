@@ -1182,8 +1182,14 @@ fn show_field_table(app: &mut ViewerApp, ui: &mut Ui, entry: &StackEntry, notes:
 /// value when a parser recognised the structure.
 fn field_carry(app: &ViewerApp, entry: &StackEntry, field: &Field) -> Carry {
     let structure = Finding::new(entry.key.clone(), "reference", Category::Structure, entry.start, entry.len).fields(entry.fields.clone());
-    let by_a_parser = app.registry.has_parser(&entry.key);
-    let anchor = crate::journal::provenance::structure_anchor(&structure, field.offset, field.len)
+    structure_field_carry(app, &structure, field)
+}
+
+/// What a field of a parsed `structure` carries elsewhere, as
+/// [`field_carry`]: the Reference tab's and the Inspector's field rows.
+pub(crate) fn structure_field_carry(app: &ViewerApp, structure: &Finding, field: &Field) -> Carry {
+    let by_a_parser = app.registry.has_parser(&structure.id);
+    let anchor = crate::journal::provenance::structure_anchor(structure, field.offset, field.len)
         .filter(|_| by_a_parser)
         .map(|anchor| crate::journal::provenance::with_part(&anchor, crate::journal::anchors::Part::Value));
     let value = match crate::ops::parse_offset(field.value.trim()) {

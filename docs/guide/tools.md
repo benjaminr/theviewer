@@ -304,14 +304,16 @@ changes*) and record its history, for Compare's timeline.
 ## Sending a value to another tool
 
 A result row (a string, a key a tool proposed, a decode, a finding, a field
-in the Reference tab, a packet) and the selection can be handed to another
-tool. Right-click it:
+in the Reference tab or the Inspector's field tree, a value the Inspector
+reads, a packet) and the selection can be handed to another tool. Right-click it:
 
 - **Send to ›** lists where it can go:
   - **New worksheet** opens its bytes as a sheet derived from the one they
     came from (a decode is applied over the bytes it was found for);
   - **Variable…** binds it to a name, such as `$serial`, through
-    `vars.set`;
+    `vars.set`. The name offered is the value's kind: `key` for a key, a
+    field's own name, the label of a `name: value` string, `url`, `path`,
+    `email` or `id`;
   - the inputs of the open tools that take it: the XOR tab's key, the
     Selection menu's key (*Transform · key*), the Find box's needle, the
     Crypto tab's AES key and crib, the CRC solver's records and their start
