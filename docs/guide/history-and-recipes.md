@@ -274,8 +274,8 @@ recipes:
    run. It does every step without asking about each one, because you have
    seen the preview.
 
-One *Undo* takes all of a run's edits back, as "Recipe steps by
-recipe:NAME".
+One *Undo* takes all of a run's edits to a document back, as "Recipe
+steps by recipe:NAME", in each sheet it edited as in the file.
 
 Ask, plugins and MCP clients run recipes through `recipes.run`. That is an
 edit, so [Settings › Permissions](ask-and-permissions.md#who-may-change-the-file)
@@ -314,6 +314,7 @@ the recipe stopped on any file, or a file could not be opened or saved.
   unpacked file or a decoded stream, into DIR.
 - `--allow-writes` lets steps that write files run. Without it, a recipe
   that would write one (perhaps one someone sent you) stops there.
-- `--plugins DIR` loads plugins from DIR instead of the usual places. See
-[Command line](command-line.md#theviewer-replay) and
+- `--plugins DIR` loads plugins from DIR instead of the usual places.
+
+See [Command line](command-line.md#theviewer-replay) and
 [docs/recipes.md](../recipes.md).
