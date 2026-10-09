@@ -917,7 +917,7 @@ fn show_row(state: &mut HistoryState, app: &mut ViewerApp, ui: &mut Ui, row: &Ro
         }
         label.context_menu(|ui| step_menu(state, app, ui, row));
         if !row.made.is_empty() {
-            ui.label(RichText::new(format!("──▶ {}", row.made.join(", "))).small().color(theme::ACCENT)).on_hover_text("The sheets this step made");
+            ui.label(RichText::new(format!("→ {}", row.made.join(", "))).small().color(theme::ACCENT)).on_hover_text("The sheets this step made");
         }
         if !row.sources.is_empty() {
             ui.label(RichText::new(format!("← {}", row.sources.join(", "))).small().color(theme::TEXT_DIM)).on_hover_text("Where its values came from, which a recipe finds again");

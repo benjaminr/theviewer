@@ -6,9 +6,9 @@
 //! finds it again, bytes with their sheet and ranges, or a sheet. Sent to an
 //! input of another tool (a [`Slot`]), the value fills it and the field is
 //! **bound**: it shows a chip such as `NC500-2F357657 · from step 7, string
-//! /^NC500-/ ✕` in place of a text box, and the call the tool makes passes
+//! /^NC500-/ ×` in place of a text box, and the call the tool makes passes
 //! the anchor as `derived_from` ([`ViewerApp::perform_derived`]), so the
-//! journal and a recipe made from it keep where the value came from. ✕
+//! journal and a recipe made from it keep where the value came from. ×
 //! unbinds the field and keeps the value as a literal.
 //!
 //! Each tool says which of its inputs take a carry (its `slots`), and fills
@@ -651,7 +651,7 @@ pub struct FieldResponse {
 
 /// A text field that shows a chip in place of the text box while it is
 /// bound: the value as found and where from, the anchor in words on hover,
-/// and ✕ to unbind, keeping the value as a literal. A carry dragged from a
+/// and × to unbind, keeping the value as a literal. A carry dragged from a
 /// result row can be dropped on it, bound or not.
 pub fn bound_field(ui: &mut Ui, text: &mut String, bound: &mut Option<Bound>, hint: &str, width: f32) -> FieldResponse {
     let mut answer = FieldResponse::default();
@@ -664,7 +664,7 @@ pub fn bound_field(ui: &mut Ui, text: &mut String, bound: &mut Option<Bound>, hi
                     let value = crate::text::truncate_chars(&binding.shown, CHIP_VALUE_CHARS);
                     let label = ui.add(egui::Label::new(RichText::new(value).monospace()).sense(egui::Sense::hover()));
                     ui.label(RichText::new(format!("· {}", binding.from)).small().color(theme::ACCENT));
-                    unbind = ui.add(egui::Button::new(RichText::new("✕").small()).frame(false)).on_hover_text("Unbind: keep the value as typed, not where it came from").clicked();
+                    unbind = ui.add(egui::Button::new(RichText::new("×").color(theme::ACCENT)).frame(false)).on_hover_text("Unbind: keep the value as typed, not where it came from").clicked();
                     label
                 })
                 .inner

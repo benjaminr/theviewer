@@ -924,7 +924,7 @@ mod tests {
         let mut harness = xor_tab(app);
         harness.run();
         harness.get_by_label("· $serial");
-        harness.get_by_label("✕").click();
+        harness.get_by_label("×").click();
         harness.run();
         let stats = &harness.state().bench.tools.stats;
         assert_eq!((stats.xor_key.as_str(), stats.xor_key_bound.is_none()), ("4142", true));

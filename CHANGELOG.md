@@ -19,9 +19,9 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   worksheet* on findings, and dragging a row onto a field do the same.
 - **Bound fields.** A field filled from another tool shows a chip of the
   value and where it came from (`NC500-2F357657 · from step 7, string
-  /^NC500-/ ✕`), and the step it is used in records its anchor, so a
+  /^NC500-/ ×`), and the step it is used in records its anchor, so a
   recipe finds the value again on the next file: a string by the first of
-  its shape, a key by its rank, a variable as `$name`. ✕ keeps the value
+  its shape, a key by its rank, a variable as `$name`. × keeps the value
   as a literal.
 - **Output toggles.** The Selection menu's XOR, add and subtract and its
   Decompress, the XOR tab's Apply and the Crypto tab's decodes put what

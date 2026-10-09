@@ -5,7 +5,7 @@
 //!
 //! ```text
 //!  ▾ novacam_2.0.3.upd  (doc-1, 412 KiB)                          [Show]
-//!      #1  Derive "reassembled" …                       ──▶ "reassembled"
+//!      #1  Derive "reassembled" …                       → "reassembled"
 //!      ▾ "reassembled"  (doc-2, 401 KiB)                          [Show]
 //!          #5  Bind $serial to "NC500-2F357657"   ← pick #4 /^NC500-/
 //!  ⚠ 0 unresolved documents · 2 literal offsets  Suggest anchors…
@@ -170,7 +170,10 @@ fn sheet_header(app: &mut ViewerApp, ui: &mut Ui, node: &SheetNode) {
     }
     let active = node.doc == app.document_id();
     let open = app.sheets().into_iter().find(|sheet| sheet.id == node.doc);
-    let mut name = RichText::new(&node.name).strong();
+    // An open sheet is called as the strip calls it; a closed one as the
+    // history does.
+    let title = open.as_ref().map_or_else(|| node.name.clone(), |sheet| if sheet.short.is_empty() { sheet.title().to_string() } else { sheet.short.clone() });
+    let mut name = RichText::new(title).strong();
     if active {
         name = name.color(theme::ACCENT);
     }
@@ -213,8 +216,12 @@ pub fn recipe_checks(journal: &Journal) -> RecipeChecks {
     }
     for entry in timeline::entries_for_recipe(journal, None) {
         let anchored = |path: &str| entry.derived_from.contains_key(path);
+        // Counted by parameter, so the ranges of a selection are one.
         for (path, _) in crate::journal::replay::literal_offsets_in(&entry.params, &anchored) {
-            checks.literal_offsets.push((entry.step, path));
+            let parameter = path.split('[').next().unwrap_or(&path).to_string();
+            if !checks.literal_offsets.contains(&(entry.step, parameter.clone())) {
+                checks.literal_offsets.push((entry.step, parameter));
+            }
         }
     }
     checks

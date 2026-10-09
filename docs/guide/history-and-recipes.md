@@ -42,7 +42,7 @@ The caller menu shows one caller's steps only (*every caller* shows them
 all), *Show undone* hides or shows the steps that were undone, and *Notes
 only* shows just the notes.
 
-After a step, `──▶ "payload"` names the sheets it made, and `← pick #4
+After a step, `→ "payload"` names the sheets it made, and `← pick #4
 /^NC500-/` or `← $serial` says where its anchored values came from.
 
 ### Steps and Sheets

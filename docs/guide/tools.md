@@ -326,10 +326,10 @@ on findings. A row can also be dragged onto a field.
 
 A field filled this way is **bound**: it shows a chip of the value and
 where it came from, such as `NC500-2F357657 · from step 7, string /^NC500-/
-✕`, in place of a text box. Point at it for the anchor in words. The step
+×`, in place of a text box. Point at it for the anchor in words. The step
 the tool then takes records the anchor beside the value, so a recipe made
 from the history finds the value again on the next file (here, the first
-string of the same shape among those step 7 found). ✕ unbinds the field
+string of the same shape among those step 7 found). × unbinds the field
 and keeps the value as typed.
 
 The Selection menu's *XOR, add or subtract…* and *Decompress…*, the XOR
