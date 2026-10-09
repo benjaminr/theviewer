@@ -703,6 +703,9 @@ pub fn drag_source(response: &egui::Response, carry: impl FnOnce() -> Carry) {
 }
 
 #[cfg(test)]
+mod firmware_acceptance;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::app::Launch;
