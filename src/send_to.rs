@@ -509,12 +509,63 @@ fn reads_a_document(anchor: &Anchor) -> bool {
     anchor.within().iter().any(|inner| matches!(inner, Anchor::Find { .. } | Anchor::Structure { .. } | Anchor::Finding { .. } | Anchor::Selection { .. }))
 }
 
-/// A name for a variable bound to `carry`: the text's leading word, else
-/// "value".
+/// A name for a variable bound to `carry`, from what the value is: a key,
+/// a decoding, a structure field's own name, the label before `:` or `=`
+/// in a text, the kind of text it is (a URL, path or email address, or an
+/// identifier mixing letters and digits such as a serial number), else the
+/// text's leading word; "value" when nothing says more.
 pub fn suggested_name(carry: &Carry) -> String {
-    let Carry::Value(CarriedValue { value: Carried::Text(text), .. }) = carry else { return "value".to_string() };
-    let word: String = text.chars().take_while(|character| character.is_ascii_alphanumeric()).take(16).collect::<String>().to_lowercase();
-    if word.is_empty() || word.starts_with(|character: char| character.is_ascii_digit()) { "value".to_string() } else { word }
+    let Carry::Value(carried) = carry else { return "value".to_string() };
+    if let Some(field) = carried.from.strip_prefix("field ").and_then(identifier) {
+        return field;
+    }
+    match &carried.value {
+        Carried::Bytes(_) => "key".to_string(),
+        Carried::Operation(_) => "decode".to_string(),
+        Carried::Number(_) => "value".to_string(),
+        Carried::Text(text) => name_for_text(text.trim()),
+    }
+}
+
+/// A name for a variable holding `text`.
+fn name_for_text(text: &str) -> String {
+    let lower = text.to_ascii_lowercase();
+    if lower.contains("://") {
+        return "url".to_string();
+    }
+    if !text.contains(' ') && text.contains('@') && text.contains('.') {
+        return "email".to_string();
+    }
+    if text.starts_with('/') || text.starts_with("./") || text.contains(":\\") {
+        return "path".to_string();
+    }
+    if let Some((label, rest)) = text.split_once([':', '='])
+        && !rest.trim().is_empty()
+        && let Some(label) = identifier(label)
+    {
+        return label;
+    }
+    let has_letters = text.chars().any(|character| character.is_ascii_alphabetic());
+    let has_digits = text.chars().any(|character| character.is_ascii_digit());
+    let token_like = !text.contains(' ') && text.chars().all(|character| character.is_ascii_alphanumeric() || "-_.".contains(character));
+    if token_like && has_letters && has_digits && text.len() >= 6 {
+        return "id".to_string();
+    }
+    let word: String = text.chars().take_while(|character| character.is_ascii_alphabetic()).take(16).collect::<String>().to_ascii_lowercase();
+    if word.len() >= 3 { word } else { "value".to_string() }
+}
+
+/// `text` as a variable name, `snake_case`, when it reads as one: a few
+/// words of letters, digits and separators that start with a letter.
+fn identifier(text: &str) -> Option<String> {
+    let words: Vec<String> = text
+        .split(|character: char| !character.is_ascii_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .map(|word| word.to_ascii_lowercase())
+        .collect();
+    let name = words.join("_");
+    let fits = !words.is_empty() && words.len() <= 4 && name.len() <= 32 && name.starts_with(|character: char| character.is_ascii_alphabetic());
+    fits.then_some(name)
 }
 
 // ---------------------------------------------------------------------------
@@ -740,10 +791,19 @@ mod tests {
     }
 
     #[test]
-    fn a_name_is_suggested_from_the_text_s_first_word() {
+    fn a_variable_is_named_for_what_its_value_is() {
         let carry = |text: &str| Carry::value(Carried::Text(text.into()), None, "", "doc-1");
-        assert_eq!(suggested_name(&carry("NC500-2F357657")), "nc500");
+        assert_eq!(suggested_name(&carry("NC500-2F357657")), "id");
+        assert_eq!(suggested_name(&carry("serial: NC500-2F357657")), "serial");
+        assert_eq!(suggested_name(&carry("api_token = 7f3c9a1e5b2d4f60")), "api_token");
+        assert_eq!(suggested_name(&carry("https://example.com/fw.bin")), "url");
+        assert_eq!(suggested_name(&carry("/etc/config.enc")), "path");
+        assert_eq!(suggested_name(&carry("ops@acme.example")), "email");
+        assert_eq!(suggested_name(&carry("Modbus RTU slave")), "modbus");
         assert_eq!(suggested_name(&carry("--")), "value");
+        let field = Carry::value(Carried::Number(1536), None, "field payload_len", "doc-1");
+        assert_eq!(suggested_name(&field), "payload_len");
+        assert_eq!(suggested_name(&Carry::value(Carried::Bytes(vec![0x5a]), None, "", "doc-1")), "key");
         assert_eq!(suggested_name(&Carry::Sheet("doc-1".into())), "value");
     }
 
