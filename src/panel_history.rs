@@ -42,6 +42,7 @@ use crate::journal::{JournalEntry, Outcome};
 use crate::{recipes, theme};
 
 mod sheets_view;
+mod variables;
 
 /// Height of the list of steps when a step's details are shown below it.
 const LIST_HEIGHT: f32 = 220.0;
@@ -444,16 +445,18 @@ fn show_history_inside(state: &mut HistoryState, app: &mut ViewerApp, ui: &mut U
     }
     ui.separator();
     show_note_box(state, app, ui);
+    ui.separator();
+    variables::show_variables(state, app, ui);
 }
 
 /// The steps keep at least this much room, the note box going below.
 const MIN_LIST_HEIGHT: f32 = 48.0;
 
-/// The height the note box and its button row take.
+/// The height the note box, its button row and the variables below take.
 fn note_box_height(ui: &Ui) -> f32 {
     let row = ui.text_style_height(&egui::TextStyle::Body);
     let spacing = ui.spacing();
-    row * NOTE_BOX_ROWS as f32 + spacing.interact_size.y + spacing.item_spacing.y * 3.0 + spacing.button_padding.y * 4.0 + 8.0
+    row * NOTE_BOX_ROWS as f32 + spacing.interact_size.y * 2.0 + spacing.item_spacing.y * 5.0 + spacing.button_padding.y * 4.0 + 8.0
 }
 
 /// The steps and notes the filters keep, laying out only those in view: a
@@ -1647,5 +1650,36 @@ mod tests {
         harness.run();
         assert_eq!(harness.state().bench.panels.history.selected, Some(2), "the first step with a literal offset, the derive's start");
         harness.get_by_label("Recipe values");
+    }
+
+    #[test]
+    fn the_variables_footer_lists_each_variable_and_goes_to_the_step_that_bound_it() {
+        let mut app = app_with(b"NC500-2F357657 and more");
+        app.perform("vars.set", json!({"name": "serial", "value": "NC500-2F357657"})).unwrap();
+        let step = app.journal.last_step().unwrap();
+        let mut harness = harness_for(app);
+        harness.step();
+        harness.get_by_label(&format!("$serial = \"NC500-2F357657\" (#{step})")).click();
+        harness.run();
+        assert_eq!(harness.state().bench.panels.history.selected, Some(step));
+    }
+
+    #[test]
+    fn plus_binds_a_variable_to_the_selection_with_where_it_came_from() {
+        let mut app = app_with(b"..PK....");
+        app.search_mode = crate::search::SearchMode::Text;
+        app.search_text = "PK".to_string();
+        app.find_next();
+        app.bench.send_to.variable_name = "magic".to_string();
+        let mut harness = harness_for(app);
+        harness.step();
+        harness.get_by_label("+").click();
+        harness.run();
+        harness.get_by_label("Bind to the selection").click();
+        harness.run();
+        let shown = variables::variables(harness.state());
+        assert_eq!(shown.len(), 1);
+        assert_eq!((shown[0].name.as_str(), &shown[0].value), ("magic", &json!("504b")));
+        harness.get_by_label_contains("$magic = \"504b\"");
     }
 }
