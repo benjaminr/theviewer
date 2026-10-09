@@ -42,6 +42,34 @@ The caller menu shows one caller's steps only (*every caller* shows them
 all), *Show undone* hides or shows the steps that were undone, and *Notes
 only* shows just the notes.
 
+After a step, `──▶ "payload"` names the sheets it made, and `← pick #4
+/^NC500-/` or `← $serial` says where its anchored values came from.
+
+### Steps and Sheets
+
+*Steps* lists the steps in the order taken. *Sheets* groups them under the
+sheet they ran on, as a tree that follows the sheets' lineage: each file
+you opened, the sheets made from it under the step that made them, and so
+on down. Each sheet's heading gives its id and size, and *Show* shows it;
+right-click it to send the sheet elsewhere. Notes stay where they were
+written, under the sheet shown then.
+
+Below the tree, a line says what would stop the steps replaying as a
+recipe: `⚠ 1 unresolved document · 2 literal offsets`. An unresolved
+document is one the recipe could not name (a second file, or a sheet no
+step it keeps made); a literal offset is a number a recipe would repeat as
+it is, which may not fit another file. Point at the line for each one;
+*Suggest anchors…* opens the first such step's
+[Recipe values](#recipe-values-anchors-and-parameters).
+
+### Variables
+
+The foot of the tab lists the session's variables:
+`$serial = "NC500-2F357657" (#5)`. Click one to go to the step that bound
+it. Drag it onto a field, or right-click it and *Send to*, to use it: the
+field is bound to `$serial`, not to its value, so a recipe passes the
+variable on. *+* binds a new variable to the selection.
+
 Click a step for its details: its parameters, its result, and how it would
 be undone. *Show bytes* selects the bytes it touched.
 
@@ -186,7 +214,10 @@ bound it finds it again on the next file.
 Many anchors are recorded for you as you work. A selection made with *Find
 next* or *All matches* remembers which match it was; selecting a finding
 remembers the finding; clicking a structure field remembers its path; and
-packets taken from the selection remember the selection.
+packets taken from the selection remember the selection. A value sent from
+one tool to another ([Send to](tools.md#sending-a-value-to-another-tool))
+keeps its anchor: a string by a pick of the first string of its shape, a
+key by its rank among those proposed, a variable as `$name`.
 
 For the rest, open a step's **Recipe values** (in its details, or
 *Recipe values…* in its menu). It lists each value a recipe would repeat:

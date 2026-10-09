@@ -7,6 +7,9 @@ with a dash for a space: `--tool strings`, `--tool dot-plot`, `--tool ask`. Each
 [recommended layouts](layouts-and-workspace.md) open the ones each kind of
 work needs.
 
+What one tool finds can be handed to another without retyping it: see
+[Sending a value to another tool](#sending-a-value-to-another-tool).
+
 The tabs come in five groups:
 
 | Group | Tabs |
@@ -168,14 +171,22 @@ selection for *Analyse › Statistics of selection*.
 ### Strings
 
 ASCII, UTF-8 and UTF-16 strings, tagged when they look like URLs, paths,
-IPv4 addresses, UUIDs, version numbers or `key=value` settings.
+IPv4 addresses, UUIDs, version numbers or `key=value` settings. *Use as
+key* puts a string in the XOR tab's key; right-click one to send it
+elsewhere or bind it to a variable.
 
 ### XOR
 
 Recovers single-byte and repeating XOR keys. Preview the result, or apply
-it as an edit. A long key that nearly repeats a shorter one, as happens on
-short data when a column or two is solved wrongly, is folded to the
-shorter key, which is listed first when the two decode about as well.
+it. A long key that nearly repeats a shorter one, as happens on short data
+when a column or two is solved wrongly, is folded to the shorter key, which
+is listed first when the two decode about as well.
+
+The **Key** row applies a key of your own (typed, or sent from another
+tool, such as a string or a variable) to the selection, or 64 KiB from the
+cursor. *Use as key* beside a key found puts it there. **Output** says
+where *Apply* puts the result: *In place*, as an undoable edit, or *New
+worksheet*, a sheet derived from this one with the label you type.
 
 ### Crypto
 
@@ -194,13 +205,16 @@ shorter key, which is listed first when the two decode about as well.
   longer than the crib: *key prefix at offset 0* is the start of the key
   to go on from.
 - Decrypts AES-128, AES-192 or AES-256 in ECB, CBC or CTR mode. Type the
-  key as hex, or press *Use this key* beside a raw key found; select the
+  key as hex, send one from another tool, or press *Use as key* beside a
+  raw key found; select the
   ciphertext and press *Decrypt*, and the plaintext opens as a document.
   PKCS#7 padding is removed; when it is not there, the bytes are kept whole
   and the status bar says the key, IV or mode may be wrong.
 
-Decodes open as a document (*Open decoded*) or apply as an edit (*Apply*),
-which is a `transform.apply` step a recipe repeats.
+Decodes open as a document (*Open decoded*) or apply where **Output**
+says (*Apply*): in place, or as a new worksheet. Either is a
+`transform.apply` step a recipe repeats. *Use as key* beside the key bytes
+a crib revealed puts them in the XOR tab's key.
 
 ### Checksums
 
@@ -286,3 +300,40 @@ Many files at once: captures, firmware versions, saved states.
 device (`/dev/rdisk2`, needs sudo) or process memory (`pid:1234`, Linux
 only). It can watch a file as it grows (also *Tools › Watch file for
 changes*) and record its history, for Compare's timeline.
+
+## Sending a value to another tool
+
+A result row (a string, a key a tool proposed, a decode, a finding, a field
+in the Reference tab, a packet) and the selection can be handed to another
+tool. Right-click it:
+
+- **Send to ›** lists where it can go:
+  - **New worksheet** opens its bytes as a sheet derived from the one they
+    came from (a decode is applied over the bytes it was found for);
+  - **Variable…** binds it to a name, such as `$serial`, through
+    `vars.set`;
+  - the inputs of the open tools that take it: the XOR tab's key, the
+    Selection menu's key (*Transform · key*), the Find box's needle, the
+    Crypto tab's AES key and crib, the CRC solver's records and their start
+    (under Checksums), and the Bits tab's line code bit offset.
+- **Copy value** copies the value; **Copy anchor** copies, as JSON, the
+  anchor a recipe finds it again by.
+
+The selection's *Send to* is in the Selection menu, wherever it appears.
+Rows where one use dominates have a button for it: *Use as key* on
+strings, XOR keys, raw keys and a crib's key bytes, and *Open as worksheet*
+on findings. A row can also be dragged onto a field.
+
+A field filled this way is **bound**: it shows a chip of the value and
+where it came from, such as `NC500-2F357657 · from step 7, string /^NC500-/
+✕`, in place of a text box. Point at it for the anchor in words. The step
+the tool then takes records the anchor beside the value, so a recipe made
+from the history finds the value again on the next file (here, the first
+string of the same shape among those step 7 found). ✕ unbinds the field
+and keeps the value as typed.
+
+The Selection menu's *XOR, add or subtract…* and *Decompress…*, the XOR
+tab and the Crypto tab's decodes have an **Output** choice: *In place*, or
+*New worksheet* with an optional label, which a recipe names the sheet by.
+Each tool remembers its own choice.
+

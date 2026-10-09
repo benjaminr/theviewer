@@ -8,6 +8,32 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Send to.** Right-click a string, an XOR key, a decode, a finding, a
+  field in the Reference tab, a packet or the selection for *Send to ›*: a
+  new worksheet derived from its sheet, a variable (`vars.set`), or an
+  input of an open tool (the XOR tab's key, the Selection menu's key, the
+  Find needle, the Crypto tab's AES key and crib, the CRC solver's records
+  and start, the Bits tab's line code offset); *Copy value* and *Copy
+  anchor* copy the value and the anchor a recipe finds it by. *Use as key*
+  on strings, XOR keys, raw keys and a crib's key bytes, *Open as
+  worksheet* on findings, and dragging a row onto a field do the same.
+- **Bound fields.** A field filled from another tool shows a chip of the
+  value and where it came from (`NC500-2F357657 · from step 7, string
+  /^NC500-/ ✕`), and the step it is used in records its anchor, so a
+  recipe finds the value again on the next file: a string by the first of
+  its shape, a key by its rank, a variable as `$name`. ✕ keeps the value
+  as a literal.
+- **Output toggles.** The Selection menu's XOR, add and subtract and its
+  Decompress, the XOR tab's Apply and the Crypto tab's decodes put what
+  they make in place or in a new worksheet with a label, as `output`.
+- **The History tab's Sheets view and variables.** *Sheets* groups the
+  steps under the sheet they ran on as a tree of lineage, with *Show* on
+  each sheet, the sheets each step made and where its anchored values came
+  from; a line below says how many documents a recipe could not name and
+  how many literal offsets it would repeat, with *Suggest anchors…*. The
+  foot of the tab lists the variables bound, each going to the step that
+  bound it, dragged or sent elsewhere as the variable, with *+* to bind one
+  to the selection.
 - **Text encodings are built-in codecs.** base32 (either case, with or
   without padding), base64, base64url, hex text, DEC SIXBIT (`sixbit`) and
   AIS 6-bit ASCII (`ais6`) decode by id with `codecs.decode`, open with

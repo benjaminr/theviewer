@@ -49,6 +49,23 @@ strip is a single short line.
   already open is shown again (and read from disk again if it has unsaved
   edits, which are lost).
 
+## Making sheets from what you find
+
+Besides decompressing and opening the selection as a document:
+
+- **Send to › New worksheet**, in the right-click menu of a result row (a
+  string, a finding, a field, a packet) and in the Selection menu, opens its
+  bytes as a sheet derived from the one it was found in;
+- **Open as worksheet** on a finding does the same for its bytes;
+- **Output: New worksheet**, in the Selection menu's *XOR, add or
+  subtract…* and *Decompress…*, the XOR tab and the Crypto tab's decodes,
+  puts what they make in a new sheet rather than over the bytes, with the
+  label you type.
+
+Each is a step that makes a sheet, so a recipe keeps it. The History tab's
+[Sheets view](history-and-recipes.md#steps-and-sheets) shows the steps
+under the sheets they ran on.
+
 ## Closing sheets
 
 `Cmd+W` (*File › Close worksheet*) closes the active sheet and every sheet
