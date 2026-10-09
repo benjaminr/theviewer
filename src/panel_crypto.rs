@@ -20,6 +20,7 @@ use crate::selection_ops::Operation;
 use crate::journal::anchors::{Anchor, Pick, StepRef};
 use crate::journal::DerivedFrom;
 use crate::send_to::{self, Carried, Carry, Sending, Slot, Target};
+use crate::output_choice::{self, OutputChoice};
 use crate::sheets::PerSheet;
 use crate::theme;
 
@@ -67,6 +68,8 @@ pub struct CryptoState {
     crib: String,
     crib_error: Option<String>,
     decrypt: DecryptForm,
+    /// Where a decode's Apply puts it.
+    decode_output: OutputChoice,
 }
 
 /// The AES decryption's settings, as typed.
@@ -497,6 +500,8 @@ fn show_decode(state: &mut CryptoState, app: &mut ViewerApp, ui: &mut Ui) {
         return;
     }
     let mut action = None;
+    let mut chosen_output = state.decode_output.clone();
+    output_choice::toggle(ui, &mut chosen_output);
     for (index, candidate) in results.candidates.iter().enumerate() {
         ui.horizontal(|ui| {
             ui.monospace(RichText::new(format!("{:.2}", candidate.score)).color(theme::ACCENT));
@@ -510,17 +515,21 @@ fn show_decode(state: &mut CryptoState, app: &mut ViewerApp, ui: &mut Ui) {
             if ui.small_button("Open decoded").on_hover_text("Open the decoded bytes as a document; Back returns").clicked() {
                 action = Some((index, false));
             }
-            if ui.small_button("Apply").on_hover_text("Apply the decode to the bytes as an undoable step that a recipe can repeat").clicked() {
+            if ui.small_button("Apply").on_hover_text("Apply the decode where Output says, as a step a recipe can repeat: over the bytes (undoable) or as a new worksheet").clicked() {
                 action = Some((index, true));
             }
         });
         ui.monospace(RichText::new(&candidate.preview).small().color(theme::TEXT_DIM));
     }
-    if let Some((index, in_place)) = action {
-        let (start, len) = (results.start, results.len);
-        let transform = results.candidates[index].transform.clone();
-        apply_decode(app, &sheet, start, len, &transform, in_place);
-        if in_place {
+    let chosen = action.map(|(index, apply)| (results.start, results.len, results.candidates[index].transform.clone(), apply));
+    state.decode_output = chosen_output;
+    if let Some((start, len, transform, apply)) = chosen {
+        if apply {
+            apply_decode_as_chosen(app, &sheet, (start, len), &transform, &state.decode_output);
+        } else {
+            apply_decode(app, &sheet, start, len, &transform, false);
+        }
+        if apply && !state.decode_output.new {
             // The previews describe the bytes as they were before the edit.
             state.decode.closed(&sheet);
         }
@@ -624,6 +633,15 @@ fn start_decode(state: &mut CryptoState, app: &mut ViewerApp, start: usize, len:
         params["crib"] = serde_json::Value::String(state.crib.clone());
     }
     app.perform_later("crypto.attack", params);
+}
+
+/// The person applies a decode where the Output toggle says: over the
+/// bytes, or as a new worksheet, through `transform.apply`.
+fn apply_decode_as_chosen(app: &mut ViewerApp, sheet: &str, span: (usize, usize), transform: &ciphers::Transform, choice: &OutputChoice) {
+    let operation = serde_json::to_value(Operation::from(transform.clone())).unwrap_or_default();
+    if output_choice::transform_span(app, sheet, span, operation, choice, DerivedFrom::new()) {
+        app.status = crate::analysis_stats::applied_status(&transform.describe(), span.0, span.1, choice);
+    }
 }
 
 /// The person uses a decode: applied to the bytes as an undoable step

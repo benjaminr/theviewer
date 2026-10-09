@@ -19,6 +19,7 @@ use crate::compress::{self, Codec};
 use crate::document::Document;
 use crate::ops;
 use crate::journal::{Anchor, DerivedFrom};
+use crate::output_choice::{self, OutputChoice};
 use crate::search::SearchMode;
 use crate::send_to::{self, Carry, Slot, Target};
 use crate::plugin::Finding;
@@ -60,11 +61,24 @@ pub struct OperationInputs {
     pub counter_little_endian: bool,
     /// Where "Move to" puts the bytes, as an offset.
     pub move_destination_text: String,
+    /// Where XOR, add and subtract put what they make.
+    pub key_output: OutputChoice,
+    /// Where Decompress puts what it makes.
+    pub decompress_output: OutputChoice,
 }
 
 impl Default for OperationInputs {
     fn default() -> Self {
-        OperationInputs { key_text: "FF".to_string(), key_bound: None, counter_start: 0, counter_step: 1, counter_little_endian: true, move_destination_text: String::new() }
+        OperationInputs {
+            key_text: "FF".to_string(),
+            key_bound: None,
+            counter_start: 0,
+            counter_step: 1,
+            counter_little_endian: true,
+            move_destination_text: String::new(),
+            key_output: OutputChoice::for_method("transform.apply"),
+            decompress_output: OutputChoice::for_method("transform.apply"),
+        }
     }
 }
 
@@ -95,15 +109,27 @@ impl ViewerApp {
     /// [`ViewerApp::apply_operation`] with some of the operation's values
     /// taken from where `derived_from` says (a key sent from another tool).
     pub fn apply_operation_derived(&mut self, operation: Operation, derived_from: DerivedFrom) -> bool {
+        self.apply_operation_to(operation, derived_from, &OutputChoice::for_method("transform.apply"))
+    }
+
+    /// [`ViewerApp::apply_operation_derived`] with what it makes going where
+    /// `output` says: over the bytes, or into a new worksheet of the
+    /// ranges' new bytes one after another, which is then shown.
+    pub fn apply_operation_to(&mut self, operation: Operation, derived_from: DerivedFrom, output: &OutputChoice) -> bool {
         let ranges = self.operation_ranges();
         if ranges.is_empty() {
             self.status = "Nothing to change: the cursor is at the end of the document".to_string();
             return false;
         }
         let target = self.current_selection().unwrap_or(Selection::Range(self.cursor, 1));
-        let params = serde_json::json!({ "selection": target, "operation": operation });
+        let mut params = serde_json::json!({ "selection": target, "operation": operation });
+        output.add_to(&mut params);
         if self.perform_derived("transform.apply", params, derived_from).is_err() {
             return false;
+        }
+        if output.new {
+            self.status = format!("{} opened as a new worksheet", operation.label());
+            return true;
         }
         let bytes: usize = ranges.iter().map(|&(_, len)| len).sum();
         let places = if ranges.len() == 1 { format!("at {:#x}", ranges[0].0) } else { format!("in {} ranges", ranges.len()) };
@@ -493,7 +519,8 @@ impl ViewerApp {
     pub fn apply_key(&mut self, make: fn(Vec<u8>) -> Operation) {
         if let Some(key) = self.operation_key() {
             let derived_from = send_to::Bound::at(&self.inputs.key_bound, "operation.key");
-            self.apply_operation_derived(make(key), derived_from);
+            let output = self.inputs.key_output.clone();
+            self.apply_operation_to(make(key), derived_from, &output);
         }
     }
 
@@ -590,10 +617,14 @@ pub fn show_selection_menu(app: &mut ViewerApp, ui: &mut Ui) {
             }
         }
     });
-    if ui.button("Decompress").on_hover_text("Replace each range with its decompressed contents").clicked() {
-        app.apply_operation(Operation::Decompress);
-        ui.close();
-    }
+    ui.menu_button("Decompress…", |ui| {
+        output_choice::toggle(ui, &mut app.inputs.decompress_output);
+        if ui.button("Decompress").on_hover_text("Decompress each range, in place or into a new worksheet").clicked() {
+            let output = app.inputs.decompress_output.clone();
+            app.apply_operation_to(Operation::Decompress, DerivedFrom::new(), &output);
+            ui.close();
+        }
+    });
     if let Some(carry) = app.selection_carry() {
         ui.separator();
         send_to::menu(app, ui, &carry);
@@ -670,6 +701,7 @@ fn show_key_fields(app: &mut ViewerApp, ui: &mut Ui) {
         send_to::send_later(app, send_to::Sending::To(Target::TransformKey), carry);
     }
     ui.label(RichText::new("The key repeats from the start of each range").small().color(theme::TEXT_DIM));
+    output_choice::toggle(ui, &mut app.inputs.key_output);
     ui.horizontal(|ui| {
         let actions: [(&str, MakeOperation); 3] = [("XOR", Operation::Xor), ("Add", Operation::Add), ("Subtract", Operation::Subtract)];
         for (label, make) in actions {

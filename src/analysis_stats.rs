@@ -11,7 +11,9 @@ use crate::sheets::PerSheet;
 use crate::stats::{self, ByteStats, Repeat, Verdict};
 use crate::strings::{self, Encoding, FoundString};
 use crate::theme;
+use crate::journal::DerivedFrom;
 use crate::journal::anchors::{Anchor, Pick, StepRef};
+use crate::output_choice::{self, OutputChoice};
 use crate::send_to::{self, Carried, Carry, Sending, Slot, Target};
 use crate::xor::XorCandidate;
 
@@ -77,6 +79,8 @@ pub struct StatsState {
     pub xor_key: String,
     /// Where that key came from, when it was sent from another tool.
     pub xor_key_bound: Option<send_to::Bound>,
+    /// Where the XOR tab's Apply puts the decode.
+    pub xor_output: OutputChoice,
 }
 
 /// What the Statistics tab worked out about one sheet, kept while it is
@@ -103,6 +107,7 @@ impl Default for StatsState {
             xor_candidates: PerSheet::default(),
             xor_key: String::new(),
             xor_key_bound: None,
+            xor_output: OutputChoice::for_method("transform.apply"),
         }
     }
 }
@@ -590,15 +595,23 @@ pub fn show_xor(app: &mut ViewerApp, ui: &mut Ui) {
                 if ui.small_button("Preview").on_hover_text("Open the decoded bytes as a document; Back returns").clicked() {
                     action = Some((candidate.key.clone(), false));
                 }
-                if ui.small_button("Apply").on_hover_text("Replace the bytes with the decode (undoable)").clicked() {
+                if ui.small_button("Apply").on_hover_text("Apply the decode where Output says: over the bytes (undoable) or as a new worksheet").clicked() {
                     action = Some((candidate.key.clone(), true));
                 }
             });
             ui.monospace(RichText::new(&candidate.preview).small().color(theme::TEXT_DIM));
         }
     });
-    if let Some((key, in_place)) = action {
-        use_xor_key(app, &sheet, results.start, results.len, &key, in_place);
+    match action {
+        Some((key, true)) => {
+            let key_hex = crate::ops::to_compact_hex(&key);
+            let choice = app.bench.tools.stats.xor_output.clone();
+            if output_choice::transform_span(app, &sheet, (results.start, results.len), serde_json::json!({ "op": "xor", "key": key_hex }), &choice, DerivedFrom::new()) {
+                app.status = applied_status(&format!("XOR {key_hex}"), results.start, results.len, &choice);
+            }
+        }
+        Some((key, false)) => use_xor_key(app, &sheet, results.start, results.len, &key, false),
+        None => {}
     }
 }
 
@@ -631,6 +644,7 @@ fn show_xor_key_row(app: &mut ViewerApp, ui: &mut Ui, start: usize, len: usize) 
         let ready = !app.bench.tools.stats.xor_key.trim().is_empty() && len > 0;
         apply = ui.add_enabled(ready, egui::Button::new(format!("Apply to {len} bytes at {start:#x}"))).on_hover_text("XOR the bytes with this key, repeated from their start").clicked();
     });
+    output_choice::toggle(ui, &mut app.bench.tools.stats.xor_output);
     if apply {
         apply_xor_key_field(app, start, len);
     }
@@ -644,13 +658,20 @@ pub(crate) fn apply_xor_key_field(app: &mut ViewerApp, start: usize, len: usize)
         return false;
     };
     let key_hex = crate::ops::to_compact_hex(&key);
-    let params = serde_json::json!({ "selection": { "range": [start, len] }, "operation": { "op": "xor", "key": key_hex } });
     let derived_from = send_to::Bound::at(&app.bench.tools.stats.xor_key_bound, "operation.key");
-    let applied = app.perform_derived("transform.apply", params, derived_from).is_ok();
+    let choice = app.bench.tools.stats.xor_output.clone();
+    let sheet = app.document_id();
+    let applied = output_choice::transform_span(app, &sheet, (start, len), serde_json::json!({ "op": "xor", "key": key_hex }), &choice, derived_from);
     if applied {
-        app.status = format!("XOR {key_hex} applied to {len} bytes at {start:#x}");
+        app.status = applied_status(&format!("XOR {key_hex}"), start, len, &choice);
     }
     applied
+}
+
+/// What the status bar says once `what` was applied to `len` bytes at
+/// `start` where `choice` says.
+pub(crate) fn applied_status(what: &str, start: usize, len: usize, choice: &OutputChoice) -> String {
+    if choice.new { format!("{what} of {len} bytes at {start:#x} opened as a new worksheet") } else { format!("{what} applied to {len} bytes at {start:#x}") }
 }
 
 /// The inputs of the XOR tab a carry can fill: its key, with bytes.
@@ -916,5 +937,33 @@ mod tests {
         let stats = &harness.state().bench.tools.stats;
         assert_eq!((stats.xor_key.as_str(), stats.xor_key_bound.is_none()), ("4142", true));
         assert!(harness.get_all_by_value("4142").next().is_some(), "the key is a text box again, holding the value");
+    }
+
+    #[test]
+    fn output_new_makes_a_labelled_sheet_of_the_decode_and_leaves_the_bytes_be() {
+        use egui_kittest::kittest::Queryable;
+        let mut app = app_with(b"plain text!");
+        let parent = app.document_id();
+        app.bench.tools.stats.xor_key = "20".to_string();
+        app.restore_selection(0, 5);
+        let mut harness = xor_tab(app);
+        harness.run();
+        harness.get_by_label("New worksheet").click();
+        harness.run();
+        harness.state_mut().bench.tools.stats.xor_output.label = "upper".to_string();
+        take_performed();
+        harness.get_by_label("Apply to 5 bytes at 0x0").click();
+        harness.run();
+        let app = harness.state_mut();
+        let expected = json!({"selection": {"range": [0, 5]}, "operation": {"op": "xor", "key": "20"}, "output": {"new": {"label": "upper"}}});
+        assert_eq!(take_performed(), [("transform.apply".to_string(), expected)]);
+        assert_ne!(app.document_id(), parent, "the new sheet is shown");
+        assert_eq!(app.document.read_range(0, 5), b"PLAIN");
+        assert_eq!(app.sheet_title(&app.document_id()).as_deref(), Some("upper"));
+        let made = app.journal.entries().rev().find(|entry| entry.method == "transform.apply").unwrap().made.clone();
+        assert_eq!(made, [app.document_id()], "the step made a sheet, which a recipe keeps");
+        let original = crate::api::Workspace::document_mut(app, &parent).unwrap().read_range(0, 5);
+        assert_eq!(original, b"plain", "the parent is as it was");
+        assert!(app.status.ends_with("opened as a new worksheet"), "{}", app.status);
     }
 }

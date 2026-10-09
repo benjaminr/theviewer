@@ -63,6 +63,7 @@ pub mod mcp;
 pub mod media;
 pub mod numeric;
 pub mod ops;
+pub mod output_choice;
 pub mod packets;
 pub mod packing;
 pub mod panel_alignment;
