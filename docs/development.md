@@ -85,7 +85,7 @@ text.
 | `columns.rs` `protocol.rs` `templates.rs` | Record profiling, protocol analysis, and the template language. |
 | `packets.rs` `packets/` `panel_packets.rs` `panel_packets_view.rs` `panel_packets_grid.rs` `panel_packets_tshark.rs` | Packet sources (framing, pcap and pcapng, splits by width, length field or pattern), packets laid out as rows with column operations, dissection, conversations and streams, the filter language, pcap export and in-place editing, decoding with tshark; the packet viewer panel. |
 | `corpus.rs` `corpus/` `bin/capture_corpus.rs` | The developer tool that fetches sample captures and compares our dissection with tshark's. |
-| `stats.rs` `strings.rs` `xor.rs` | Statistics and randomness tests, strings, XOR key recovery. |
+| `stats.rs` `strings.rs` `xor.rs` `block_cipher.rs` | Statistics and randomness tests, strings, XOR key recovery, AES decryption. |
 | `disasm.rs` `pointers.rs` `checksums.rs` `diff.rs` | Disassembly, the pointer graph, checksums, file comparison. |
 | `sources.rs` `plot.rs` | Live sources, watching and recording; plots and bytes as audio. |
 | `analysis_tools.rs` `analysis_stats.rs` `analysis_tabs.rs` `dock.rs` `workbench.rs` | The tool panels and the state behind them. |
@@ -93,7 +93,9 @@ text.
 | `api.rs` `api/` | The data API: one table of methods with JSON schemas, run against the window or a headless workspace; Ask's tools, `theviewer api` and [docs/api.md](api.md) come from it. |
 | `mcp.rs` `mcp/` | `theviewer mcp`: a hand-written, synchronous MCP server over stdio; tools from the method table, resources and subscriptions from the bus, prompts. |
 | `journal/replay.rs` `journal/anchors.rs` `journal/recipe.rs` `recipes.rs` `recipes/` `api/recipes.rs` | Running steps again: the recipe runner and anchors, the recipe file, recipes on disk, `theviewer replay`, "Run recipe…" and `recipes.*`. |
-| `journal.rs` `journal/` `panel_history.rs` | The journal of every call by caller, the timeline of steps in effect and undone, inverses, going back and playback; the History tab. |
+| `journal.rs` `journal/` `panel_history.rs` `panel_history/` | The journal of every call by caller, the timeline of steps in effect and undone, inverses, going back and playback, notes; the History tab with its Sheets view and variables. |
+| `sheets.rs` `sheets/` | Worksheets in the window: every open document with its lineage, the worksheet strip and the tree of sheets. |
+| `send_to.rs` `output_choice.rs` `api/output.rs` `api/vars.rs` | Carrying a value from one tool to another (*Send to…*, *Use as…*, bound-field chips, drag and drop); the Output toggle; the `output` parameter; the session's variables. |
 | `bus.rs` `bus/` `panel_workspace.rs` | The workspace bus of retained facts and events that the tools share; the Workspace tab. |
 | `reference.rs` `panel_reference.rs` `reference_check.rs` `bin/check_reference.rs` | The reference notes (built in from `reference/*.toml`, and your own), RFC fetching, the Reference tab, and the citation checker. |
 | `api/permissions.rs` `confirmations.rs` | Who is calling the API and what each client may change; the window that asks you about a change. |
