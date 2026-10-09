@@ -221,6 +221,8 @@ challenges from start to finish.
 - `alignment.run` samples a long set of messages evenly rather than taking
   the first 256.
 - `Esc` closes the image, sound or video being viewed.
+- The example plugin `base64.lua` registers its codec as `base64-lua`, so
+  it no longer shadows the built-in `base64`.
 
 ### Fixed
 
