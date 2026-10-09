@@ -15,6 +15,7 @@ use crate::bits::{self, BitOrder, BitPeriodScan, PlaneScore, SyncPattern};
 use crate::linecode::{self, BcdTimestamp, DecodeResult, LineCode};
 use crate::numeric::{self, FieldError, RankedInterpretation};
 use crate::raster::PixelFormat;
+use crate::send_to::{self, Carry, Slot, Target};
 use crate::theme;
 use crate::tlv::{self, Hypothesis};
 
@@ -170,6 +171,29 @@ fn selection_or_file(app: &ViewerApp, limit: usize) -> (usize, usize, &'static s
 
 fn dim(text: impl Into<String>) -> RichText {
     RichText::new(text).small().color(theme::TEXT_DIM)
+}
+
+/// The latest bit a line code's decode starts at.
+const MOST_BIT_OFFSET: u64 = 63;
+
+/// The inputs of the Bits tab a carry can fill: the bit offset a line code
+/// is decoded from.
+pub fn slots(carry: &Carry) -> Vec<Slot> {
+    match carry.as_number() {
+        Some((offset, _)) if offset <= MOST_BIT_OFFSET => vec![Slot { label: "Bits · line code bit offset", target: Target::BitsOffset }],
+        _ => Vec::new(),
+    }
+}
+
+/// Decode line codes from the bit offset `carry` holds.
+pub(crate) fn fill_offset(state: &mut BitsState, _app: &mut ViewerApp, carry: &Carry) -> Result<String, String> {
+    match carry.as_number() {
+        Some((offset, _)) if offset <= MOST_BIT_OFFSET => {
+            state.manual_offset = offset as usize;
+            Ok(format!("Line codes are decoded from bit {offset}"))
+        }
+        _ => Err(send_to::does_not_fit(carry, "a bit offset of 0 to 63")),
+    }
 }
 
 /// Show the panel.

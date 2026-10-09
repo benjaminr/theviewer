@@ -18,7 +18,9 @@ use crate::app::ViewerApp;
 use crate::compress::{self, Codec};
 use crate::document::Document;
 use crate::ops;
-use crate::journal::DerivedFrom;
+use crate::journal::{Anchor, DerivedFrom};
+use crate::search::SearchMode;
+use crate::send_to::{self, Carry, Slot, Target};
 use crate::plugin::Finding;
 use crate::selection::Selection;
 use crate::selection_ops::{self, CopyFormat, Operation};
@@ -575,6 +577,10 @@ pub fn show_selection_menu(app: &mut ViewerApp, ui: &mut Ui) {
         app.apply_operation(Operation::Decompress);
         ui.close();
     }
+    if let Some(carry) = app.selection_carry() {
+        ui.separator();
+        send_to::menu(app, ui, &carry);
+    }
 }
 
 fn hex_field(ui: &mut Ui, text: &mut String, hint: &str) {
@@ -702,6 +708,82 @@ fn show_move_fields(app: &mut ViewerApp, ui: &mut Ui) {
             ui.close();
         }
     });
+}
+
+// ---------------------------------------------------------------------------
+// Carrying the selection elsewhere
+// ---------------------------------------------------------------------------
+
+impl ViewerApp {
+    /// What the selection (or the byte at the cursor) carries elsewhere: its
+    /// bytes, with the anchors of the step that selected them when it was
+    /// the person's (a match of the Find box, a finding, a field), so a
+    /// recipe finds them again.
+    pub fn selection_carry(&self) -> Option<Carry> {
+        let ranges = self.operation_ranges();
+        if ranges.is_empty() {
+            return None;
+        }
+        let sheet = self.document_id();
+        let selected = self.current_selection().and_then(|selection| serde_json::to_value(selection).ok());
+        let step = self.journal.entries().rev().find(|entry| entry.method == "selection.set" && entry.outcome.is_ok() && entry.doc.as_deref() == Some(sheet.as_str()));
+        let derived_from: DerivedFrom = match (step, selected) {
+            (Some(entry), Some(selected)) if entry.params.get("selection") == Some(&selected) => {
+                entry.derived_from.iter().filter_map(|(path, anchor)| Some((range_path(path)?, anchor.clone()))).collect()
+            }
+            _ => DerivedFrom::new(),
+        };
+        let from = derived_from.get("ranges[0][0]").map_or_else(|| "the selection".to_string(), Anchor::describe);
+        Some(Carry::bytes(sheet, ranges, derived_from, from))
+    }
+}
+
+/// A `selection.set` parameter path (`selection.range[0]`,
+/// `selection.ranges[2][1]`) as the path of a carry's range.
+fn range_path(path: &str) -> Option<String> {
+    if let Some(part) = path.strip_prefix("selection.range") {
+        return Some(format!("ranges[0]{part}"));
+    }
+    path.strip_prefix("selection.").filter(|rest| rest.starts_with("ranges[")).map(str::to_string)
+}
+
+/// The inputs of the Selection menu and the Find box a carry can fill: the
+/// key of XOR, add and subtract, and the needle.
+pub fn slots(carry: &Carry) -> Vec<Slot> {
+    let mut slots = Vec::new();
+    if carry.has_bytes() {
+        slots.push(Slot { label: "Transform · key", target: Target::TransformKey });
+    }
+    if carry.has_bytes() || carry.as_number().is_some() {
+        slots.push(Slot { label: "Find · needle", target: Target::SearchNeedle });
+    }
+    slots
+}
+
+/// Fill the key of the Selection menu's XOR, add and subtract with what
+/// `carry` holds, as hex.
+pub(crate) fn fill_transform_key(app: &mut ViewerApp, carry: &Carry) -> Result<String, String> {
+    let filled = carry.as_hex(app).ok_or_else(|| send_to::does_not_fit(carry, "a key"))?;
+    app.inputs.key_text = filled.text;
+    Ok(format!("The Selection menu's key is {}: XOR, add or subtract with it", carry.summary()))
+}
+
+/// Fill the Find box with what `carry` holds: text as text, bytes as hex,
+/// a number as an integer.
+pub(crate) fn fill_search_needle(app: &mut ViewerApp, carry: &Carry) -> Result<String, String> {
+    let (mode, filled) = if let Some(filled) = carry.as_text() {
+        (SearchMode::Text, filled)
+    } else if let Some(filled) = carry.as_hex(app) {
+        (SearchMode::Hex, filled)
+    } else if let Some((number, _)) = carry.as_number() {
+        (SearchMode::Integer, send_to::Filled { text: number.to_string(), bound: None })
+    } else {
+        return Err(send_to::does_not_fit(carry, "looked for"));
+    };
+    app.search_mode = mode;
+    app.search_text = filled.text;
+    app.search_count = None;
+    Ok(format!("Find looks for {}; press F3", carry.summary()))
 }
 
 // ---------------------------------------------------------------------------

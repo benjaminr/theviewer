@@ -17,6 +17,9 @@ use crate::ciphers::{self, CipherCandidate, KeyFragment};
 use crate::keys::{self, KeyFinding, KeyFormat, KeyKind};
 use crate::plugin::{Category, Finding};
 use crate::selection_ops::Operation;
+use crate::journal::anchors::{Anchor, Pick, StepRef};
+use crate::journal::DerivedFrom;
+use crate::send_to::{self, Carried, Carry, Slot, Target};
 use crate::sheets::PerSheet;
 use crate::theme;
 
@@ -35,6 +38,8 @@ const KEY_DETAIL_WIDTH: f32 = 520.0;
 struct Job<T> {
     receiver: Receiver<T>,
     sheet: String,
+    /// The step that started it.
+    step: Option<u64>,
 }
 
 /// Cipher candidates for the range `start..start + len`.
@@ -44,6 +49,9 @@ pub(crate) struct DecodeResults {
     pub candidates: Vec<CipherCandidate>,
     /// With a crib: the key bytes it reveals, whether or not they decode.
     pub fragments: Vec<KeyFragment>,
+    /// The `crypto.attack` step that proposed them, which a candidate
+    /// carried elsewhere is picked from.
+    pub step: Option<u64>,
 }
 
 /// State of the crypto panel, kept between frames.
@@ -114,7 +122,7 @@ pub fn show_crypto(state: &mut CryptoState, app: &mut ViewerApp, ui: &mut egui::
 /// A job of the sheet shown, and where its result is to be sent.
 fn awaited<T>(app: &ViewerApp) -> (Job<T>, mpsc::Sender<T>) {
     let (sender, receiver) = mpsc::channel();
-    (Job { receiver, sheet: app.document_id() }, sender)
+    (Job { receiver, sheet: app.document_id(), step: app.journal.step_being_recorded() }, sender)
 }
 
 /// Wait for a search `crypto.repeated_blocks` started; returns where its report is sent.
@@ -152,7 +160,13 @@ fn poll<T>(job: &mut Option<Job<T>>, done: &mut PerSheet<T>, active: &str) {
 fn collect_finished(state: &mut CryptoState, active: &str) {
     poll(&mut state.blocks_job, &mut state.blocks, active);
     poll(&mut state.keys_job, &mut state.keys, active);
-    poll(&mut state.decode_job, &mut state.decode, active);
+    if let Some(pending) = &state.decode_job
+        && let Ok(mut results) = pending.receiver.try_recv()
+    {
+        results.step = pending.step;
+        state.decode.deliver(&pending.sheet, results, active);
+        state.decode_job = None;
+    }
 }
 
 fn dim(text: impl Into<String>) -> RichText {
@@ -323,9 +337,14 @@ fn show_keys(state: &mut CryptoState, app: &mut ViewerApp, ui: &mut Ui) {
     let mut key_to_use = None;
     for finding in findings {
         ui.horizontal(|ui| {
-            if ui.add(egui::Label::new(RichText::new(format!("{:#010x}", finding.offset)).monospace().color(theme::TEXT_DIM)).sense(Sense::click())).clicked() {
+            let offset = ui.add(egui::Label::new(RichText::new(format!("{:#010x}", finding.offset)).monospace().color(theme::TEXT_DIM)).sense(Sense::click()));
+            if offset.clicked() {
                 chosen = Some(as_finding(finding));
             }
+            offset.context_menu(|ui| {
+                let carry = Carry::bytes(sheet.clone(), vec![(finding.offset, finding.len)], DerivedFrom::new(), format!("{} at {:#x}", finding.kind.label(), finding.offset));
+                send_to::menu(app, ui, &carry);
+            });
             ui.label(RichText::new(finding.kind.label()).small().color(kind_colour(finding.kind)));
             ui.label(dim(format!("{} · {} B · {:.0}%", finding.format.label(), finding.len, finding.confidence * 100.0)));
             if finding.kind == KeyKind::RawKeyCandidate && ui.small_button("Use this key").on_hover_text("Fill in the key under Decrypt (AES) with these bytes").clicked() {
@@ -470,7 +489,11 @@ fn show_decode(state: &mut CryptoState, app: &mut ViewerApp, ui: &mut Ui) {
     for (index, candidate) in results.candidates.iter().enumerate() {
         ui.horizontal(|ui| {
             ui.monospace(RichText::new(format!("{:.2}", candidate.score)).color(theme::ACCENT));
-            ui.label(RichText::new(candidate.transform.describe()).strong());
+            let described = ui.add(egui::Label::new(RichText::new(candidate.transform.describe()).strong()).sense(Sense::click()));
+            described.context_menu(|ui| {
+                let carry = decode_carry(results, index, &sheet);
+                send_to::menu(app, ui, &carry);
+            });
             let magic = candidate.magic.map(|name| format!(" · starts like a {name}")).unwrap_or_default();
             ui.label(dim(format!("{:.0}% printable · {:.2} bits/byte{magic} · {}", candidate.printable_fraction * 100.0, candidate.entropy, candidate.reason)));
             if ui.small_button("Open decoded").on_hover_text("Open the decoded bytes as a document; Back returns").clicked() {
@@ -491,6 +514,47 @@ fn show_decode(state: &mut CryptoState, app: &mut ViewerApp, ui: &mut Ui) {
             state.decode.closed(&sheet);
         }
     }
+}
+
+/// What the decode at `index` of those proposed for `sheet` carries
+/// elsewhere: its operation over the span attacked, found again on another
+/// file as the candidate at the same place of those the attack proposes
+/// there.
+fn decode_carry(results: &DecodeResults, index: usize, sheet: &str) -> Carry {
+    let operation = serde_json::to_value(Operation::from(results.candidates[index].transform.clone())).unwrap_or_default();
+    let (anchor, from) = match results.step {
+        Some(step) => {
+            let pick = Pick { step: StepRef::Number(step), list: "job.candidates".to_string(), condition: None, sort: None, nth: index, field: Some("operation".to_string()) };
+            (Some(Anchor::Pick { pick }), format!("from step {step}, decode {}", index + 1))
+        }
+        None => (None, format!("decode {}", index + 1)),
+    };
+    Carry::value(Carried::Operation(operation), anchor, from, sheet).with_span(results.start, results.len)
+}
+
+/// The inputs of the Crypto tab a carry can fill: the AES key and the crib.
+pub fn slots(carry: &Carry) -> Vec<Slot> {
+    if !carry.has_bytes() {
+        return Vec::new();
+    }
+    vec![Slot { label: "Crypto · AES key", target: Target::CryptoKey }, Slot { label: "Crypto · crib", target: Target::CryptoCrib }]
+}
+
+/// Fill the AES key under Decrypt with what `carry` holds, as hex.
+pub(crate) fn fill_key(state: &mut CryptoState, app: &mut ViewerApp, carry: &Carry) -> Result<String, String> {
+    let filled = carry.as_hex(app).ok_or_else(|| send_to::does_not_fit(carry, "an AES key"))?;
+    state.decrypt.key = filled.text;
+    state.decrypt.error = None;
+    Ok(format!("The key under Decrypt is {}", carry.summary()))
+}
+
+/// Fill the crib of the cipher attacks with what `carry` holds, bytes that
+/// are not printable written as \xHH.
+pub(crate) fn fill_crib(state: &mut CryptoState, app: &mut ViewerApp, carry: &Carry) -> Result<String, String> {
+    let bytes = carry.bytes_up_to(app, send_to::MOST_CARRIED_BYTES).ok_or_else(|| send_to::does_not_fit(carry, "a crib"))?;
+    state.crib = ciphers::crib_text(&bytes);
+    state.crib_error = None;
+    Ok(format!("The crib is {}", carry.summary()))
 }
 
 /// The key bytes the crib revealed, shown even when they decode nothing:

@@ -193,6 +193,11 @@ fn show_table(state: &mut PacketsState, app: &mut ViewerApp, ui: &mut Ui, height
                 if response.clicked() {
                     clicked = Some((index, ui.input(|input| input.modifiers)));
                 }
+                response.context_menu(|ui| {
+                    if let Some(carry) = packets_carry(state, app, index) {
+                        crate::send_to::menu(app, ui, &carry);
+                    }
+                });
             }
         });
     });
@@ -200,6 +205,20 @@ fn show_table(state: &mut PacketsState, app: &mut ViewerApp, ui: &mut Ui, height
     if let Some((index, modifiers)) = clicked {
         click_row(state, app, index, modifiers);
     }
+}
+
+/// What the packet at `index` carries elsewhere, with the others selected
+/// when it is one of them: their bytes in the sheet they were read from.
+fn packets_carry(state: &PacketsState, app: &ViewerApp, index: usize) -> Option<crate::send_to::Carry> {
+    let set = state.set.as_ref()?;
+    let chosen = if state.selected.contains(&index) { targets(state) } else { vec![index] };
+    let ranges: Vec<(usize, usize)> = chosen.iter().filter_map(|&chosen| set.packets.get(chosen)).map(|packet| (packet.offset, packet.len)).collect();
+    let sheet = state.source_sheet.clone().unwrap_or_else(|| app.document_id());
+    let from = match chosen.as_slice() {
+        [one] => format!("packet {}", one + 1),
+        many => format!("{} packets", many.len()),
+    };
+    Some(crate::send_to::Carry::bytes(sheet, ranges, crate::journal::DerivedFrom::new(), from))
 }
 
 /// Plain click selects one packet; Cmd (Ctrl) toggles one; Shift extends

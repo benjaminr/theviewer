@@ -4,6 +4,7 @@
 use eframe::egui::{self, RichText, Sense, Ui, vec2};
 
 use crate::app::ViewerApp;
+use crate::send_to::{self, Carry};
 use crate::bus::topics::FindingsPublished;
 use crate::legend::{LayerKind, PinnedGroup};
 use crate::plugin::{Category, Finding};
@@ -187,6 +188,9 @@ pub fn show_findings_panel(app: &mut ViewerApp, ui: &mut Ui) {
                     bookmark = Some(finding.clone());
                     ui.close();
                 }
+                ui.separator();
+                let carry = finding_carry(app, finding);
+                send_to::menu(app, ui, &carry);
             });
         }
         if visible.len() > MAX_ROWS {
@@ -221,6 +225,15 @@ pub fn show_findings_panel(app: &mut ViewerApp, ui: &mut Ui) {
 
     show_bookmarks(app, ui);
     ui.separator();
+}
+
+/// What a finding carries elsewhere: its bytes in the sheet shown, found
+/// again on another file by the finding, as `findings.query` counts it.
+pub fn finding_carry(app: &mut ViewerApp, finding: &Finding) -> Carry {
+    let start = finding.start.min(app.document.len());
+    let len = finding.len.min(app.document.len() - start);
+    let derived_from = app.finding_provenance(finding, start, len).into_iter().map(|(path, anchor)| (path.replace("selection.range", "ranges[0]"), anchor)).collect();
+    Carry::bytes(app.document_id(), vec![(start, len)], derived_from, format!("finding {}", finding.id))
 }
 
 fn show_bookmarks(app: &mut ViewerApp, ui: &mut Ui) {

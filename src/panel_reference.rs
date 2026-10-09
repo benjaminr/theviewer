@@ -19,6 +19,7 @@ use std::time::Duration;
 use eframe::egui::{self, Align2, Color32, FontId, Rect, RichText, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
 
 use crate::app::ViewerApp;
+use crate::send_to::{self, Carried, Carry};
 use crate::bus::topics::{FieldsDecoded, ProtocolIdentified, ReferenceFocus};
 use crate::bus::{Message, MessageId, Payload, Topic};
 use crate::dock::DockTab;
@@ -1124,6 +1125,10 @@ fn show_field_table(app: &mut ViewerApp, ui: &mut Ui, entry: &StackEntry, notes:
                 ui.horizontal(|ui| {
                     ui.add_space(depth as f32 * 12.0);
                     let name = ui.add(egui::Label::new(RichText::new(&field.name).color(colour)).selectable(false).sense(Sense::click()));
+                    name.context_menu(|ui| {
+                        let carry = field_carry(app, entry, field);
+                        send_to::menu(app, ui, &carry);
+                    });
                     match &explanation {
                         Some(explanation) => name.on_hover_text(explanation.as_str()),
                         None => name,
@@ -1169,6 +1174,22 @@ fn show_field_table(app: &mut ViewerApp, ui: &mut Ui, entry: &StackEntry, notes:
     if total > rows.len() {
         ui.label(RichText::new(format!("… {} more fields", total - rows.len())).small().color(theme::TEXT_DIM));
     }
+}
+
+/// What a field of `entry` carries elsewhere: its value (a number when it
+/// reads as one) and its bytes, found again on another file as the field's
+/// value when a parser recognised the structure.
+fn field_carry(app: &ViewerApp, entry: &StackEntry, field: &Field) -> Carry {
+    let structure = Finding::new(entry.key.clone(), "reference", Category::Structure, entry.start, entry.len).fields(entry.fields.clone());
+    let by_a_parser = app.registry.has_parser(&entry.key);
+    let anchor = crate::journal::provenance::structure_anchor(&structure, field.offset, field.len)
+        .filter(|_| by_a_parser)
+        .map(|anchor| crate::journal::provenance::with_part(&anchor, crate::journal::anchors::Part::Value));
+    let value = match crate::ops::parse_offset(field.value.trim()) {
+        Some(number) => Carried::Number(number as u64),
+        None => Carried::Text(field.value.clone()),
+    };
+    Carry::value(value, anchor, format!("field {}", field.name), app.document_id()).with_span(field.offset, field.len)
 }
 
 /// The fields a diagram draws, up to document offset `end`: the most

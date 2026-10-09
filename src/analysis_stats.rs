@@ -1,5 +1,6 @@
 //! Dock tabs for byte statistics, strings and XOR key recovery.
 
+use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};
 
 use eframe::egui::{self, Color32, Rect, RichText, Sense, TextureHandle, Ui, pos2, vec2};
@@ -10,6 +11,8 @@ use crate::sheets::PerSheet;
 use crate::stats::{self, ByteStats, Repeat, Verdict};
 use crate::strings::{self, Encoding, FoundString};
 use crate::theme;
+use crate::journal::anchors::{Anchor, Pick, StepRef};
+use crate::send_to::{self, Carried, Carry, Slot, Target};
 use crate::xor::XorCandidate;
 
 /// Largest range analysed for statistics and strings.
@@ -34,19 +37,33 @@ pub struct StatsResult {
 pub struct FoundStrings {
     pub start: usize,
     pub len: usize,
-    pub strings: Vec<FoundString>,
+    /// Shared, so the tab can draw them while it carries one elsewhere.
+    pub strings: Arc<Vec<FoundString>>,
+    /// The `strings.find` step that found them, when the person's search
+    /// did: what a string carried elsewhere is picked from.
+    pub step: Option<u64>,
 }
 
-/// XOR results for (start, len): candidates and likely key lengths.
-pub type XorResults = (usize, usize, Vec<XorCandidate>, Vec<(usize, f64)>);
+/// The keys `xor.recover_keys` proposed for a span.
+#[derive(Clone)]
+pub struct XorResults {
+    pub start: usize,
+    pub len: usize,
+    pub candidates: Vec<XorCandidate>,
+    /// The likely key lengths, with their scores.
+    pub lengths: Vec<(usize, f64)>,
+    /// The read that proposed them, which a key carried elsewhere is
+    /// picked from.
+    pub step: Option<u64>,
+}
 
 pub struct StatsState {
     pending: Option<Receiver<StatsResult>>,
     pub result: Option<StatsResult>,
     heatmap: Option<TextureHandle>,
 
-    /// A search running, with the sheet it searches.
-    strings_pending: Option<(String, Receiver<FoundStrings>)>,
+    /// A search running, with the sheet it searches and its step.
+    strings_pending: Option<(String, Option<u64>, Receiver<FoundStrings>)>,
     /// The strings found, kept for each sheet searched.
     pub strings: PerSheet<FoundStrings>,
     pub min_chars: usize,
@@ -56,6 +73,8 @@ pub struct StatsState {
 
     /// The keys recovered, kept for each sheet.
     pub xor_candidates: PerSheet<XorResults>,
+    /// The key of the XOR tab's Apply row, as hex.
+    pub xor_key: String,
 }
 
 /// What the Statistics tab worked out about one sheet, kept while it is
@@ -80,6 +99,7 @@ impl Default for StatsState {
             filter: String::new(),
             interesting_only: false,
             xor_candidates: PerSheet::default(),
+            xor_key: String::new(),
         }
     }
 }
@@ -90,7 +110,7 @@ impl StatsState {
         self.put_statistics(StatisticsResults::default());
         self.strings.closed(sheet);
         self.xor_candidates.closed(sheet);
-        if self.strings_pending.as_ref().is_some_and(|(searched, _)| searched == sheet) {
+        if self.strings_pending.as_ref().is_some_and(|(searched, ..)| searched == sheet) {
             self.strings_pending = None;
         }
     }
@@ -358,7 +378,7 @@ pub(crate) fn start_strings(app: &mut ViewerApp) {
 
 /// Find the strings in `bytes` (from document offset `start`).
 pub(crate) fn find_strings(bytes: &[u8], start: usize, min_chars: usize, encodings: &[Encoding]) -> FoundStrings {
-    FoundStrings { start, len: bytes.len(), strings: strings::extract(bytes, start, min_chars, encodings, MAX_STRINGS) }
+    FoundStrings { start, len: bytes.len(), strings: Arc::new(strings::extract(bytes, start, min_chars, encodings, MAX_STRINGS)), step: None }
 }
 
 /// Wait for a search `strings.find` started, to show it in the Strings
@@ -366,17 +386,19 @@ pub(crate) fn find_strings(bytes: &[u8], start: usize, min_chars: usize, encodin
 pub(crate) fn await_strings(app: &mut ViewerApp) -> Sender<FoundStrings> {
     app.note_tool_result(crate::dock::DockTab::Strings);
     let (sender, receiver) = mpsc::channel();
-    app.bench.tools.stats.strings_pending = Some((app.document_id(), receiver));
+    let step = app.journal.step_being_recorded();
+    app.bench.tools.stats.strings_pending = Some((app.document_id(), step, receiver));
     sender
 }
 
 pub fn show_strings(app: &mut ViewerApp, ui: &mut Ui) {
     let active = app.document_id();
     let stats = &mut app.bench.tools.stats;
-    if let Some((sheet, receiver)) = &stats.strings_pending
-        && let Ok(found) = receiver.try_recv()
+    if let Some((sheet, step, receiver)) = &stats.strings_pending
+        && let Ok(mut found) = receiver.try_recv()
     {
         let sheet = sheet.clone();
+        found.step = *step;
         stats.strings.deliver(&sheet, found, &active);
         stats.strings_pending = None;
     }
@@ -400,33 +422,75 @@ pub fn show_strings(app: &mut ViewerApp, ui: &mut Ui) {
     });
     let Some(sheet) = app.bench.tools.stats.strings.sheet().map(str::to_string) else { return };
     crate::sheets::view::results_of_other_sheet(app, ui, &sheet);
-    let Some(FoundStrings { strings: found, .. }) = app.bench.tools.stats.strings.get() else { return };
+    let Some((found, step)) = app.bench.tools.stats.strings.get().map(|found| (found.strings.clone(), found.step)) else { return };
     let filter = app.bench.tools.stats.filter.to_lowercase();
     let interesting_only = app.bench.tools.stats.interesting_only;
-    let shown: Vec<(&FoundString, Option<&'static str>)> = found
+    let shown: Vec<(usize, Option<&'static str>)> = found
         .iter()
-        .map(|s| (s, strings::classify(&s.text)))
-        .filter(|(s, tag)| (!interesting_only || tag.is_some()) && (filter.is_empty() || s.text.to_lowercase().contains(&filter)))
+        .enumerate()
+        .map(|(index, string)| (index, strings::classify(&string.text)))
+        .filter(|(index, tag)| (!interesting_only || tag.is_some()) && (filter.is_empty() || found[*index].text.to_lowercase().contains(&filter)))
         .collect();
     ui.label(RichText::new(format!("{} strings{}", shown.len(), if found.len() >= MAX_STRINGS { " (stopped at the limit)" } else { "" })).small().color(theme::TEXT_DIM));
     let mut chosen = None;
     let row_height = ui.text_style_height(&egui::TextStyle::Monospace) + 2.0;
     egui::ScrollArea::vertical().id_salt("strings-list").show_rows(ui, row_height, shown.len(), |ui, range| {
-        for (string, tag) in &shown[range] {
+        for &(index, tag) in &shown[range] {
+            let string = &found[index];
             ui.horizontal(|ui| {
                 if ui.add(egui::Label::new(RichText::new(format!("{:#010x}", string.offset)).monospace().color(theme::TEXT_DIM)).sense(Sense::click())).clicked() {
                     chosen = Some((string.offset, string.len_bytes));
                 }
                 ui.label(RichText::new(string.encoding.label()).small().color(theme::TEXT_DIM));
                 if let Some(tag) = tag {
-                    ui.label(RichText::new(*tag).small().color(theme::CURSOR));
+                    ui.label(RichText::new(tag).small().color(theme::CURSOR));
                 }
-                ui.add(egui::Label::new(RichText::new(&string.text).monospace()).truncate());
+                let text = ui.add(egui::Label::new(RichText::new(&string.text).monospace()).truncate().sense(Sense::click()));
+                text.context_menu(|ui| {
+                    let carry = string_carry(&found, step, index, &sheet);
+                    send_to::menu(app, ui, &carry);
+                });
             });
         }
     });
     if let Some((offset, len)) = chosen {
         app.select_found_in(&sheet, offset, len);
+    }
+}
+
+/// What the string at `index` of those found in `sheet` carries elsewhere:
+/// its text, found again on another file as a pick from the strings the
+/// search (step `step`) found: the first whose text has the same shape,
+/// when it is the first such, else the one at its place.
+pub(crate) fn string_carry(found: &[FoundString], step: Option<u64>, index: usize, sheet: &str) -> Carry {
+    let string = &found[index];
+    let pattern = crate::journal::provenance::shape_of(&string.text).filter(|pattern| {
+        let Ok(regex) = regex_lite::Regex::new(pattern) else { return false };
+        found.iter().position(|other| regex.is_match(&other.text)) == Some(index)
+    });
+    let (anchor, from) = match step {
+        Some(step) => {
+            let condition = pattern.as_ref().map(|pattern| serde_json::Map::from_iter([("text".to_string(), serde_json::json!({ "regex": pattern }))]));
+            let nth = if condition.is_some() { 0 } else { index };
+            let pick = Pick { step: StepRef::Number(step), list: "job.strings".to_string(), condition, sort: None, nth, field: Some("text".to_string()) };
+            let from = match &pattern {
+                Some(pattern) => format!("from step {step}, string /{}/", pattern_shown(pattern)),
+                None => format!("from step {step}, string {}", index + 1),
+            };
+            (Some(Anchor::Pick { pick }), from)
+        }
+        None => (None, format!("string at {:#x}", string.offset)),
+    };
+    Carry::value(Carried::Text(string.text.clone()), anchor, from, sheet).with_span(string.offset, string.len_bytes)
+}
+
+/// A shape's pattern as a chip shows it: its fixed start without escapes,
+/// `^NC500-` for `^NC500\-[0-9A-F]{8}$`, or the whole pattern when it has
+/// none.
+fn pattern_shown(pattern: &str) -> String {
+    match pattern.find('[') {
+        Some(at) if at > 1 => pattern[..at].replace('\\', ""),
+        _ => pattern.to_string(),
     }
 }
 
@@ -439,41 +503,51 @@ pub fn show_strings(app: &mut ViewerApp, ui: &mut Ui) {
 fn find_xor_keys(app: &mut ViewerApp, start: usize, len: usize) {
     let params = serde_json::json!({ "start": start, "len": len, "max_key": crate::api::tools::xor::DEFAULT_MAX_KEY });
     if let Ok(found) = app.perform_typed::<crate::api::tools::xor::RecoveredKeys>("xor.recover_keys", params) {
-        show_xor_keys(app, &found);
+        // The read the keys came from, which a key carried elsewhere cites.
+        let step = app.journal.last_step();
+        show_xor_keys(app, &found, step);
     }
 }
 
 /// Show keys recovered in the XOR tab.
-fn show_xor_keys(app: &mut ViewerApp, found: &crate::api::tools::xor::RecoveredKeys) {
+fn show_xor_keys(app: &mut ViewerApp, found: &crate::api::tools::xor::RecoveredKeys, step: Option<u64>) {
     let lengths = found.key_lengths.iter().map(|length| (length.length, length.score)).collect();
     let sheet = app.document_id();
-    app.bench.tools.stats.xor_candidates.set(&sheet, (found.start as usize, found.len as usize, found.xor_candidates(), lengths));
+    let results = XorResults { start: found.start as usize, len: found.len as usize, candidates: found.xor_candidates(), lengths, step };
+    app.bench.tools.stats.xor_candidates.set(&sheet, results);
     app.note_tool_result(crate::dock::DockTab::Xor);
 }
 
 /// Recover the keys again for the same bytes, after an edit: the app's own
 /// work, not the person's step.
 pub(crate) fn refresh_xor(app: &mut ViewerApp) {
-    let Some((start, len, ..)) = app.bench.tools.stats.xor_candidates.of(&app.document_id()).cloned() else { return };
+    let Some(XorResults { start, len, .. }) = app.bench.tools.stats.xor_candidates.of(&app.document_id()).cloned() else { return };
     let params = crate::api::tools::xor::RecoverKeysParams { start: start as u64, len: Some(len.min(app.document.len().saturating_sub(start)) as u64), ..Default::default() };
     match crate::api::tools::xor::recover_keys(app, params) {
-        Ok(found) => show_xor_keys(app, &found),
+        Ok(found) => show_xor_keys(app, &found, None),
         Err(error) => app.status = format!("XOR keys: {}", error.message),
     }
 }
 
+/// The bytes the XOR tab works on: the selection, else 64 KiB from the
+/// cursor, capped.
+fn xor_span(app: &ViewerApp) -> (usize, usize) {
+    let (start, len) = app.selection().map(|(start, len)| (start, len.min(XOR_LIMIT))).unwrap_or((app.cursor, XOR_LIMIT.min(64 * 1024)));
+    (start, len.min(app.document.len().saturating_sub(start)))
+}
+
 pub fn show_xor(app: &mut ViewerApp, ui: &mut Ui) {
-    let (start, len) = app.selection().map(|(s, l)| (s, l.min(XOR_LIMIT))).unwrap_or((app.cursor, XOR_LIMIT.min(64 * 1024)));
-    let len = len.min(app.document.len().saturating_sub(start));
+    let (start, len) = xor_span(app);
     ui.horizontal(|ui| {
         if ui.button(format!("Find XOR keys for {} bytes at {start:#x}", len)).clicked() {
             find_xor_keys(app, start, len);
         }
         ui.label(RichText::new("select the suspect bytes first; without a selection, 64 KiB from the cursor").small().color(theme::TEXT_DIM));
     });
+    show_xor_key_row(app, ui, start, len);
     let active = app.document_id();
     app.bench.tools.stats.xor_candidates.switched(&active);
-    let Some((sheet, (start, len, candidates, lengths))) = app.bench.tools.stats.xor_candidates.shown().map(|(sheet, found)| (sheet.to_string(), found.clone())) else {
+    let Some((sheet, results)) = app.bench.tools.stats.xor_candidates.shown().map(|(sheet, found)| (sheet.to_string(), found.clone())) else {
         ui.label(
             RichText::new("Recovers single-byte and repeating-key XOR by letter frequency, index of coincidence and the key showing through zero padding. Preview a decode, or apply it as an undoable edit.")
                 .color(theme::TEXT_DIM),
@@ -481,21 +555,25 @@ pub fn show_xor(app: &mut ViewerApp, ui: &mut Ui) {
         return;
     };
     crate::sheets::view::results_of_other_sheet(app, ui, &sheet);
-    if !lengths.is_empty() {
-        let text: Vec<String> = lengths.iter().map(|(length, score)| format!("{length} ({score:.3})")).collect();
+    if !results.lengths.is_empty() {
+        let text: Vec<String> = results.lengths.iter().map(|(length, score)| format!("{length} ({score:.3})")).collect();
         ui.label(RichText::new(format!("Likely key lengths: {}", text.join(", "))).small().color(theme::TEXT_DIM));
     }
-    if candidates.is_empty() {
+    if results.candidates.is_empty() {
         ui.label(RichText::new("No convincing key.").color(theme::TEXT_DIM));
         return;
     }
     let mut action: Option<(Vec<u8>, bool)> = None;
     egui::ScrollArea::vertical().id_salt("xor-candidates").show(ui, |ui| {
-        for candidate in &candidates {
+        for (index, candidate) in results.candidates.iter().enumerate() {
             ui.horizontal(|ui| {
                 let key: String = candidate.key.iter().map(|b| format!("{b:02x}")).collect();
                 let printable: String = candidate.key.iter().map(|&b| if (0x20..0x7F).contains(&b) { b as char } else { '.' }).collect();
-                ui.monospace(RichText::new(format!("key {key}")).color(theme::ACCENT));
+                let key_label = ui.add(egui::Label::new(RichText::new(format!("key {key}")).monospace().color(theme::ACCENT)).sense(Sense::click()));
+                key_label.context_menu(|ui| {
+                    let carry = xor_key_carry(&results, index, &sheet);
+                    send_to::menu(app, ui, &carry);
+                });
                 if candidate.key.len() > 1 {
                     ui.monospace(RichText::new(format!("\"{printable}\"")).color(theme::TEXT_DIM));
                 }
@@ -511,8 +589,66 @@ pub fn show_xor(app: &mut ViewerApp, ui: &mut Ui) {
         }
     });
     if let Some((key, in_place)) = action {
-        use_xor_key(app, &sheet, start, len, &key, in_place);
+        use_xor_key(app, &sheet, results.start, results.len, &key, in_place);
     }
+}
+
+/// What the key at `index` of those proposed in `sheet` carries elsewhere:
+/// its bytes, found again on another file as the key at the same rank of
+/// those `xor.recover_keys` proposes there.
+pub(crate) fn xor_key_carry(results: &XorResults, index: usize, sheet: &str) -> Carry {
+    let key = results.candidates[index].key.clone();
+    let rank = if index == 0 { "the top key".to_string() } else { format!("key {}", index + 1) };
+    let (anchor, from) = match results.step {
+        Some(step) => {
+            let pick = Pick { step: StepRef::Number(step), list: "result.candidates".to_string(), condition: None, sort: None, nth: index, field: Some("key".to_string()) };
+            (Some(Anchor::Pick { pick }), format!("from step {step}, {rank}"))
+        }
+        None => (None, rank),
+    };
+    Carry::value(Carried::Bytes(key), anchor, from, sheet)
+}
+
+/// The XOR tab's own key, applied to the bytes the tab works on.
+fn show_xor_key_row(app: &mut ViewerApp, ui: &mut Ui, start: usize, len: usize) {
+    let mut apply = false;
+    ui.horizontal(|ui| {
+        ui.label("Key");
+        ui.add(egui::TextEdit::singleline(&mut app.bench.tools.stats.xor_key).desired_width(160.0).hint_text("hex, or Send to here").font(egui::TextStyle::Monospace));
+        let ready = !app.bench.tools.stats.xor_key.trim().is_empty() && len > 0;
+        apply = ui.add_enabled(ready, egui::Button::new(format!("Apply to {len} bytes at {start:#x}"))).on_hover_text("XOR the bytes with this key, repeated from their start").clicked();
+    });
+    if apply {
+        apply_xor_key_field(app, start, len);
+    }
+}
+
+/// The person XORs `len` bytes at `start` of the sheet shown with the key
+/// typed (or sent) into the XOR tab: `transform.apply`.
+pub(crate) fn apply_xor_key_field(app: &mut ViewerApp, start: usize, len: usize) -> bool {
+    let Some(key) = crate::ops::parse_hex(&app.bench.tools.stats.xor_key).filter(|key| !key.is_empty()) else {
+        app.status = "The key must be hex bytes, e.g. 5A or DEADBEEF".to_string();
+        return false;
+    };
+    let key_hex = crate::ops::to_compact_hex(&key);
+    let params = serde_json::json!({ "selection": { "range": [start, len] }, "operation": { "op": "xor", "key": key_hex } });
+    let applied = app.perform("transform.apply", params).is_ok();
+    if applied {
+        app.status = format!("XOR {key_hex} applied to {len} bytes at {start:#x}");
+    }
+    applied
+}
+
+/// The inputs of the XOR tab a carry can fill: its key, with bytes.
+pub fn slots(carry: &Carry) -> Vec<Slot> {
+    if carry.has_bytes() { vec![Slot { label: "XOR tab · key", target: Target::XorKey }] } else { Vec::new() }
+}
+
+/// Fill the XOR tab's key with what `carry` holds, as hex.
+pub(crate) fn fill_xor_key(app: &mut ViewerApp, carry: &Carry) -> Result<String, String> {
+    let filled = carry.as_hex(app).ok_or_else(|| send_to::does_not_fit(carry, "an XOR key"))?;
+    app.bench.tools.stats.xor_key = filled.text;
+    Ok(format!("The XOR tab's key is {}", carry.summary()))
 }
 
 /// The person applies a key to the bytes of sheet `sheet` it was found
@@ -598,7 +734,7 @@ mod tests {
         start_strings(&mut app);
         let expected = json!({"start": 0, "len": notes().len(), "min_chars": 8, "encodings": ["ascii", "utf16be"]});
         assert_eq!(take_performed(), [("strings.find".to_string(), expected)]);
-        let found = wait_for(&app.bench.tools.stats.strings_pending.take().map(|(_, receiver)| receiver));
+        let found = wait_for(&app.bench.tools.stats.strings_pending.take().map(|(_, _, receiver)| receiver));
         assert_eq!(found.strings.first().map(|string| string.offset), Some(64));
         assert!(found.strings.iter().all(|string| string.text.chars().count() >= 8));
     }
@@ -609,7 +745,7 @@ mod tests {
         let mut app = app_with(&hidden);
         find_xor_keys(&mut app, 0, hidden.len());
         assert_eq!(take_performed(), [("xor.recover_keys".to_string(), json!({"start": 0, "len": hidden.len(), "max_key": 32}))]);
-        let (start, len, candidates, _) = app.bench.tools.stats.xor_candidates.get().cloned().expect("keys listed");
+        let XorResults { start, len, candidates, .. } = app.bench.tools.stats.xor_candidates.get().cloned().expect("keys listed");
         assert_eq!((start, len), (0, hidden.len()));
         assert_eq!(candidates.first().map(|candidate| candidate.key.clone()), Some(vec![0x5A]));
     }
@@ -641,5 +777,59 @@ mod tests {
             [("selection.set".to_string(), json!({"selection": {"range": [70, 5]}})), ("cursor.set".to_string(), json!({"offset": notes().len()}))]
         );
         assert_eq!(app.cursor, notes().len(), "past the end goes to the end");
+    }
+
+    /// The strings `strings.find` found in `app`'s document, as the tab
+    /// keeps them, with the step that found them.
+    fn strings_found(app: &mut ViewerApp) -> FoundStrings {
+        start_strings(app);
+        let (_, step, receiver) = app.bench.tools.stats.strings_pending.take().expect("a search is pending");
+        let mut found = receiver.recv_timeout(PATIENCE).expect("the search finishes");
+        found.step = step;
+        app.run_bus();
+        found
+    }
+
+    #[test]
+    fn a_string_sent_to_a_variable_is_bound_with_the_pick_that_finds_it_again() {
+        let mut app = app_with(b"\0\0config for unit\0\0NC500-2F357657\0\0NC500-00000000\0\0");
+        let found = strings_found(&mut app);
+        let index = found.strings.iter().position(|string| string.text == "NC500-2F357657").expect("the serial is found");
+        let carry = string_carry(&found.strings, found.step, index, &app.document_id());
+        let Carry::Value(carried) = &carry else { panic!("a string carries a value") };
+        assert_eq!(carried.from, format!("from step {}, string /^NC500-/", found.step.unwrap()));
+        take_performed();
+        send_to::bind_variable(&mut app, &carry, "$serial").unwrap();
+        assert_eq!(take_performed(), [("vars.set".to_string(), json!({"name": "serial", "value": "NC500-2F357657"}))]);
+        let listed = app.perform("vars.list", json!({})).unwrap();
+        let shape = crate::journal::provenance::shape_of("NC500-2F357657").unwrap();
+        let expected = json!({"pick": {"step": found.step, "list": "job.strings", "where": {"text": {"regex": shape}}, "field": "text"}});
+        assert_eq!(listed["variables"][0]["anchor"], expected, "the first string of its shape, found again by that shape");
+    }
+
+    #[test]
+    fn a_string_that_is_not_the_first_of_its_shape_is_picked_by_its_place() {
+        let mut app = app_with(b"\0\0NC500-00000000\0\0NC500-2F357657\0\0");
+        let found = strings_found(&mut app);
+        let carry = string_carry(&found.strings, found.step, 1, &app.document_id());
+        let Carry::Value(carried) = carry else { panic!("a string carries a value") };
+        let Some(Anchor::Pick { pick }) = carried.anchor else { panic!("a pick") };
+        assert_eq!((pick.condition, pick.nth), (None, 1));
+    }
+
+    #[test]
+    fn a_key_sent_to_the_xor_tab_fills_its_key_and_applying_it_is_a_transform() {
+        let hidden = crate::xor::apply(&notes()[64..], &[0x5A], 0);
+        let mut app = app_with(&hidden);
+        find_xor_keys(&mut app, 0, hidden.len());
+        let results = app.bench.tools.stats.xor_candidates.get().cloned().expect("keys listed");
+        let carry = xor_key_carry(&results, 0, &app.document_id());
+        assert!(slots(&carry).iter().any(|slot| slot.target == Target::XorKey));
+        send_to::send(&mut app, Target::XorKey, &carry).unwrap();
+        assert_eq!(app.bench.tools.stats.xor_key, "5a");
+        take_performed();
+        assert!(apply_xor_key_field(&mut app, 0, 4));
+        assert_eq!(take_performed(), [("transform.apply".to_string(), json!({"selection": {"range": [0, 4]}, "operation": {"op": "xor", "key": "5a"}}))]);
+        assert_eq!(app.document.read_range(0, 4), &notes()[64..68]);
     }
 }

@@ -40,8 +40,22 @@ impl ViewerApp {
     /// came from (a split started from a search match records that match),
     /// by parameter path, so the journal entry carries them as
     /// `derived_from` and a recipe made from it is portable.
+    /// A read an anchor cites (the keys `xor.recover_keys` proposed, say)
+    /// is moved into the journal first, so a recipe holds it.
     pub fn perform_derived(&mut self, method: &str, params: Value, derived_from: crate::journal::DerivedFrom) -> Result<Value, ApiError> {
+        self.promote_cited_reads(&derived_from);
         self.with_provenance(derived_from, |app| app.perform(method, params))
+    }
+
+    /// Move the reads `derived_from`'s anchors cite into the journal.
+    fn promote_cited_reads(&mut self, derived_from: &crate::journal::DerivedFrom) {
+        let sheets = crate::journal::anchors::RunSheets::default();
+        let cited: Vec<u64> = derived_from.values().flat_map(|anchor| anchor.cited_steps(&sheets)).collect();
+        for step in cited {
+            if self.journal.entry(step).is_none() {
+                crate::journal::promote(self, step);
+            }
+        }
     }
 
     /// [`ViewerApp::perform`] once the frame's drawing is over: for a panel
@@ -62,6 +76,7 @@ impl ViewerApp {
 
     /// Carry out the actions [`ViewerApp::perform_later`] kept, in order.
     pub(crate) fn perform_waiting_actions(&mut self) {
+        crate::send_to::send_waiting(self);
         for (method, params, derived_from) in std::mem::take(&mut self.actions_after_drawing) {
             let _ = self.perform_derived(&method, params, derived_from);
         }

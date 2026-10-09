@@ -167,6 +167,8 @@ pub struct Workbench {
 
     /// State of the self-contained tool panels.
     pub panels: PanelStates,
+    /// What the Send to menus wait to carry out, and the variable name typed.
+    pub send_to: crate::send_to::SendToState,
 
     serial: Option<SerialCapture>,
     serial_seen: usize,
@@ -216,6 +218,7 @@ impl Default for Workbench {
             unpacked: PerSheet::default(),
             unpack_password: String::new(),
             panels: PanelStates::default(),
+            send_to: crate::send_to::SendToState::default(),
             serial: None,
             serial_seen: 0,
             live_sheet: None,

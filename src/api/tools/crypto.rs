@@ -704,7 +704,7 @@ pub fn attack(workspace: &mut dyn Workspace, caller: &Caller, params: AttackPara
         deliver,
         move |_| {
             let fragments = options.crib.as_deref().map(|crib| crate::ciphers::crib_key_fragments(&bytes, crib)).unwrap_or_default();
-            DecodeResults { start, len, candidates: crate::ciphers::attack(&bytes, &options), fragments }
+            DecodeResults { start, len, candidates: crate::ciphers::attack(&bytes, &options), fragments, step: None }
         },
         |results| {
             let decodes = CipherDecodes {

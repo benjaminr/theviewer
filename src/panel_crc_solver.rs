@@ -10,6 +10,7 @@ use eframe::egui::{self, RichText, Ui};
 use crate::app::ViewerApp;
 use crate::crc_solver::{self, CrcSolution, CrcWidth, SolveError, SolveReport, SolverOptions, StoredOrder};
 use crate::ops;
+use crate::send_to::{self, Carry, Slot, Target};
 use crate::theme;
 
 /// How often the panel repaints while a solve runs.
@@ -78,6 +79,48 @@ struct RecordPlan {
     start: usize,
     record_len: usize,
     count: usize,
+}
+
+/// The inputs of the CRC solver a carry can fill: its records (bytes in
+/// ranges of one length, one after another) and their start.
+pub fn slots(carry: &Carry) -> Vec<Slot> {
+    let mut slots = Vec::new();
+    if matches!(carry, Carry::Bytes(_)) {
+        slots.push(Slot { label: "Checksums · CRC records", target: Target::CrcRecords });
+    }
+    if carry.as_offset().is_some() {
+        slots.push(Slot { label: "Checksums · CRC records' start", target: Target::CrcStart });
+    }
+    slots
+}
+
+/// Take the ranges `carry` holds as the records to solve: where the first
+/// starts, their length and how many, when they are of one length one
+/// after another; one range is the records' start.
+pub(crate) fn fill_records(state: &mut CrcSolverState, _app: &mut ViewerApp, carry: &Carry) -> Result<String, String> {
+    let Carry::Bytes(bytes) = carry else { return Err(send_to::does_not_fit(carry, "records")) };
+    let Some(&(start, len)) = bytes.ranges.first() else { return Err(send_to::does_not_fit(carry, "records")) };
+    let one_after_another = bytes.ranges.windows(2).all(|pair| pair[1].1 == len && pair[0].0 + pair[0].1 == pair[1].0);
+    if !one_after_another {
+        return Err(format!("{} are not records of one length one after another", carry.summary()));
+    }
+    state.source = RecordSource::FixedLength;
+    state.start_text = format!("{start:#x}");
+    if bytes.ranges.len() > 1 {
+        state.record_len_text = len.to_string();
+        state.count_text = bytes.ranges.len().to_string();
+    }
+    state.input_error = None;
+    Ok(format!("The CRC solver's records are {}", carry.summary()))
+}
+
+/// Start the CRC solver's fixed-length records where `carry` says.
+pub(crate) fn fill_start(state: &mut CrcSolverState, _app: &mut ViewerApp, carry: &Carry) -> Result<String, String> {
+    let filled = carry.as_offset().ok_or_else(|| send_to::does_not_fit(carry, "an offset"))?;
+    state.source = RecordSource::FixedLength;
+    state.start_text = filled.text;
+    state.input_error = None;
+    Ok(format!("The CRC solver's records start at {}", carry.summary()))
 }
 
 /// Show the CRC solver panel.
