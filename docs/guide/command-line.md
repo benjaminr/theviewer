@@ -119,7 +119,7 @@ inspect and edit them. It runs until the client closes the connection.
 | Option | Effect |
 | --- | --- |
 | `--plugins DIR` | Load plugins from DIR instead of `./plugins` and `~/.config/theviewer/plugins`; give it more than once for several |
-| `--all-tools` | List every API method as a tool. By default only the core methods and the plugins' are listed, with `api_search`, `api_describe` and `api_call` to reach the rest, which keeps the tool list a client holds in its model's context to about a quarter of the size |
+| `--all-tools` | List every API method as a tool. By default only the core methods and the plugins' are listed, with `api_search`, `api_describe` and `api_call` to reach the rest, which keeps the tool list a client holds in its model's context to about a sixth of the size |
 | `--output-schemas` | List each tool's result schema too, which roughly doubles the tool list |
 | `--legacy-current` | Make a call without `doc` mean the current document, which every document opened or derived becomes, rather than the client's focus, as before clients had one |
 

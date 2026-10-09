@@ -75,8 +75,8 @@ nothing but protocol messages on standard output.
 
 A client keeps every tool it is offered in its model's context, so the
 tool list's size matters. With the plugins in this repository, the default
-list is 30 tools and about 56 KB of JSON; `--all-tools` lists 180 tools in
-about 310 KB; `--output-schemas` roughly doubles either.
+list is 30 tools and about 58 KB of JSON; `--all-tools` lists 184 tools in
+about 370 KB; `--output-schemas` roughly doubles either.
 
 ## Tools
 
@@ -138,9 +138,13 @@ the start say so too, naming the methods' own tools in their place.
 
 `history_note` writes a note into the session's history, where the client
 is in its work: what it is doing and why. `#12` in the text cites step 12
-and links the note to it, and `steps` links more. The note is recorded as
-the client's (`mcp:claude-code`), and it changes nothing: it is never
-undone or repeated. It returns the note's own step number.
+and links the note to it (`\#917` writes "#917" citing nothing), and
+`steps` links more. `kind` says what it records: an `observation` (the
+default), a `hypothesis`, a `decision`, a `fallback` (a gap worked round)
+or a `conclusion`. The note is recorded as the client's
+(`mcp:claude-code`), and it changes nothing: it is never undone or
+repeated. A read it cites is kept as evidence, which recipes leave out. It
+returns the note's own step number.
 
 ```json
 {"name": "history_note", "arguments": {"text": "#4 found the sync word at 0x40; splitting the frames there next"}}
@@ -149,7 +153,8 @@ undone or repeated. It returns the note's own step number.
 The server's instructions ask the model to note its reasoning as it goes,
 so the person can follow it beside the steps in the History tab.
 `history.list` gives each note's text and linked steps, and on each step
-the notes linked to it. Through `api_call`, `history.edit_note` and
+the notes linked to it; `{"limit": 1, "order": "newest"}` gives the last
+step. Through `api_call`, `history.edit_note` and
 `history.delete_note` change a note, and `history.export_notes` gives the
 notes as Markdown (or writes them to a `path`). See
 [History and recipes](guide/history-and-recipes.md#notes).
@@ -376,7 +381,7 @@ Lists (`tools/list`, `resources/list`) come in pages of 100, with
 - **A method is missing.** By default only the core tools are listed: ask
   the model to use `api_search`, or start the server with `--all-tools`.
 - **The model's context fills up.** Leave out `--all-tools` and
-  `--output-schemas`, which make the tool list about five and two times
+  `--output-schemas`, which make the tool list about six and two times
   larger.
 - **A plugin's tool is missing.** Look on standard error for a load error,
   and check the folder: the server loads `./plugins` relative to where the
