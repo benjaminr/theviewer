@@ -12,7 +12,7 @@ use crate::stats::{self, ByteStats, Repeat, Verdict};
 use crate::strings::{self, Encoding, FoundString};
 use crate::theme;
 use crate::journal::anchors::{Anchor, Pick, StepRef};
-use crate::send_to::{self, Carried, Carry, Slot, Target};
+use crate::send_to::{self, Carried, Carry, Sending, Slot, Target};
 use crate::xor::XorCandidate;
 
 /// Largest range analysed for statistics and strings.
@@ -445,6 +445,9 @@ pub fn show_strings(app: &mut ViewerApp, ui: &mut Ui) {
                 if let Some(tag) = tag {
                     ui.label(RichText::new(tag).small().color(theme::CURSOR));
                 }
+                if ui.small_button("Use as key").on_hover_text("XOR with this text in the XOR tab, keeping where it came from").clicked() {
+                    send_to::send_later(app, Sending::To(Target::XorKey), string_carry(&found, step, index, &sheet));
+                }
                 let text = ui.add(egui::Label::new(RichText::new(&string.text).monospace()).truncate().sense(Sense::click()));
                 text.context_menu(|ui| {
                     let carry = string_carry(&found, step, index, &sheet);
@@ -578,6 +581,9 @@ pub fn show_xor(app: &mut ViewerApp, ui: &mut Ui) {
                     ui.monospace(RichText::new(format!("\"{printable}\"")).color(theme::TEXT_DIM));
                 }
                 ui.label(RichText::new(format!("{:.0}% printable · {}", candidate.printable_fraction * 100.0, candidate.reason)).small().color(theme::TEXT_DIM));
+                if ui.small_button("Use as key").on_hover_text("Put this key in the Key field above, keeping where it came from").clicked() {
+                    send_to::send_later(app, Sending::To(Target::XorKey), xor_key_carry(&results, index, &sheet));
+                }
                 if ui.small_button("Preview").on_hover_text("Open the decoded bytes as a document; Back returns").clicked() {
                     action = Some((candidate.key.clone(), false));
                 }
@@ -831,5 +837,25 @@ mod tests {
         assert!(apply_xor_key_field(&mut app, 0, 4));
         assert_eq!(take_performed(), [("transform.apply".to_string(), json!({"selection": {"range": [0, 4]}, "operation": {"op": "xor", "key": "5a"}}))]);
         assert_eq!(app.document.read_range(0, 4), &notes()[64..68]);
+    }
+
+    #[test]
+    fn use_as_key_on_a_candidate_fills_the_xor_tab_s_key_with_where_it_came_from() {
+        use egui_kittest::kittest::Queryable;
+        let hidden = crate::xor::apply(&notes()[64..], &[0x5A], 0);
+        let mut app = app_with(&hidden);
+        find_xor_keys(&mut app, 0, hidden.len());
+        let mut harness = egui_kittest::Harness::new_ui_state(
+            |ui, app: &mut ViewerApp| {
+                app.perform_waiting_actions();
+                show_xor(app, ui);
+            },
+            app,
+        );
+        harness.step();
+        harness.get_all_by_label("Use as key").next().expect("each candidate offers it").click();
+        harness.run();
+        assert_eq!(harness.state().bench.tools.stats.xor_key, "5a");
+        assert!(harness.state().status.starts_with("The XOR tab's key is 5a"), "{}", harness.state().status);
     }
 }

@@ -167,6 +167,11 @@ pub fn show_findings_panel(app: &mut ViewerApp, ui: &mut Ui) {
                     chosen = Some(finding.clone());
                     ui.close();
                 }
+                if ui.button("Open as worksheet").on_hover_text("Open its bytes as a sheet derived from this one, found again by the finding in a recipe").clicked() {
+                    let carry = finding_carry(app, finding);
+                    send_to::send_later(app, send_to::Sending::NewWorksheet, carry);
+                    ui.close();
+                }
                 // The operations act on the finding (or on the selection it is part of).
                 if !app.is_selected(finding.start) {
                     app.select_finding(finding);

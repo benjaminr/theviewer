@@ -19,7 +19,7 @@ use crate::plugin::{Category, Finding};
 use crate::selection_ops::Operation;
 use crate::journal::anchors::{Anchor, Pick, StepRef};
 use crate::journal::DerivedFrom;
-use crate::send_to::{self, Carried, Carry, Slot, Target};
+use crate::send_to::{self, Carried, Carry, Sending, Slot, Target};
 use crate::sheets::PerSheet;
 use crate::theme;
 
@@ -347,7 +347,7 @@ fn show_keys(state: &mut CryptoState, app: &mut ViewerApp, ui: &mut Ui) {
             });
             ui.label(RichText::new(finding.kind.label()).small().color(kind_colour(finding.kind)));
             ui.label(dim(format!("{} · {} B · {:.0}%", finding.format.label(), finding.len, finding.confidence * 100.0)));
-            if finding.kind == KeyKind::RawKeyCandidate && ui.small_button("Use this key").on_hover_text("Fill in the key under Decrypt (AES) with these bytes").clicked() {
+            if finding.kind == KeyKind::RawKeyCandidate && ui.small_button("Use as key").on_hover_text("Fill in the key under Decrypt (AES) with these bytes").clicked() {
                 key_to_use = Some((finding.offset, finding.len));
             }
             ui.scope(|ui| {
@@ -396,7 +396,7 @@ fn show_decrypt(state: &mut CryptoState, app: &mut ViewerApp, ui: &mut Ui) {
         let key_len = crate::ops::parse_hex(&form.key).map_or(0, |key| key.len());
         match Algorithm::for_key_len(key_len) {
             Some(algorithm) => ui.label(RichText::new(algorithm.label()).small().color(theme::ACCENT)),
-            None if form.key.is_empty() => ui.label(dim("or Use this key on a raw key found above")),
+            None if form.key.is_empty() => ui.label(dim("or Use as key on a raw key found above")),
             None => ui.label(dim(format!("{key_len} bytes: not an AES key"))),
         };
     });
@@ -480,7 +480,7 @@ fn show_decode(state: &mut CryptoState, app: &mut ViewerApp, ui: &mut Ui) {
     };
     let sheet = sheet.to_string();
     crate::sheets::view::results_of_other_sheet(app, ui, &sheet);
-    show_key_fragments(ui, results);
+    show_key_fragments(app, ui, results, &sheet);
     if results.candidates.is_empty() {
         ui.label(dim("No convincing decode."));
         return;
@@ -559,13 +559,17 @@ pub(crate) fn fill_crib(state: &mut CryptoState, app: &mut ViewerApp, carry: &Ca
 
 /// The key bytes the crib revealed, shown even when they decode nothing:
 /// with a key longer than the crib they are the start of the answer.
-fn show_key_fragments(ui: &mut Ui, results: &DecodeResults) {
+fn show_key_fragments(app: &mut ViewerApp, ui: &mut Ui, results: &DecodeResults, sheet: &str) {
     for fragment in &results.fragments {
         ui.horizontal_wrapped(|ui| {
             ui.label(RichText::new(format!("Key bytes at {:#x}", results.start + fragment.offset)).strong());
             ui.monospace(keys::short_hex(&fragment.keystream, fragment.keystream.len()));
             if ui.small_button("Copy").on_hover_text("Copy the key bytes as hex").clicked() {
                 ui.ctx().copy_text(crate::api::values::encode_bytes(&fragment.keystream, Default::default()));
+            }
+            if ui.small_button("Use as key").on_hover_text("Put these key bytes in the XOR tab's key").clicked() {
+                let carry = Carry::value(Carried::Bytes(fragment.keystream.clone()), None, format!("key bytes at {:#x}", results.start + fragment.offset), sheet);
+                send_to::send_later(app, Sending::To(Target::XorKey), carry);
             }
         });
         ui.label(dim(&fragment.reason));

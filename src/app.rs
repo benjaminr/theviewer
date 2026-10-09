@@ -1943,6 +1943,11 @@ impl ViewerApp {
                 self.select_finding(finding);
                 ui.close();
             }
+            if ui.button("Open as worksheet").on_hover_text("Open its bytes as a sheet derived from this one, found again by the finding in a recipe").clicked() {
+                let carry = crate::findings::finding_carry(self, finding);
+                crate::send_to::send_later(self, crate::send_to::Sending::NewWorksheet, carry);
+                ui.close();
+            }
             if finding.category == Category::Compressed && ui.button("Decompress").clicked() {
                 self.toggle_compressed_view();
                 ui.close();
