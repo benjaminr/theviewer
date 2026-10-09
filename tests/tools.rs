@@ -509,7 +509,7 @@ fn statistics_strings_and_xor_tabs_diagnose_data() {
     steps(&mut harness, 2);
     harness.get_by_label_contains("Find XOR keys").click();
     steps(&mut harness, 3);
-    let (_, _, candidates, _) = harness.state().bench.tools.stats.xor_candidates.get().cloned().unwrap();
+    let candidates = harness.state().bench.tools.stats.xor_candidates.get().cloned().unwrap().candidates;
     assert_eq!(candidates.first().map(|c| c.key.clone()), Some(key.to_vec()), "{:?}", candidates.iter().map(|c| &c.key).collect::<Vec<_>>());
     harness.get_all_by_label("Apply").next().unwrap().click();
     steps(&mut harness, 3);
