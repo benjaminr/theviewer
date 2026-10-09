@@ -381,7 +381,15 @@ pub(crate) fn start_strings(app: &mut ViewerApp) {
     let min_chars = options.min_chars.max(crate::api::tools::strings::FEWEST_CHARS);
     let encodings: Vec<crate::api::tools::strings::StringEncoding> =
         Encoding::ALL.iter().zip(options.encodings).filter(|(_, on)| *on).map(|(encoding, _)| crate::api::tools::strings::StringEncoding::of(*encoding)).collect();
-    let _ = app.perform("strings.find", serde_json::json!({ "start": start, "len": len, "min_chars": min_chars, "encodings": encodings }));
+    let mut params = serde_json::json!({ "min_chars": min_chars, "encodings": encodings });
+    // The whole file is what the method searches when given no span, so a
+    // recipe made from this step searches the whole of the next file too,
+    // whatever its length.
+    if app.selection().is_some() {
+        params["start"] = serde_json::json!(start);
+        params["len"] = serde_json::json!(len);
+    }
+    let _ = app.perform("strings.find", params);
 }
 
 /// Find the strings in `bytes` (from document offset `start`).
@@ -760,11 +768,20 @@ mod tests {
         app.bench.tools.stats.min_chars = 8;
         app.bench.tools.stats.encodings = [true, false, false, true];
         start_strings(&mut app);
-        let expected = json!({"start": 0, "len": notes().len(), "min_chars": 8, "encodings": ["ascii", "utf16be"]});
-        assert_eq!(take_performed(), [("strings.find".to_string(), expected)]);
+        let expected = json!({"min_chars": 8, "encodings": ["ascii", "utf16be"]});
+        assert_eq!(take_performed(), [("strings.find".to_string(), expected)], "the whole file, whatever its length, so a recipe searches the whole of the next");
         let found = wait_for(&app.bench.tools.stats.strings_pending.take().map(|(_, _, receiver)| receiver));
         assert_eq!(found.strings.first().map(|string| string.offset), Some(64));
         assert!(found.strings.iter().all(|string| string.text.chars().count() >= 8));
+    }
+
+    #[test]
+    fn finding_strings_in_a_selection_names_its_span() {
+        let mut app = app_with(&notes());
+        app.restore_selection(64, 100);
+        start_strings(&mut app);
+        let performed = take_performed();
+        assert_eq!((performed[0].1["start"].as_u64(), performed[0].1["len"].as_u64()), (Some(64), Some(100)));
     }
 
     #[test]
