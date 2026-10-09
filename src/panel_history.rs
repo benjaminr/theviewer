@@ -41,6 +41,8 @@ use crate::journal::timeline::{self, Inverse, Playback, StepStatus, Timeline};
 use crate::journal::{JournalEntry, Outcome};
 use crate::{recipes, theme};
 
+mod sheets_view;
+
 /// Height of the list of steps when a step's details are shown below it.
 const LIST_HEIGHT: f32 = 220.0;
 /// Characters of a parameter or result shown before it is cut.
@@ -113,6 +115,13 @@ pub struct Row {
     pub noted_by: Vec<(u64, String)>,
     /// Whether it is a read kept only because a note cites it.
     pub evidence: bool,
+    /// The sheet it was about.
+    pub doc: Option<String>,
+    /// What the sheets it made are called.
+    pub made: Vec<String>,
+    /// Where its anchored values came from, each in a few words: "$serial",
+    /// "pick #4 /^NC500-/".
+    pub sources: Vec<String>,
 }
 
 impl Row {
@@ -123,6 +132,13 @@ impl Row {
         };
         let refused = matches!(&entry.outcome, Outcome::Error(error) if error.code == ErrorCode::ReadOnly);
         let description = names.describe(entry);
+        let mut sources: Vec<String> = Vec::new();
+        for anchor in entry.derived_from.values() {
+            let source = crate::send_to::anchor_source(anchor);
+            if !sources.contains(&source) {
+                sources.push(source);
+            }
+        }
         Row {
             step: entry.step,
             caller: entry.caller.clone(),
@@ -137,6 +153,9 @@ impl Row {
             note: entry.note.clone(),
             noted_by,
             evidence: entry.evidence,
+            doc: entry.doc.clone(),
+            made: entry.made.iter().map(|doc| names.document(doc)).collect(),
+            sources,
         }
     }
 
@@ -259,6 +278,15 @@ pub struct HistoryState {
     /// How tall each row and note card was when last drawn, by step, so the
     /// list lays out only the rows in view.
     heights: HashMap<u64, f32>,
+    /// Show the steps grouped under the sheets they ran on.
+    pub sheets_view: bool,
+    /// The tree of sheets the Sheets view shows, for a journal revision and
+    /// the rows the filters kept.
+    sheet_tree: Option<(u64, Vec<usize>, Vec<sheets_view::SheetNode>)>,
+    /// What would stop the steps replaying as a recipe, at a revision.
+    recipe_checks: Option<(u64, sheets_view::RecipeChecks)>,
+    /// The step whose recipe values to open, once its details are shown.
+    open_recipe_values: Option<u64>,
 }
 
 impl Default for HistoryState {
@@ -290,6 +318,10 @@ impl Default for HistoryState {
             scroll_to: None,
             highlighted: None,
             heights: HashMap::new(),
+            sheets_view: false,
+            sheet_tree: None,
+            recipe_checks: None,
+            open_recipe_values: None,
         }
     }
 }
@@ -397,6 +429,10 @@ fn show_history_inside(state: &mut HistoryState, app: &mut ViewerApp, ui: &mut U
     if state.rows.is_empty() {
         let list = egui::ScrollArea::vertical().id_salt("history-steps").max_height(list_height).auto_shrink([false, true]);
         list.show(ui, |ui| ui.label(RichText::new("Nothing done yet. Each edit, view change, packet set and job, by you, plugins, Ask or MCP clients, is listed here as a step, with the notes written beside them.").color(theme::TEXT_DIM)));
+    } else if state.sheets_view {
+        let warnings_height = ui.spacing().interact_size.y;
+        sheets_view::show(state, app, ui, (list_height - warnings_height).max(MIN_LIST_HEIGHT));
+        sheets_view::show_warnings(state, app, ui);
     } else {
         show_steps(state, app, ui, list_height);
     }
@@ -667,6 +703,8 @@ fn show_toolbar(state: &mut HistoryState, app: &mut ViewerApp, ui: &mut Ui) {
     ui.horizontal_wrapped(|ui| {
         let steps = state.rows.len() - state.notes;
         ui.label(RichText::new(format!("{steps} steps · {} notes · {} undone", state.notes, state.undone)).small().color(theme::TEXT_DIM));
+        ui.selectable_value(&mut state.sheets_view, false, "Steps").on_hover_text("The steps in the order taken");
+        ui.selectable_value(&mut state.sheets_view, true, "Sheets").on_hover_text("The steps grouped under the sheet they ran on, following the sheets' lineage");
         egui::ComboBox::from_id_salt("history-caller").selected_text(state.caller_filter.as_deref().unwrap_or("every caller")).show_ui(ui, |ui| {
             ui.selectable_value(&mut state.caller_filter, None, "every caller");
             for caller in state.callers.clone() {
@@ -875,6 +913,12 @@ fn show_row(state: &mut HistoryState, app: &mut ViewerApp, ui: &mut Ui, row: &Ro
             state.selected = if selected { None } else { Some(row.step) };
         }
         label.context_menu(|ui| step_menu(state, app, ui, row));
+        if !row.made.is_empty() {
+            ui.label(RichText::new(format!("──▶ {}", row.made.join(", "))).small().color(theme::ACCENT)).on_hover_text("The sheets this step made");
+        }
+        if !row.sources.is_empty() {
+            ui.label(RichText::new(format!("← {}", row.sources.join(", "))).small().color(theme::TEXT_DIM)).on_hover_text("Where its values came from, which a recipe finds again");
+        }
     });
 }
 
@@ -961,7 +1005,12 @@ fn show_details(state: &mut HistoryState, app: &mut ViewerApp, ui: &mut Ui, step
         egui::CollapsingHeader::new("Result").id_salt(("history-result", step)).show(ui, |ui| ui.label(RichText::new(result).monospace().small()));
     }
     if details.succeeded {
-        egui::CollapsingHeader::new("Recipe values").id_salt(("history-anchors", step)).show(ui, |ui| show_recipe_values(state, app, ui, step));
+        let mut header = egui::CollapsingHeader::new("Recipe values").id_salt(("history-anchors", step));
+        if state.open_recipe_values == Some(step) {
+            state.open_recipe_values = None;
+            header = header.open(Some(true));
+        }
+        header.show(ui, |ui| show_recipe_values(state, app, ui, step));
     }
     if close {
         state.selected = None;
@@ -1547,5 +1596,56 @@ mod tests {
         let written = std::fs::read_to_string(&path).unwrap();
         std::fs::remove_file(&path).ok();
         assert!(written.contains("Start of the analysis"), "{written}");
+    }
+
+    /// A file, a sheet derived from it labelled "middle" and one made from
+    /// that by a transform, labelled "inner", with a step on each of the
+    /// first two.
+    fn app_with_lineage() -> (ViewerApp, [String; 3]) {
+        let mut app = app_with(b"0123456789abcdef");
+        let root = app.document_id();
+        app.perform("bytes.write", json!({"start": 0, "data": "41"})).unwrap();
+        app.perform("documents.derive", json!({"start": 4, "len": 8, "output": {"new": {"label": "middle"}}})).unwrap();
+        let middle = app.document_id();
+        app.perform("bytes.write", json!({"start": 0, "data": "42"})).unwrap();
+        app.perform("transform.apply", json!({"selection": {"range": [0, 2]}, "operation": {"op": "invert"}, "output": {"new": {"label": "inner"}}})).unwrap();
+        let inner = app.document_id();
+        (app, [root, middle, inner])
+    }
+
+    #[test]
+    fn the_sheets_view_groups_the_steps_under_their_sheets_following_lineage() {
+        use sheets_view::{Item, SheetNode};
+        let (app, [root, middle, inner]) = app_with_lineage();
+        let mut state = HistoryState::default();
+        state.follow(&app);
+        let shown: Vec<usize> = state.shown().collect();
+        let tree = sheets_view::sheet_tree(&app.journal, &state.rows, &shown);
+        let inner_node = SheetNode { doc: inner.clone(), name: "inner".into(), items: vec![] };
+        let middle_node = SheetNode { doc: middle.clone(), name: "middle".into(), items: vec![Item::Row(2), Item::Row(3), Item::Sheet(inner_node)] };
+        let root_node = SheetNode { doc: root.clone(), name: "test.bin".into(), items: vec![Item::Row(0), Item::Row(1), Item::Sheet(middle_node)] };
+        assert_eq!(tree, [root_node], "each sheet under the step that made it");
+        assert_eq!(state.rows[1].made, ["\"middle\""]);
+    }
+
+    #[test]
+    fn the_sheets_view_shows_each_sheet_with_a_button_that_shows_it_and_what_would_not_replay() {
+        let (app, [root, ..]) = app_with_lineage();
+        let mut harness = harness_for(app);
+        harness.step();
+        harness.get_by_label("Sheets").click();
+        harness.run();
+        harness.get_by_label("middle");
+        harness.get_by_label("inner");
+        harness.get_by_label_contains("⚠ 0 unresolved documents · 2 literal offsets");
+        let show_buttons: Vec<_> = harness.get_all_by_label("Show").collect();
+        assert_eq!(show_buttons.len(), 3, "one for each sheet");
+        show_buttons[0].click();
+        harness.run();
+        assert_eq!(harness.state().document_id(), root, "Show shows the sheet");
+        harness.get_by_label("Suggest anchors…").click();
+        harness.run();
+        assert_eq!(harness.state().bench.panels.history.selected, Some(2), "the first step with a literal offset, the derive's start");
+        harness.get_by_label("Recipe values");
     }
 }

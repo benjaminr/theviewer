@@ -315,20 +315,32 @@ const OFFSET_NAMES: &[&str] = &["start", "offset", "at", "end", "range", "ranges
 fn literal_offsets(recipe: &Recipe) -> Vec<String> {
     let mut found = Vec::new();
     for step in &recipe.steps {
-        visit_paths(&step.params, "", &mut |path, value| {
-            if super::anchors::as_anchor(value).is_some() {
-                return false;
-            }
-            let name = path.rsplit('.').next().unwrap_or(path);
-            let name = name.split('[').next().unwrap_or(name);
-            if OFFSET_NAMES.contains(&name)
-                && let Some(offset) = value.as_u64().filter(|offset| *offset > 0)
-            {
-                found.push(format!("step {}'s {path} ({offset})", step.step));
-            }
-            true
-        });
+        for (path, offset) in literal_offsets_in(&step.params, &|_| false) {
+            found.push(format!("step {}'s {path} ({offset})", step.step));
+        }
     }
+    found
+}
+
+/// Each literal offset in a step's `params`, by path, leaving out those at
+/// the paths `anchored` says a recipe takes from an anchor: a number (not
+/// an anchor) given as an offset into a document, which may not fit
+/// another file. 0, the start of any file, fits every one.
+pub fn literal_offsets_in(params: &serde_json::Value, anchored: &dyn Fn(&str) -> bool) -> Vec<(String, u64)> {
+    let mut found = Vec::new();
+    visit_paths(params, "", &mut |path, value| {
+        if super::anchors::as_anchor(value).is_some() || anchored(path) {
+            return false;
+        }
+        let name = path.rsplit('.').next().unwrap_or(path);
+        let name = name.split('[').next().unwrap_or(name);
+        if OFFSET_NAMES.contains(&name)
+            && let Some(offset) = value.as_u64().filter(|offset| *offset > 0)
+        {
+            found.push((path.to_string(), offset));
+        }
+        true
+    });
     found
 }
 

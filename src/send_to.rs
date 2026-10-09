@@ -268,6 +268,45 @@ fn sheet_anchor(app: &ViewerApp, sheet: &str) -> Option<Anchor> {
     Some(Anchor::Sheet { sheet: SheetRef::Step { step, nth: 0 } })
 }
 
+/// A shape's pattern as a chip shows it: its fixed start without escapes,
+/// `^NC500-` for `^NC500\-[0-9A-F]{8}$`, or the whole pattern when it has
+/// none.
+pub fn pattern_shown(pattern: &str) -> String {
+    match pattern.find('[') {
+        Some(at) if at > 1 => pattern[..at].replace('\\', ""),
+        _ => pattern.to_string(),
+    }
+}
+
+/// Where a value an anchor finds came from, in a few words, as the History
+/// tab shows it after a step: "$serial", "pick #4 /^NC500-/", "#3",
+/// "match 2 of hex 7EA5", "field IHDR.width of png".
+pub fn anchor_source(anchor: &Anchor) -> String {
+    match anchor {
+        Anchor::Var { var } => format!("${var}"),
+        Anchor::Then { of, .. } => anchor_source(of),
+        Anchor::Step { step, .. } => format!("#{step}"),
+        Anchor::Pick { pick } => {
+            let step = match &pick.step {
+                anchors::StepRef::Number(step) => format!("#{step}"),
+                other => other.describe(),
+            };
+            let regex = pick.condition.as_ref().filter(|condition| condition.len() == 1).and_then(|condition| condition.values().next()).and_then(|test| test.get("regex")).and_then(Value::as_str);
+            match regex {
+                Some(regex) => format!("pick {step} /{}/", pattern_shown(regex)),
+                None if pick.nth > 0 => format!("pick {step} item {}", pick.nth + 1),
+                None => format!("pick {step}"),
+            }
+        }
+        Anchor::Find { find, nth, .. } => format!("match {} of {}", nth + 1, find.describe()),
+        Anchor::Structure { structure, field, .. } => format!("field {field} of {structure}"),
+        Anchor::Finding { finding, .. } => finding.describe(),
+        Anchor::Selection { .. } => "the selection".to_string(),
+        Anchor::Param { param } => format!("parameter {param}"),
+        Anchor::Sheet { sheet } => sheet.describe(),
+    }
+}
+
 /// A field's value bound to where it came from: the chip shows `shown` and
 /// `from`, and calls made with the field pass `anchor` as `derived_from`.
 #[derive(Clone, Debug, PartialEq)]

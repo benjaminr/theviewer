@@ -485,7 +485,7 @@ pub(crate) fn string_carry(found: &[FoundString], step: Option<u64>, index: usiz
             let nth = if condition.is_some() { 0 } else { index };
             let pick = Pick { step: StepRef::Number(step), list: "job.strings".to_string(), condition, sort: None, nth, field: Some("text".to_string()) };
             let from = match &pattern {
-                Some(pattern) => format!("from step {step}, string /{}/", pattern_shown(pattern)),
+                Some(pattern) => format!("from step {step}, string /{}/", send_to::pattern_shown(pattern)),
                 None => format!("from step {step}, string {}", index + 1),
             };
             (Some(Anchor::Pick { pick }), from)
@@ -493,16 +493,6 @@ pub(crate) fn string_carry(found: &[FoundString], step: Option<u64>, index: usiz
         None => (None, format!("string at {:#x}", string.offset)),
     };
     Carry::value(Carried::Text(string.text.clone()), anchor, from, sheet).with_span(string.offset, string.len_bytes)
-}
-
-/// A shape's pattern as a chip shows it: its fixed start without escapes,
-/// `^NC500-` for `^NC500\-[0-9A-F]{8}$`, or the whole pattern when it has
-/// none.
-fn pattern_shown(pattern: &str) -> String {
-    match pattern.find('[') {
-        Some(at) if at > 1 => pattern[..at].replace('\\', ""),
-        _ => pattern.to_string(),
-    }
 }
 
 // ---------------------------------------------------------------------------
