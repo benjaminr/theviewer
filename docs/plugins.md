@@ -6,8 +6,9 @@ other client of the [data API](api.md):
 
 - **Detectors** scan a window of bytes and report findings.
 - **Parsers** parse one structure at an offset into a field tree.
-- **Codecs** decode and encode a block: a compression or an encoding such
-  as base64.
+- **Codecs** decode and encode a block: a compression or an encoding the
+  built-in ones (base32, base64, hex, sixbit, ais6 and the decompressors)
+  do not cover.
 - **Actions** are commands you run from the command palette.
 - **The data API** (`theviewer.api`): read and edit the document, and call
   any method, from actions, handlers and methods.
@@ -614,7 +615,7 @@ What happens:
 
 | File | Registers | Shows |
 | --- | --- | --- |
-| `base64.lua` | the encoding codec `base64` | `detect` on a run of base64 characters, `decode` with `consumed`, `encode` |
+| `base64.lua` | the encoding codec `base64` | `detect` on a run of base64 characters, `decode` with `consumed`, `encode`; base64 is built in now, so it is a model to copy rather than a codec you need, and the built-in one decodes by that id |
 | `xor_key.lua` | the encoding codec `xor-55` | a codec that is its own inverse and is reached only through Probe |
 | `ntp_timestamps.lua` | the detector `ntp-timestamps` | strided numeric runs, confidence, dates in Lua |
 | `tlv.lua` | the parser `tlv` | `looks_like` against `parse`, nested field trees |

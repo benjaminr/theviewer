@@ -224,6 +224,11 @@ a crib revealed puts them in the XOR tab's key.
   and works out the CRC's width, polynomial, initial value, reflection and
   final XOR, naming the standard algorithm when there is one.
 
+Through the API, `checksums.verify` checks the checksum stored in each
+record (a packet set's packets or fixed-length records) against a model,
+such as `CRC-16/XMODEM` or a solved CRC, and lists the records that fail;
+`checksums.compute` computes one over a span.
+
 ### Learn
 
 Learns a new format from a few samples, and fuzzy-matches files and shared
@@ -278,9 +283,10 @@ of those clusters other files now use).
 
 ### Diff
 
-Compares with another file (*Tools › Compare with file…*), finding
-inserted and deleted bytes rather than only changed ones, and scrolls both
-together.
+Compares with another file (*Tools › Compare with file…*), or with
+another open sheet (*Compare with active* in the
+[tree of sheets](worksheets.md#the-tree-of-sheets)), finding inserted and
+deleted bytes rather than only changed ones, and scrolls both together.
 
 ### Compare
 
