@@ -300,7 +300,7 @@ pub enum PatternPlace {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CreateParams {
-    /// Document id, path or "current" (the default).
+    /// Document id, path or "current" (left out: the caller's focus).
     #[serde(default)]
     pub doc: Option<String>,
     /// Where the packets come from.
@@ -768,7 +768,7 @@ pub struct HttpBodies {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct FindCapturesParams {
-    /// Document id, path or "current" (the default).
+    /// Document id, path or "current" (left out: the caller's focus).
     #[serde(default)]
     pub doc: Option<String>,
     /// First offset looked in (0 by default).
@@ -827,7 +827,7 @@ pub struct RefreshParams {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SpanParams {
-    /// Document id, path or "current" (the default).
+    /// Document id, path or "current" (left out: the caller's focus).
     #[serde(default)]
     pub doc: Option<String>,
     /// First offset (0 by default).

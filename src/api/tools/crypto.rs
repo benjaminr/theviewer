@@ -63,7 +63,7 @@ pub const MAX_CANDIDATES: usize = 12;
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ScanConstantsParams {
-    /// Document id, path or "current" (the default).
+    /// Document id, path or "current" (left out: the caller's focus).
     #[serde(default)]
     pub doc: Option<String>,
 }
@@ -72,7 +72,7 @@ pub struct ScanConstantsParams {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CryptoSpanParams {
-    /// Document id, path or "current" (the default).
+    /// Document id, path or "current" (left out: the caller's focus).
     #[serde(default)]
     pub doc: Option<String>,
     /// First offset searched (0 by default).
@@ -87,7 +87,7 @@ pub struct CryptoSpanParams {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AttackParams {
-    /// Document id, path or "current" (the default).
+    /// Document id, path or "current" (left out: the caller's focus).
     #[serde(default)]
     pub doc: Option<String>,
     /// First offset of the suspect bytes (0 by default).
@@ -310,7 +310,7 @@ pub struct CipherDecodes {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct DecryptParams {
-    /// Document id, path or "current" (the default).
+    /// Document id, path or "current" (left out: the caller's focus).
     #[serde(default)]
     pub doc: Option<String>,
     /// First offset of the ciphertext (0 by default).
@@ -350,7 +350,7 @@ pub struct DecryptParams {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct OpenDecryptedParams {
-    /// Document id, path or "current" (the default): the parent.
+    /// Document id, path or "current" (left out: the caller's focus): the parent.
     #[serde(default)]
     pub doc: Option<String>,
     /// First offset of the ciphertext (0 by default).
@@ -535,7 +535,7 @@ pub fn open_decrypted(workspace: &mut dyn Workspace, caller: &Caller, params: Op
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ApplyParams {
-    /// Document id, path or "current" (the default); with a candidate, the
+    /// Document id, path or "current" (left out: the caller's focus); with a candidate, the
     /// document its attack read.
     #[serde(default)]
     pub doc: Option<String>,

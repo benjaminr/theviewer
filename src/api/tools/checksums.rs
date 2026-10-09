@@ -46,7 +46,7 @@ pub const SOLVE_LIMIT: usize = crate::api::MAX_CALL_BYTES;
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct DigestsParams {
-    /// Document id, path or "current" (the default).
+    /// Document id, path or "current" (left out: the caller's focus).
     #[serde(default)]
     pub doc: Option<String>,
     /// First offset digested (0 by default).
@@ -82,7 +82,7 @@ pub struct DigestsResult {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct FindStoredParams {
-    /// Document id, path or "current" (the default).
+    /// Document id, path or "current" (left out: the caller's focus).
     #[serde(default)]
     pub doc: Option<String>,
     /// First offset searched (0 by default).
@@ -168,7 +168,7 @@ impl CrcOrder {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SolveCrcParams {
-    /// Document id, path or "current" (the default).
+    /// Document id, path or "current" (left out: the caller's focus).
     #[serde(default)]
     pub doc: Option<String>,
     /// Document offset of the first record.
@@ -549,7 +549,7 @@ pub struct VerifyResult {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ComputeParams {
-    /// Document id, path or "current" (the default).
+    /// Document id, path or "current" (left out: the caller's focus).
     #[serde(default)]
     pub doc: Option<String>,
     /// First offset covered (0 by default).

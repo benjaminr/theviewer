@@ -187,8 +187,8 @@ Field tables nest:
 
 ```lua
 theviewer.register_codec{
-  id = "base64",
-  name = "Base64 text",
+  id = "base64-lua",
+  name = "Base64 text (plugin example)",
   kind = "encoding",                                             -- or "compression"; encoding when omitted
   detect = function(window) return ... end,                      -- required
   decode = function(window, max_out) return data, consumed end,  -- required
@@ -615,7 +615,7 @@ What happens:
 
 | File | Registers | Shows |
 | --- | --- | --- |
-| `base64.lua` | the encoding codec `base64` | `detect` on a run of base64 characters, `decode` with `consumed`, `encode`; base64 is built in now, so it is a model to copy rather than a codec you need, and the built-in one decodes by that id |
+| `base64.lua` | the encoding codec `base64-lua` | `detect` on a run of base64 characters, `decode` with `consumed`, `encode`; base64 is built in (`base64`), so this is a model to copy, under an id of its own so it does not shadow the built-in codec |
 | `xor_key.lua` | the encoding codec `xor-55` | a codec that is its own inverse and is reached only through Probe |
 | `ntp_timestamps.lua` | the detector `ntp-timestamps` | strided numeric runs, confidence, dates in Lua |
 | `tlv.lua` | the parser `tlv` | `looks_like` against `parse`, nested field trees |

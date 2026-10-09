@@ -58,7 +58,7 @@ pub(super) fn describe_call(_workspace: &mut dyn Workspace, method: &str, params
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct DocParams {
-    /// Document id, path or "current" (the default).
+    /// Document id, path or "current" (left out: the caller's focus).
     #[serde(default)]
     pub doc: Option<String>,
 }
@@ -89,7 +89,7 @@ pub struct CursorResult {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SetSelectionParams {
-    /// Document id, path or "current" (the default).
+    /// Document id, path or "current" (left out: the caller's focus).
     #[serde(default)]
     pub doc: Option<String>,
     /// What to select: {"range": [start, len]}, {"ranges": [[start, len], …]}
@@ -107,7 +107,7 @@ pub struct SetSelectionParams {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SetCursorParams {
-    /// Document id, path or "current" (the default).
+    /// Document id, path or "current" (left out: the caller's focus).
     #[serde(default)]
     pub doc: Option<String>,
     /// Offset to put the cursor at; the document's length is just past the last byte.

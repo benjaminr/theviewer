@@ -55,7 +55,7 @@ pub(super) fn examples() -> Vec<(&'static str, serde_json::Value)> {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct UnpackParams {
-    /// Document id, path or "current" (the default).
+    /// Document id, path or "current" (left out: the caller's focus).
     #[serde(default)]
     pub doc: Option<String>,
     /// Password for ZipCrypto-encrypted zip entries. Without one they are

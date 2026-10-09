@@ -40,7 +40,7 @@ pub(super) fn examples() -> Vec<(&'static str, serde_json::Value)> {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct FilesystemsParams {
-    /// Document id, path or "current" (the default).
+    /// Document id, path or "current" (left out: the caller's focus).
     #[serde(default)]
     pub doc: Option<String>,
 }
@@ -49,7 +49,7 @@ pub struct FilesystemsParams {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct OpenEntryParams {
-    /// Document id, path or "current" (the default): the parent.
+    /// Document id, path or "current" (left out: the caller's focus): the parent.
     #[serde(default)]
     pub doc: Option<String>,
     /// Document offset of the filesystem image, as forensics.find_filesystems gave it.
@@ -66,7 +66,7 @@ pub struct OpenEntryParams {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ClassifyBlocksParams {
-    /// Document id, path or "current" (the default).
+    /// Document id, path or "current" (left out: the caller's focus).
     #[serde(default)]
     pub doc: Option<String>,
     /// Bytes per block, at least 256 (4096 by default).

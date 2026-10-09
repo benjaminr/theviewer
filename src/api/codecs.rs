@@ -97,7 +97,7 @@ pub struct CodecList {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct DetectParams {
-    /// Document id, path or "current" (the default).
+    /// Document id, path or "current" (left out: the caller's focus).
     #[serde(default)]
     pub doc: Option<String>,
     /// Offset where the encoded data would start.
@@ -108,7 +108,7 @@ pub struct DetectParams {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct DecodeParams {
-    /// Document id, path or "current" (the default).
+    /// Document id, path or "current" (left out: the caller's focus).
     #[serde(default)]
     pub doc: Option<String>,
     /// Offset of the encoded data.
@@ -158,7 +158,7 @@ pub struct DecodeResult {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ProbeParams {
-    /// Document id, path or "current" (the default).
+    /// Document id, path or "current" (left out: the caller's focus).
     #[serde(default)]
     pub doc: Option<String>,
     /// Offset where compressed data might start.
@@ -349,7 +349,7 @@ const OPEN_DECODED_MAX: usize = 64 * 1024 * 1024;
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct OpenDecodedParams {
-    /// Document id, path or "current" (the default): the parent.
+    /// Document id, path or "current" (left out: the caller's focus): the parent.
     #[serde(default)]
     pub doc: Option<String>,
     /// Offset where the compressed stream starts.

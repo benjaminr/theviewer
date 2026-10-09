@@ -425,7 +425,7 @@ One document's id, name, path, length, version and whether it has unsaved edits.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `doc` | string | no | Document id, path or "current" (the default). |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus). |
 
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -550,7 +550,7 @@ Save a document over its file, or to a path, with every edit made so far.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `doc` | string | no | Document id, path or "current" (the default). |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus). |
 | `path` | string | no | Where to save; over the document's own file when omitted. |
 
 | Result field | Type | Required | Description |
@@ -580,7 +580,7 @@ Open bytes of a document (a span, several ranges one after another, bytes given,
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `data` | string | no | The bytes themselves, written as `encoding` says, when they are not in the document as they are (a reassembled stream, say). |
-| `doc` | string | no | Document id, path or "current" (the default): the parent. |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus): the parent. |
 | `encoding` | `"hex"` \| `"base64"` \| `"text"` | no | How `data` is written: hex (the default), base64 or text. |
 | `len` | integer | no | Bytes to open from `start`; to the end of the document when omitted. |
 | `name` | string | no | What to call the new document; the parent's name and the span when omitted. |
@@ -616,7 +616,7 @@ Write a span of a document (or several ranges one after another) to a file, or w
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `decompress` | boolean | no | Write what the first codec that decodes at `start` makes of the bytes, instead of the bytes. |
-| `doc` | string | no | Document id, path or "current" (the default). |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus). |
 | `len` | integer | no | Bytes to write, or to read the compressed stream from (at most 64 MiB); to the end of the document when omitted. |
 | `path` | string | yes | The file to write. |
 | `ranges` | array of pair | no | Several spans as [start, len], written one after another (a selection of several ranges); in place of `start` and `len`. |
@@ -655,7 +655,7 @@ Read a span of bytes, as hex by default, or as base64 or text; a span running pa
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `doc` | string | no | Document id, path or "current" (the default). |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus). |
 | `encoding` | `"hex"` \| `"base64"` \| `"text"` | no | How to write the bytes: hex (the default), base64 or text. |
 | `len` | integer | no | Bytes to read, at most 16 MiB; to the end of the document when omitted, or when the document ends sooner. |
 | `start` | integer | yes | Offset of the first byte. |
@@ -679,7 +679,7 @@ A classic hex dump of a span, 16 bytes per line with an ASCII column, at most 1 
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `doc` | string | no | Document id, path or "current" (the default). |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus). |
 | `len` | integer | no | Bytes to show, at most 1 MiB; to the end of the document when omitted. |
 | `start` | integer | yes | Offset of the first byte. |
 
@@ -702,7 +702,7 @@ Overwrite bytes in place with new ones, as one undoable step; the document keeps
 | --- | --- | --- | --- |
 | `coalesce` | boolean | no | Join the caller's previous step when that step wrote or inserted just the one byte at `start`, so a byte typed as two hex digits undoes as one step. |
 | `data` | string | yes | The new bytes, written as `encoding` says; they must fit inside the document. |
-| `doc` | string | no | Document id, path or "current" (the default). |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus). |
 | `encoding` | `"hex"` \| `"base64"` \| `"text"` | no | How `data` is written: hex (the default), base64 or text. |
 | `expect_version` | integer | no | Fail with version_conflict, changing nothing, unless the document is at this version. |
 | `start` | integer | yes | Offset of the first byte to overwrite. |
@@ -728,7 +728,7 @@ Insert bytes at an offset, as one undoable step; the bytes after it move along.
 | `at` | integer | yes | Offset to insert at; the document's length appends. Also taken as `start`, as the other byte methods call it. |
 | `coalesce` | boolean | no | Join the caller's previous step when that step wrote or inserted just the one byte at `at`. |
 | `data` | string | yes | The bytes to insert, written as `encoding` says. |
-| `doc` | string | no | Document id, path or "current" (the default). |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus). |
 | `encoding` | `"hex"` \| `"base64"` \| `"text"` | no | How `data` is written: hex (the default), base64 or text. |
 | `expect_version` | integer | no | Fail with version_conflict, changing nothing, unless the document is at this version. |
 
@@ -750,7 +750,7 @@ Remove a span of bytes, as one undoable step; the bytes after it move back.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `doc` | string | no | Document id, path or "current" (the default). |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus). |
 | `expect_version` | integer | no | Fail with version_conflict, changing nothing, unless the document is at this version. |
 | `len` | integer | yes | Bytes to remove. |
 | `start` | integer | yes | Offset of the first byte to remove. |
@@ -774,7 +774,7 @@ Replace a span of bytes with new bytes of any length, as one undoable step.
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `data` | string | yes | The bytes to put in their place, written as `encoding` says. |
-| `doc` | string | no | Document id, path or "current" (the default). |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus). |
 | `encoding` | `"hex"` \| `"base64"` \| `"text"` | no | How `data` is written: hex (the default), base64 or text. |
 | `expect_version` | integer | no | Fail with version_conflict, changing nothing, unless the document is at this version. |
 | `len` | integer | yes | Bytes to take out; the new bytes may be longer or shorter. |
@@ -798,7 +798,7 @@ Cut ranges out and put their bytes, one after another, at an offset counted befo
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `doc` | string | no | Document id, path or "current" (the default). |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus). |
 | `expect_version` | integer | no | Fail with version_conflict, changing nothing, unless the document is at this version. |
 | `ranges` | array of pair | yes | The ranges to move, as [start, len]; their bytes land one after another, in document order. |
 | `to` | integer | yes | Where the bytes land, as an offset counted before they are cut out; an offset inside a range lands them where that range began. |
@@ -823,7 +823,7 @@ Read a span of bits, most or least significant bit of each byte first, as a stri
 | --- | --- | --- | --- |
 | `bit_len` | integer | yes | Bits to read, at most 1048576. |
 | `bit_start` | integer | yes | Bit offset of the first bit: byte offset × 8 plus the bit within the byte, in `order`. |
-| `doc` | string | no | Document id, path or "current" (the default). |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus). |
 | `order` | `"msb"` \| `"lsb"` | no | Which bit of each byte comes first: "msb" (the default) or "lsb". |
 
 | Result field | Type | Required | Description |
@@ -847,7 +847,7 @@ Overwrite bits from any bit offset, most or least significant bit of each byte f
 | --- | --- | --- | --- |
 | `bit_start` | integer | yes | Bit offset of the first bit: byte offset × 8 plus the bit within the byte, in `order`. |
 | `bits` | string | yes | The new bits as "0" and "1", first bit first; spaces and underscores are ignored. |
-| `doc` | string | no | Document id, path or "current" (the default). |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus). |
 | `expect_version` | integer | no | Fail with version_conflict, changing nothing, unless the document is at this version. |
 | `order` | `"msb"` \| `"lsb"` | no | Which bit of each byte comes first: "msb" (the default) or "lsb". |
 
@@ -869,7 +869,7 @@ Start a search of a span for bit periods (frames that are not a whole number of 
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `doc` | string | no | Document id, path or "current" (the default). |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus). |
 | `len` | integer | no | Bytes searched, at most 256 KiB and a quarter of max_period; as many as that from start when omitted. |
 | `max_period` | integer | no | Longest period looked for, 8 to 8192 bits (1024 by default). |
 | `order` | `"msb"` \| `"lsb"` | no | Which bit of each byte comes first: "msb" (the default) or "lsb". |
@@ -890,7 +890,7 @@ Start splitting a span (at most 1 MiB) into its eight bit planes as a job, scori
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `doc` | string | no | Document id, path or "current" (the default). |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus). |
 | `len` | integer | no | Bytes split, at most 1 MiB; to the end of the document (or 1 MiB) when omitted. |
 | `row_width` | integer | yes | Bytes per row, 1 to 1024, for scoring each plane by its left and upper neighbours. |
 | `start` | integer | no | First offset split (0 by default). |
@@ -913,7 +913,7 @@ Open one bit plane of a span (at most 1 MiB) as a derived document: bit k of eve
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `bit` | integer | yes | Which bit, 0 (least significant) to 7. |
-| `doc` | string | no | Document id, path or "current" (the default): the parent. |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus): the parent. |
 | `len` | integer | no | Bytes, at most 1 MiB; to the end of the document (or 1 MiB) when omitted. |
 | `output` | Output | no | Where the plane goes: "new" (the default; {"new": {"label": …}} labels the sheet) or "return". |
 | `start` | integer | no | First offset (0 by default). |
@@ -943,7 +943,7 @@ Start trying Manchester (both conventions), differential Manchester, 8b/10b and 
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `doc` | string | no | Document id, path or "current" (the default). |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus). |
 | `len` | integer | no | Bytes decoded, at most 64 KiB; to the end of the document (or 64 KiB) when omitted. |
 | `order` | `"msb"` \| `"lsb"` | no | Which bit of each byte comes first: "msb" (the default) or "lsb". |
 | `start` | integer | no | First offset decoded (0 by default). |
@@ -967,7 +967,7 @@ Decode a span (at most 64 KiB) from a line code at a bit offset and open the dec
 | --- | --- | --- | --- |
 | `bit_offset` | integer | no | Bit to start at, 0 to 63 (0 by default). |
 | `code` | `"differential_manchester"` \| `"nrzi"` \| `"8b10b"` \| `"gray_byte"` \| `"gray_word"` \| `"packed_bcd"` \| `"manchester_ieee"` \| `"manchester_thomas"` | yes | A line code, as the Bits tool decodes it. |
-| `doc` | string | no | Document id, path or "current" (the default): the parent. |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus): the parent. |
 | `len` | integer | no | Bytes decoded, at most 64 KiB; to the end of the document (or 64 KiB) when omitted. |
 | `order` | `"msb"` \| `"lsb"` | no | Which bit of each byte comes first: "msb" (the default) or "lsb". |
 | `output` | Output | no | Where the decoded bytes go: "new" (the default; {"new": {"label": …}} labels the sheet) or "return". |
@@ -990,7 +990,7 @@ Rank what a field of records holds (integers, floats, fixed point, timestamps, e
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `doc` | string | no | Document id, path or "current" (the default). |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus). |
 | `offset` | integer | yes | Offset of the field within each record. |
 | `origin` | integer | yes | Document offset of the first record. |
 | `stride` | integer | yes | Bytes per record. |
@@ -1011,7 +1011,7 @@ Start a search of a span (at most 256 KiB, one message or a run of records) for 
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `doc` | string | no | Document id, path or "current" (the default). |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus). |
 | `len` | integer | no | Bytes in the region, at most 256 KiB; to the end of the document (or 256 KiB) when omitted. |
 | `start` | integer | no | First offset of the region (0 by default). |
 
@@ -1032,7 +1032,7 @@ Apply an operation (XOR, invert, shift bits, swap byte order, number, compress, 
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `doc` | string | no | Document id, path or "current" (the default). |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus). |
 | `encoding` | `"hex"` \| `"base64"` \| `"text"` | no | With output "return", how the bytes are written: hex (the default), base64 or text. |
 | `expect_version` | integer | no | Fail with version_conflict, changing nothing, unless the document is at this version. |
 | `operation` | Operation | yes | What to do to each selected range, such as {"op": "xor", "key": "5a"}. |
@@ -1058,7 +1058,7 @@ What transform.apply would write into each range of a selection, without changin
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `doc` | string | no | Document id, path or "current" (the default). |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus). |
 | `encoding` | `"hex"` \| `"base64"` \| `"text"` | no | How to write the new bytes: hex (the default), base64 or text. |
 | `operation` | Operation | yes | What to do to each selected range. |
 | `selection` | Selection | no | What to change; the document's selection, or the byte at the cursor, when omitted. |
@@ -1079,7 +1079,7 @@ Undo the document's last step, whoever made it, and put the cursor where it was.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `doc` | string | no | Document id, path or "current" (the default). |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus). |
 | `expect_version` | integer | no | Fail with version_conflict, changing nothing, unless the document is at this version. |
 
 | Result field | Type | Required | Description |
@@ -1100,7 +1100,7 @@ Redo the last step undone, and put the cursor where it was.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `doc` | string | no | Document id, path or "current" (the default). |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus). |
 | `expect_version` | integer | no | Fail with version_conflict, changing nothing, unless the document is at this version. |
 
 | Result field | Type | Required | Description |
@@ -1122,7 +1122,7 @@ Run several calls on one document as one undoable step; when one fails, every ch
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `calls` | array of TransactionCall | yes | The calls, run in order: edits, selection changes and reads. |
-| `doc` | string | no | Document id, path or "current" (the default); every call must be about this document. |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus); every call must be about this document. |
 | `expect_version` | integer | no | Fail with version_conflict, changing nothing, unless the document is at this version. |
 | `label` | string | no | What the step is called in the undo history; "N changes" when omitted. |
 
@@ -1487,7 +1487,7 @@ The next (or previous) occurrence of hex bytes, text, UTF-16 text or an integer 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `backwards` | boolean | no | Search towards the start of the document. |
-| `doc` | string | no | Document id, path or "current" (the default). |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus). |
 | `from` | integer | no | Offset to search from: the first match at or after it, or before it when searching backwards. |
 | `little_endian` | boolean | no | For integers: store them little-endian (the default) or big-endian. |
 | `mode` | `"hex"` \| `"text"` \| `"utf16"` \| `"integer"` | no | How to read the query: "hex", "text" (the default), "utf16" (little-endian) or "integer". |
@@ -1508,7 +1508,7 @@ Every occurrence of hex bytes, text, UTF-16 text or an integer in the document, 
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `doc` | string | no | Document id, path or "current" (the default). |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus). |
 | `limit` | integer | no | Most matches to return (100 by default). |
 | `little_endian` | boolean | no | For integers: store them little-endian (the default) or big-endian. |
 | `mode` | `"hex"` \| `"text"` \| `"utf16"` \| `"integer"` | no | How to read the query: "hex", "text" (the default), "utf16" (little-endian) or "integer". |
@@ -1531,7 +1531,7 @@ How many times hex bytes, text, UTF-16 text or an integer occur in the document,
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `cap` | integer | no | Stop counting here (100000 by default), so huge files stay quick. |
-| `doc` | string | no | Document id, path or "current" (the default). |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus). |
 | `little_endian` | boolean | no | For integers: store them little-endian (the default) or big-endian. |
 | `mode` | `"hex"` \| `"text"` \| `"utf16"` \| `"integer"` | no | How to read the query: "hex", "text" (the default), "utf16" (little-endian) or "integer". |
 | `query` | string | yes | Hex bytes such as "89 50 4E 47", text, or a decimal or 0x hex integer. |
@@ -1552,7 +1552,7 @@ Read the bytes at an offset as integers, floats, fixed-point numbers and timesta
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `at` | integer | yes | Offset of the number's first byte. |
-| `doc` | string | no | Document id, path or "current" (the default). |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus). |
 | `kind` | `"unsigned"` \| `"signed"` \| `"float"` \| `"unix_seconds"` \| `"unix_millis"` \| `"fixed_point"` \| `"file_time"` \| `"gps_seconds"` \| `"hfs_seconds"` \| `"dos_date_time"` | no | Only this kind of number, such as "unsigned", "float" or "unix_seconds". |
 | `little_endian` | boolean | no | Only this byte order. |
 | `width` | integer | no | Only this width in bytes: 1, 2, 4 or 8. Every width that fits when omitted. |
@@ -1572,7 +1572,7 @@ What is selected in a document: one range, several ranges or a column of every r
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `doc` | string | no | Document id, path or "current" (the default). |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus). |
 
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -1592,7 +1592,7 @@ Select one range, several ranges or a column of every record in a document, or n
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `cursor` | integer | no | Where the cursor goes: the start or end of one of the selected ranges, which is then the range Shift extends from its other end (a column's cursor is at its end); the end of the last range when omitted. With nothing selected, any offset; the cursor stays when omitted. |
-| `doc` | string | no | Document id, path or "current" (the default). |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus). |
 | `selection` | Selection | no | What to select: {"range": [start, len]}, {"ranges": [[start, len], …]} or {"columns": {…}}; null or omitted selects nothing. |
 
 | Result field | Type | Required | Description |
@@ -1612,7 +1612,7 @@ The cursor's offset in a document.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `doc` | string | no | Document id, path or "current" (the default). |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus). |
 
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -1629,7 +1629,7 @@ Move the cursor to an offset, selecting nothing.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `doc` | string | no | Document id, path or "current" (the default). |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus). |
 | `offset` | integer | yes | Offset to put the cursor at; the document's length is just past the last byte. |
 
 | Result field | Type | Required | Description |
@@ -1648,7 +1648,7 @@ Run the detectors over a span and list what they recognise (signatures, compress
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `categories` | array of `"signature"` \| `"executable"` \| `"image"` \| `"archive"` \| `"document"` \| `"filesystem"` \| `"compressed"` \| `"encoding"` \| `"protocol"` \| `"structure"` \| `"timestamp"` \| `"counter"` \| `"offset_table"` \| `"float_array"` \| `"text"` \| `"high_entropy"` \| `"padding"` \| `"custom"` | no | Only findings of these categories, such as "compressed" or "timestamp". |
-| `doc` | string | no | Document id, path or "current" (the default). |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus). |
 | `len` | integer | no | Bytes scanned, at most 16 MiB; to the end of the document when omitted. |
 | `limit` | integer | no | Most findings to return (100 by default). |
 | `min_confidence` | number | no | Only findings at least this confident, 0 to 1 (0.5 by default). |
@@ -1671,7 +1671,7 @@ Publish findings about a document on the bus as the caller's, for the views, Fin
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `doc` | string | no | Document id, path or "current" (the default). |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus). |
 | `findings` | array of Finding | yes | The findings, in document offsets; they replace those the caller published before under the same key. |
 | `key` | string | no | Tells apart several sets of findings one caller keeps (empty by default). |
 
@@ -1691,7 +1691,7 @@ Withdraw the findings the caller published under a key.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `doc` | string | no | Document id, path or "current" (the default). |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus). |
 | `key` | string | no | The key the findings were published under (empty by default). |
 
 | Result field | Type | Required | Description |
@@ -1711,7 +1711,7 @@ Parse the structure starting exactly at an offset (executables, images, archives
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `at` | integer | yes | Offset where the structure starts. |
-| `doc` | string | no | Document id, path or "current" (the default). |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus). |
 | `parser` | string | no | Only this parser, by id (see structure.parsers); every parser when omitted. |
 
 | Result field | Type | Required | Description |
@@ -1757,7 +1757,7 @@ Apply a binary template, by name or as source text, at an offset and return its 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `at` | integer | no | Offset the template's root starts at (0 by default). |
-| `doc` | string | no | Document id, path or "current" (the default). |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus). |
 | `limit` | integer | no | Most records to return (100 by default). |
 | `name` | string | no | A template from templates.list. |
 | `next` | string | no | The `next` cursor of the previous page of records. |
@@ -1783,7 +1783,7 @@ Propose a template struct from several example records, from what varies between
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `doc` | string | no | Document id, path or "current" (the default). |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus). |
 | `len` | integer | yes | Bytes of example records, several of them. |
 | `pin` | boolean | no | Also apply the struct at `start` and pin it, as templates.apply with pin does. |
 | `record_len` | integer | no | Bytes per record; guessed from what repeats when omitted. |
@@ -1805,7 +1805,7 @@ Withdraw the template pinned over a document: its records are no longer outlined
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `doc` | string | no | Document id, path or "current" (the default). |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus). |
 
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -1837,7 +1837,7 @@ The codecs whose header starts at an offset.
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `at` | integer | yes | Offset where the encoded data would start. |
-| `doc` | string | no | Document id, path or "current" (the default). |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus). |
 
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -1856,7 +1856,7 @@ Decode (decompress) a span with any codec codecs.list lists, plugins' included, 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `codec` | string | no | Codec id from codecs.list, such as "zlib", "gzip" or a plugin's "base32"; the first built-in decompressor that decodes there when omitted. |
-| `doc` | string | no | Document id, path or "current" (the default). |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus). |
 | `encoding` | `"hex"` \| `"base64"` \| `"text"` | no | How to write the output returned: hex (the default), base64 or text. |
 | `len` | integer | no | Bytes of input, at most 16 MiB returned (64 MiB to a new sheet or in place); to the end of the document when omitted. |
 | `max_output` | integer | no | Most bytes of output, at most 16 MiB returned (the default), 64 MiB to a new sheet or in place. |
@@ -1885,7 +1885,7 @@ Try every codec at the start of a span and list those that decode: the built-in 
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `doc` | string | no | Document id, path or "current" (the default). |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus). |
 | `len` | integer | no | Bytes of input, at most 16 MiB; to the end of the document when omitted. |
 | `max_output` | integer | no | Most bytes of output each decoder may produce, at most 16 MiB (the default). |
 | `start` | integer | yes | Offset where compressed data might start. |
@@ -1907,7 +1907,7 @@ Decompress the stream starting at an offset, with the first codec that decodes t
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `codec` | string | no | The codec to decode with, any codecs.list lists; the first built-in decompressor that decodes there when omitted. |
-| `doc` | string | no | Document id, path or "current" (the default): the parent. |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus): the parent. |
 | `start` | integer | yes | Offset where the compressed stream starts. |
 
 | Result field | Type | Required | Description |
@@ -1931,7 +1931,7 @@ Dissect one packet, from a span or from hex bytes, into protocol layers and fiel
 | --- | --- | --- | --- |
 | `bytes` | string | no | The packet's bytes instead of a span, written as `encoding` says. |
 | `decode_as` | `"ethernet"` \| `"raw_ip"` \| `"dns"` \| `"snmp"` \| `"ntp"` \| `"modbus_tcp"` \| `"mqtt"` \| `"tls"` \| `"dhcp"` \| `"tftp"` \| `"rtp"` \| `"rtcp"` \| `"http"` \| `"dns_over_tcp"` \| `"tpkt"` \| `"nbss"` | no | For frames of unknown format: the protocol to decode them as, such as "dns" or "modbus_tcp". |
-| `doc` | string | no | Document id, path or "current" (the default). |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus). |
 | `encoding` | `"hex"` \| `"base64"` \| `"text"` | no | How `bytes` is written: hex (the default), base64 or text. |
 | `len` | integer | no | Bytes in the packet; to the end of the document when omitted. |
 | `link` | `"ethernet"` \| `"raw_ip"` \| `"linux_sll"` \| `"linux_sll2"` \| `"bsd_loopback"` \| `"open_bsd_loopback"` \| `"ppp"` \| `"ppp_hdlc"` \| `"ieee80211"` \| `"radiotap"` \| `"unknown"` | no | What the first byte is, such as "ethernet" or "raw_ip"; "unknown" (the default) reads an IP header if one is there. |
@@ -1958,7 +1958,7 @@ Find the protocol a set of frames of unknown format is, by trying every frame de
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `doc` | string | no | Document id, path or "current" (the default). |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus). |
 | `frames` | array of FrameSpan | yes | The frames, at most 16 MiB in all; a sample of them is tried. |
 
 | Result field | Type | Required | Description |
@@ -1977,7 +1977,7 @@ Take a set of packets from a document: a capture in it, a range cut into fixed r
 | --- | --- | --- | --- |
 | `decode_as` | `"ethernet"` \| `"raw_ip"` \| `"dns"` \| `"snmp"` \| `"ntp"` \| `"modbus_tcp"` \| `"mqtt"` \| `"tls"` \| `"dhcp"` \| `"tftp"` \| `"rtp"` \| `"rtcp"` \| `"http"` \| `"dns_over_tcp"` \| `"tpkt"` \| `"nbss"` | no | The protocol frames of unknown format are decoded as; detected from a sample of them when omitted (unless `detect` is false). |
 | `detect` | boolean | no | Whether to detect the protocol of frames of unknown format when `decode_as` is not given (true by default). |
-| `doc` | string | no | Document id, path or "current" (the default). |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus). |
 | `framing` | Framing | no | For `protocol_framing`: how the range is cut into messages; found by the protocol analysis when omitted. |
 | `from` | `"capture"` \| `"split_fixed"` \| `"length_field"` \| `"pattern"` \| `"selection"` \| `"protocol_framing"` | yes | Where the packets come from. |
 | `gunzip` | boolean | no | For `capture`: the capture at `start` is compressed with gzip. It is opened decompressed as a document of its own, derived from this one, and the set is taken from there. |
@@ -2221,7 +2221,7 @@ The captures inside a span of a document (pcap, pcapng, snoop, Network Monitor o
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `doc` | string | no | Document id, path or "current" (the default). |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus). |
 | `len` | integer | no | Bytes looked in; to the end of the document when omitted, at most 128 MiB. |
 | `start` | integer | no | First offset looked in (0 by default). |
 
@@ -2301,7 +2301,7 @@ Look for a length field that cuts a span into frames, with the protocol analysis
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `doc` | string | no | Document id, path or "current" (the default). |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus). |
 | `len` | integer | no | Bytes in the span; to the end of the document when omitted. |
 | `start` | integer | no | First offset (0 by default). |
 
@@ -2586,7 +2586,7 @@ Map the whole document: a summary of what it is, its regions with offsets, likel
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `doc` | string | no | Document id, path or "current" (the default). |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus). |
 | `max_findings` | integer | no | Most findings to include (all of them, up to 2000, by default). |
 
 | Result field | Type | Required | Description |
@@ -2611,7 +2611,7 @@ Start analysis.overview as a background job and return its id at once; the repor
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `doc` | string | no | Document id, path or "current" (the default). |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus). |
 | `max_findings` | integer | no | Most findings to include (all of them, up to 2000, by default). |
 
 | Result field | Type | Required | Description |
@@ -2629,7 +2629,7 @@ Measure a span: entropy, chi-square, serial correlation, printable, zero and hig
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `doc` | string | no | Document id, path or "current" (the default). |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus). |
 | `len` | integer | no | Bytes in the span; to the end of the document when omitted. |
 | `start` | integer | no | First offset (0 by default). |
 
@@ -2659,7 +2659,7 @@ Split the document into regions of one kind (text, tables, code, compressed, ran
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `doc` | string | no | Document id, path or "current" (the default). |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus). |
 | `limit` | integer | no | Most segments to return (100 by default). |
 | `next` | string | no | The `next` cursor of the previous page. |
 
@@ -2680,7 +2680,7 @@ Compress a span with several codecs and report the ratios, with a verdict: encry
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `doc` | string | no | Document id, path or "current" (the default). |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus). |
 | `len` | integer | no | Bytes in the span; to the end of the document when omitted. |
 | `start` | integer | no | First offset (0 by default). |
 
@@ -2702,7 +2702,7 @@ Identify the character encoding of a span of text, with previews and the likely 
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `doc` | string | no | Document id, path or "current" (the default). |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus). |
 | `len` | integer | no | Bytes in the span; to the end of the document when omitted. |
 | `start` | integer | no | First offset (0 by default). |
 
@@ -2722,7 +2722,7 @@ Test whether a span is machine code, and for which processor, by disassembling s
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `doc` | string | no | Document id, path or "current" (the default). |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus). |
 | `len` | integer | no | Bytes in the span; to the end of the document when omitted. |
 | `start` | integer | no | First offset (0 by default). |
 
@@ -2743,7 +2743,7 @@ Start a scan of a window of bytes for repeating periods (record widths) as a bac
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `doc` | string | no | Document id, path or "current" (the default). |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus). |
 | `len` | integer | no | Bytes scanned (192 KiB by default, at most 16 MiB). |
 | `max_period` | integer | no | Longest period looked for, 2 to 16384 (4096 by default). |
 | `start` | integer | no | First offset of the window scanned (0 by default; the window uses the view's origin). |
@@ -2850,7 +2850,7 @@ What the tools have learnt about a document and keep: the latest fact per topic,
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `doc` | string | no | Document id, path or "current" (the default). |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus). |
 | `producer` | string | no | Only facts from this producer, such as "tool:period-scan". |
 | `span` | SpanParam | no | Only facts whose span overlaps these bytes. |
 | `topic` | string | no | Only facts on this topic, such as "record_width.estimated". |
@@ -2951,7 +2951,7 @@ Start the Statistics tool's measure of a span (at most 64 MiB) as a job: the ent
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `doc` | string | no | Document id, path or "current" (the default). |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus). |
 | `len` | integer | no | Bytes measured, at most 64 MiB; to the end of the document (or 64 MiB) when omitted. |
 | `start` | integer | no | First offset measured (0 by default). |
 
@@ -2970,7 +2970,7 @@ Start the Strings tool's search of a span (at most 64 MiB) for runs of text at l
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `doc` | string | no | Document id, path or "current" (the default). |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus). |
 | `encodings` | array of `"ascii"` \| `"utf8"` \| `"utf16le"` \| `"utf16be"` | no | The encodings looked for (ascii, utf8 and utf16le by default). |
 | `len` | integer | no | Bytes searched, at most 64 MiB; to the end of the document (or 64 MiB) when omitted. |
 | `min_chars` | integer | no | Fewest characters in a string, 2 to 256 (6 by default). |
@@ -2991,7 +2991,7 @@ Recover single-byte and repeating XOR keys for a span (at most 1 MiB) by letter 
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `doc` | string | no | Document id, path or "current" (the default). |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus). |
 | `len` | integer | no | Bytes searched, at most 1 MiB; to the end of the document (or 1 MiB) when omitted. |
 | `max_key` | integer | no | Longest key looked for, 1 to 256 bytes (32 by default). |
 | `start` | integer | no | First offset of the suspect bytes (0 by default). |
@@ -3013,7 +3013,7 @@ The digests of a span (at most 64 MiB): CRC-32, Adler-32, MD5, SHA-1, SHA-256, t
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `doc` | string | no | Document id, path or "current" (the default). |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus). |
 | `len` | integer | no | Bytes digested, at most 64 MiB; to the end of the document (or 64 MiB) when omitted. |
 | `start` | integer | no | First offset digested (0 by default). |
 
@@ -3044,7 +3044,7 @@ Find a CRC, Adler or sum stored in a span (at most 64 MiB) that covers part of i
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `boundaries` | array of integer | no | Document offsets where known fields start or end (the window passes those of the findings in the span), also tested as stored values and as the edges of covered ranges. |
-| `doc` | string | no | Document id, path or "current" (the default). |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus). |
 | `len` | integer | no | Bytes searched, at most 64 MiB; to the end of the document (or 64 MiB) when omitted. |
 | `start` | integer | no | First offset searched (0 by default). |
 
@@ -3065,7 +3065,7 @@ Start the CRC solver on records that each carry a stored CRC (fixed-length recor
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `count` | integer | no | Records, at least 2; the first 256 are solved. |
-| `doc` | string | no | Document id, path or "current" (the default). |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus). |
 | `filter` | string | no | With `set`, a display filter choosing its packets. |
 | `offset` | integer | no | Offset of the CRC within each record, covering the bytes before it; the last bytes of each record when omitted. |
 | `order` | `"big"` \| `"little"` \| `"either"` | no | Byte order of the stored CRC (either, by default). |
@@ -3114,7 +3114,7 @@ Compute a checksum of a span with a model (an algorithm by name, or a CRC's para
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `doc` | string | no | Document id, path or "current" (the default). |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus). |
 | `len` | integer | no | Bytes covered; to the end of the document (or 64 MiB) when omitted. |
 | `model` | ChecksumModel | yes | The checksum; its `skip` and `offset` are not used. |
 | `start` | integer | no | First offset covered (0 by default). |
@@ -3138,7 +3138,7 @@ Start a comparison of a document with another file (path) or another open docume
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `doc` | string | no | Document id, path or "current" (the default). |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus). |
 | `other` | string | no | An open document to compare it with, by id or path, such as a sheet derived from it; give this or `path`. |
 | `path` | string | no | The file to compare it with; give this or `other`. |
 
@@ -3174,7 +3174,7 @@ Start a scan of the whole document (an edited one's first 256 MiB) for well-know
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `doc` | string | no | Document id, path or "current" (the default). |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus). |
 
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -3191,7 +3191,7 @@ Start a search of a span (at most 16 MiB) for random-looking 8- and 16-byte bloc
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `doc` | string | no | Document id, path or "current" (the default). |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus). |
 | `len` | integer | no | Bytes searched; to the end of the document, or the search's limit, when omitted. |
 | `start` | integer | no | First offset searched (0 by default). |
 
@@ -3210,7 +3210,7 @@ Start a search of a span (the whole document by default, at most 64 MiB) for PEM
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `doc` | string | no | Document id, path or "current" (the default). |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus). |
 | `len` | integer | no | Bytes searched; to the end of the document, or the search's limit, when omitted. |
 | `start` | integer | no | First offset searched (0 by default). |
 
@@ -3230,7 +3230,7 @@ Start attacks on simple ciphers over a span (at most 1 MiB): rolling XOR, XOR wi
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `crib` | string | no | Known plaintext to drag across the data, as text with \xHH escapes, such as "PK\x03\x04". |
-| `doc` | string | no | Document id, path or "current" (the default). |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus). |
 | `len` | integer | no | Bytes decoded, at most 1 MiB; to the end of the document (or 1 MiB) when omitted. |
 | `start` | integer | no | First offset of the suspect bytes (0 by default). |
 
@@ -3252,7 +3252,7 @@ Decrypt a span with AES-128, AES-192 or AES-256 in ECB, CBC or CTR mode, with a 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `alg` | `"aes-128"` \| `"aes-192"` \| `"aes-256"` | no | Which AES: "aes-128", "aes-192" or "aes-256"; by default the one the key's length is for. |
-| `doc` | string | no | Document id, path or "current" (the default). |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus). |
 | `encoding` | `"hex"` \| `"base64"` \| `"text"` | no | How to write the plaintext returned: hex (the default), base64 or text. |
 | `iv` | string | no | The IV as hex, 16 bytes, for CBC; for CTR, the initial counter block (nonce and counter), counted up big-endian. |
 | `key` | string | no | The key, as hex: 16, 24 or 32 bytes. Give this or `keys`. |
@@ -3293,7 +3293,7 @@ Decrypt a span as crypto.decrypt does and open the plaintext as a document deriv
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `alg` | `"aes-128"` \| `"aes-192"` \| `"aes-256"` | no | Which AES: "aes-128", "aes-192" or "aes-256"; by default the one the key's length is for. |
-| `doc` | string | no | Document id, path or "current" (the default): the parent. |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus): the parent. |
 | `iv` | string | no | The IV as hex, 16 bytes, for CBC; for CTR, the initial counter block (nonce and counter), counted up big-endian. |
 | `key` | string | yes | The key, as hex: 16, 24 or 32 bytes. |
 | `len` | integer | no | Bytes of ciphertext, at most 16 MiB, whole 16-byte blocks for ECB and CBC; to the end of the document when omitted. |
@@ -3331,7 +3331,7 @@ Undo a simple cipher over a span: a candidate crypto.attack proposed (by its job
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `candidate` | CandidateRef | no | A decode crypto.attack proposed: its job and the candidate's index in the job's result (0, the most plausible, by default). |
-| `doc` | string | no | Document id, path or "current" (the default); with a candidate, the document its attack read. |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus); with a candidate, the document its attack read. |
 | `encoding` | `"hex"` \| `"base64"` \| `"text"` | no | With output "return", how the bytes are written: hex (the default), base64 or text. |
 | `len` | integer | no | Bytes to decode; to the end of the document when omitted, or, with a candidate, the span its attack read. |
 | `operation` | Operation | no | The operation that undoes the cipher, as crypto.attack's candidates give it, such as {"op": "rolling_xor", "start": 81, "step": 5}; in place of a candidate. |
@@ -3363,7 +3363,7 @@ Start comparing a document with other files byte position by byte position, each
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `doc` | string | no | Document id, path or "current" (the default): the first file. |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus): the first file. |
 | `files` | array of CompareFileParam | yes | The other files, at most 31; the first 64 MiB of each is read. |
 | `start` | integer | no | Offset in the document that lines up with the files' starts (0 by default). |
 
@@ -3382,7 +3382,7 @@ Start a search of a document and other files for fields whose values follow a nu
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `doc` | string | no | Document id, path or "current" (the default): the first file. |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus): the first file. |
 | `files` | array of CompareFileParam | yes | The other files, at most 63. |
 | `from` | integer | no | Where the search starts, from each file's start (0 by default); 256 KiB are searched. |
 | `start` | integer | no | Offset in the document that lines up with the files' starts (0 by default). |
@@ -3403,7 +3403,7 @@ Start building the change timeline of the recording of a live source or watched 
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `doc` | string | no | Document id, path or "current" (the default). |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus). |
 
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -3420,7 +3420,7 @@ Start comparing every block of a span (at most 64 MiB) with every other, by shar
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `doc` | string | no | Document id, path or "current" (the default). |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus). |
 | `len` | integer | no | Bytes plotted, at most 64 MiB; to the end of the document (or 64 MiB) when omitted. |
 | `mode` | `"k_grams"` \| `"histogram"` | no | How blocks are compared: "k_grams" (the default) or "histogram". |
 | `start` | integer | no | First offset plotted (0 by default). |
@@ -3440,7 +3440,7 @@ Start a search of a span (at most 64 MiB) for uncompressed images, trying 1-bit,
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `doc` | string | no | Document id, path or "current" (the default). |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus). |
 | `len` | integer | no | Bytes searched, at most 64 MiB; to the end of the document (or 64 MiB) when omitted. |
 | `start` | integer | no | First offset searched (0 by default). |
 
@@ -3459,7 +3459,7 @@ Start counting every run of three bytes in a span (sampled beyond 16 MiB) as a j
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `doc` | string | no | Document id, path or "current" (the default). |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus). |
 | `highlight` | pair | no | A part of the span, as [start, len], whose trigrams are picked out from the rest. |
 | `labels` | `"nothing"` \| `"segments"` \| `"report_regions"` | no | What the points are labelled by (segments by default). |
 | `len` | integer | no | Bytes counted; to the end of the document when omitted. Beyond 16 MiB the span is sampled. |
@@ -3480,7 +3480,7 @@ Start identifying the processor of a span of headerless code (at most 64 MiB) as
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `doc` | string | no | Document id, path or "current" (the default). |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus). |
 | `len` | integer | no | Bytes read, at most 64 MiB; to the end of the document (or 64 MiB) when omitted. |
 | `start` | integer | no | First offset read (0 by default). |
 
@@ -3500,7 +3500,7 @@ Start a search for the address a firmware image is loaded at (the address of off
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `byte_order` | `"little"` \| `"big"` | no | Byte order of the pointers; both are tried when omitted. |
-| `doc` | string | no | Document id, path or "current" (the default). |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus). |
 | `min_string_len` | integer | no | Shortest string counted as a pointer target, 4 to 64 (10 by default). |
 | `step` | integer | no | Candidate bases are multiples of this, at least 0x10 (0x1000 by default). |
 | `width` | integer | no | Bits in a stored pointer: 32 (the default) or 64. |
@@ -3520,7 +3520,7 @@ Start a search of a span (the whole document by default, at most 64 MiB) for ARM
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `doc` | string | no | Document id, path or "current" (the default). |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus). |
 | `len` | integer | no | Bytes read, at most 64 MiB; to the end of the document (or 64 MiB) when omitted. |
 | `start` | integer | no | First offset read (0 by default). |
 
@@ -3539,7 +3539,7 @@ Start a search of the document (its first 256 MiB) for SquashFS, CramFS, JFFS2, 
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `doc` | string | no | Document id, path or "current" (the default). |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus). |
 
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -3558,7 +3558,7 @@ Open one file (or volume) of the filesystem image at an offset of the document a
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `doc` | string | no | Document id, path or "current" (the default): the parent. |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus): the parent. |
 | `filesystem` | integer | yes | Document offset of the filesystem image, as forensics.find_filesystems gave it. |
 | `output` | Output | no | Where the file's bytes go: "new" (the default; {"new": {"label": …}} labels the sheet), "return", or {"file": path}, which needs leave to edit. |
 | `path` | string | yes | The file's path in the image, such as "etc/passwd". |
@@ -3589,7 +3589,7 @@ Start labelling every block of the document (its first 256 MiB) as padding, text
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `block_size` | integer | no | Bytes per block, at least 256 (4096 by default). |
-| `doc` | string | no | Document id, path or "current" (the default). |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus). |
 
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -3606,7 +3606,7 @@ Start extracting the archives and compressed streams in the document (its first 
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `doc` | string | no | Document id, path or "current" (the default). |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus). |
 | `password` | string | no | Password for ZipCrypto-encrypted zip entries. Without one they are listed, marked encrypted, with no content. |
 
 | Result field | Type | Required | Description |
@@ -3704,7 +3704,7 @@ Start compressing a sample of a span with deflate, bzip2, LZ4, zstd and an order
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `doc` | string | no | Document id, path or "current" (the default). |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus). |
 | `len` | integer | yes | Bytes in the span; a sample of at most 256 KiB is compressed, slices spread along it. |
 | `start` | integer | yes | First offset of the span (0 by default). |
 
@@ -3723,7 +3723,7 @@ Start profiling the compressibility of the whole document as a job, overall and 
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `doc` | string | no | Document id, path or "current" (the default). |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus). |
 
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -3740,7 +3740,7 @@ Start a search of the document (its first 256 MiB) for raw MP3/MP2 and AAC frame
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `doc` | string | no | Document id, path or "current" (the default). |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus). |
 
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -3757,7 +3757,7 @@ Profile the byte columns of fixed-size records from an offset (each column's kin
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `doc` | string | no | Document id, path or "current" (the default). |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus). |
 | `len` | integer | no | Bytes of records to profile, every record counting (a selection); when omitted, the records run from `start` until they stop looking alike. |
 | `record_len` | integer | yes | Bytes per record, 1 to 65536. |
 | `start` | integer | no | Offset of the first record. |
@@ -3781,7 +3781,7 @@ Start finding how a span is framed into messages (sync words, delimiters, length
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `doc` | string | no | Document id, path or "current" (the default). |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus). |
 | `len` | integer | no | Bytes in the stream, at most 16 MiB; to the end of the document when omitted. |
 | `start` | integer | no | First offset of the stream (0 by default). |
 
@@ -3800,7 +3800,7 @@ Split a span into messages with a framing (one protocol.analyse offered, or any 
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `doc` | string | no | Document id, path or "current" (the default). |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus). |
 | `framing` | Framing | yes | How the stream is cut into messages, as protocol.analyse gives it. |
 | `len` | integer | no | Bytes in the stream, at most 16 MiB; to the end of the document when omitted. |
 | `start` | integer | no | First offset of the stream (0 by default). |
@@ -3830,7 +3830,7 @@ Start explaining the whole document in plain words and mapping its regions, as a
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `doc` | string | no | Document id, path or "current" (the default). |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus). |
 
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -3847,7 +3847,7 @@ Start splitting the document into stretches of uniform character, grouped into t
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `doc` | string | no | Document id, path or "current" (the default). |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus). |
 
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -3864,7 +3864,7 @@ Start finding every part of the document whose statistics resemble a span, as a 
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `doc` | string | no | Document id, path or "current" (the default). |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus). |
 | `histogram_weight` | number | no | 0 compares statistics only, 1 the coarse byte histogram only (0.5 by default). |
 | `len` | integer | yes |  |
 | `start` | integer | yes | The span to find more like. |
@@ -3885,7 +3885,7 @@ Start measuring entropy, compressibility, byte kinds and the local record width 
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `doc` | string | no | Document id, path or "current" (the default). |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus). |
 
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -3902,7 +3902,7 @@ Start learning what the document and sample files of the same format share (a ma
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `doc` | string | no | Document id, path or "current" (the default): the first sample. |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus): the first sample. |
 | `paths` | array of string | yes | The other samples, files of the same format. |
 
 | Result field | Type | Required | Description |
@@ -3937,7 +3937,7 @@ Start hashing files with ssdeep and scoring how like the document each is, 0 to 
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `doc` | string | no | Document id, path or "current" (the default): what the files are compared with. |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus): what the files are compared with. |
 | `paths` | array of string | yes | The files to compare. |
 
 | Result field | Type | Required | Description |
@@ -3956,7 +3956,7 @@ Start finding the blocks of the document that also occur in a file, as a backgro
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `block` | integer | no | Block size in bytes, 16 to 65536 (512 by default); shared runs are found a whole block at a time. |
-| `doc` | string | no | Document id, path or "current" (the default). |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus). |
 | `path` | string | yes | The file to look in. |
 
 | Result field | Type | Required | Description |
@@ -3974,7 +3974,7 @@ Start clustering messages into probable types and aligning each type byte by byt
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `doc` | string | no | Document id, path or "current" (the default). |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus). |
 | `len` | integer | no | Bytes of rows; needed with `start`. |
 | `row_width` | integer | no | Bytes per row; needed with `start`. |
 | `start` | integer | no | Messages laid out one per row: the first row's offset. When omitted, the messages the protocol analysis published on frames.defined. |
@@ -3995,7 +3995,7 @@ The shape a document's bytes are drawn in: the pixel format, pixels per row, the
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `doc` | string | no | Document id, path or "current" (the default). |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus). |
 
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -4013,7 +4013,7 @@ Change the shape a document's bytes are drawn in (the pixel format, pixels per r
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `bit_offset` | integer | no | Extra bit shift after `offset`, 0 to 7. |
-| `doc` | string | no | Document id, path or "current" (the default). |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus). |
 | `format` | `"bit1"` \| `"bit1lsb"` \| `"nibble4"` \| `"gray8"` \| `"class"` \| `"rgb565"` \| `"gray16le"` \| `"gray16be"` \| `"rgb8"` \| `"bgr8"` \| `"rgba8"` \| `"bgra8"` \| `"u16le"` \| `"u16be"` \| `"i16le"` \| `"i16be"` \| `"u32le"` \| `"u32be"` \| `"i32le"` \| `"i32be"` \| `"f32le"` \| `"f32be"` | no | How bytes are read as pixels, such as "gray8", "rgb565" or "bit1". |
 | `offset` | integer | no | Document offset of the first pixel; at most the document's length. |
 | `row_padding` | integer | no | Bytes skipped after each row's pixels. |
@@ -4034,7 +4034,7 @@ Skip ranges of a document in its views (the raster and the hex dump) without del
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `doc` | string | no | Document id, path or "current" (the default). |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus). |
 | `ranges` | array of pair | yes | The spans to skip, as [start, len]; they join spans already skipped that they touch. |
 
 | Result field | Type | Required | Description |
@@ -4053,7 +4053,7 @@ Show skipped bytes again: the skipped range starting at an offset, or all of the
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `all` | boolean | no | Show every skipped range again. |
-| `doc` | string | no | Document id, path or "current" (the default). |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus). |
 | `start` | integer | no | Where the skipped range to show again starts. |
 
 | Result field | Type | Required | Description |
@@ -4071,7 +4071,7 @@ A document's bookmarks, in offset order.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `doc` | string | no | Document id, path or "current" (the default). |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus). |
 
 | Result field | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -4088,7 +4088,7 @@ Bookmark a byte or a span of a document with a name, replacing a bookmark at the
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `doc` | string | no | Document id, path or "current" (the default). |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus). |
 | `len` | integer | no | Bytes the bookmark covers; 0 marks just the offset. |
 | `name` | string | yes | What to call it. |
 | `start` | integer | yes | Offset of the bookmarked byte or span. |
@@ -4108,7 +4108,7 @@ Remove the bookmark at an offset.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `doc` | string | no | Document id, path or "current" (the default). |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus). |
 | `start` | integer | yes | Offset of the bookmark to remove. |
 
 | Result field | Type | Required | Description |
@@ -4140,7 +4140,7 @@ Watch the window's file for changes on disk, reloading it and marking what chang
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `doc` | string | no | Document id, path or "current" (the default). |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus). |
 | `enabled` | boolean | yes | On or off. |
 
 | Result field | Type | Required | Description |
@@ -4161,7 +4161,7 @@ Keep every version of a document as it changes (the window's file or capture as 
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `doc` | string | no | Document id, path or "current" (the default). |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus). |
 | `enabled` | boolean | yes | On or off. |
 
 | Result field | Type | Required | Description |
@@ -4200,7 +4200,7 @@ Open a recorded version of a document as a document derived from it; the window 
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `doc` | string | no | Document id, path or "current" (the default). |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus). |
 | `index` | integer | yes | The version, counting from 0 for the first one recorded. |
 
 | Result field | Type | Required | Description |
@@ -4284,7 +4284,7 @@ What a recipe would do to a document, without changing anything: each step descr
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `doc` | string | no | Document id, path or "current" (the default) to run it on. |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus) to run it on. |
 | `name` | string | no | A saved recipe's name, as recipes.list gives it. |
 | `parameters` | object | no | Values for the recipe's parameters, by name; text is read as the parameter's type. Those left out take their defaults. |
 | `path` | string | no | A recipe file's path. |
@@ -4309,7 +4309,7 @@ Run a recipe on a document, each step called as recipe:NAME with its anchors res
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `doc` | string | no | Document id, path or "current" (the default) to run it on. |
+| `doc` | string | no | Document id, path or "current" (left out: the caller's focus) to run it on. |
 | `name` | string | no | A saved recipe's name, as recipes.list gives it. |
 | `parameters` | object | no | Values for the recipe's parameters, by name; text is read as the parameter's type. Those left out take their defaults. |
 | `path` | string | no | A recipe file's path. |

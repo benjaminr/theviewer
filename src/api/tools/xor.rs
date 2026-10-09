@@ -44,7 +44,7 @@ pub const LENGTHS_LISTED: usize = 6;
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RecoverKeysParams {
-    /// Document id, path or "current" (the default).
+    /// Document id, path or "current" (left out: the caller's focus).
     #[serde(default)]
     pub doc: Option<String>,
     /// First offset of the suspect bytes (0 by default).

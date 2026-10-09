@@ -171,7 +171,7 @@ pub struct RunParams {
     /// The recipe itself.
     #[serde(default)]
     pub recipe: Option<Recipe>,
-    /// Document id, path or "current" (the default) to run it on.
+    /// Document id, path or "current" (left out: the caller's focus) to run it on.
     #[serde(default)]
     pub doc: Option<String>,
     /// Values for the recipe's parameters, by name; text is read as the

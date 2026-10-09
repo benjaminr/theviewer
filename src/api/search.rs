@@ -43,7 +43,7 @@ const DEFAULT_COUNT_CAP: usize = 100_000;
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct FindParams {
-    /// Document id, path or "current" (the default).
+    /// Document id, path or "current" (left out: the caller's focus).
     #[serde(default)]
     pub doc: Option<String>,
     /// Hex bytes such as "89 50 4E 47", text, or a decimal or 0x hex integer.
@@ -76,7 +76,7 @@ pub struct FindResult {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct FindAllParams {
-    /// Document id, path or "current" (the default).
+    /// Document id, path or "current" (left out: the caller's focus).
     #[serde(default)]
     pub doc: Option<String>,
     /// Hex bytes such as "89 50 4E 47", text, or a decimal or 0x hex integer.
@@ -108,7 +108,7 @@ pub struct FindAllResult {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CountParams {
-    /// Document id, path or "current" (the default).
+    /// Document id, path or "current" (left out: the caller's focus).
     #[serde(default)]
     pub doc: Option<String>,
     /// Hex bytes such as "89 50 4E 47", text, or a decimal or 0x hex integer.

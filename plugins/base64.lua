@@ -1,4 +1,8 @@
--- base64.lua: an *encoding* codec.
+-- base64.lua: an *encoding* codec, as a model to copy.
+--
+-- theviewer decodes base64 itself (the built-in codec `base64`), so this
+-- plugin registers as `base64-lua` to stay out of its way; copy it as the
+-- starting point for an encoding of your own.
 --
 -- Encoding codecs change how bytes are represented without compressing
 -- them. This one lets you decode a base64 run in place (or into a new
@@ -71,8 +75,8 @@ local function encode(data)
 end
 
 theviewer.register_codec{
-  id = "base64",
-  name = "Base64 text",
+  id = "base64-lua",
+  name = "Base64 text (plugin example)",
   kind = "encoding",
   detect = function(window)
     return run_length(window) >= MIN_RUN

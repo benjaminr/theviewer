@@ -41,7 +41,7 @@ pub(super) fn describe_call(_workspace: &mut dyn Workspace, _method: &str, _para
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct DissectParams {
-    /// Document id, path or "current" (the default).
+    /// Document id, path or "current" (left out: the caller's focus).
     #[serde(default)]
     pub doc: Option<String>,
     /// Offset of the packet's first byte.
@@ -98,7 +98,7 @@ pub struct FrameSpan {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct DetectFramesParams {
-    /// Document id, path or "current" (the default).
+    /// Document id, path or "current" (left out: the caller's focus).
     #[serde(default)]
     pub doc: Option<String>,
     /// The frames, at most 16 MiB in all; a sample of them is tried.

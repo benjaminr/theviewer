@@ -121,7 +121,7 @@ pub struct DocumentList {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct InfoParams {
-    /// Document id, path or "current" (the default).
+    /// Document id, path or "current" (left out: the caller's focus).
     #[serde(default)]
     pub doc: Option<String>,
 }
@@ -157,7 +157,7 @@ pub struct ActivateParams {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SaveParams {
-    /// Document id, path or "current" (the default).
+    /// Document id, path or "current" (left out: the caller's focus).
     #[serde(default)]
     pub doc: Option<String>,
     /// Where to save; over the document's own file when omitted.
@@ -206,7 +206,7 @@ pub struct CloseResult {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct DeriveParams {
-    /// Document id, path or "current" (the default): the parent.
+    /// Document id, path or "current" (left out: the caller's focus): the parent.
     #[serde(default)]
     pub doc: Option<String>,
     /// Offset of the first byte to open.
@@ -319,7 +319,7 @@ const JOIN_LIMIT: usize = 64 * 1024 * 1024;
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ExportParams {
-    /// Document id, path or "current" (the default).
+    /// Document id, path or "current" (left out: the caller's focus).
     #[serde(default)]
     pub doc: Option<String>,
     /// Offset of the first byte to write, or of the compressed stream; give

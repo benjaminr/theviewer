@@ -56,7 +56,7 @@ pub struct FactsParams {
     /// Only facts on this topic, such as "record_width.estimated".
     #[serde(default)]
     pub topic: Option<String>,
-    /// Document id, path or "current" (the default).
+    /// Document id, path or "current" (left out: the caller's focus).
     #[serde(default)]
     pub doc: Option<String>,
     /// Only facts whose span overlaps these bytes.

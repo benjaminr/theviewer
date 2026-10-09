@@ -43,7 +43,7 @@ usage: theviewer [FILE] [--format NAME] [--palette NAME] [--width PIXELS] [--off
              for Claude Code and other MCP clients; --plugins loads plugins from DIR instead
              of ./plugins and ~/.config/theviewer/plugins; it lists the core methods and the
              plugins' as tools, with api_search, api_describe and api_call to reach the rest;
-             --all-tools lists every method instead (about five times the size, which clients
+             --all-tools lists every method instead (about six times the size, which clients
              keep in context); --output-schemas lists each tool's result schema too (about
              twice the size); --legacy-current makes an omitted doc mean the current document,
              which every document opened or derived becomes, rather than the client's focus

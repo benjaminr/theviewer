@@ -52,7 +52,7 @@ pub struct CompareFileParam {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct VariationParams {
-    /// Document id, path or "current" (the default): the first file.
+    /// Document id, path or "current" (left out: the caller's focus): the first file.
     #[serde(default)]
     pub doc: Option<String>,
     /// Offset in the document that lines up with the files' starts (0 by default).
@@ -66,7 +66,7 @@ pub struct VariationParams {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CorrelateParams {
-    /// Document id, path or "current" (the default): the first file.
+    /// Document id, path or "current" (left out: the caller's focus): the first file.
     #[serde(default)]
     pub doc: Option<String>,
     /// Offset in the document that lines up with the files' starts (0 by default).
@@ -85,7 +85,7 @@ pub struct CorrelateParams {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CompareTimelineParams {
-    /// Document id, path or "current" (the default).
+    /// Document id, path or "current" (left out: the caller's focus).
     #[serde(default)]
     pub doc: Option<String>,
 }

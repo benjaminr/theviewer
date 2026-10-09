@@ -76,7 +76,7 @@ const MAX_TRANSACTION_CALLS: usize = 1000;
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct WriteParams {
-    /// Document id, path or "current" (the default).
+    /// Document id, path or "current" (left out: the caller's focus).
     #[serde(default)]
     pub doc: Option<String>,
     /// Offset of the first byte to overwrite.
@@ -99,7 +99,7 @@ pub struct WriteParams {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct InsertParams {
-    /// Document id, path or "current" (the default).
+    /// Document id, path or "current" (left out: the caller's focus).
     #[serde(default)]
     pub doc: Option<String>,
     /// Offset to insert at; the document's length appends. Also taken as
@@ -123,7 +123,7 @@ pub struct InsertParams {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct DeleteParams {
-    /// Document id, path or "current" (the default).
+    /// Document id, path or "current" (left out: the caller's focus).
     #[serde(default)]
     pub doc: Option<String>,
     /// Offset of the first byte to remove.
@@ -139,7 +139,7 @@ pub struct DeleteParams {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ReplaceParams {
-    /// Document id, path or "current" (the default).
+    /// Document id, path or "current" (left out: the caller's focus).
     #[serde(default)]
     pub doc: Option<String>,
     /// Offset of the first byte to replace.
@@ -160,7 +160,7 @@ pub struct ReplaceParams {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct MoveParams {
-    /// Document id, path or "current" (the default).
+    /// Document id, path or "current" (left out: the caller's focus).
     #[serde(default)]
     pub doc: Option<String>,
     /// The ranges to move, as [start, len]; their bytes land one after another, in document order.
@@ -177,7 +177,7 @@ pub struct MoveParams {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct BitsWriteParams {
-    /// Document id, path or "current" (the default).
+    /// Document id, path or "current" (left out: the caller's focus).
     #[serde(default)]
     pub doc: Option<String>,
     /// Bit offset of the first bit: byte offset × 8 plus the bit within the byte, in `order`.
@@ -196,7 +196,7 @@ pub struct BitsWriteParams {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct TransformParams {
-    /// Document id, path or "current" (the default).
+    /// Document id, path or "current" (left out: the caller's focus).
     #[serde(default)]
     pub doc: Option<String>,
     /// What to change: a range, several ranges or a column of every record.
@@ -222,7 +222,7 @@ pub struct TransformParams {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PreviewParams {
-    /// Document id, path or "current" (the default).
+    /// Document id, path or "current" (left out: the caller's focus).
     #[serde(default)]
     pub doc: Option<String>,
     /// What to change; the document's selection, or the byte at the cursor, when omitted.
@@ -239,7 +239,7 @@ pub struct PreviewParams {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct HistoryParams {
-    /// Document id, path or "current" (the default).
+    /// Document id, path or "current" (left out: the caller's focus).
     #[serde(default)]
     pub doc: Option<String>,
     /// Fail with version_conflict, changing nothing, unless the document is at this version.
@@ -262,7 +262,7 @@ pub struct TransactionCall {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct TransactionParams {
-    /// Document id, path or "current" (the default); every call must be about this document.
+    /// Document id, path or "current" (left out: the caller's focus); every call must be about this document.
     #[serde(default)]
     pub doc: Option<String>,
     /// The calls, run in order: edits, selection changes and reads.

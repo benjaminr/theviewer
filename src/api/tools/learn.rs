@@ -60,7 +60,7 @@ const FRAGMENT_BLOCKS: std::ops::RangeInclusive<usize> = 16..=65_536;
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct FormatParams {
-    /// Document id, path or "current" (the default): the first sample.
+    /// Document id, path or "current" (left out: the caller's focus): the first sample.
     #[serde(default)]
     pub doc: Option<String>,
     /// The other samples, files of the same format.
@@ -119,7 +119,7 @@ pub struct SaveCatalogueResult {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct FuzzyCompareParams {
-    /// Document id, path or "current" (the default): what the files are compared with.
+    /// Document id, path or "current" (left out: the caller's focus): what the files are compared with.
     #[serde(default)]
     pub doc: Option<String>,
     /// The files to compare.
@@ -153,7 +153,7 @@ pub struct FuzzyCompareResult {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct FragmentsParams {
-    /// Document id, path or "current" (the default).
+    /// Document id, path or "current" (left out: the caller's focus).
     #[serde(default)]
     pub doc: Option<String>,
     /// The file to look in.

@@ -102,7 +102,7 @@ impl LineCodeName {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ScanPeriodsParams {
-    /// Document id, path or "current" (the default).
+    /// Document id, path or "current" (left out: the caller's focus).
     #[serde(default)]
     pub doc: Option<String>,
     /// First offset searched (0 by default).
@@ -188,7 +188,7 @@ impl BitPeriods {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PlanesParams {
-    /// Document id, path or "current" (the default).
+    /// Document id, path or "current" (left out: the caller's focus).
     #[serde(default)]
     pub doc: Option<String>,
     /// First offset split (0 by default).
@@ -244,7 +244,7 @@ impl BitPlanes {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct OpenPlaneParams {
-    /// Document id, path or "current" (the default): the parent.
+    /// Document id, path or "current" (left out: the caller's focus): the parent.
     #[serde(default)]
     pub doc: Option<String>,
     /// First offset (0 by default).
@@ -265,7 +265,7 @@ pub struct OpenPlaneParams {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct LineCodeParams {
-    /// Document id, path or "current" (the default).
+    /// Document id, path or "current" (left out: the caller's focus).
     #[serde(default)]
     pub doc: Option<String>,
     /// First offset decoded (0 by default).
@@ -400,7 +400,7 @@ fn tied_codes(decodes: &[crate::linecode::DecodeResult]) -> Vec<LineCodeName> {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct DecodeLineCodeParams {
-    /// Document id, path or "current" (the default): the parent.
+    /// Document id, path or "current" (left out: the caller's focus): the parent.
     #[serde(default)]
     pub doc: Option<String>,
     /// First offset decoded (0 by default).
@@ -439,7 +439,7 @@ pub struct DecodedDocument {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RankFieldParams {
-    /// Document id, path or "current" (the default).
+    /// Document id, path or "current" (left out: the caller's focus).
     #[serde(default)]
     pub doc: Option<String>,
     /// Document offset of the first record.
@@ -477,7 +477,7 @@ pub struct RankedField {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct LengthFieldsParams {
-    /// Document id, path or "current" (the default).
+    /// Document id, path or "current" (left out: the caller's focus).
     #[serde(default)]
     pub doc: Option<String>,
     /// First offset of the region (0 by default).

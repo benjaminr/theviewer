@@ -1068,7 +1068,7 @@ mod tests {
     #[test]
     fn example_scripts_load_and_register_things() {
         let host = host_with_examples();
-        assert!(host.codecs().iter().any(|c| c.id() == "base64"));
+        assert!(host.codecs().iter().any(|c| c.id() == "base64-lua"));
         assert!(host.codecs().iter().any(|c| c.id() == "xor-55"));
         assert!(host.detectors().iter().any(|d| d.id() == "ntp-timestamps"));
         assert!(host.parsers().iter().any(|p| p.id() == "tlv"));
@@ -1079,7 +1079,7 @@ mod tests {
     fn base64_codec_round_trips_and_detects() {
         let host = host_with_examples();
         let codecs = host.codecs();
-        let base64 = codecs.iter().find(|c| c.id() == "base64").unwrap();
+        let base64 = codecs.iter().find(|c| c.id() == "base64-lua").unwrap();
         let encoded = base64.encode(b"hello world").unwrap().unwrap();
         assert_eq!(encoded, b"aGVsbG8gd29ybGQ=");
         let decoded = base64.decode(&encoded, usize::MAX).unwrap();
