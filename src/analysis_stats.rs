@@ -456,7 +456,8 @@ pub fn show_strings(app: &mut ViewerApp, ui: &mut Ui) {
                 if ui.small_button("Use as key").on_hover_text("XOR with this text in the XOR tab, keeping where it came from").clicked() {
                     send_to::send_later(app, Sending::To(Target::XorKey), string_carry(&found, step, index, &sheet));
                 }
-                let text = ui.add(egui::Label::new(RichText::new(&string.text).monospace()).truncate().sense(Sense::click()));
+                let text = ui.add(egui::Label::new(RichText::new(&string.text).monospace()).truncate().sense(Sense::click_and_drag()));
+                send_to::drag_source(&text, || string_carry(&found, step, index, &sheet));
                 text.context_menu(|ui| {
                     let carry = string_carry(&found, step, index, &sheet);
                     send_to::menu(app, ui, &carry);
@@ -570,7 +571,8 @@ pub fn show_xor(app: &mut ViewerApp, ui: &mut Ui) {
             ui.horizontal(|ui| {
                 let key: String = candidate.key.iter().map(|b| format!("{b:02x}")).collect();
                 let printable: String = candidate.key.iter().map(|&b| if (0x20..0x7F).contains(&b) { b as char } else { '.' }).collect();
-                let key_label = ui.add(egui::Label::new(RichText::new(format!("key {key}")).monospace().color(theme::ACCENT)).sense(Sense::click()));
+                let key_label = ui.add(egui::Label::new(RichText::new(format!("key {key}")).monospace().color(theme::ACCENT)).sense(Sense::click_and_drag()));
+                send_to::drag_source(&key_label, || xor_key_carry(&results, index, &sheet));
                 key_label.context_menu(|ui| {
                     let carry = xor_key_carry(&results, index, &sheet);
                     send_to::menu(app, ui, &carry);
@@ -955,5 +957,31 @@ mod tests {
         let original = crate::api::Workspace::document_mut(app, &parent).unwrap().read_range(0, 5);
         assert_eq!(original, b"plain", "the parent is as it was");
         assert!(app.status.ends_with("opened as a new worksheet"), "{}", app.status);
+    }
+
+    #[test]
+    fn a_key_dragged_onto_the_key_field_binds_it_as_send_to_does() {
+        use egui_kittest::kittest::Queryable;
+        let hidden = crate::xor::apply(&notes()[64..], &[0x5A], 0);
+        let mut app = app_with(&hidden);
+        find_xor_keys(&mut app, 0, hidden.len());
+        app.bench.tools.stats.xor_key = "00".to_string();
+        let mut harness = xor_tab(app);
+        harness.run();
+        let from = harness.get_by_label("key 5a").rect().center();
+        let to = harness.get_all_by_value("00").next().expect("the key field").rect().center();
+        harness.hover_at(from);
+        harness.step();
+        harness.drag_at(from);
+        harness.step();
+        harness.hover_at(from + eframe::egui::vec2(12.0, 4.0));
+        harness.step();
+        harness.hover_at(to);
+        harness.step();
+        harness.drop_at(to);
+        harness.run();
+        let stats = &harness.state().bench.tools.stats;
+        assert_eq!(stats.xor_key, "5a");
+        assert!(stats.xor_key_bound.as_ref().is_some_and(|bound| matches!(bound.anchor, Anchor::Pick { .. })), "{:?}", stats.xor_key_bound);
     }
 }

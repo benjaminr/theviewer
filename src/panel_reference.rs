@@ -1124,7 +1124,8 @@ fn show_field_table(app: &mut ViewerApp, ui: &mut Ui, entry: &StackEntry, notes:
             cells.push(
                 ui.horizontal(|ui| {
                     ui.add_space(depth as f32 * 12.0);
-                    let name = ui.add(egui::Label::new(RichText::new(&field.name).color(colour)).selectable(false).sense(Sense::click()));
+                    let name = ui.add(egui::Label::new(RichText::new(&field.name).color(colour)).selectable(false).sense(Sense::click_and_drag()));
+                    send_to::drag_source(&name, || field_carry(app, entry, field));
                     name.context_menu(|ui| {
                         let carry = field_carry(app, entry, field);
                         send_to::menu(app, ui, &carry);

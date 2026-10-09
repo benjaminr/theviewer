@@ -148,13 +148,17 @@ pub fn show_findings_panel(app: &mut ViewerApp, ui: &mut Ui) {
                 ui.monospace(RichText::new(format!("{:#010x}", finding.start)).color(theme::TEXT_DIM));
                 let colour = if finding.weak() { theme::TEXT_DIM } else { theme::TEXT };
                 let title = RichText::new(&finding.title).color(colour);
-                let label = ui.add(egui::Label::new(title).sense(Sense::click()));
+                let label = ui.add(egui::Label::new(title).sense(Sense::click_and_drag()));
                 if !finding.detail.is_empty() {
                     ui.add(egui::Label::new(RichText::new(&finding.detail).small().color(theme::TEXT_DIM)).truncate());
                 }
                 label
             });
             let label = row.inner;
+            if label.drag_started() {
+                let carry = finding_carry(app, finding);
+                label.dnd_set_drag_payload(carry);
+            }
             if label.clicked() {
                 if ui.input(|input| input.modifiers.command) {
                     added = Some(finding.clone());

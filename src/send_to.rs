@@ -697,6 +697,9 @@ pub fn drag_source(response: &egui::Response, carry: impl FnOnce() -> Carry) {
     if response.drag_started() {
         response.dnd_set_drag_payload(carry());
     }
+    if response.dragged() {
+        response.ctx.set_cursor_icon(egui::CursorIcon::Grabbing);
+    }
 }
 
 #[cfg(test)]

@@ -505,7 +505,8 @@ fn show_decode(state: &mut CryptoState, app: &mut ViewerApp, ui: &mut Ui) {
     for (index, candidate) in results.candidates.iter().enumerate() {
         ui.horizontal(|ui| {
             ui.monospace(RichText::new(format!("{:.2}", candidate.score)).color(theme::ACCENT));
-            let described = ui.add(egui::Label::new(RichText::new(candidate.transform.describe()).strong()).sense(Sense::click()));
+            let described = ui.add(egui::Label::new(RichText::new(candidate.transform.describe()).strong()).sense(Sense::click_and_drag()));
+            send_to::drag_source(&described, || decode_carry(results, index, &sheet));
             described.context_menu(|ui| {
                 let carry = decode_carry(results, index, &sheet);
                 send_to::menu(app, ui, &carry);
