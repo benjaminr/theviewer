@@ -6,503 +6,278 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-09
+
+Worksheets: every file and every sheet made from one stays open, and steps
+pass what they make and find to one another through an `output` parameter,
+sheet anchors, variables and *Send to*, so a recipe saved from the History
+tab replays on the next file. Notes in the History tab keep your reasoning.
+Also built-in text codecs, packet filter expressions, AES, FAT volumes, PDF
+and EXIF, checksum verification, and many fixes from working six CTF-style
+challenges from start to finish.
+
 ### Added
 
-- **Send to.** Right-click a string, an XOR key, a decode, a finding, a
-  field in the Reference tab, a packet or the selection for *Send to ›*: a
-  new worksheet derived from its sheet, a variable (`vars.set`), or an
-  input of an open tool (the XOR tab's key, the Selection menu's key, the
-  Find needle, the Crypto tab's AES key and crib, the CRC solver's records
-  and start, the Bits tab's line code offset); *Copy value* and *Copy
-  anchor* copy the value and the anchor a recipe finds it by. *Use as key*
-  on strings, XOR keys, raw keys and a crib's key bytes, *Open as
-  worksheet* on findings, and dragging a row onto a field do the same.
+**Worksheets**
+- Every file opened and every sheet made from one (a decompressed stream,
+  an unpacked node, a bit plane, a selection) stays open, one shown at a
+  time, each with its own cursor, selection, shape and analysis. See
+  [Worksheets](docs/guide/worksheets.md).
+- The **worksheet strip** under the toolbar shows the active sheet's
+  ancestry, its children under `▸` and the other files; `*` marks unsaved
+  edits, and `×` or a middle-click closes a sheet with those derived from
+  it. The **tree of sheets** (*≡ Tree*, `Shift+Cmd+T`, the Workspace tab)
+  lists every sheet with the step that made it, with *Show*, *Compare with
+  active*, *Close* and *Label…*; recipes name a sheet by its label.
+- `Cmd+W` closes the sheet shown and those derived from it, asking first
+  about unsaved edits; *File › Close other worksheets*; `Ctrl+Tab` and
+  `Ctrl+Shift+Tab` cycle the sheets; the window title names the sheet.
+- The tools' results are kept with each sheet. Strings, XOR, Crypto and
+  Unpacked go on showing another sheet's results, saying whose (*From
+  payload (doc-4) · Show it*), and the packet viewer reads, writes and
+  draws only on the sheet its packets came from.
+- `documents.activate` and `documents.close` (a sheet and every sheet
+  derived from it); `documents.list` and `documents.info` give `parent`,
+  `made_by` and label, and each journal entry the sheets it `made`.
+- `diff.run` compares a document with another open one, given as `other`,
+  and the Diff tab compares the sheet shown with another, without writing
+  either to a file.
+
+**Passing values between tools**
+- **Send to.** Right-click a string, a key, a decode, a finding, a field in
+  the Reference tab or the Inspector, a value the Inspector reads, a packet
+  or the selection to send it to a new worksheet, a variable (named for
+  what it is: `key`, a field's name, a string's label, `url`, `path`,
+  `email` or `id`) or an open tool's input (the XOR and Selection keys, the
+  Find needle, the AES key and crib, the CRC solver's records, the line
+  code offset). *Copy value* and *Copy anchor* copy it. *Use as key*, *Open
+  as worksheet* on findings, and dragging a row onto a field do the same.
 - **Bound fields.** A field filled from another tool shows a chip of the
   value and where it came from (`NC500-2F357657 · from step 7, string
-  /^NC500-/ ×`), and the step it is used in records its anchor, so a
-  recipe finds the value again on the next file: a string by the first of
-  its shape, a key by its rank, a variable as `$name`. × keeps the value
-  as a literal.
-- **Output toggles.** The Selection menu's XOR, add and subtract and its
-  Decompress, the XOR tab's Apply and the Crypto tab's decodes put what
-  they make in place or in a new worksheet with a label, as `output`.
-- **The History tab's Sheets view and variables.** *Sheets* groups the
-  steps under the sheet they ran on as a tree of lineage, with *Show* on
-  each sheet, the sheets each step made and where its anchored values came
-  from; a line below says how many documents a recipe could not name and
-  how many literal offsets it would repeat, with *Suggest anchors…*. The
-  foot of the tab lists the variables bound, each going to the step that
-  bound it, dragged or sent elsewhere as the variable, with *+* to bind one
-  to the selection.
-- **Text encodings are built-in codecs.** base32 (either case, with or
-  without padding), base64, base64url, hex text, DEC SIXBIT (`sixbit`) and
-  AIS 6-bit ASCII (`ais6`) decode by id with `codecs.decode`, open with
-  `codecs.open_decoded`, decode in place with `transform.apply`
-  `{"op": "decompress", "codec": …}` and encode with `{"op": "compress",
-  "codec": …}`, without a plugin. `codecs.detect` offers base32, base64,
-  base64url and hex where a run of 32 of their characters starts.
-- **Probe tries the text encodings and the plugins' codecs.** The window's
-  *Probe* and `codecs.probe` list base32, base64, base64url and hex text
-  after the decompressors where a run of 16 of their characters starts,
-  and `codecs.probe` then tries every plugin codec; its streams give each
-  codec's id, name and kind. `codecs.decode` without a codec falls back to
-  them too, and its description names the codec that will decode.
-- **`contains` and `matches` in packet filters**, as Wireshark writes them:
-  `template.payload contains 00` compares a hex value with the field's own
-  bytes, `frame contains a5:5a` looks in the whole packet, and
-  `dns.qry.name matches "^www"` is a regular expression, ignoring case.
-- **`crypto.attack` proposes repeating XOR keys without a crib**, those
-  `xor.recover_keys` finds.
-- **`crypto.decrypt` takes several keys** as `keys`, and keeps the first
-  whose PKCS#7 padding comes out valid; every decryption says its `key`,
-  and `key_index` which of several decrypted.
-- **`unpack.open`, `unpack.read` and `unpack.save` name a node by names**:
-  `"path": "bin/novacamd"`, the last names of one node's path, as well as
-  by child indices.
-- **`packets.http_bodies` labels the sheets it opens**: `output`
-  `{"new": {"label": "body"}}` labels them `body`, `body 1`, `body 2`…
-- `packets.conversations` and `packets.endpoints` take `descending`, and
-  `packets.extract` takes `limit`.
-- `xor.recover_keys` gives each candidate a `rank`.
-- **Then anchors work on text and with other anchors.** New operations:
-  `match` (a regex's first group, or a group named by number), `after`,
-  `before`, `split` (a piece by index, or every piece), `format` (the value
-  written into a text, with more values from `with`), `hex` (an integer as
-  zero-padded hex digits), `div` and `mod`. The number `add`, `sub`, `mul`,
-  `div` and `mod` take may be an anchor, so a table's length is one marker
-  less another; a recipe keeps and renumbers the steps such operands cite.
-- **`part: "end"`** on find, finding, structure and selection anchors: the
-  offset just past the match, field or span.
-- **A pinned template is a structure.** `{"structure": "template:ncupd",
-  "field": "Ncupd.record_len"}` reads a field of the template pinned over
-  the document with `templates.apply {pin: true}`.
-- **Picks find their list wherever it is.** `[field=value]` in a pick's
-  `list` keeps the items of a list on the way (`job.filesystems[kind=FAT].entries`),
-  and `..key` gathers a key at any depth (`job..children`, every node of an
-  unpacked tree). A pick's `where` takes anchors and `{"$var": name}` as
-  values and bounds, and a field matches a value that reads as the same
-  number.
-- A pick over one page of a longer list (its holder has a `next` cursor)
-  warns that it saw only the first page, in the step's anchors and the
-  run's warnings.
-- **Notes in the history.** Write what you are doing and why into the
-  History tab as you work: the box at its foot adds a note where you are
-  (`Cmd+Enter` or *Add note*), and each step's *Note* button starts one
-  about that step. A note is a card among the steps, with who wrote it and
-  when, and `#12` in it is a link that scrolls to step 12 and highlights it.
-  Notes can be edited and deleted from their cards, *Notes only* shows just
-  them, and *Export notes…* saves them as Markdown with the steps they cite.
-  A note changes nothing: it is never undone, played back or gone back
-  past.
-- `history.note`, `history.edit_note`, `history.delete_note` and
-  `history.export_notes` in the API. `history.list` and `history.entry`
-  give each note's text and linked steps, and on each step the notes
-  linked to it.
-- The MCP server lists `history_note` among its core tools and asks the
-  model to note its reasoning as it works.
-- A recipe made from the history carries the notes linked to each step in
-  that step's `note`.
-- **Note kinds.** `history.note {kind}` takes `observation` (the default),
-  `hypothesis`, `decision`, `fallback` or `conclusion`, and
-  `history.edit_note` can change it. The History tab shows the kind as a
-  tag on each note card and has a kind menu beside *Add note*; the export
-  marks each note's kind and ends with a list of every fallback.
-- `\#917` in a note writes "#917" without citing a step, for packet
-  numbers and the like.
-- `history.list {order: "newest"}` lists the newest entries, so
-  `{limit: 1, order: "newest"}` gives the last step; without it, `limit`
-  keeps the oldest as before.
-- **Packet filters as expressions.** `and`/`&&`, `or`/`||`, `not`/`!` and
-  brackets; `"quoted text"`; `tcp.port`, `udp.port` and `ip.addr` for
-  either end; the DNS flag bits (`dns.flags.response==0`); the parts of an
-  HTTP request or status line and any HTTP header (`http.request.method`,
-  `http.content_encoding`); and numbers for named values
-  (`dns.qry.type==16`).
-- **Template fields in filters:** `template.type==60`, or `type==60` when
-  the name is the template's; the packet summary shows up to twelve of a
-  template's fields.
-- **Sorting and de-duplicating packets** by any column or field, in the
-  Packets panel (*Sort by*, *Desc.*, *Unique*) and in `packets.list`
-  (`sort`, `descending`, `dedupe`). Packets opened, saved or exported
-  together come out in the order shown.
-- `packets.extract` takes a field by name (`field_name`), at each packet's
-  own offset and length, and one `label` of a DNS name.
-- **HTTP bodies.** `packets.http_bodies` and the Follow stream view's *Open
-  body as document* give each request's and response's body put together,
-  de-chunked and decompressed (gzip, deflate).
-- **Resynchronising length-field splits.** `resync` and `sync` in
-  `packets.sets.create`'s `length_field` find the place again at the sync
-  word after a stray byte or a frame cut short, and the description lists
-  the stretches skipped.
-- **Sync word and length framing** in the protocol analysis, which
-  `packets.detect_length_field` returns with its sync word.
-- `packets.conversations` and `packets.endpoints` take `sort` (packets,
-  bytes, address or first packet).
-- `bytes.insert` takes `start` as well as `at`.
-- **Recipes keep the steps that make sheets.** `documents.derive`,
-  `codecs.open_decoded`, `bits.open_plane`, `bits.decode_linecode`,
-  `unpack.open`, `forensics.open_entry`, `crypto.open_decrypted`,
-  `packets.sets.create` with `gunzip` and `packets.http_bodies` with `open`
-  make a new document, a sheet, from another; a recipe now repeats them and
-  names what they made with a `sheet` anchor: `{"sheet": {"step": 2}}`
-  (the sheet step 2 made), `{"sheet": "payload"}` (one a step labelled with
-  its `makes`) or `{"sheet": "input"}` (the run's document).
-- Each of those methods returns the sheet as `output: {doc, label?, len}`
-  (`outputs` for several), beside its other fields, and `api.describe`
-  lists their `outputs`.
-- `documents.list` and `documents.info` give a derived document's
-  `parent` and `made_by` (the step, method and parameters that made it),
-  and each journal entry the sheets it `made`.
-- **Recipe format 2**, written only when a recipe needs it: sheet anchors,
-  a step's `makes` label and `inputs`. Recipes without them are written as
-  format 1, as before, and this build reads both.
-- The report of a recipe run lists the `sheets` it made.
-- `theviewer replay --save-sheets DIR` saves each sheet a run made, and
-  `--allow-writes` lets steps that write files run; `theviewer replay` and
-  `theviewer api` take `--plugins DIR`, as `theviewer mcp` does.
-- **Anchors at call time.** Every caller (the person's panels, Ask,
-  plugins, MCP clients, the command line) may pass an anchor in place of
-  any parameter's value: `{"$anchor": …}`, `{"$var": "serial"}` or
-  `{"$sheet": 7}` / `{"$sheet": "payload"}`. The call resolves it against
-  the session before the method runs, and the journal keeps both the value
-  and the anchor, so a recipe saved from an MCP session finds its values
-  again without `history.make_anchor`.
-- **Pick, then and var anchors.** `pick` chooses an item from a list in an
-  earlier step's result by what it holds (`where` with `regex`, `equals`,
-  `contains`, `min`, `max`, `tag`, `all` and `any`; `sort`; `nth`;
-  `field`), naming the step by number or as `"@label"`; `then` works on
-  another anchor's value (`add`, `sub`, `mul`, `and`, `text_to_hex`,
-  `hex_to_text`, `int`, `slice`, `len`); `var` reads a variable.
-- **Variables.** `vars.set {name, value}` binds a value found to a name,
-  journalled and replayed, and undone by putting back the value before;
-  `vars.list` lists them with where each came from, and `vars.clear` clears
-  one or all. In a recipe, a `vars.set` keeps its anchor, so the value is
-  found again on the next file.
-- *Make parameter* (`history.make_parameter`) on a value an anchor found
-  makes a parameter whose default is that anchor (`default_anchor`): the
-  recipe finds the value unless one is given.
-- `history.suggest_anchors` offers picks for literals found in lists
-  earlier steps returned (strings, keys, candidates): by a pattern of the
-  text's shape, by the item's tag, or by its place.
-- **Each caller has a focus**, the document an omitted `doc` means for it:
-  the current document when it first calls, then the one it opens or
-  activates. `documents.activate` moves it, `documents.list` marks it
-  (`focus`), and `output: {"new": {"focus": true}}` moves it to the sheet
-  made.
-- `unpack.open`, `unpack.read` and `unpack.save` take `tree_doc`, the
-  document unpacked, which defaults to the one `unpack.run` last ran on.
-- The MCP server lists `vars_set` among its core tools, and its
-  instructions ask the model to name sheets with `{"$sheet": N}`, bind the
-  values it finds with `vars_set` and pass them on with `{"$var": name}`.
-- `theviewer mcp --legacy-current` makes an omitted `doc` mean the current
-  document for one more release.
-- **One `output` parameter** on the methods that produce bytes, saying
-  where they go: `"in_place"` (an undoable edit of what they came from),
-  `"new"` (a sheet derived from it; `{"new": {"label": "payload"}}` labels
-  it, and a recipe names it by the label), `"return"` (in the result) or
-  `{"file": path}` (which needs leave to edit). Each result says where in
-  `output`: `{doc, label, len}`, `{version, len, ranges}`,
-  `{len, encoding, data}` or `{path, len}`. `api.describe` lists each
-  method's outputs and default, and a call is journalled, undone and kept
-  by recipes as its output says.
-  - `transform.apply`: in place by default; `new` and `return`.
-  - `codecs.decode`: returned by default; `new` and `in_place`. It takes
-    any codec `codecs.list` lists, plugins' included, or the first built-in
-    decompressor that decodes there when none is named; so does
-    `codecs.open_decoded`.
-  - `documents.derive`: a new sheet by default; `file`. It joins ranges of
-    several documents with `sources: [{doc, ranges}]`.
-  - `bits.open_plane` and `bits.decode_linecode`: `return` beside `new`.
-  - `unpack.open` and `forensics.open_entry`: `return` and `file` beside
-    `new`.
-  - `packets.extract`: `new` (a sheet of the set's document) and `file`
-    beside `return`. Without `indices` it takes the packets
-    `packets.list` lists with `filter`, `sort` and `dedupe`, in that
-    order, so a recipe extracts the same packets of another capture.
-  - `packets.follow_stream`: `new`, with `direction` to take one side's
-    bytes.
-  - `crypto.decrypt`: `new`, `in_place` and `file` beside `return`.
-- **`crypto.apply`** applies a `crypto.attack` candidate, by its job and
-  index, or an operation, over a span: to a new sheet by default, or in
-  place, returned or to a file. A recipe applies the candidate of the
-  attack its own step ran.
-- **Results say their step.** Through MCP, a result's `_meta.step` is the
-  journal step its call became (a read's number included), and a method
-  that starts a job returns `{job, step}`, so a note or anchor can cite it
-  without a `history.list` after every call.
-- **A recipe step's `expect`** (format 2): a path in the step's params,
-  result or job that must be there and not empty, or match a regular
-  expression; a run where it does not stops at that step, saying why.
-- `vars.set` takes a `doc`: the document its value's anchor is found in.
-- A sheet a `recipes.run` made is named by the run's step and its label,
-  `{"$sheet": {"step": 12, "label": "firmware"}}`, and `recipes.run` lists
-  the sheets it made under `outputs`, as other sheet-making methods do.
-- **Worksheets in the window.** Every file opened and every sheet made from
-  one (a decompressed stream, an unpacked node, a bit plane, a selection
-  opened on its own) stays open, one shown at a time, each kept where it
-  was left with its cursor, selection, shape and analysis. See the new
-  [Worksheets](docs/guide/worksheets.md) page.
-  - The **worksheet strip** under the toolbar shows the active sheet's
-    ancestry: click one to show it, drop down its children from `▸`, reach
-    the other files after the separator; `*` marks unsaved edits, and `×`
-    or a middle-click closes a sheet with those derived from it.
-  - The **tree of sheets** (*≡ Tree*, `Shift+Cmd+T`, and the top of the
-    Workspace tab) lists every sheet with the step and method that made it
-    and its size, with *Show*, *Compare with active*, *Close* and
-    *Label…*. A label is shown in the strip, listed by the API and used by
-    recipes saved from the history to name the sheet.
-  - `Cmd+W` (*File › Close worksheet*) closes the sheet shown and those
-    derived from it, asking first when one has unsaved edits; *File › Close
-    other worksheets* closes all but it and the sheets it came from.
-    `Ctrl+Tab` and `Ctrl+Shift+Tab` show the next and previous sheet.
-  - The window title names the sheet shown and, for a derived one, the
-    file it came from.
-  - The report, findings, pinned outlines, statistics and the other tools'
-    results are kept with each sheet and shown again with it. Strings, XOR,
-    Crypto and Unpacked go on showing another sheet's results, saying
-    whose (*From payload (doc-4) · Show it*), and act on that sheet.
-  - The packet viewer remembers the sheet its packets were read from: what
-    it writes, selects and opens is that sheet's while another is shown,
-    its outlines and legend layer are drawn only on it, and its note offers
-    *Show it*.
-- **`documents.close`** closes a document and every document derived from
-  it, refusing while one has unsaved edits unless the person at the window
-  discards them.
-- `diff.run` compares a document with another open one, given as `other`,
-  in place of a file's `path`; both may be sheet anchors, so two sheets
-  compare without one being written.
+  /^NC500-/ ×`), and its step records the anchor, so a recipe finds the
+  value again on the next file; × keeps it as a literal.
+- **Output toggles** on the Selection menu's XOR, add, subtract and
+  Decompress and on the XOR and Crypto tabs' *Apply*: in place, or a new
+  labelled worksheet.
+- The History tab's **Sheets** view groups the steps under the sheets they
+  ran on, with where each anchored value came from and how many documents
+  and literal offsets a recipe could not anchor (*Suggest anchors…*). Its
+  footer lists the variables bound, with *+* to bind the selection.
 
-- **`checksums.verify`** checks the checksum stored in each record, a
-  packet set's packets (with a `filter`) or fixed-length `records`,
-  against a `model`, and lists the records whose value is wrong.
-  **`checksums.compute`** computes one over a span, with its bytes as
-  stored. A model is an algorithm by name (`sum8`, `CRC-32`, a catalogue
-  CRC such as `CRC-16/XMODEM`) or a CRC's parameters; a `solve_crc`
-  solution can be passed as it is.
-- `checksums.solve_crc` takes a packet `set` and `filter`: frames of
-  different lengths, which also pin down init and xorout.
-- Templates read a field only when a condition holds, `time: u32 if type ==
-  0x81`, and expressions compare with `==` and `!=` (1 or 0).
-- `bits.detect_linecode` gives each decode the stretches it reads without
-  an error (`clean`, in document bytes), and when codes tie with the best
-  names them in `tied` with a `note` on telling them apart by a checksum.
-- `columns.profile` names each field (`field_7`) by where it starts, the
-  same name its template uses, whatever the field is guessed to be.
-- The JSON parser gives a document's members as fields (a string's span
-  without its quotes), so `{"structure": "serial.json", "field":
-  "payload_b64"}` works.
-- `forensics.find_filesystems` gives each FAT entry its `first_cluster`,
-  the `entry_offset` of its directory entry, the `ranges` its content lies
-  in and, for a deleted file, whether its clusters are still free
-  (`clusters_free`).
-- `checksums.digests` gives `sum8_value`, `sum16_value` and `xor8_value`
-  as numbers beside the hex.
+**Analysis notes**
+- **Notes in the History tab:** the box at its foot adds one where you
+  are (`Cmd+Enter` or *Add note*), and each step's *Note* button starts one
+  about that step. `#12` links to step 12 (`\#917` does not). Notes are
+  edited and deleted from their cards, *Notes only* shows just them, and a
+  note is never undone, played back or gone back past.
+- **Kinds:** `observation`, `hypothesis`, `decision`, `fallback` and
+  `conclusion`, shown as tags.
+- *Export notes…* saves them as Markdown, titled by the input file, each
+  cited step described in plain words, ending with every fallback.
+- A read a note cites is kept as evidence, dimmed in the tab and left out
+  of recipes unless an anchor cites it. A recipe carries each note on the
+  first step it cites, "As recorded on <file>:".
+- `history.note`, `history.edit_note`, `history.delete_note` and
+  `history.export_notes`; `history.list` and `history.entry` give the
+  notes. The MCP server lists `history_note` among its core tools.
+
+**Recipes and the API**
+- **One `output` parameter** on the methods that produce bytes:
+  `"in_place"`, `"new"` (a sheet; `{"new": {"label": "payload"}}` labels
+  it), `"return"` or `{"file": path}`. The result says where in `output`,
+  and the journal, undo and recipes treat each call as its output says.
+  Taken by `transform.apply`, `codecs.decode`, `crypto.decrypt`,
+  `documents.derive` (which joins several documents' ranges with
+  `sources`), `bits.open_plane`, `bits.decode_linecode`, `unpack.open`,
+  `forensics.open_entry`, `packets.extract` and `packets.follow_stream`.
+- **`crypto.apply`** applies a `crypto.attack` candidate, by job and index,
+  or an operation, over a span; a recipe applies the candidate of the
+  attack its own step ran.
+- **Recipes keep the steps that make sheets** and name what they made with
+  sheet anchors: `{"sheet": {"step": 2}}`, `{"sheet": "payload"}` (a step's
+  `makes` label) or `{"sheet": "input"}`. Those steps return `output:
+  {doc, label?, len}`, and `recipes.run` lists the sheets made.
+- **Anchors at call time.** Any caller may pass `{"$anchor": …}`, `{"$var":
+  "serial"}` or `{"$sheet": 7}` in place of a parameter's value; the call
+  resolves it, and the journal keeps both, so a recipe saved from an MCP
+  session finds its values again.
+- **Pick, then and var anchors.** `pick` chooses an item from an earlier
+  step's list (`where` with `regex`, `equals`, `contains`, `min`, `max`,
+  `tag`, `all`, `any`; `sort`; `nth`; `[field=value]` and `..key` in its
+  path); `then` works on another anchor's value, with arithmetic, `slice`,
+  `int`, `hex`, `text_to_hex`, `hex_to_text`, `match`, `after`, `before`,
+  `split` and `format`; `var` reads a variable. `part: "end"` gives the
+  offset past a match, and `{"structure": "template:NAME"}` reads a pinned
+  template.
+- **Variables:** `vars.set`, `vars.list` and `vars.clear`, journalled and
+  replayed, and in the MCP server's core tools.
+- **A step's `expect`**: a path in its params, result or job that must be
+  present, or match a regular expression, or the run stops there.
+- *Make parameter* gives a parameter an anchor as its `default_anchor`, and
+  `history.suggest_anchors` offers picks for literals from earlier lists.
+- **Recipe format 2**, written only when a recipe needs it; both read.
+- Through MCP, a result's `_meta.step` is its journal step, and a method
+  that starts a job returns `{job, step}`.
+- `theviewer replay --save-sheets DIR` and `--allow-writes`, and
+  `--plugins DIR` for `replay` and `api` as for `mcp`.
+- `history.list {order: "newest"}`; `unpack.open`, `.read` and `.save`
+  name a node by path (`"bin/novacamd"`) and take `tree_doc`;
+  `bytes.insert` takes `start` as well as `at`.
+
+**Codecs and crypto**
+- **Built-in text codecs:** base32, base64, base64url, hex text, DEC SIXBIT
+  (`sixbit`) and AIS 6-bit (`ais6`), by id in `codecs.decode`,
+  `codecs.open_decoded` and `transform.apply`, without a plugin.
+  `codecs.detect`, *Probe* and `codecs.probe` find them, and `codecs.probe`
+  tries every plugin codec too.
+- **AES:** `crypto.decrypt` and `crypto.open_decrypted` decrypt AES-128,
+  -192 and -256 in ECB, CBC or CTR mode, trying several `keys` and keeping
+  the first with valid PKCS#7 padding; the Crypto panel has *Decrypt
+  (AES)*.
+- `transform.apply` takes rolling XOR, XOR with the previous byte, XOR then
+  add, add then XOR and rotation; each `crypto.attack` candidate carries
+  the `operation` that applies it, and the Crypto panel's *Apply* is that
+  step.
+- `crypto.attack` lists the key bytes a crib reveals (`key_fragments`) even
+  when the key is longer than the crib, and proposes repeating XOR keys
+  without one. `xor.recover_keys` gives each candidate a `rank`.
+
+**Packets**
+- **Filter expressions:** `and`, `or`, `not` and brackets; quoted text;
+  `tcp.port` and `ip.addr` for either end; DNS flag bits; HTTP request,
+  status and header fields; numbers for named values; `contains` and
+  `matches`; and template fields (`template.type==60`).
+- **Sorting and de-duplicating** by any column or field, in the Packets
+  panel and `packets.list` (`sort`, `descending`, `dedupe`);
+  `packets.conversations` and `packets.endpoints` sort too.
+- `packets.extract` takes a field by name (`field_name`, one `label` of a
+  DNS name), a `limit`, and without `indices` the packets a `filter`,
+  `sort` and `dedupe` list. *Only the chosen field* saves or opens one
+  field of each selected packet, reassembling a file sent in blocks.
+- **HTTP bodies:** `packets.http_bodies` and *Open body as document* give
+  each body de-chunked and decompressed.
+- **Resynchronising splits:** `resync` and `sync` in a length field find
+  their place again at the sync word; the protocol analysis finds sync
+  word and length framing.
+
+**Forensics and formats**
+- FAT12, FAT16 and FAT32 volumes, in a disk's partitions too, with long
+  names, DOS times and deleted files recovered, each entry's clusters and
+  ranges, and the boot sector's geometry; `forensics.open_entry` opens
+  them.
+- ZIP entry flags, and a `password` for `unpack.run` and the Unpacked tab
+  to decrypt ZipCrypto.
+- EXIF tags in JPEGs; a PDF parser listing objects, streams with their
+  filters, and embedded files; JSON members as fields.
+
+**Checksums and structure**
+- **`checksums.verify`** lists the records whose stored checksum a
+  `model` rejects, and **`checksums.compute`** computes one over a span;
+  `checksums.solve_crc` takes a packet `set` and `filter`.
+- Template fields read only `if` a condition holds, and `==` and `!=`.
+- `bits.detect_linecode` gives each decode its error-free stretches and
+  names codes that tie with the best; `columns.profile` names fields by
+  where they start (`field_7`).
 
 ### Changed
 
-- **Back keeps the sheet it leaves.** In the window, Back (`Cmd+[`, the
-  status bar's *Back*, *Back out*, `Cmd+D` where no stream is at the
-  cursor) shows the parent and the child stays open; `documents.open
-  {doc}` and `documents.activate` show a sheet and close nothing. Deriving
-  twice from one sheet gives two siblings rather than nesting the second
-  under the first, and a document can be derived from any open sheet, not
-  only the one shown.
+- **Back keeps the derived sheet open.** Back (`Cmd+[`, *Back*, *Back
+  out*, `Cmd+D` where no stream is at the cursor) shows the parent and
+  leaves the child open. *Decompress* is offered in every sheet, so a
+  stream in a stream can be followed down, and deriving twice gives
+  siblings.
 - **File › Open adds a worksheet** rather than closing the others, as do
-  File › New, `documents.open`, `documents.new` and `documents.open_source`
-  in the window. Opening a file already open shows it again (File › Open
-  reads it from disk again when it has unsaved edits). *File › Close other
-  worksheets* does what opening used to.
-- A parked sheet's folds, shape, bookmarks and selection can be set through
-  the API; it is saved once shown. Each root file's sidecar is saved,
-  whichever sheet is shown.
-- `jobs.status` is no longer journalled: polling a job takes no step
-  number, so the step before the next call is the one that started it.
-- Saving a recipe whose anchor cites a step the recipe cannot hold (one
-  that failed, was dropped or is a read never cited) fails, naming the
-  step, instead of quietly repeating the literal.
-- `history.make_anchor` refuses a `job.` path on a step that started no
-  job, naming the step that did, and checks and promotes the step a pick
-  cites, as it does a step anchor's; `history.suggest_anchors` offers
-  picks from a job's result only on the step that started it.
-- The replay warning that literal offsets may not fit another file is
-  given only when the recipe has one, and names it.
-- A value marked as an anchor that is not one is refused with what is
-  wrong with it: a then anchor without `then`, an operation it does not know
-  with those there are, a `part` or needle that does not read.
-- A recipe run no longer takes the first document id its steps name for
-  the file it runs on. A step naming a document by an id that is neither
-  the run's input nor a sheet the run made stops the run (format 1 recipes
-  too); a step with no `doc`, or `"current"`, runs on the input.
-- `theviewer replay` refuses a step that writes a file (such as
-  `documents.export`) unless given `--allow-writes`.
-- A recipe run's edits undo as one step of each document it edited, sheets
-  included, rather than only of the input.
-- `documents.derive`, `bits.open_plane`, `unpack.open` and
-  `forensics.open_entry` return the new document's fields with `output`
-  beside them; `packets.sets.create` returns the set's with `output` when
-  it opened a decompressed capture.
-- **An omitted `doc` means the caller's focus**, not the current document.
-  At the window nothing changes: the person's focus is the document shown,
-  and plugins and Ask, which act for the person, follow it. For MCP
-  clients and the command line, deriving a document, opening a node or
-  decompressing a stream no longer moves where their next call without
-  `doc` goes; `"current"` still names the document opened
-  or made last. Every journal entry's `params` now name the document.
-- A value marked `$anchor`, `$var` or `$sheet` that is not an anchor is
-  refused rather than passed to the method as a literal.
-- Recipes that use pick, then or var anchors, or a parameter whose default
-  is an anchor, are written as format 2.
-- `transform.preview`, `codecs.open_decoded`, `crypto.open_decrypted`,
-  `documents.export`, `unpack.read` and `unpack.save` stay, as shorthands
-  for the method they name with an `output`. `transform.apply`,
-  `codecs.decode`, `crypto.decrypt`, `packets.extract` and
-  `packets.follow_stream` results gain `output`; `codecs.decode`'s and
-  `crypto.decrypt`'s `data` is left out when the bytes went elsewhere, and
-  `bits.decode_linecode`'s `document` when they were returned.
-- `packets.extract` is a read when it returns its bytes, kept among the
-  recent reads rather than as a step; written to a file it is still a step
-  that needs leave to edit.
-- `codecs.open_decoded`'s `codec` is the codec's id as a string, any
-  `codecs.list` lists, where it was one of the built-in decompressors.
-
-- A filter naming a field the packets cannot have is refused with the
-  names it was close to, rather than matching nothing.
-- `bytes.read` past the end of a document returns the bytes there are,
-  with `len` and `short`, rather than failing.
-- Packets are counted from 0 everywhere in the API: `packets.columns.read`
-  and the `packets.follow_stream` text now number them by their index, as
-  the other methods do. The Packets panel's *No.* still counts from 1.
-- `alignment.run` clusters an even sample of a long set of messages and
-  puts every other message into the type it is most like, rather than
-  looking at only the first 256; the result's notes say so.
-
-- `protocol.analyse`'s template reads a field only some message types
-  carry (a telemetry timestamp) only in those types, keeps the bytes the
-  length field leaves out as a `trailer` rather than in the payload, and
-  says where the first message is rather than "the first gap is at 0x0".
-- `analysis.overview` headlines a file that starts with a partition table
-  as a disk image ("Disk image: MBR partition table, FAT16 boot sector,
-  holding …"), and a raw dump of frames headed by a sync word as framed
-  messages, not as machine code.
-- `templates.infer` reads a timestamp the detectors find in the records as
-  one time field, and a span that ends inside a record (a finding's) as
-  that record whole. It also reads a NUL-padded name to the end of its
-  padding, a column of a few values as a `kind` and a varying number below
-  2^24 as a u32.
+  *File › New*, `documents.open`, `documents.new` and
+  `documents.open_source`; opening a file already open shows it again.
+- **An omitted `doc` means the caller's focus.** At the window, and for
+  plugins and Ask, that is the document shown. For MCP clients and the
+  command line it is the one they last opened or activated: making a sheet
+  no longer moves it. Journal entries now name their document, and
+  `theviewer mcp --legacy-current` keeps the old meaning for one release.
+- **A replay refuses unknown document ids.** A step naming a document that
+  is neither the run's input nor a sheet the run made stops the run,
+  format 1 recipes too; a step with no `doc` runs on the input.
+  `theviewer replay` runs steps that write files only with
+  `--allow-writes`.
+- **`jobs.status` polls are not journalled** and take no step number, so
+  an anchor on a job's result cites the step that started it.
+- **Recipe saves fail rather than keep stale literals.** An anchor citing a
+  step the recipe cannot hold, or a recipe that would not replay, is
+  refused, naming the step, and the History tab says why before saving.
+  A `$anchor`, `$var` or `$sheet` that is not an anchor is refused rather
+  than passed on as a literal.
+- **Packets are numbered from 0 in the API**, `packets.columns.read` and
+  the `packets.follow_stream` text included; the Packets panel's *No.*
+  still counts from 1.
+- **`bytes.read` returns a short read** past the end of a document, with
+  `len` and `short`, rather than failing.
+- A packet filter naming an unknown field is refused with the names it was
+  close to, rather than matching nothing.
+- A recipe run's edits undo as one step of each document it edited.
+- `packets.extract` is a read when it returns its bytes.
+- `codecs.decode`'s and `crypto.decrypt`'s `data` is left out when the
+  bytes went elsewhere; `codecs.open_decoded` takes any codec id.
+- The literal-offsets replay warning is given only when a recipe has one.
+- `alignment.run` samples a long set of messages evenly rather than taking
+  the first 256.
+- `Esc` closes the image, sound or video being viewed.
 
 ### Fixed
 
-- `xor.recover_keys` returned a score its own order contradicted, so a pick
-  sorting by score descending bound an over-fitted key; `score` is now the
-  score the candidates are ranked by.
-- `packets.list {dedupe: "info"}` kept one packet when every summary began
-  with the same number; packets are now de-duplicated by the whole text.
-- `X contains Y` in a packet filter read as three words and matched nothing.
-- `columns.profile` kept a counter whole when records repeat it (steps of
-  0 or 1) or list it backwards with a constant high byte, finds a Unix time
-  at an odd offset, and no longer guesses a float or text across a
-  constant field from three records.
-- `checksums.find_stored` finds a one-byte sum followed by padding or
-  ending at a boundary given, not only as the very last byte.
-- `bits.scan_periods` no longer reports the idle between bursts as the sync
-  word.
-- Float arrays are no longer found in bit-packed radio samples (a run of a
-  dozen byte values or fewer), nor icons, TrueType fonts and Targa images
-  at any zero run their few-byte magic matches.
-- A timestamp finding's title said its byte order twice ("u32 LE LE").
-- `findings.publish` takes a finding without `fields`.
-- A split's description said "1 frames" and "1 times".
+**Recipes and the window**
+- Recipes saved from a session that derived documents did not replay, and
+  `history.recipe` and `history.save_recipe` kept different steps; every
+  recipe now comes from one builder.
+- A recipe made from the Strings tab searched the next file over the
+  recorded file's length; it now searches the whole file.
+- `Cmd+Enter` in a text field opened the media at the cursor, and the
+  floating selection toolbar covered an image being viewed.
 
-- A note citing a read made the read a step of every recipe saved from the
-  history, and once a sheet the read looked at was undone, the recipe
-  could not be saved at all. A read kept only because a note cites it is
-  now evidence: the History tab shows it dimmed and tagged, the export
-  marks it, and recipes leave it out unless an anchor cites it.
-- The exported notes were titled with every sheet's full lineage name and
-  showed cited steps as "Call X with {json}" naming `doc-7` and `set-1`.
-  The title names the input file, a *Sheets* line lists their labels, and
-  each cited step is described in plain words with sheets by label, sets
-  by name, the anchors its values came from and a short summary of what it
-  returned. The History tab's rows describe steps the same way.
-- A note linked to several recipe steps was copied whole into each. It is
-  written on the first, after "As recorded on <file>:" so a replay on
-  another file does not present its values as that file's, and the others
-  say "See the note on step N."
-- Recipes saved from a session that derived documents did not replay:
-  the steps that made the documents were left out, later steps kept their
-  session's ids (`doc-4`), and the replay ran such a step on the input, or
-  stopped. `history.recipe`, `history.save_recipe`, `recipes.save` and the
-  History tab now share one builder, which keeps the steps that make
-  sheets, takes each step's document from the journal rather than its
-  params (often none), takes the recorded file from the documents' lineage
-  rather than the first id named, and names every document as a sheet
-  anchor, at any parameter path.
-- A recipe that would not replay (a step on a second file, or on a sheet
-  made outside the history or by a step it leaves out) is refused, naming
-  the step and why; the History tab says so before asking where to save.
-- `history.recipe` and `history.save_recipe` kept different steps.
-- An anchor `history.suggest_anchors` proposed on a job's result could cite
-  a `jobs.status` poll; the recipe then dropped the poll and kept the
-  literal, so a replay bound the recorded file's value.
-- The recipe builder replaced a `doc` given as an anchor (a pick of one of
-  the sheets a step made) with the sheet's place among those the step
-  made.
-- `crypto.apply` with `candidate.job` given as an anchor and no `doc` ran
-  on the caller's focus rather than the sheet the attack read.
-- Sheets a `recipes.run` made had no label in the session, so
-  `documents.list` showed none and `{"$sheet": label}` could not name them.
-- `theviewer replay --save-sheets` overwrote one file's sheets with
-  another's when two files given shared a name; each now carries its place
-  among the files (`fw.upd.2.step22.config.bin`).
-- `packets.follow_stream` and a filtered `packets.conversations` gave a
-  conversation's first packet as 0, or as its place among the packets
-  kept, rather than its index in the set.
-- Fields tshark decoded never reached the API's filters or
-  `packets.dissect`.
-- A length-field split that lost its place said "the frames cover every
-  byte"; it now says where frames stop starting with the sync word.
-- The protocol analysis ranked a few-message u16 length chain, or a chain
-  out of step with the sync word, above a sync word explaining nearly every
-  byte; called address bytes the message type and missed the type after
-  them; and gave its template two fields of the same name.
-- `transform.apply` and `documents.derive` take rolling XOR, XOR with the
-  previous byte, XOR then add, add then XOR and per-byte rotation, and each
-  `crypto.attack` candidate carries the `operation` that applies it. The
-  Crypto panel's *Apply* is now a `transform.apply` step a recipe repeats.
-- `crypto.attack` with a crib lists the key bytes the crib reveals
-  (`key_fragments`), *key prefix at offset 0* first, even when the key is
-  longer than the crib and no decode comes of them.
-- `crypto.decrypt` and `crypto.open_decrypted` decrypt AES-128, AES-192
-  and AES-256 in ECB, CBC or CTR mode, with PKCS#7 padding; the Crypto
-  panel has a Decrypt (AES) section, and *Use this key* beside a raw key
-  found fills in its key.
+**Crypto**
+- `xor.recover_keys` ranked a single byte that flips the text's case above
+  a word key, and an over-fitted multiple above the true shorter key, and
+  gave a `score` its own order contradicted.
+- `crypto.find_keys` found a raw key ending in a padding-like byte a byte
+  early.
+- A key pinned by a crib lost the crib as its reason when found without it
+  too.
 
-### Fixed
+**Packets**
+- `X contains Y` read as three words, and a DNS flag tshark gives in words
+  was not found by number.
+- Fields tshark decoded never reached the filters or `packets.dissect`.
+- A conversation's first packet was given as 0 or its place among those
+  kept.
+- The protocol analysis ranked short or out-of-step length chains above a
+  sync word, and took address bytes for the message type.
+- A split's description said "1 frames"; a split that lost its place said
+  the frames cover every byte.
 
-- `xor.recover_keys` and the XOR tab fold a long key that nearly repeats a
-  shorter one (one column solved wrongly) to that shorter key, offer both,
-  and rank the shorter first when they score alike.
-- `crypto.find_keys` reports a raw key with a zero at its edge, beside
-  zero padding, at its aligned offset, and the alignment one byte along as
-  an alternative, rather than only the earlier one.
-- Forensics reads FAT12, FAT16 and FAT32 volumes, inside a disk image's
-  partitions too, with long names, DOS times and deleted files recovered
-  on a contiguous assumption; `forensics.open_entry` opens them.
-- The FAT boot sector shows sectors per FAT, hidden sectors, media, the
-  serial number and the FAT, root and data offsets, and takes its type from
-  the cluster count.
-- JPEG field trees show EXIF tags; a new PDF parser lists objects, streams
-  with their filters and offsets, and embedded files.
-- The ZIP field tree shows each entry's flags: encrypted, data descriptor,
-  UTF-8 names. `unpack.run` takes a `password`, and the Unpacked tab a
-  password field, to decrypt ZipCrypto entries.
+**Forensics**
+- An encrypted ZIP showed ciphertext as a member's content and dropped
+  deflated members; each is now listed as encrypted.
 
-### Fixed
-
-- Unpacking an encrypted ZIP lists every member, marked "encrypted
-  (ZipCrypto)" or "encrypted (AES)" with no content, instead of showing
-  ciphertext as the file and dropping deflated members; a member that does
-  not inflate is kept with the error.
+**Heuristics**
+- `analysis.overview` headlines a partitioned disk as a disk image, and
+  frames headed by a sync word as framed messages, not machine code.
+- A Cortex-M vector table counts towards Thumb, so a small firmware image
+  is not taken for x86.
+- `protocol.analyse`'s template reads a type's own fields only in that
+  type, even when frames are cut short, and keeps a `trailer` out of the
+  payload.
+- `templates.infer` reads a timestamp as one field, a span to the end of
+  its record, a NUL-padded name whole, a few-valued column as a `kind` and
+  a number below 2^24 as a u32.
+- `columns.profile` keeps a repeating or backwards counter whole, finds a
+  Unix time at an odd offset, and no longer guesses floats from three
+  records.
+- `checksums.find_stored` finds a one-byte sum before padding, not only as
+  the last byte, and `bits.scan_periods` no longer takes the idle between
+  bursts for the sync word.
+- Float arrays are no longer found in bit-packed radio samples, nor icons,
+  TrueType fonts and Targa images at any zero run.
+- A timestamp finding's title said "u32 LE LE", and `findings.publish`
+  refused a finding without `fields`.
 
 ## [0.3.1] - 2026-10-07
 
@@ -744,6 +519,7 @@ The first published release.
 - The file report no longer lists bare magic-number matches as objects.
 - *Columns* profiles from the cursor's record to the end of the table.
 
+[0.4.0]: https://github.com/benjaminr/theviewer/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/benjaminr/theviewer/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/benjaminr/theviewer/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/benjaminr/theviewer/compare/v0.1.2...v0.2.0
