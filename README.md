@@ -33,9 +33,9 @@ from the [releases page](https://github.com/benjaminr/theviewer/releases),
 then:
 
 ```sh
-tar -xzf theviewer-0.3.1-macos-arm64.tar.gz
-xattr -d com.apple.quarantine theviewer-0.3.1-macos-arm64/theviewer   # the binary is not signed
-./theviewer-0.3.1-macos-arm64/theviewer path/to/file.bin
+tar -xzf theviewer-0.4.0-macos-arm64.tar.gz
+xattr -d com.apple.quarantine theviewer-0.4.0-macos-arm64/theviewer   # the binary is not signed
+./theviewer-0.4.0-macos-arm64/theviewer path/to/file.bin
 ```
 
 **From source, anywhere else.** You need a Rust toolchain
@@ -88,11 +88,14 @@ uses `ffmpeg` if it is installed, and the packet viewer can use Wireshark's
 
 7. **Open what is inside.** Images, audio, video and compressed streams
    buried in the file open where they sit. Put the cursor on one and press
-   `Cmd+Enter` to view or play it, or `Cmd+D` to decompress.
+   `Cmd+Enter` to view or play it, or `Cmd+D` to decompress it into a
+   [worksheet](docs/guide/worksheets.md) of its own; the file stays open
+   beside it.
 8. **Edit it, and keep the steps.** Type hex over a byte, or XOR, fill,
    shift or move a selection. Everything can be undone, and `Cmd+S` saves
-   safely through a temporary file. The *History* tab lists every step;
-   save them as a recipe and run it on the next file.
+   safely through a temporary file. The *History* tab lists every step,
+   with your notes among them; save them as a recipe and run it on the next
+   file.
 
 Press `Cmd+K` at any time for the command palette, which lists every action
 with its shortcut, or right-click a byte for the actions that apply to it.
@@ -114,6 +117,9 @@ file formats, firmware, bit streams, forensics and comparing files.
 - Unlimited undo on files of any size; skip bytes out of the view without
   deleting them; open embedded images, audio, video and compressed streams
   where they sit.
+- [Worksheets](docs/guide/worksheets.md): every file and every sheet made
+  from one (a decompressed stream, an unpacked file, a decryption) stays
+  open, with a strip of its ancestry and a tree of every sheet.
 
 **Find structure**
 - Record-width detection, a plain-language report, and about 600 file
@@ -144,15 +150,25 @@ file formats, firmware, bit streams, forensics and comparing files.
 **Analysis tools**
 - 29 tool tabs, among them dot plot, trigram cube, size map, image finder,
   bit planes and line codes, statistics, compressibility and text
-  encoding, strings, XOR and cipher attacks, crypto constants, checksums
-  and a CRC solver, disassembly, firmware load address, unpacking,
-  forensics, diff and comparing many files.
+  encoding, strings, XOR and cipher attacks, AES, crypto constants,
+  checksums and a CRC solver, disassembly, firmware load address,
+  unpacking, forensics, diff and comparing many files.
+- Built-in decoders for base32, base64, hex text, DEC SIXBIT and AIS 6-bit
+  text beside the decompressors; forensics for FAT volumes and deleted
+  files, password-protected ZIPs, PDF objects and EXIF tags. See
+  [the tools](docs/guide/tools.md).
 
 **History and recipes**
 - Every step by everyone, in the History tab: undo any step, go back to
   one, or play them back.
-- Recipes with anchors (the nth match, a structure field, a finding) and
-  parameters, so they work on files where things sit elsewhere.
+- [Analysis notes](docs/guide/history-and-recipes.md#notes) among the
+  steps, linking to the steps they cite, exported as Markdown.
+- Values passed between tools with *Send to* and variables, each
+  remembering where it came from, so a recipe finds it again on the next
+  file ([sending a value](docs/guide/tools.md#sending-a-value-to-another-tool)).
+- Recipes with anchors (the nth match, a structure field, a finding, a
+  pick from an earlier step's result) and parameters, so they work on
+  files where things sit elsewhere.
 
 **Automate**
 - `--report` and `--json` for scripts; `theviewer api` runs any of the
@@ -182,7 +198,8 @@ The [user guide](docs/guide/README.md) covers each part in full:
 - [Layouts and the workspace](docs/guide/layouts-and-workspace.md):
   recommended and saved layouts, and what the tools share.
 - [History and recipes](docs/guide/history-and-recipes.md): undo, go back,
-  playback, and recipes in the window and from the shell.
+  playback, notes, variables, and recipes in the window and from the
+  shell.
 - [Ask Claude, and who may change the file](docs/guide/ask-and-permissions.md).
 - [Command line](docs/guide/command-line.md): every option and subcommand.
 - [Settings and files](docs/guide/settings-and-files.md): settings, where
@@ -227,7 +244,10 @@ the full list.
 | `Cmd+Enter`, `Space` | Open the media at the cursor; play and pause; `Esc` closes it |
 | `Cmd+D` | Open the compressed block at the cursor; back up a level where there is none |
 | `Cmd+E` | Save the selection or stream to a file |
-| `Cmd+[` | Back to the parent document |
+| `Cmd+[` | Back to the parent worksheet; this one stays open |
+| `Cmd+W` | Close the worksheet shown and those derived from it |
+| `Ctrl+Tab` `Ctrl+Shift+Tab` | Next and previous worksheet |
+| `Shift+Cmd+T` | The tree of every open worksheet |
 | `Cmd+J` | Fold the tools away or back |
 | `Cmd+L` | Ask Claude |
 | `Cmd+,` | Settings |
